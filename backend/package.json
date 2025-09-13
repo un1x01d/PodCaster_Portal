@@ -9,7 +9,9 @@
   },
   "dependencies": {
     "bcrypt": "^6.0.0",
+    "cjs": "^0.0.11",
     "cors": "^2.8.5",
+    "csv-parse": "^6.1.0",
     "csv-parser": "^3.2.0",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",

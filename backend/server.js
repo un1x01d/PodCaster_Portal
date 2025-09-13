@@ -1,177 +1,170 @@
-// -----------------------------------------------------------------------------
-// Admin Dashboard Backend (Excel/CSV + Auth by Show Content Parent)
-// -----------------------------------------------------------------------------
-// - Admin can upload + see all data
-// - Producers log in, filtered by "Show Content Parent"
-// -----------------------------------------------------------------------------
-
 import express from "express";
 import multer from "multer";
-import xlsx from "xlsx";
-import csvParser from "csv-parser";
 import cors from "cors";
+import xlsx from "xlsx";
 import fs from "fs";
-import path from "path";
 import jwt from "jsonwebtoken";
-import bcrypt from "bcrypt";
-import { fileURLToPath } from "url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { parse } from "csv-parse/sync";
 
 const app = express();
 const upload = multer({ dest: "uploads/" });
+const PORT = 4000;
+const JWT_SECRET = "supersecret"; // 🔒 replace with env var in production
 
 app.use(cors());
 app.use(express.json());
 
-const JWT_SECRET = "super-secret-key"; // ⚠️ replace with env var in production
+let parsedData = [];
 
-// -----------------------------------------------------------------------------
-// User store (replace with DB later)
-// -----------------------------------------------------------------------------
+// --- Users (Admin + Producers) ---
 const users = [
-  {
-    id: 1,
-    name: "Admin",
-    email: "admin@test.com",
-    password: bcrypt.hashSync("admin123", 10),
-    role: "admin"
-  },
-  {
-    id: 2,
-    name: "Jordan Berman",
-    email: "jordan@test.com",
-    password: bcrypt.hashSync("producer123", 10),
-    role: "producer",
-    contentParent: "Jordan Berman"
-  },
-  {
-    id: 3,
-    name: "Maybe Both LLC",
-    email: "maybe@test.com",
-    password: bcrypt.hashSync("producer123", 10),
-    role: "producer",
-    contentParent: "Maybe Both LLC"
-  },
-  {
-    id: 4,
-    name: "Lisa Damour, PHD, LLC",
-    email: "lisa@test.com",
-    password: bcrypt.hashSync("producer123", 10),
-    role: "producer",
-    contentParent: "Lisa Damour, PHD, LLC"
-  }
+  { email: "admin@example.com", password: "admin123", role: "admin" },
+
+  { email: "producer1@example.com", password: "producer123", role: "producer", contentParent: "Jordan Berman" },
+  { email: "producer2@example.com", password: "producer123", role: "producer", contentParent: "Maybe Both LLC" },
+  { email: "producer3@example.com", password: "producer123", role: "producer", contentParent: "Lisa Damour, PHD, LLC" },
+  { email: "producer4@example.com", password: "producer123", role: "producer", contentParent: "Your Zen Mama LLC" },
+  { email: "producer5@example.com", password: "producer123", role: "producer", contentParent: "Angela Codella" },
 ];
 
-// -----------------------------------------------------------------------------
-// Middleware: JWT authentication
-// -----------------------------------------------------------------------------
-function authenticate(req, res, next) {
-  const authHeader = req.headers.authorization;
-  if (!authHeader) return res.status(401).json({ error: "No token" });
-  const token = authHeader.split(" ")[1];
-  try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    req.user = decoded;
+// --- Auth Middleware ---
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1];
+  if (!token) return res.sendStatus(401);
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.sendStatus(403);
+    req.user = user;
     next();
-  } catch {
-    return res.status(403).json({ error: "Invalid token" });
-  }
+  });
 }
 
-// -----------------------------------------------------------------------------
-// Auth endpoint
-// -----------------------------------------------------------------------------
+// --- Header Sanitizer ---
+function sanitizeHeader(header, i) {
+  if (!header || header.trim() === "") return `Column${i + 1}`;
+  return String(header)
+    .trim()
+    .replace(/\s+/g, "_") // spaces → underscores
+    .replace(/[^\w\d_]/g, ""); // remove special chars
+}
+
+// --- Login ---
 app.post("/login", (req, res) => {
   const { email, password } = req.body;
-  const user = users.find((u) => u.email === email);
+  const user = users.find((u) => u.email === email && u.password === password);
   if (!user) return res.status(401).json({ error: "Invalid credentials" });
 
-  if (!bcrypt.compareSync(password, user.password)) {
-    return res.status(401).json({ error: "Invalid credentials" });
-  }
-
   const token = jwt.sign(
-    {
-      id: user.id,
-      email: user.email,
-      role: user.role,
-      name: user.name,
-      contentParent: user.contentParent || null
-    },
+    { email: user.email, role: user.role, contentParent: user.contentParent || null },
     JWT_SECRET,
-    { expiresIn: "2h" }
+    { expiresIn: "8h" }
   );
-
   res.json({ token });
 });
 
-// -----------------------------------------------------------------------------
-// Upload data (admin only)
-// -----------------------------------------------------------------------------
-app.post("/upload", authenticate, upload.single("file"), (req, res) => {
-  if (req.user.role !== "admin")
-    return res.status(403).json({ error: "Admins only" });
+// --- Upload File (CSV/XLSX/XLS) ---
+app.post("/upload", upload.single("file"), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: "No file uploaded" });
+  }
 
-  const filePath = path.resolve(req.file.path);
-  const ext = path.extname(req.file.originalname).toLowerCase();
-  let rows = [];
+  const filePath = req.file.path;
+  const fileExt = req.file.originalname.split(".").pop().toLowerCase();
 
-  if (ext === ".xlsx" || ext === ".xls") {
-    // Parse Excel
-    const workbook = xlsx.readFile(filePath, { cellDates: true });
-    const sheetName = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[sheetName];
-    rows = xlsx.utils.sheet_to_json(sheet, { defval: "", raw: false });
-  } else {
-    // Parse CSV/TSV (streaming)
-    const raw = fs.readFileSync(filePath, "utf8");
-    const lines = raw.trim().split(/\r?\n/);
-    const separator = raw.includes("\t") ? "\t" : ",";
-    const headers = lines[0].split(separator).map((h) => h.trim());
-    rows = lines.slice(1).map((line) => {
-      const cols = line.split(separator);
-      let obj = {};
+  try {
+    const fileBuffer = fs.readFileSync(filePath);
+    let csvString;
+
+    if (fileExt === "csv") {
+      // Directly use CSV
+      csvString = fileBuffer.toString("utf8");
+    } else if (fileExt === "xlsx" || fileExt === "xls") {
+      // Flatten Excel to CSV in-memory
+      const workbook = xlsx.read(fileBuffer, { type: "buffer" });
+      const sheetName = workbook.SheetNames[0]; // always take first sheet
+      const sheet = workbook.Sheets[sheetName];
+      csvString = xlsx.utils.sheet_to_csv(sheet, { FS: ",", strip: true });
+    } else {
+      return res.status(400).json({ error: "Unsupported file type" });
+    }
+
+    // Parse CSV safely
+    let records = parse(csvString, {
+      columns: true,
+      skip_empty_lines: true,
+    });
+
+    // --- Safeguard: reject pivot-style XLSX ---
+    if (Object.keys(records[0] || {}).length === 1) {
+      return res.status(400).json({
+        error:
+          "❌ This Excel file only contains 1 column (likely a Pivot Table or filtered export).\n\n" +
+          "👉 To fix: open the spreadsheet in Excel or LibreOffice, copy all data, paste as values into a new sheet, " +
+          "remove filters/pivots, and then save as either:\n" +
+          "   • CSV (UTF-8)\n" +
+          "   • or a clean XLSX workbook\n\n" +
+          "Then re-upload the file.",
+      });
+    }
+
+    // Sanitize headers
+    const headers = Object.keys(records[0] || {}).map((h, i) =>
+      sanitizeHeader(h, i)
+    );
+
+    parsedData = records.map((row) => {
+      const obj = {};
       headers.forEach((h, i) => {
-        obj[h] = cols[i] ?? "";
+        const originalKey = Object.keys(records[0])[i];
+        obj[h] = row[originalKey];
       });
       return obj;
     });
+
+    console.log(`✅ Parsed ${parsedData.length} rows, ${headers.length} columns`);
+    console.log("Detected headers:", headers);
+
+    fs.unlinkSync(filePath);
+
+    res.json({
+      success: true,
+      rows: parsedData.length,
+      cols: headers.length,
+    });
+  } catch (err) {
+    console.error("❌ Parse error:", err);
+    res.status(500).json({ error: "Failed to parse file" });
   }
-
-  fs.unlinkSync(filePath);
-
-  // Store rows in memory (replace with DB later)
-  app.locals.data = rows;
-
-  res.json({ success: true, rows: rows.length });
 });
 
-// -----------------------------------------------------------------------------
-// Get data (admin = all, producer = filtered by Show Content Parent)
-// -----------------------------------------------------------------------------
-app.get("/data", authenticate, (req, res) => {
-  const rows = app.locals.data || [];
-
+// --- Get Data ---
+app.get("/data", authenticateToken, (req, res) => {
   if (req.user.role === "admin") {
-    return res.json(rows);
-  } else {
-    const filtered = rows.filter(
-      (r) =>
-        r["Show Content Parent"] &&
-        r["Show Content Parent"].trim().toLowerCase() ===
-          req.user.contentParent.trim().toLowerCase()
+    return res.json(parsedData);
+  }
+
+  if (req.user.role === "producer") {
+    const headers = Object.keys(parsedData[0] || {});
+    const contentParentCol = headers.find(
+      (h) => h.trim().toLowerCase() === "show_content_parent".toLowerCase()
+    );
+
+    if (!contentParentCol) {
+      return res.json([]); // no matching column
+    }
+
+    const filtered = parsedData.filter(
+      (row) => row[contentParentCol] === req.user.contentParent
     );
     return res.json(filtered);
   }
+
+  res.status(403).json({ error: "Unauthorized" });
 });
 
-// -----------------------------------------------------------------------------
-// Start server
-// -----------------------------------------------------------------------------
-const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => {
-  console.log(`✅ Backend running on http://localhost:${PORT}`);
-});
+// --- Start Server ---
+app.listen(PORT, () =>
+  console.log(`✅ Backend running on http://localhost:${PORT}`)
+);
 

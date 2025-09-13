@@ -1,14 +1,5 @@
 import React, { useState, useEffect } from "react";
 import axios from "axios";
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  CartesianGrid,
-  ResponsiveContainer,
-} from "recharts";
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -20,12 +11,8 @@ export default function App() {
   const [sortConfig, setSortConfig] = useState(null);
   const [file, setFile] = useState(null);
 
+  // One selected column for totals
   const [calcColumn, setCalcColumn] = useState("");
-  const [error, setError] = useState("");
-
-  // Chart column selectors
-  const [chartX, setChartX] = useState("");
-  const [chartY, setChartY] = useState("");
 
   // --- Authentication ---
   const handleLogin = async (e) => {
@@ -63,12 +50,11 @@ export default function App() {
         headers: { Authorization: `Bearer ${token}` },
       });
       setData(res.data);
-      setError("");
       if (res.data.length > 0) {
         const cols = Object.keys(res.data[0]);
         setHeaders(cols);
 
-        // Defaults for totals and chart
+        // Default: first numeric-looking column
         if (!calcColumn) {
           const numericCol = cols.find((c) =>
             res.data.some((row) => {
@@ -79,23 +65,13 @@ export default function App() {
           );
           setCalcColumn(numericCol || "");
         }
-        if (!chartX) setChartX(cols[0]); // first column as default X
-        if (!chartY) {
-          const numericCol = cols.find((c) =>
-            res.data.some((row) => {
-              if (!row[c]) return false;
-              let clean = String(row[c]).replace(/[\$,]/g, "");
-              return !isNaN(parseFloat(clean));
-            })
-          );
-          setChartY(numericCol || "");
-        }
       }
     } catch (err) {
       console.error("❌ Load data failed:", err.message);
     }
   };
 
+  // Auto-load data after login
   useEffect(() => {
     if (token && user) {
       loadData();
@@ -114,15 +90,9 @@ export default function App() {
           Authorization: `Bearer ${token}`,
         },
       });
-      setError("");
       loadData();
-    } catch (err) {
-      console.error("Upload error:", err.response?.data || err.message);
-      if (err.response && err.response.data && err.response.data.error) {
-        setError(err.response.data.error);
-      } else {
-        setError("❌ Upload failed. Please try again.");
-      }
+    } catch {
+      alert("❌ Upload failed");
     }
   };
 
@@ -156,6 +126,7 @@ export default function App() {
     return sortedData.reduce((acc, row) => {
       if (!row[calcColumn]) return acc;
 
+      // Clean up: remove $, commas, spaces
       let raw = String(row[calcColumn]).trim();
       let clean = raw.replace(/[\$,]/g, "");
       const num = parseFloat(clean);
@@ -163,30 +134,6 @@ export default function App() {
       return acc + (isNaN(num) ? 0 : num);
     }, 0);
   }, [sortedData, calcColumn]);
-
-  // --- Chart Data ---
-  const chartData = React.useMemo(() => {
-    if (!data || !chartX || !chartY) return [];
-
-    const groups = {};
-    data.forEach((row) => {
-      const xVal = row[chartX];
-      let yVal = row[chartY];
-      if (!xVal || !yVal) return;
-
-      // Clean numeric values
-      let clean = String(yVal).replace(/[\$,]/g, "").trim();
-      let num = parseFloat(clean);
-      if (isNaN(num)) num = 0;
-
-      groups[xVal] = (groups[xVal] || 0) + num;
-    });
-
-    return Object.entries(groups).map(([xVal, total]) => ({
-      [chartX]: xVal,
-      [chartY]: total,
-    }));
-  }, [data, chartX, chartY]);
 
   // --- Login Page ---
   if (!token || !user) {
@@ -270,6 +217,7 @@ export default function App() {
           Refresh
         </button>
 
+        {/* Dropdown for totals column */}
         {headers.length > 0 && (
           <div className="ml-6 flex items-center gap-2">
             <label className="font-semibold">Totals Column:</label>
@@ -288,76 +236,17 @@ export default function App() {
         )}
       </div>
 
-      {/* Error */}
-      {error && (
-        <div className="m-4 p-4 border border-red-400 bg-red-100 text-red-800 rounded-lg whitespace-pre-wrap">
-          <strong>Upload Error:</strong>
-          <br />
-          {error}
-        </div>
-      )}
-
-      {/* Totals */}
-      {calcColumn && !error && (
+      {/* Totals at the top */}
+      {calcColumn && (
         <div className="p-4 bg-indigo-100 border-b border-gray-200 font-bold">
           {calcColumn}:{" "}
           <span className="text-indigo-800">${total.toLocaleString()}</span>
         </div>
       )}
 
-      {/* Chart with selectors */}
-      <div className="p-6">
-        <h2 className="text-lg font-bold mb-4">Dynamic Chart</h2>
-        {headers.length > 0 && (
-          <div className="flex gap-4 mb-4">
-            <div>
-              <label className="font-semibold mr-2">X-Axis:</label>
-              <select
-                value={chartX}
-                onChange={(e) => setChartX(e.target.value)}
-                className="border p-2 rounded text-sm"
-              >
-                {headers.map((h) => (
-                  <option key={h} value={h}>
-                    {h}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="font-semibold mr-2">Y-Axis:</label>
-              <select
-                value={chartY}
-                onChange={(e) => setChartY(e.target.value)}
-                className="border p-2 rounded text-sm"
-              >
-                {headers.map((h) => (
-                  <option key={h} value={h}>
-                    {h}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-        )}
-        {chartData.length > 0 ? (
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey={chartX} />
-              <YAxis />
-              <Tooltip formatter={(value) => `$${value.toLocaleString()}`} />
-              <Bar dataKey={chartY} fill="#1976d2" />
-            </BarChart>
-          </ResponsiveContainer>
-        ) : (
-          <div className="text-gray-500">📊 No chart data available</div>
-        )}
-      </div>
-
       {/* Table */}
       <div className="flex-1 overflow-auto m-4 bg-white rounded-xl shadow-lg border border-gray-200">
-        {data.length > 0 && !error ? (
+        {data.length > 0 ? (
           <table className="table-auto border-collapse w-full text-sm">
             <thead className="sticky top-0 bg-blue-700 text-white shadow-sm">
               <tr>
@@ -395,11 +284,11 @@ export default function App() {
               ))}
             </tbody>
           </table>
-        ) : !error ? (
+        ) : (
           <div className="text-gray-500 text-center py-10">
             📂 Upload or refresh to see data
           </div>
-        ) : null}
+        )}
       </div>
     </div>
   );
