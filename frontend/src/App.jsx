@@ -23,7 +23,6 @@ export default function App() {
   const [calcColumn, setCalcColumn] = useState("");
   const [error, setError] = useState("");
 
-  // Chart column selectors
   const [chartX, setChartX] = useState("");
   const [chartY, setChartY] = useState("");
 
@@ -68,7 +67,6 @@ export default function App() {
         const cols = Object.keys(res.data[0]);
         setHeaders(cols);
 
-        // Defaults for totals and chart
         if (!calcColumn) {
           const numericCol = cols.find((c) =>
             res.data.some((row) => {
@@ -79,7 +77,7 @@ export default function App() {
           );
           setCalcColumn(numericCol || "");
         }
-        if (!chartX) setChartX(cols[0]); // first column as default X
+        if (!chartX) setChartX(cols[0]);
         if (!chartY) {
           const numericCol = cols.find((c) =>
             res.data.some((row) => {
@@ -118,7 +116,7 @@ export default function App() {
       loadData();
     } catch (err) {
       console.error("Upload error:", err.response?.data || err.message);
-      if (err.response && err.response.data && err.response.data.error) {
+      if (err.response?.data?.error) {
         setError(err.response.data.error);
       } else {
         setError("❌ Upload failed. Please try again.");
@@ -155,11 +153,9 @@ export default function App() {
     if (!calcColumn) return 0;
     return sortedData.reduce((acc, row) => {
       if (!row[calcColumn]) return acc;
-
       let raw = String(row[calcColumn]).trim();
       let clean = raw.replace(/[\$,]/g, "");
       const num = parseFloat(clean);
-
       return acc + (isNaN(num) ? 0 : num);
     }, 0);
   }, [sortedData, calcColumn]);
@@ -167,21 +163,16 @@ export default function App() {
   // --- Chart Data ---
   const chartData = React.useMemo(() => {
     if (!data || !chartX || !chartY) return [];
-
     const groups = {};
     data.forEach((row) => {
       const xVal = row[chartX];
       let yVal = row[chartY];
       if (!xVal || !yVal) return;
-
-      // Clean numeric values
       let clean = String(yVal).replace(/[\$,]/g, "").trim();
       let num = parseFloat(clean);
       if (isNaN(num)) num = 0;
-
       groups[xVal] = (groups[xVal] || 0) + num;
     });
-
     return Object.entries(groups).map(([xVal, total]) => ({
       [chartX]: xVal,
       [chartY]: total,
@@ -226,7 +217,7 @@ export default function App() {
 
   // --- Dashboard ---
   return (
-    <div className="w-screen h-screen flex flex-col bg-gray-50">
+    <div className="w-screen min-h-screen flex flex-col bg-gray-50">
       {/* Top Bar */}
       <div className="bg-blue-600 text-white px-6 py-4 flex justify-between items-center shadow">
         <h1 className="text-xl font-bold">📊 Podcaster Dashboard</h1>
@@ -305,7 +296,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Chart with selectors */}
+      {/* Chart */}
       <div className="p-6">
         <h2 className="text-lg font-bold mb-4">Dynamic Chart</h2>
         {headers.length > 0 && (
@@ -343,11 +334,17 @@ export default function App() {
         {chartData.length > 0 ? (
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={chartData}>
+              <defs>
+                <linearGradient id="barGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#1e90ff" stopOpacity={0.9} />
+                  <stop offset="100%" stopColor="#32cd32" stopOpacity={0.9} />
+                </linearGradient>
+              </defs>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey={chartX} />
               <YAxis />
               <Tooltip formatter={(value) => `$${value.toLocaleString()}`} />
-              <Bar dataKey={chartY} fill="#1976d2" />
+              <Bar dataKey={chartY} fill="url(#barGradient)" />
             </BarChart>
           </ResponsiveContainer>
         ) : (
@@ -356,7 +353,10 @@ export default function App() {
       </div>
 
       {/* Table */}
-      <div className="flex-1 overflow-auto m-4 bg-white rounded-xl shadow-lg border border-gray-200">
+      <div
+        className="m-4 bg-white rounded-xl shadow-lg border border-gray-200 overflow-y-auto"
+        style={{ height: `${50 * 30}px` }} // ~50 rows viewport
+      >
         {data.length > 0 && !error ? (
           <table className="table-auto border-collapse w-full text-sm">
             <thead className="sticky top-0 bg-blue-700 text-white shadow-sm">
