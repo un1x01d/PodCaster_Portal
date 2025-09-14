@@ -16,10 +16,10 @@ export default function App() {
 
   const [filters, setFilters] = useState({});
 
-  // summary table state
+  // --- summary (SUMIFS style) ---
   const [groupCol, setGroupCol] = useState("");
-  const [valCol1, setValCol1] = useState("");
-  const [valCol2, setValCol2] = useState("");
+  const [groupCol2, setGroupCol2] = useState("");
+  const [valCol, setValCol] = useState("");
 
   // --- Authentication ---
   const handleLogin = async (e) => {
@@ -74,8 +74,8 @@ export default function App() {
         }
 
         if (!groupCol) setGroupCol(cols[0]);
-        if (!valCol1) setValCol1(cols[1]);
-        if (!valCol2 && cols.length > 2) setValCol2(cols[2]);
+        if (!groupCol2 && cols.length > 1) setGroupCol2(cols[1]);
+        if (!valCol && cols.length > 2) setValCol(cols[2]);
       }
     } catch (err) {
       console.error("❌ Load data failed:", err.message);
@@ -157,25 +157,28 @@ export default function App() {
     }, 0);
   }, [filteredData, calcColumn]);
 
-  // --- Summary Data ---
+  // --- Summary Data (SUMIFS) ---
   const summaryData = React.useMemo(() => {
-    if (!groupCol || !valCol1 || !valCol2) return [];
+    if (!groupCol || !groupCol2 || !valCol) return [];
 
     const groups = {};
     filteredData.forEach((row) => {
-      const g = row[groupCol];
-      if (!g) return;
+      const g1 = row[groupCol];
+      const g2 = row[groupCol2];
+      if (!g1 || !g2) return;
 
-      const v1 = parseFloat(String(row[valCol1]).replace(/[\$,]/g, "")) || 0;
-      const v2 = parseFloat(String(row[valCol2]).replace(/[\$,]/g, "")) || 0;
+      let raw = row[valCol];
+      let clean = String(raw || "").replace(/[\$,]/g, "").trim();
+      let num = parseFloat(clean);
+      if (isNaN(num)) num = 0;
 
-      if (!groups[g]) groups[g] = { [valCol1]: 0, [valCol2]: 0 };
-      groups[g][valCol1] += v1;
-      groups[g][valCol2] += v2;
+      const key = `${g1} | ${g2}`;
+      if (!groups[key]) groups[key] = { g1, g2, total: 0 };
+      groups[key].total += num;
     });
 
-    return Object.entries(groups);
-  }, [filteredData, groupCol, valCol1, valCol2]);
+    return Object.values(groups);
+  }, [filteredData, groupCol, groupCol2, valCol]);
 
   // --- Login Page ---
   if (!token || !user) {
@@ -304,13 +307,13 @@ export default function App() {
         </div>
       )}
 
-      {/* Summary Table */}
+      {/* Summary Table (SUMIFS) */}
       {headers.length > 0 && (
         <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200 p-4">
-          <h2 className="text-lg font-bold mb-2">Summary by Group</h2>
+          <h2 className="text-lg font-bold mb-2">Summary (Two Conditions)</h2>
           <div className="flex gap-4 mb-4">
             <div>
-              <label className="font-semibold mr-2">Group By:</label>
+              <label className="font-semibold mr-2">Condition 1:</label>
               <select
                 value={groupCol}
                 onChange={(e) => setGroupCol(e.target.value)}
@@ -324,10 +327,10 @@ export default function App() {
               </select>
             </div>
             <div>
-              <label className="font-semibold mr-2">Value 1:</label>
+              <label className="font-semibold mr-2">Condition 2:</label>
               <select
-                value={valCol1}
-                onChange={(e) => setValCol1(e.target.value)}
+                value={groupCol2}
+                onChange={(e) => setGroupCol2(e.target.value)}
                 className="border p-2 rounded text-sm"
               >
                 {headers.map((h) => (
@@ -338,10 +341,10 @@ export default function App() {
               </select>
             </div>
             <div>
-              <label className="font-semibold mr-2">Value 2:</label>
+              <label className="font-semibold mr-2">Value Column:</label>
               <select
-                value={valCol2}
-                onChange={(e) => setValCol2(e.target.value)}
+                value={valCol}
+                onChange={(e) => setValCol(e.target.value)}
                 className="border p-2 rounded text-sm"
               >
                 {headers.map((h) => (
@@ -356,19 +359,17 @@ export default function App() {
             <thead className="bg-blue-700 text-white">
               <tr>
                 <th className="border px-4 py-2 text-left">{groupCol}</th>
-                <th className="border px-4 py-2 text-left">{valCol1}</th>
-                <th className="border px-4 py-2 text-left">{valCol2}</th>
+                <th className="border px-4 py-2 text-left">{groupCol2}</th>
+                <th className="border px-4 py-2 text-left">{valCol}</th>
               </tr>
             </thead>
             <tbody>
-              {summaryData.map(([group, totals]) => (
-                <tr key={group} className="odd:bg-gray-50 even:bg-white">
-                  <td className="border px-4 py-2">{group}</td>
+              {summaryData.map((row, i) => (
+                <tr key={i} className="odd:bg-gray-50 even:bg-white">
+                  <td className="border px-4 py-2">{row.g1}</td>
+                  <td className="border px-4 py-2">{row.g2}</td>
                   <td className="border px-4 py-2">
-                    ${totals[valCol1].toLocaleString()}
-                  </td>
-                  <td className="border px-4 py-2">
-                    ${totals[valCol2].toLocaleString()}
+                    ${row.total.toLocaleString()}
                   </td>
                 </tr>
               ))}
