@@ -1,5 +1,14 @@
 import React, { useState, useEffect } from "react";
 import axios from "axios";
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+} from "recharts";
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -13,10 +22,8 @@ export default function App() {
 
   const [calcColumn, setCalcColumn] = useState("");
   const [error, setError] = useState("");
-
   const [filters, setFilters] = useState({});
 
-  // --- summary (SUMIFS style) ---
   const [groupCol, setGroupCol] = useState("");
   const [groupCol2, setGroupCol2] = useState("");
   const [valCol, setValCol] = useState("");
@@ -58,12 +65,20 @@ export default function App() {
       });
       setData(res.data);
       setError("");
+
       if (res.data.length > 0) {
         const cols = Object.keys(res.data[0]);
-        setHeaders(cols);
+
+        // Force Advertiser + Broadcast Month as first columns
+        const requiredCols = ["Advertiser", "Broadcast Month"];
+        const finalCols = [
+          ...requiredCols.filter((r) => cols.includes(r)),
+          ...cols.filter((c) => !requiredCols.includes(c)),
+        ];
+        setHeaders(finalCols);
 
         if (!calcColumn) {
-          const numericCol = cols.find((c) =>
+          const numericCol = finalCols.find((c) =>
             res.data.some((row) => {
               if (!row[c]) return false;
               let clean = String(row[c]).replace(/[\$,]/g, "");
@@ -73,9 +88,9 @@ export default function App() {
           setCalcColumn(numericCol || "");
         }
 
-        if (!groupCol) setGroupCol(cols[0]);
-        if (!groupCol2 && cols.length > 1) setGroupCol2(cols[1]);
-        if (!valCol && cols.length > 2) setValCol(cols[2]);
+        if (!groupCol) setGroupCol(finalCols[0]);
+        if (!groupCol2 && finalCols.length > 1) setGroupCol2(finalCols[1]);
+        if (!valCol && finalCols.length > 2) setValCol(finalCols[2]);
       }
     } catch (err) {
       console.error("❌ Load data failed:", err.message);
@@ -157,7 +172,7 @@ export default function App() {
     }, 0);
   }, [filteredData, calcColumn]);
 
-  // --- Summary Data (SUMIFS) ---
+  // --- Summary Data (SUMIFS style) ---
   const summaryData = React.useMemo(() => {
     if (!groupCol || !groupCol2 || !valCol) return [];
 
@@ -179,6 +194,24 @@ export default function App() {
 
     return Object.values(groups);
   }, [filteredData, groupCol, groupCol2, valCol]);
+
+  // --- Chart Data based on summaryData ---
+  const chartData = React.useMemo(() => {
+    if (!groupCol || !groupCol2 || !valCol) return [];
+
+    const grouped = {};
+    summaryData.forEach(({ g1, g2, total }) => {
+      if (!grouped[g1]) grouped[g1] = { [groupCol]: g1 };
+      grouped[g1][g2] = total;
+    });
+
+    return Object.values(grouped);
+  }, [summaryData, groupCol, groupCol2, valCol]);
+
+  const seriesKeys = React.useMemo(() => {
+    const set = new Set(summaryData.map((row) => row.g2));
+    return Array.from(set);
+  }, [summaryData]);
 
   // --- Login Page ---
   if (!token || !user) {
@@ -279,7 +312,6 @@ export default function App() {
               </select>
             </div>
 
-            {/* Reset Filters */}
             <button
               onClick={() => setFilters({})}
               className="bg-gray-500 hover:bg-gray-600 text-white px-3 py-2 rounded-lg ml-4"
@@ -290,15 +322,6 @@ export default function App() {
         )}
       </div>
 
-      {/* Error */}
-      {error && (
-        <div className="m-4 p-4 border border-red-400 bg-red-100 text-red-800 rounded-lg whitespace-pre-wrap">
-          <strong>Upload Error:</strong>
-          <br />
-          {error}
-        </div>
-      )}
-
       {/* Totals */}
       {calcColumn && !error && (
         <div className="p-4 bg-indigo-100 border-b border-gray-200 font-bold">
@@ -307,7 +330,57 @@ export default function App() {
         </div>
       )}
 
-      {/* Summary Table (SUMIFS) */}
+      {/* Chart */}
+      <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200 p-4">
+        <h2 className="text-lg font-bold mb-2">
+          {valCol} by {groupCol} and {groupCol2}
+        </h2>
+        {chartData.length > 0 ? (
+          <ResponsiveContainer width="100%" height={400}>
+            <BarChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey={groupCol} />
+              <YAxis />
+              <Tooltip formatter={(val) => `$${val.toLocaleString()}`} />
+              {seriesKeys.map((key, idx) => (
+                <Bar
+                  key={key}
+                  dataKey={key}
+                  stackId="a"
+                  fill={`url(#color${idx})`}
+                />
+              ))}
+              <defs>
+                {seriesKeys.map((key, idx) => (
+                  <linearGradient
+                    key={key}
+                    id={`color${idx}`}
+                    x1="0"
+                    y1="0"
+                    x2="0"
+                    y2="1"
+                  >
+                    <stop
+                      offset="5%"
+                      stopColor={idx % 2 === 0 ? "#4f46e5" : "#3b82f6"}
+                      stopOpacity={0.9}
+                    />
+                    <stop
+                      offset="95%"
+                      stopColor={idx % 2 === 0 ? "#4f46e5" : "#3b82f6"}
+                      stopOpacity={0.5}
+                    />
+                  </linearGradient>
+                ))}
+              </defs>
+            </BarChart>
+          </ResponsiveContainer>
+        ) : (
+          <p className="text-gray-500">📊 No chart data available</p>
+        )}
+      </div>
+
+      {/* Summary Table */}
       {headers.length > 0 && (
         <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200 p-4">
           <h2 className="text-lg font-bold mb-2">Summary (Two Conditions)</h2>
