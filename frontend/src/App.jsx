@@ -1,14 +1,5 @@
 import React, { useState, useEffect } from "react";
 import axios from "axios";
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  CartesianGrid,
-  ResponsiveContainer,
-} from "recharts";
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -23,10 +14,12 @@ export default function App() {
   const [calcColumn, setCalcColumn] = useState("");
   const [error, setError] = useState("");
 
-  const [chartX, setChartX] = useState("");
-  const [chartY, setChartY] = useState("");
-
   const [filters, setFilters] = useState({});
+
+  // summary table state
+  const [groupCol, setGroupCol] = useState("");
+  const [valCol1, setValCol1] = useState("");
+  const [valCol2, setValCol2] = useState("");
 
   // --- Authentication ---
   const handleLogin = async (e) => {
@@ -79,17 +72,10 @@ export default function App() {
           );
           setCalcColumn(numericCol || "");
         }
-        if (!chartX) setChartX(cols[0]);
-        if (!chartY) {
-          const numericCol = cols.find((c) =>
-            res.data.some((row) => {
-              if (!row[c]) return false;
-              let clean = String(row[c]).replace(/[\$,]/g, "");
-              return !isNaN(parseFloat(clean));
-            })
-          );
-          setChartY(numericCol || "");
-        }
+
+        if (!groupCol) setGroupCol(cols[0]);
+        if (!valCol1) setValCol1(cols[1]);
+        if (!valCol2 && cols.length > 2) setValCol2(cols[2]);
       }
     } catch (err) {
       console.error("❌ Load data failed:", err.message);
@@ -171,24 +157,25 @@ export default function App() {
     }, 0);
   }, [filteredData, calcColumn]);
 
-  // --- Chart Data ---
-  const chartData = React.useMemo(() => {
-    if (!filteredData || !chartX || !chartY) return [];
+  // --- Summary Data ---
+  const summaryData = React.useMemo(() => {
+    if (!groupCol || !valCol1 || !valCol2) return [];
+
     const groups = {};
     filteredData.forEach((row) => {
-      const xVal = row[chartX];
-      let yVal = row[chartY];
-      if (!xVal || !yVal) return;
-      let clean = String(yVal).replace(/[\$,]/g, "").trim();
-      let num = parseFloat(clean);
-      if (isNaN(num)) num = 0;
-      groups[xVal] = (groups[xVal] || 0) + num;
+      const g = row[groupCol];
+      if (!g) return;
+
+      const v1 = parseFloat(String(row[valCol1]).replace(/[\$,]/g, "")) || 0;
+      const v2 = parseFloat(String(row[valCol2]).replace(/[\$,]/g, "")) || 0;
+
+      if (!groups[g]) groups[g] = { [valCol1]: 0, [valCol2]: 0 };
+      groups[g][valCol1] += v1;
+      groups[g][valCol2] += v2;
     });
-    return Object.entries(groups).map(([xVal, total]) => ({
-      [chartX]: xVal,
-      [chartY]: total,
-    }));
-  }, [filteredData, chartX, chartY]);
+
+    return Object.entries(groups);
+  }, [filteredData, groupCol, valCol1, valCol2]);
 
   // --- Login Page ---
   if (!token || !user) {
@@ -317,16 +304,16 @@ export default function App() {
         </div>
       )}
 
-      {/* Chart */}
-      <div className="p-6">
-        <h2 className="text-lg font-bold mb-4">Dynamic Chart</h2>
-        {headers.length > 0 && (
+      {/* Summary Table */}
+      {headers.length > 0 && (
+        <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200 p-4">
+          <h2 className="text-lg font-bold mb-2">Summary by Group</h2>
           <div className="flex gap-4 mb-4">
             <div>
-              <label className="font-semibold mr-2">X-Axis:</label>
+              <label className="font-semibold mr-2">Group By:</label>
               <select
-                value={chartX}
-                onChange={(e) => setChartX(e.target.value)}
+                value={groupCol}
+                onChange={(e) => setGroupCol(e.target.value)}
                 className="border p-2 rounded text-sm"
               >
                 {headers.map((h) => (
@@ -337,10 +324,24 @@ export default function App() {
               </select>
             </div>
             <div>
-              <label className="font-semibold mr-2">Y-Axis:</label>
+              <label className="font-semibold mr-2">Value 1:</label>
               <select
-                value={chartY}
-                onChange={(e) => setChartY(e.target.value)}
+                value={valCol1}
+                onChange={(e) => setValCol1(e.target.value)}
+                className="border p-2 rounded text-sm"
+              >
+                {headers.map((h) => (
+                  <option key={h} value={h}>
+                    {h}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="font-semibold mr-2">Value 2:</label>
+              <select
+                value={valCol2}
+                onChange={(e) => setValCol2(e.target.value)}
                 className="border p-2 rounded text-sm"
               >
                 {headers.map((h) => (
@@ -351,33 +352,33 @@ export default function App() {
               </select>
             </div>
           </div>
-        )}
-        {chartData.length > 0 ? (
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={chartData}>
-              <defs>
-                <linearGradient id="barGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#1e90ff" stopOpacity={0.9} />
-                  <stop offset="100%" stopColor="#32cd32" stopOpacity={0.9} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey={chartX} />
-              <YAxis />
-              <Tooltip formatter={(value) => `$${value.toLocaleString()}`} />
-              <Bar dataKey={chartY} fill="url(#barGradient)" />
-            </BarChart>
-          </ResponsiveContainer>
-        ) : (
-          <div className="text-gray-500">📊 No chart data available</div>
-        )}
-      </div>
+          <table className="table-auto border-collapse w-full text-sm">
+            <thead className="bg-blue-700 text-white">
+              <tr>
+                <th className="border px-4 py-2 text-left">{groupCol}</th>
+                <th className="border px-4 py-2 text-left">{valCol1}</th>
+                <th className="border px-4 py-2 text-left">{valCol2}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {summaryData.map(([group, totals]) => (
+                <tr key={group} className="odd:bg-gray-50 even:bg-white">
+                  <td className="border px-4 py-2">{group}</td>
+                  <td className="border px-4 py-2">
+                    ${totals[valCol1].toLocaleString()}
+                  </td>
+                  <td className="border px-4 py-2">
+                    ${totals[valCol2].toLocaleString()}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
-      {/* Table */}
-      <div
-        className="m-4 bg-white rounded-xl shadow-lg border border-gray-200 overflow-y-auto"
-        style={{ height: `${50 * 30}px` }} // ~50 rows viewport
-      >
+      {/* Main Table */}
+      <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200">
         {data.length > 0 && !error ? (
           <table className="table-auto border-collapse w-full text-sm">
             <thead className="sticky top-0 bg-blue-700 text-white shadow-sm">
@@ -408,7 +409,9 @@ export default function App() {
                       >
                         <option value="">All</option>
                         {Array.from(
-                          new Set(filteredData.map((row) => row[h]).filter(Boolean))
+                          new Set(
+                            filteredData.map((row) => row[h]).filter(Boolean)
+                          )
                         ).map((val) => (
                           <option key={val} value={val}>
                             {val}
