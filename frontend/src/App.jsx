@@ -26,6 +26,8 @@ export default function App() {
   const [chartX, setChartX] = useState("");
   const [chartY, setChartY] = useState("");
 
+  const [filters, setFilters] = useState({});
+
   // --- Authentication ---
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -148,23 +150,32 @@ export default function App() {
     setSortConfig({ key, direction });
   };
 
+  // --- Filters ---
+  const filteredData = React.useMemo(() => {
+    return sortedData.filter((row) =>
+      Object.entries(filters).every(
+        ([col, val]) => !val || row[col] === val
+      )
+    );
+  }, [sortedData, filters]);
+
   // --- Totals ---
   const total = React.useMemo(() => {
     if (!calcColumn) return 0;
-    return sortedData.reduce((acc, row) => {
+    return filteredData.reduce((acc, row) => {
       if (!row[calcColumn]) return acc;
       let raw = String(row[calcColumn]).trim();
       let clean = raw.replace(/[\$,]/g, "");
       const num = parseFloat(clean);
       return acc + (isNaN(num) ? 0 : num);
     }, 0);
-  }, [sortedData, calcColumn]);
+  }, [filteredData, calcColumn]);
 
   // --- Chart Data ---
   const chartData = React.useMemo(() => {
-    if (!data || !chartX || !chartY) return [];
+    if (!filteredData || !chartX || !chartY) return [];
     const groups = {};
-    data.forEach((row) => {
+    filteredData.forEach((row) => {
       const xVal = row[chartX];
       let yVal = row[chartY];
       if (!xVal || !yVal) return;
@@ -177,7 +188,7 @@ export default function App() {
       [chartX]: xVal,
       [chartY]: total,
     }));
-  }, [data, chartX, chartY]);
+  }, [filteredData, chartX, chartY]);
 
   // --- Login Page ---
   if (!token || !user) {
@@ -238,7 +249,7 @@ export default function App() {
       </div>
 
       {/* Controls */}
-      <div className="flex gap-3 p-4 bg-white shadow-sm border-b items-center">
+      <div className="flex gap-3 p-4 bg-white shadow-sm border-b items-center flex-wrap">
         {user.role === "admin" && (
           <>
             <input
@@ -262,20 +273,30 @@ export default function App() {
         </button>
 
         {headers.length > 0 && (
-          <div className="ml-6 flex items-center gap-2">
-            <label className="font-semibold">Totals Column:</label>
-            <select
-              value={calcColumn}
-              onChange={(e) => setCalcColumn(e.target.value)}
-              className="border p-2 rounded text-sm"
+          <>
+            <div className="ml-6 flex items-center gap-2">
+              <label className="font-semibold">Totals Column:</label>
+              <select
+                value={calcColumn}
+                onChange={(e) => setCalcColumn(e.target.value)}
+                className="border p-2 rounded text-sm"
+              >
+                {headers.map((h) => (
+                  <option key={h} value={h}>
+                    {h}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Reset Filters */}
+            <button
+              onClick={() => setFilters({})}
+              className="bg-gray-500 hover:bg-gray-600 text-white px-3 py-2 rounded-lg ml-4"
             >
-              {headers.map((h) => (
-                <option key={h} value={h}>
-                  {h}
-                </option>
-              ))}
-            </select>
-          </div>
+              Reset Filters
+            </button>
+          </>
         )}
       </div>
 
@@ -364,21 +385,43 @@ export default function App() {
                 {headers.map((h) => (
                   <th
                     key={h}
-                    className="border border-gray-200 px-4 py-2 text-left whitespace-nowrap cursor-pointer"
-                    onClick={() => requestSort(h)}
+                    className="border border-gray-200 px-4 py-2 text-left whitespace-nowrap"
                   >
-                    {h}
-                    {sortConfig?.key === h
-                      ? sortConfig.direction === "asc"
-                        ? " ▲"
-                        : " ▼"
-                      : " ⬍"}
+                    <div className="flex flex-col">
+                      <span
+                        className="cursor-pointer"
+                        onClick={() => requestSort(h)}
+                      >
+                        {h}
+                        {sortConfig?.key === h
+                          ? sortConfig.direction === "asc"
+                            ? " ▲"
+                            : " ▼"
+                          : " ⬍"}
+                      </span>
+                      <select
+                        value={filters[h] || ""}
+                        onChange={(e) =>
+                          setFilters({ ...filters, [h]: e.target.value })
+                        }
+                        className="mt-1 text-black border rounded text-xs"
+                      >
+                        <option value="">All</option>
+                        {Array.from(
+                          new Set(filteredData.map((row) => row[h]).filter(Boolean))
+                        ).map((val) => (
+                          <option key={val} value={val}>
+                            {val}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {sortedData.map((row, i) => (
+              {filteredData.map((row, i) => (
                 <tr
                   key={i}
                   className="odd:bg-gray-50 even:bg-white hover:bg-blue-50"
