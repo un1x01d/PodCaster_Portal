@@ -28,6 +28,8 @@ export default function App() {
   const [groupCol2, setGroupCol2] = useState("");
   const [valCol, setValCol] = useState("");
 
+  const [summaryFilters, setSummaryFilters] = useState({});
+
   // --- Authentication ---
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -194,6 +196,15 @@ export default function App() {
 
     return Object.values(groups);
   }, [filteredData, groupCol, groupCol2, valCol]);
+
+  // --- Summary Filters ---
+  const filteredSummaryData = React.useMemo(() => {
+    return summaryData.filter((row) =>
+      Object.entries(summaryFilters).every(
+        ([col, val]) => !val || row[col] === val
+      )
+    );
+  }, [summaryData, summaryFilters]);
 
   // --- Chart Data based on summaryData ---
   const chartData = React.useMemo(() => {
@@ -431,13 +442,36 @@ export default function App() {
           <table className="table-auto border-collapse w-full text-sm">
             <thead className="bg-blue-700 text-white">
               <tr>
-                <th className="border px-4 py-2 text-left">{groupCol}</th>
-                <th className="border px-4 py-2 text-left">{groupCol2}</th>
-                <th className="border px-4 py-2 text-left">{valCol}</th>
+                {[groupCol, groupCol2, valCol].map((col) => (
+                  <th key={col} className="border px-4 py-2 text-left">
+                    <div className="flex flex-col">
+                      <span>{col}</span>
+                      <select
+                        value={summaryFilters[col] || ""}
+                        onChange={(e) =>
+                          setSummaryFilters({
+                            ...summaryFilters,
+                            [col]: e.target.value,
+                          })
+                        }
+                        className="mt-1 text-black border rounded text-xs"
+                      >
+                        <option value="">All</option>
+                        {Array.from(
+                          new Set(summaryData.map((row) => row[col]).filter(Boolean))
+                        ).map((val) => (
+                          <option key={val} value={val}>
+                            {val}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
-              {summaryData.map((row, i) => (
+              {filteredSummaryData.map((row, i) => (
                 <tr key={i} className="odd:bg-gray-50 even:bg-white">
                   <td className="border px-4 py-2">{row.g1}</td>
                   <td className="border px-4 py-2">{row.g2}</td>
