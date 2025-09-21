@@ -1,170 +1,295 @@
 import express from "express";
-import multer from "multer";
 import cors from "cors";
+import multer from "multer";
 import xlsx from "xlsx";
-import fs from "fs";
 import jwt from "jsonwebtoken";
-import { parse } from "csv-parse/sync";
+import { Pool } from "pg";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 
 const app = express();
-const upload = multer({ dest: "uploads/" });
-const PORT = 4000;
-const JWT_SECRET = "supersecret"; // 🔒 replace with env var in production
-
 app.use(cors());
 app.use(express.json());
 
-let parsedData = [];
+const JWT_SECRET = process.env.JWT_SECRET || "supersecret";
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
-// --- Users (Admin + Producers) ---
-const users = [
-  { email: "admin@example.com", password: "admin123", role: "admin" },
+// ---------- helpers ----------
+async function query(sql, params) {
+  const res = await pool.query(sql, params);
+  return res.rows;
+}
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const UPLOADS_DIR = path.join(__dirname, "uploads");
+if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
-  { email: "producer1@example.com", password: "producer123", role: "producer", contentParent: "Jordan Berman" },
-  { email: "producer2@example.com", password: "producer123", role: "producer", contentParent: "Maybe Both LLC" },
-  { email: "producer3@example.com", password: "producer123", role: "producer", contentParent: "Lisa Damour, PHD, LLC" },
-  { email: "producer4@example.com", password: "producer123", role: "producer", contentParent: "Your Zen Mama LLC" },
-  { email: "producer5@example.com", password: "producer123", role: "producer", contentParent: "Angela Codella" },
-];
+// multer target inside mounted uploads volume
+const upload = multer({ dest: path.join(UPLOADS_DIR, "tmp") });
 
-// --- Auth Middleware ---
-function authenticateToken(req, res, next) {
-  const authHeader = req.headers["authorization"];
-  const token = authHeader && authHeader.split(" ")[1];
-  if (!token) return res.sendStatus(401);
-
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) return res.sendStatus(403);
-    req.user = user;
-    next();
-  });
+function genTempPassword(len = 12) {
+  const chars =
+    "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%^&*";
+  let out = "";
+  for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
+  return out;
 }
 
-// --- Header Sanitizer ---
-function sanitizeHeader(header, i) {
-  if (!header || header.trim() === "") return `Column${i + 1}`;
-  return String(header)
-    .trim()
-    .replace(/\s+/g, "_") // spaces → underscores
-    .replace(/[^\w\d_]/g, ""); // remove special chars
-}
+// ---------- init/migrations ----------
+async function initDb() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id SERIAL PRIMARY KEY,
+      email TEXT UNIQUE,
+      password TEXT,
+      role TEXT
+    );
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS sheets (
+      id TEXT PRIMARY KEY,
+      uploaded_at TIMESTAMP DEFAULT NOW(),
+      headers JSONB
+    );
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS permissions (
+      id SERIAL PRIMARY KEY,
+      sheet_id TEXT,
+      user_id INT,
+      allowed_columns JSONB,
+      row_filters JSONB
+    );
+  `);
+  await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT FALSE;`);
+  await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS filename TEXT;`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS permissions_uniq ON permissions (sheet_id, user_id);`);
 
-// --- Login ---
-app.post("/login", (req, res) => {
-  const { email, password } = req.body;
-  const user = users.find((u) => u.email === email && u.password === password);
-  if (!user) return res.status(401).json({ error: "Invalid credentials" });
-
-  const token = jwt.sign(
-    { email: user.email, role: user.role, contentParent: user.contentParent || null },
-    JWT_SECRET,
-    { expiresIn: "8h" }
+  await pool.query(
+    `INSERT INTO users (email,password,role)
+     VALUES ('admin@example.com','admin123','admin')
+     ON CONFLICT (email) DO NOTHING;`
   );
+}
+initDb().catch((e) => console.error("DB init error", e));
+
+// ---------- auth ----------
+function auth(req, res, next) {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ error: "Unauthorized" });
+  try {
+    req.user = jwt.verify(token, JWT_SECRET);
+    next();
+  } catch {
+    return res.status(401).json({ error: "Invalid token" });
+  }
+}
+
+app.post("/login", async (req, res) => {
+  const { email, password } = req.body || {};
+  const rows = await query("SELECT * FROM users WHERE email=$1 AND password=$2", [email, password]);
+  if (!rows.length) return res.status(401).json({ error: "Invalid credentials" });
+  const u = rows[0];
+  const token = jwt.sign({ id: u.id, email: u.email, role: u.role }, JWT_SECRET);
   res.json({ token });
 });
 
-// --- Upload File (CSV/XLSX/XLS) ---
-app.post("/upload", upload.single("file"), (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: "No file uploaded" });
-  }
-
-  const filePath = req.file.path;
-  const fileExt = req.file.originalname.split(".").pop().toLowerCase();
-
+// ---------- upload (.xlsx or .csv) ----------
+app.post("/upload", auth, upload.single("file"), async (req, res) => {
   try {
-    const fileBuffer = fs.readFileSync(filePath);
-    let csvString;
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    if (!req.file) return res.status(400).json({ error: "No file" });
 
-    if (fileExt === "csv") {
-      // Directly use CSV
-      csvString = fileBuffer.toString("utf8");
-    } else if (fileExt === "xlsx" || fileExt === "xls") {
-      // Flatten Excel to CSV in-memory
-      const workbook = xlsx.read(fileBuffer, { type: "buffer" });
-      const sheetName = workbook.SheetNames[0]; // always take first sheet
-      const sheet = workbook.Sheets[sheetName];
-      csvString = xlsx.utils.sheet_to_csv(sheet, { FS: ",", strip: true });
+    const tmpPath = req.file.path;
+    const originalName = req.file.originalname || "uploaded";
+    const ext = (originalName.split(".").pop() || "").toLowerCase();
+
+    let rows = [];
+    if (ext === "csv") {
+      const buf = fs.readFileSync(tmpPath);
+      const wb = xlsx.read(buf, { type: "buffer" });
+      const sn = wb.SheetNames[0];
+      rows = xlsx.utils.sheet_to_json(wb.Sheets[sn], { defval: "" });
     } else {
-      return res.status(400).json({ error: "Unsupported file type" });
+      const wb = xlsx.readFile(tmpPath, { cellDates: true });
+      const sn = wb.SheetNames[0];
+      rows = xlsx.utils.sheet_to_json(wb.Sheets[sn], { defval: "" });
+    }
+    const headers = Object.keys(rows[0] || {});
+    const sheetId = Date.now().toString();
+
+    const dest = path.join(UPLOADS_DIR, "current.xlsx");
+    if (ext === "csv") {
+      const wb = xlsx.utils.book_new();
+      const ws = xlsx.utils.json_to_sheet(rows);
+      xlsx.utils.book_append_sheet(wb, ws, "Sheet1");
+      xlsx.writeFile(wb, dest);
+      fs.unlinkSync(tmpPath);
+    } else {
+      if (fs.existsSync(dest)) fs.unlinkSync(dest);
+      fs.renameSync(tmpPath, dest);
     }
 
-    // Parse CSV safely
-    let records = parse(csvString, {
-      columns: true,
-      skip_empty_lines: true,
-    });
-
-    // --- Safeguard: reject pivot-style XLSX ---
-    if (Object.keys(records[0] || {}).length === 1) {
-      return res.status(400).json({
-        error:
-          "❌ This Excel file only contains 1 column (likely a Pivot Table or filtered export).\n\n" +
-          "👉 To fix: open the spreadsheet in Excel or LibreOffice, copy all data, paste as values into a new sheet, " +
-          "remove filters/pivots, and then save as either:\n" +
-          "   • CSV (UTF-8)\n" +
-          "   • or a clean XLSX workbook\n\n" +
-          "Then re-upload the file.",
-      });
-    }
-
-    // Sanitize headers
-    const headers = Object.keys(records[0] || {}).map((h, i) =>
-      sanitizeHeader(h, i)
+    await query("UPDATE sheets SET active = FALSE", []);
+    await query(
+      "INSERT INTO sheets (id, headers, active, filename) VALUES ($1,$2,$3,$4)",
+      [sheetId, JSON.stringify(headers), true, originalName]
     );
 
-    parsedData = records.map((row) => {
-      const obj = {};
-      headers.forEach((h, i) => {
-        const originalKey = Object.keys(records[0])[i];
-        obj[h] = row[originalKey];
-      });
-      return obj;
-    });
-
-    console.log(`✅ Parsed ${parsedData.length} rows, ${headers.length} columns`);
-    console.log("Detected headers:", headers);
-
-    fs.unlinkSync(filePath);
-
-    res.json({
-      success: true,
-      rows: parsedData.length,
-      cols: headers.length,
-    });
-  } catch (err) {
-    console.error("❌ Parse error:", err);
-    res.status(500).json({ error: "Failed to parse file" });
+    res.json({ sheetId, headers, rows: rows.length, active: true, filename: originalName });
+  } catch (e) {
+    console.error("upload failed:", e);
+    res.status(500).json({ error: "upload_failed" });
   }
 });
 
-// --- Get Data ---
-app.get("/data", authenticateToken, (req, res) => {
-  if (req.user.role === "admin") {
-    return res.json(parsedData);
-  }
-
-  if (req.user.role === "producer") {
-    const headers = Object.keys(parsedData[0] || {});
-    const contentParentCol = headers.find(
-      (h) => h.trim().toLowerCase() === "show_content_parent".toLowerCase()
-    );
-
-    if (!contentParentCol) {
-      return res.json([]); // no matching column
-    }
-
-    const filtered = parsedData.filter(
-      (row) => row[contentParentCol] === req.user.contentParent
-    );
-    return res.json(filtered);
-  }
-
-  res.status(403).json({ error: "Unauthorized" });
+// ---------- sheet meta ----------
+app.get("/sheets/active", auth, async (_req, res) => {
+  const s = await query("SELECT id, headers, filename FROM sheets WHERE active = TRUE LIMIT 1", []);
+  if (!s.length) return res.json(null);
+  res.json({ sheetId: s[0].id, headers: s[0].headers, filename: s[0].filename });
 });
 
-// --- Start Server ---
-app.listen(PORT, () =>
-  console.log(`✅ Backend running on http://localhost:${PORT}`)
-);
+app.get("/sheets/:id", auth, async (req, res) => {
+  const s = await query("SELECT id, headers, active, filename FROM sheets WHERE id=$1", [req.params.id]);
+  if (!s.length) return res.status(404).json({ error: "not_found" });
+  res.json(s[0]);
+});
+
+// ---------- data (reads uploads/current.xlsx) ----------
+app.get("/data/:sheetId", auth, async (req, res) => {
+  try {
+    const filePath = path.join(UPLOADS_DIR, "current.xlsx");
+    if (!fs.existsSync(filePath)) return res.json([]);
+
+    const wb = xlsx.readFile(filePath, { cellDates: true });
+    const sn = wb.SheetNames[0];
+    let rows = xlsx.utils.sheet_to_json(wb.Sheets[sn], { defval: "" });
+
+    if (req.user.role !== "admin") {
+      const p = await query(
+        "SELECT allowed_columns, row_filters FROM permissions WHERE sheet_id=$1 AND user_id=$2 LIMIT 1",
+        [req.params.sheetId, req.user.id]
+      );
+      if (p.length) {
+        const allowed = p[0].allowed_columns ?? [];
+        const filters = p[0].row_filters ?? {};
+        if (filters && Object.keys(filters).length) {
+          const fObj = typeof filters === "object" ? filters : JSON.parse(filters);
+          rows = rows.filter((r) =>
+            Object.entries(fObj).every(([col, val]) => String(r[col] ?? "") === String(val))
+          );
+        }
+        const cols = Array.isArray(allowed) ? allowed : JSON.parse(allowed || "[]");
+        if (cols.length) {
+          rows = rows.map((r) => {
+            const o = {};
+            cols.forEach((c) => {
+              if (c in r) o[c] = r[c];
+            });
+            return o;
+          });
+        }
+      }
+    }
+
+    res.json(rows);
+  } catch (e) {
+    console.error("data fetch failed:", e);
+    res.status(500).json({ error: "data_failed" });
+  }
+});
+
+// ---------- users ----------
+app.get("/users", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const users = await query("SELECT id,email,role FROM users ORDER BY id ASC", []);
+  res.json(users);
+});
+
+app.post("/users", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const { email, password, role } = req.body || {};
+  await query("INSERT INTO users (email,password,role) VALUES ($1,$2,$3)", [
+    email,
+    password,
+    role || "producer",
+  ]);
+  res.json({ success: true });
+});
+
+// EDIT user (password and/or role), or RESET password
+app.patch("/users/:id", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const { id } = req.params;
+  const { password, role, reset } = req.body || {};
+
+  let newPassword = password;
+  if (reset) {
+    newPassword = genTempPassword();
+  }
+
+  if (newPassword && role) {
+    await query("UPDATE users SET password=$1, role=$2 WHERE id=$3", [
+      newPassword,
+      role,
+      id,
+    ]);
+  } else if (newPassword) {
+    await query("UPDATE users SET password=$1 WHERE id=$2", [newPassword, id]);
+  } else if (role) {
+    await query("UPDATE users SET role=$1 WHERE id=$2", [role, id]);
+  } else {
+    return res.status(400).json({ error: "No changes provided" });
+  }
+
+  res.json({ success: true, newPassword: reset ? newPassword : undefined });
+});
+
+// DELETE user
+app.delete("/users/:id", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const { id } = req.params;
+  await query("DELETE FROM permissions WHERE user_id=$1", [id]);
+  await query("DELETE FROM users WHERE id=$1", [id]);
+  res.json({ success: true });
+});
+
+// ---------- permissions (upsert by composite) ----------
+app.post("/permissions", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const { sheetId, userId, allowed_columns, row_filters } = req.body || {};
+
+  await query(
+    `
+    INSERT INTO permissions (sheet_id,user_id,allowed_columns,row_filters)
+    VALUES ($1,$2,$3,$4)
+    ON CONFLICT (sheet_id, user_id) DO UPDATE
+    SET allowed_columns = EXCLUDED.allowed_columns,
+        row_filters = EXCLUDED.row_filters;
+  `,
+    [sheetId, userId, JSON.stringify(allowed_columns || []), JSON.stringify(row_filters || {})]
+  );
+
+  res.json({ success: true });
+});
+
+app.get("/permissions", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const { userId, sheetId } = req.query;
+  const rows = await query(
+    "SELECT allowed_columns, row_filters FROM permissions WHERE sheet_id=$1 AND user_id=$2 LIMIT 1",
+    [sheetId, userId]
+  );
+  if (!rows.length) return res.json({ allowed_columns: [], row_filters: {} });
+
+  const allowed = rows[0].allowed_columns ?? [];
+  const filters = rows[0].row_filters ?? {};
+  res.json({
+    allowed_columns: Array.isArray(allowed) ? allowed : JSON.parse(allowed),
+    row_filters: typeof filters === "object" ? filters : JSON.parse(filters),
+  });
+});
+
+app.listen(4000, () => console.log("✅ Backend running on :4000"));
 

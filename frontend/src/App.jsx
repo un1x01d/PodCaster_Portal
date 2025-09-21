@@ -1,39 +1,55 @@
 import React, { useState, useEffect } from "react";
+import {
+  BrowserRouter as Router,
+  Routes,
+  Route,
+  Link,
+} from "react-router-dom";
 import axios from "axios";
 import {
   BarChart,
   Bar,
   XAxis,
   YAxis,
-  Tooltip,
   CartesianGrid,
+  Tooltip,
+  Legend,
   ResponsiveContainer,
 } from "recharts";
+import * as XLSX from "xlsx";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
+import UserManagement from "./UserManagement";
+import "./index.css";
+
+const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
 
 export default function App() {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(localStorage.getItem("token") || "");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+
+  const [sheetId, setSheetId] = useState(null);
+  const [activeFilename, setActiveFilename] = useState("");
+
   const [data, setData] = useState([]);
   const [headers, setHeaders] = useState([]);
   const [sortConfig, setSortConfig] = useState(null);
+
   const [file, setFile] = useState(null);
+  const [selectedFileName, setSelectedFileName] = useState("");
 
-  const [calcColumn, setCalcColumn] = useState("");
-  const [error, setError] = useState("");
+  // Two-condition summary
+  const [condCol1, setCondCol1] = useState("");
+  const [condCol2, setCondCol2] = useState("");
+  const [valueCol, setValueCol] = useState("");
 
-  const [chartX, setChartX] = useState("");
-  const [chartY, setChartY] = useState("");
-
-  // --- Authentication ---
+  // --- Auth ---
   const handleLogin = async (e) => {
     e.preventDefault();
     try {
-      const res = await axios.post("http://localhost:4000/login", {
-        email,
-        password,
-      });
+      const res = await axios.post(`${API}/login`, { email, password });
       localStorage.setItem("token", res.data.token);
       setToken(res.data.token);
       decodeToken(res.data.token);
@@ -55,78 +71,82 @@ export default function App() {
     if (token) decodeToken(token);
   }, [token]);
 
+  // --- Init: fetch active sheet then data ---
+  useEffect(() => {
+    const init = async () => {
+      try {
+        const res = await axios.get(`${API}/sheets/active`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.data?.sheetId) {
+          setSheetId(res.data.sheetId);
+          setActiveFilename(res.data.filename || "");
+          await loadData(res.data.sheetId);
+        } else {
+          setSheetId(null);
+          setActiveFilename("");
+          setData([]);
+          setHeaders([]);
+        }
+      } catch (e) {
+        console.error("active sheet fetch failed", e);
+      }
+    };
+    if (token && user) init();
+  }, [token, user]);
+
   // --- Data Load ---
-  const loadData = async () => {
+  const loadData = async (sid = sheetId) => {
+    if (!sid) return;
     try {
-      const res = await axios.get("http://localhost:4000/data", {
+      const res = await axios.get(`${API}/data/${sid}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      setData(res.data);
-      setError("");
-      if (res.data.length > 0) {
-        const cols = Object.keys(res.data[0]);
-        setHeaders(cols);
-
-        if (!calcColumn) {
-          const numericCol = cols.find((c) =>
-            res.data.some((row) => {
-              if (!row[c]) return false;
-              let clean = String(row[c]).replace(/[\$,]/g, "");
-              return !isNaN(parseFloat(clean));
-            })
-          );
-          setCalcColumn(numericCol || "");
-        }
-        if (!chartX) setChartX(cols[0]);
-        if (!chartY) {
-          const numericCol = cols.find((c) =>
-            res.data.some((row) => {
-              if (!row[c]) return false;
-              let clean = String(row[c]).replace(/[\$,]/g, "");
-              return !isNaN(parseFloat(clean));
-            })
-          );
-          setChartY(numericCol || "");
-        }
-      }
+      const rows = res.data || [];
+      setData(rows);
+      setHeaders(rows.length ? Object.keys(rows[0]) : []);
     } catch (err) {
       console.error("❌ Load data failed:", err.message);
     }
   };
 
-  useEffect(() => {
-    if (token && user) {
-      loadData();
-    }
-  }, [token, user]);
-
-  // --- File Upload ---
+  // --- File Upload (Admin only) ---
   const handleUpload = async () => {
     if (!file) return;
     const formData = new FormData();
     formData.append("file", file);
     try {
-      await axios.post("http://localhost:4000/upload", formData, {
+      const uploadRes = await axios.post(`${API}/upload`, formData, {
         headers: {
           "Content-Type": "multipart/form-data",
           Authorization: `Bearer ${token}`,
         },
       });
-      setError("");
-      loadData();
-    } catch (err) {
-      console.error("Upload error:", err.response?.data || err.message);
-      if (err.response?.data?.error) {
-        setError(err.response.data.error);
-      } else {
-        setError("❌ Upload failed. Please try again.");
+
+      // Clear filters on new upload
+      setCondCol1("");
+      setCondCol2("");
+      setValueCol("");
+      setSortConfig(null);
+
+      // refresh active + data
+      const res = await axios.get(`${API}/sheets/active`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.data?.sheetId) {
+        setSheetId(res.data.sheetId);
+        setActiveFilename(res.data.filename || uploadRes.data?.filename || "");
+        await loadData(res.data.sheetId);
       }
+    } catch (e) {
+      console.error("upload failed", e);
+      alert("❌ Upload failed");
     }
   };
 
   // --- Sorting ---
   const sortedData = React.useMemo(() => {
-    let rows = [...data];
+    let rows = [...(data || [])];
     if (sortConfig) {
       const { key, direction } = sortConfig;
       rows.sort((a, b) => {
@@ -148,36 +168,95 @@ export default function App() {
     setSortConfig({ key, direction });
   };
 
-  // --- Totals ---
-  const total = React.useMemo(() => {
-    if (!calcColumn) return 0;
-    return sortedData.reduce((acc, row) => {
-      if (!row[calcColumn]) return acc;
-      let raw = String(row[calcColumn]).trim();
-      let clean = raw.replace(/[\$,]/g, "");
-      const num = parseFloat(clean);
-      return acc + (isNaN(num) ? 0 : num);
-    }, 0);
-  }, [sortedData, calcColumn]);
-
-  // --- Chart Data ---
-  const chartData = React.useMemo(() => {
-    if (!data || !chartX || !chartY) return [];
-    const groups = {};
-    data.forEach((row) => {
-      const xVal = row[chartX];
-      let yVal = row[chartY];
-      if (!xVal || !yVal) return;
-      let clean = String(yVal).replace(/[\$,]/g, "").trim();
-      let num = parseFloat(clean);
-      if (isNaN(num)) num = 0;
-      groups[xVal] = (groups[xVal] || 0) + num;
+  // --- Two-condition Summary ---
+  const summaryData = React.useMemo(() => {
+    if (!condCol1 || !condCol2 || !valueCol) return [];
+    const map = {};
+    (sortedData || []).forEach((row) => {
+      const c1 = row[condCol1] || "N/A";
+      const c2 = row[condCol2] || "N/A";
+      const raw = String(row[valueCol] ?? "").replace(/[\$,]/g, "");
+      const num = parseFloat(raw);
+      if (isNaN(num)) return;
+      const key = `${c1}__${c2}`;
+      if (!map[key]) map[key] = { [condCol1]: c1, [condCol2]: c2, total: 0 };
+      map[key].total += num;
     });
-    return Object.entries(groups).map(([xVal, total]) => ({
-      [chartX]: xVal,
-      [chartY]: total,
-    }));
-  }, [data, chartX, chartY]);
+    return Object.values(map);
+  }, [condCol1, condCol2, valueCol, sortedData]);
+
+  // --- Exports ---
+  const exportCSV = () => {
+    try {
+      const fileName = "report.csv";
+      const ws = XLSX.utils.json_to_sheet(sortedData || []);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Filtered Data");
+      if (summaryData?.length > 0) {
+        const ws2 = XLSX.utils.json_to_sheet(summaryData);
+        XLSX.utils.book_append_sheet(wb, ws2, "Summary");
+      }
+      XLSX.writeFile(wb, fileName, { bookType: "csv" });
+    } catch (err) {
+      console.error("CSV Export failed:", err);
+    }
+  };
+
+  const exportXLSX = () => {
+    try {
+      const fileName = "report.xlsx";
+      const ws = XLSX.utils.json_to_sheet(sortedData || []);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Filtered Data");
+      if (summaryData?.length > 0) {
+        const ws2 = XLSX.utils.json_to_sheet(summaryData);
+        XLSX.utils.book_append_sheet(wb, ws2, "Summary");
+      }
+      XLSX.writeFile(wb, fileName);
+    } catch (err) {
+      console.error("XLSX Export failed:", err);
+    }
+  };
+
+  const exportPDF = () => {
+    try {
+      const fileName = "report.pdf";
+      const title = fileName.replace(/\.[^/.]+$/, "");
+      const doc = new jsPDF();
+      doc.setFontSize(14);
+      doc.text(title, 14, 16);
+
+      if (summaryData?.length > 0 && condCol1 && condCol2 && valueCol) {
+        doc.setFontSize(12);
+        doc.text("Summary (Two Conditions)", 14, 28);
+        autoTable(doc, {
+          startY: 32,
+          head: [[condCol1, condCol2, `Total ${valueCol}`]],
+          body: summaryData.map((row) => [
+            row[condCol1],
+            row[condCol2],
+            row.total,
+          ]),
+        });
+      }
+
+      if (sortedData?.length > 0) {
+        doc.addPage();
+        doc.setFontSize(12);
+        doc.text("Filtered Data Table", 14, 16);
+        autoTable(doc, {
+          startY: 20,
+          head: [headers],
+          body: sortedData.map((row) => headers.map((h) => row[h] || "")),
+        });
+      }
+
+      doc.save(fileName);
+    } catch (err) {
+      console.error("PDF Export failed:", err);
+      alert("❌ PDF Export failed, check console");
+    }
+  };
 
   // --- Login Page ---
   if (!token || !user) {
@@ -216,11 +295,11 @@ export default function App() {
   }
 
   // --- Dashboard ---
-  return (
-    <div className="w-screen min-h-screen flex flex-col bg-gray-50">
+  const Dashboard = () => (
+    <div className="w-screen h-screen flex flex-col bg-gray-50">
       {/* Top Bar */}
       <div className="bg-blue-600 text-white px-6 py-4 flex justify-between items-center shadow">
-        <h1 className="text-xl font-bold">📊 Podcaster Dashboard</h1>
+        <h1 className="text-xl font-bold">📊 Dashboard</h1>
         <div className="flex items-center gap-4">
           <span className="italic">{user.email}</span>
           <button
@@ -229,6 +308,10 @@ export default function App() {
               setToken("");
               setUser(null);
               setData([]);
+              setHeaders([]);
+              setActiveFilename("");
+              setSelectedFileName("");
+              setCondCol1(""); setCondCol2(""); setValueCol(""); setSortConfig(null);
             }}
             className="bg-red-500 hover:bg-red-600 px-3 py-1 rounded-lg"
           >
@@ -238,14 +321,24 @@ export default function App() {
       </div>
 
       {/* Controls */}
-      <div className="flex gap-3 p-4 bg-white shadow-sm border-b items-center">
+      <div className="flex flex-wrap gap-3 p-4 bg-white shadow-sm border-b items-center">
+        {/* Upload (admin) */}
         {user.role === "admin" && (
           <>
-            <input
-              type="file"
-              onChange={(e) => setFile(e.target.files[0])}
-              className="border p-2 rounded"
-            />
+            <label className="flex items-center gap-3 border rounded p-2 bg-gray-50">
+              <input
+                type="file"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  setFile(f || null);
+                  setSelectedFileName(f?.name || "");
+                }}
+                className="border p-1 rounded"
+              />
+              <span className="text-sm text-gray-700">
+                {selectedFileName || activeFilename || "No file selected"}
+              </span>
+            </label>
             <button
               onClick={handleUpload}
               className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg"
@@ -254,21 +347,49 @@ export default function App() {
             </button>
           </>
         )}
+
         <button
-          onClick={loadData}
+          onClick={() => loadData()}
           className="bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded-lg"
         >
           Refresh
         </button>
 
-        {headers.length > 0 && (
-          <div className="ml-6 flex items-center gap-2">
-            <label className="font-semibold">Totals Column:</label>
+        {/* Export buttons for all users */}
+        <div className="flex gap-3 ml-0 md:ml-6">
+          <button
+            onClick={exportCSV}
+            className="bg-gray-600 hover:bg-gray-700 text-white px-3 py-2 rounded-lg"
+          >
+            Download CSV
+          </button>
+          <button
+            onClick={exportXLSX}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-2 rounded-lg"
+          >
+            Download XLSX
+          </button>
+          <button
+            onClick={exportPDF}
+            className="bg-red-600 hover:bg-red-700 text-white px-3 py-2 rounded-lg"
+          >
+            Download PDF
+          </button>
+        </div>
+      </div>
+
+      {/* Two-Condition Controls */}
+      <div className="p-4 bg-white border-t border-gray-200">
+        <h2 className="text-lg font-bold mb-2">📊 Two-Condition Summary</h2>
+        <div className="flex gap-4 mb-4 flex-wrap">
+          <div>
+            <label className="block text-sm font-semibold">Condition 1:</label>
             <select
-              value={calcColumn}
-              onChange={(e) => setCalcColumn(e.target.value)}
-              className="border p-2 rounded text-sm"
+              value={condCol1}
+              onChange={(e) => setCondCol1(e.target.value)}
+              className="border p-2 rounded w-64"
             >
+              <option value="">-- Select --</option>
               {headers.map((h) => (
                 <option key={h} value={h}>
                   {h}
@@ -276,88 +397,88 @@ export default function App() {
               ))}
             </select>
           </div>
-        )}
-      </div>
-
-      {/* Error */}
-      {error && (
-        <div className="m-4 p-4 border border-red-400 bg-red-100 text-red-800 rounded-lg whitespace-pre-wrap">
-          <strong>Upload Error:</strong>
-          <br />
-          {error}
-        </div>
-      )}
-
-      {/* Totals */}
-      {calcColumn && !error && (
-        <div className="p-4 bg-indigo-100 border-b border-gray-200 font-bold">
-          {calcColumn}:{" "}
-          <span className="text-indigo-800">${total.toLocaleString()}</span>
-        </div>
-      )}
-
-      {/* Chart */}
-      <div className="p-6">
-        <h2 className="text-lg font-bold mb-4">Dynamic Chart</h2>
-        {headers.length > 0 && (
-          <div className="flex gap-4 mb-4">
-            <div>
-              <label className="font-semibold mr-2">X-Axis:</label>
-              <select
-                value={chartX}
-                onChange={(e) => setChartX(e.target.value)}
-                className="border p-2 rounded text-sm"
-              >
-                {headers.map((h) => (
-                  <option key={h} value={h}>
-                    {h}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="font-semibold mr-2">Y-Axis:</label>
-              <select
-                value={chartY}
-                onChange={(e) => setChartY(e.target.value)}
-                className="border p-2 rounded text-sm"
-              >
-                {headers.map((h) => (
-                  <option key={h} value={h}>
-                    {h}
-                  </option>
-                ))}
-              </select>
-            </div>
+          <div>
+            <label className="block text-sm font-semibold">Condition 2:</label>
+            <select
+              value={condCol2}
+              onChange={(e) => setCondCol2(e.target.value)}
+              className="border p-2 rounded w-64"
+            >
+              <option value="">-- Select --</option>
+              {headers.map((h) => (
+                <option key={h} value={h}>
+                  {h}
+                </option>
+              ))}
+            </select>
           </div>
-        )}
-        {chartData.length > 0 ? (
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={chartData}>
-              <defs>
-                <linearGradient id="barGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#1e90ff" stopOpacity={0.9} />
-                  <stop offset="100%" stopColor="#32cd32" stopOpacity={0.9} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey={chartX} />
-              <YAxis />
-              <Tooltip formatter={(value) => `$${value.toLocaleString()}`} />
-              <Bar dataKey={chartY} fill="url(#barGradient)" />
-            </BarChart>
-          </ResponsiveContainer>
+          <div>
+            <label className="block text-sm font-semibold">Value Column:</label>
+            <select
+              value={valueCol}
+              onChange={(e) => setValueCol(e.target.value)}
+              className="border p-2 rounded w-64"
+            >
+              <option value="">-- Select --</option>
+              {headers.map((h) => (
+                <option key={h} value={h}>
+                  {h}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {condCol1 && condCol2 && valueCol && summaryData?.length > 0 ? (
+          <>
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={summaryData}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey={condCol2} />
+                <YAxis />
+                <Tooltip />
+                <Legend />
+                <Bar dataKey="total" fill="url(#colorUv)" />
+                <defs>
+                  <linearGradient id="colorUv" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#4f46e5" stopOpacity={0.8} />
+                    <stop offset="95%" stopColor="#818cf8" stopOpacity={0.2} />
+                  </linearGradient>
+                </defs>
+              </BarChart>
+            </ResponsiveContainer>
+
+            <table className="table-auto border-collapse w-full text-sm mt-6">
+              <thead className="bg-indigo-600 text-white">
+                <tr>
+                  <th className="p-2 border">{condCol1}</th>
+                  <th className="p-2 border">{condCol2}</th>
+                  <th className="p-2 border">Total {valueCol}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {summaryData.map((row, i) => (
+                  <tr key={i} className="odd:bg-gray-50 even:bg-white">
+                    <td className="p-2 border">{row[condCol1]}</td>
+                    <td className="p-2 border">{row[condCol2]}</td>
+                    <td className="p-2 border font-semibold">
+                      ${row.total.toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
         ) : (
-          <div className="text-gray-500">📊 No chart data available</div>
+          <p className="text-gray-500">
+            ℹ️ Select two conditions and a value column to see results.
+          </p>
         )}
       </div>
 
-      {/* Table */}
-      <div
-        className="m-4 bg-white rounded-xl shadow-lg border border-gray-200 overflow-y-auto"
-        style={{ height: `${50 * 30}px` }} // ~50 rows viewport
-      >
-        {data.length > 0 && !error ? (
+      {/* Full Data Table */}
+      <div className="flex-1 overflow-auto m-4 bg-white rounded-xl shadow-lg border border-gray-200">
+        {sortedData?.length > 0 ? (
           <table className="table-auto border-collapse w-full text-sm">
             <thead className="sticky top-0 bg-blue-700 text-white shadow-sm">
               <tr>
@@ -395,13 +516,28 @@ export default function App() {
               ))}
             </tbody>
           </table>
-        ) : !error ? (
+        ) : (
           <div className="text-gray-500 text-center py-10">
             📂 Upload or refresh to see data
           </div>
-        ) : null}
+        )}
       </div>
     </div>
+  );
+
+  return (
+    <Router>
+      <nav className="bg-gray-800 text-white p-3 flex gap-4">
+        <Link to="/">Dashboard</Link>
+        {user?.role === "admin" && <Link to="/users">Manage Users</Link>}
+      </nav>
+      <Routes>
+        <Route path="/" element={<Dashboard />} />
+        {user?.role === "admin" && (
+          <Route path="/users" element={<UserManagement token={token} sheetId={sheetId} />} />
+        )}
+      </Routes>
+    </Router>
   );
 }
 
