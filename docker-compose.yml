@@ -1,0 +1,40 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: portal
+      POSTGRES_PASSWORD: portalpass
+      POSTGRES_DB: portaldb
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgres://portal:portalpass@db:5432/portaldb
+      JWT_SECRET: supersecret
+    depends_on:
+      - db
+    volumes:
+      - ./backend/uploads:/app/uploads   # persist uploads
+    ports:
+      - "4000:4000"
+
+  frontend:
+    build: ./frontend
+    environment:
+      VITE_API_URL: http://localhost:4000   # <— change from http://backend:4000
+      BROWSER: none
+    depends_on:
+      - backend
+    ports:
+      - "5173:5173"
+
+volumes:
+  db_data:
+

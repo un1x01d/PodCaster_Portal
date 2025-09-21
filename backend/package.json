@@ -1,24 +1,27 @@
 {
-  "name": "admin-backend",
+  "name": "podcaster-portal-backend",
   "version": "1.0.0",
-  "main": "server.js",
   "type": "module",
+  "private": true,
+  "description": "Express API for Podcaster Portal",
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "start": "node server.js"
   },
   "dependencies": {
-    "bcrypt": "^6.0.0",
-    "cjs": "^0.0.11",
     "cors": "^2.8.5",
-    "csv-parse": "^6.1.0",
-    "csv-parser": "^3.2.0",
+    "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
     "multer": "^1.4.5-lts.1",
+    "pg": "^8.11.5",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=18.18"
   }
 }
+
