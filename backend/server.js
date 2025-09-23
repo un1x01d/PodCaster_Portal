@@ -1,79 +1,118 @@
+// backend/server.js
 import express from "express";
 import cors from "cors";
 import multer from "multer";
-import xlsx from "xlsx";
+import * as XLSX from "xlsx";
 import jwt from "jsonwebtoken";
 import { Pool } from "pg";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
+/* ----------------------------------------------------------------------------
+ * App / middleware
+ * ------------------------------------------------------------------------- */
 const app = express();
-app.use(cors());
+
+/* Explicit CORS (preflight handled), tiny access log */
+const corsOpts = {
+  origin: true,
+  credentials: true,
+  methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  optionsSuccessStatus: 204,
+};
+app.use(cors(corsOpts));
+app.options("*", cors(corsOpts));
+
+app.use((req, res, next) => {
+  const t0 = Date.now();
+  res.on("finish", () =>
+    console.log(`[http] ${req.method} ${req.url} -> ${res.statusCode} (${Date.now() - t0}ms)`)
+  );
+  next();
+});
+
 app.use(express.json());
 
+/* ----------------------------------------------------------------------------
+ * Config
+ * ------------------------------------------------------------------------- */
 const JWT_SECRET = process.env.JWT_SECRET || "supersecret";
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
-// ---------- helpers ----------
+/* ----------------------------------------------------------------------------
+ * Paths (ensure before Multer)
+ * ------------------------------------------------------------------------- */
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const UPLOADS_DIR = path.join(__dirname, "uploads");
+fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+const TMP_DIR = path.join(UPLOADS_DIR, "tmp");
+fs.mkdirSync(TMP_DIR, { recursive: true });
+
+/* ----------------------------------------------------------------------------
+ * Helpers
+ * ------------------------------------------------------------------------- */
 async function query(sql, params) {
   const res = await pool.query(sql, params);
   return res.rows;
 }
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const UPLOADS_DIR = path.join(__dirname, "uploads");
-if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-
-// multer target inside mounted uploads volume
-const upload = multer({ dest: path.join(UPLOADS_DIR, "tmp") });
-
 function genTempPassword(len = 12) {
-  const chars =
-    "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%^&*";
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%^&*";
   let out = "";
   for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
   return out;
 }
 
-// ---------- init/migrations ----------
+/* ----------------------------------------------------------------------------
+ * DB init (idempotent)
+ * ------------------------------------------------------------------------- */
 async function initDb() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY,
-      email TEXT UNIQUE,
+      email TEXT NOT NULL UNIQUE,
       password TEXT,
-      role TEXT
+      role TEXT NOT NULL DEFAULT 'producer'
     );
   `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS sheets (
       id TEXT PRIMARY KEY,
-      uploaded_at TIMESTAMP DEFAULT NOW(),
-      headers JSONB
+      uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      headers JSONB NOT NULL DEFAULT '[]'::jsonb,
+      filename TEXT,
+      active BOOLEAN NOT NULL DEFAULT FALSE
     );
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS sheets_one_active_true_idx
+      ON sheets (active) WHERE active;
   `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS permissions (
       id SERIAL PRIMARY KEY,
-      sheet_id TEXT,
-      user_id INT,
-      allowed_columns JSONB,
-      row_filters JSONB
+      sheet_id TEXT NOT NULL,
+      user_id INT NOT NULL,
+      allowed_columns JSONB NOT NULL DEFAULT '[]'::jsonb,
+      row_filters JSONB NOT NULL DEFAULT '{}'::jsonb
     );
   `);
-  await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT FALSE;`);
-  await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS filename TEXT;`);
-  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS permissions_uniq ON permissions (sheet_id, user_id);`);
-
-  await pool.query(
-    `INSERT INTO users (email,password,role)
-     VALUES ('admin@example.com','admin123','admin')
-     ON CONFLICT (email) DO NOTHING;`
-  );
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS permissions_uniq
+      ON permissions (sheet_id, user_id);
+  `);
+  await pool.query(`
+    INSERT INTO users (email,password,role)
+    VALUES ('admin@example.com','admin123','admin')
+    ON CONFLICT (email) DO NOTHING;
+  `);
 }
 initDb().catch((e) => console.error("DB init error", e));
 
-// ---------- auth ----------
+/* ----------------------------------------------------------------------------
+ * Auth
+ * ------------------------------------------------------------------------- */
 function auth(req, res, next) {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) return res.status(401).json({ error: "Unauthorized" });
@@ -94,41 +133,88 @@ app.post("/login", async (req, res) => {
   res.json({ token });
 });
 
-// ---------- upload (.xlsx or .csv) ----------
+/* ----------------------------------------------------------------------------
+ * Health
+ * ------------------------------------------------------------------------- */
+app.get("/healthz", (_req, res) =>
+  res.json({ ok: true, xlsx: XLSX?.version || "unknown" })
+);
+
+/* ----------------------------------------------------------------------------
+ * Multer (simple: disk to tmp, 100MB limit, no type filter)
+ * ------------------------------------------------------------------------- */
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, TMP_DIR),
+  filename: (_req, file, cb) => cb(null, file.originalname),
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: 100 * 1024 * 1024 },
+});
+
+/* ----------------------------------------------------------------------------
+ * Upload (SIMPLE PATH):
+ * - Try buffer parse (XLSX/ODS/BIFF).
+ * - If fails, try string parse (CSV/XML/HTML <table>).
+ * - If still fails and error mentions "Invalid HTML: could not find <table>", return 422.
+ * ------------------------------------------------------------------------- */
 app.post("/upload", auth, upload.single("file"), async (req, res) => {
   try {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     if (!req.file) return res.status(400).json({ error: "No file" });
 
-    const tmpPath = req.file.path;
     const originalName = req.file.originalname || "uploaded";
-    const ext = (originalName.split(".").pop() || "").toLowerCase();
+    const tmpPath = req.file.path;
+
+    console.log(`[upload] name=${originalName} mime=${req.file.mimetype}`);
 
     let rows = [];
-    if (ext === "csv") {
+    // 1) Buffer parse first (handles real XLSX/ODS/legacy XLS containers)
+    try {
       const buf = fs.readFileSync(tmpPath);
-      const wb = xlsx.read(buf, { type: "buffer" });
+      const wb = XLSX.read(buf, { type: "buffer", cellDates: true });
       const sn = wb.SheetNames[0];
-      rows = xlsx.utils.sheet_to_json(wb.Sheets[sn], { defval: "" });
-    } else {
-      const wb = xlsx.readFile(tmpPath, { cellDates: true });
-      const sn = wb.SheetNames[0];
-      rows = xlsx.utils.sheet_to_json(wb.Sheets[sn], { defval: "" });
+      if (!sn) throw new Error("no_sheets_buffer");
+      rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { defval: "" });
+    } catch (eBuf) {
+      // 2) String parse (CSV / SpreadsheetML XML / HTML with <table>)
+      try {
+        const str = fs.readFileSync(tmpPath, "utf8");
+        const wb = XLSX.read(str, { type: "string", cellDates: true });
+        const sn = wb.SheetNames[0];
+        if (!sn) throw new Error("no_sheets_string");
+        rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { defval: "" });
+      } catch (eStr) {
+        const msg = String(eStr?.message || eBuf?.message || "");
+        fs.unlink(tmpPath, () => {});
+        if (msg.includes("Invalid HTML: could not find <table>")) {
+          console.warn("[upload] html content without tables");
+          return res.status(422).json({
+            error: "html_without_tables",
+            message:
+              "This file is an HTML page without <table> elements. Re-export as CSV/XLSX or upload HTML with a <table>."
+          });
+        }
+        console.error("[upload] parse failed:", msg);
+        return res.status(400).json({
+          error: "unreadable_spreadsheet",
+          message: "Could not parse file as CSV/XLSX/XML/HTML-table. Verify the export."
+        });
+      }
     }
+
+    // Write normalized workbook to uploads/current.xlsx
+    const dest = path.join(UPLOADS_DIR, "current.xlsx");
+    const wbOut = XLSX.utils.book_new();
+    const wsOut = XLSX.utils.json_to_sheet(rows);
+    XLSX.utils.book_append_sheet(wbOut, wsOut, "Sheet1");
+    if (fs.existsSync(dest)) fs.unlinkSync(dest);
+    const xbuf = XLSX.write(wbOut, { bookType: "xlsx", type: "buffer" });
+    fs.writeFileSync(dest, xbuf);
+    fs.unlink(tmpPath, () => {});
+
     const headers = Object.keys(rows[0] || {});
     const sheetId = Date.now().toString();
-
-    const dest = path.join(UPLOADS_DIR, "current.xlsx");
-    if (ext === "csv") {
-      const wb = xlsx.utils.book_new();
-      const ws = xlsx.utils.json_to_sheet(rows);
-      xlsx.utils.book_append_sheet(wb, ws, "Sheet1");
-      xlsx.writeFile(wb, dest);
-      fs.unlinkSync(tmpPath);
-    } else {
-      if (fs.existsSync(dest)) fs.unlinkSync(dest);
-      fs.renameSync(tmpPath, dest);
-    }
 
     await query("UPDATE sheets SET active = FALSE", []);
     await query(
@@ -136,14 +222,20 @@ app.post("/upload", auth, upload.single("file"), async (req, res) => {
       [sheetId, JSON.stringify(headers), true, originalName]
     );
 
+    console.log(`[upload] OK sheetId=${sheetId} rows=${rows.length} headers=${headers.length}`);
     res.json({ sheetId, headers, rows: rows.length, active: true, filename: originalName });
   } catch (e) {
     console.error("upload failed:", e);
-    res.status(500).json({ error: "upload_failed" });
+    if (e?.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({ error: "file_too_large", maxMB: 100 });
+    }
+    res.status(500).json({ error: "upload_failed", message: String(e?.message || "unknown_error") });
   }
 });
 
-// ---------- sheet meta ----------
+/* ----------------------------------------------------------------------------
+ * Sheets meta
+ * ------------------------------------------------------------------------- */
 app.get("/sheets/active", auth, async (_req, res) => {
   const s = await query("SELECT id, headers, filename FROM sheets WHERE active = TRUE LIMIT 1", []);
   if (!s.length) return res.json(null);
@@ -156,15 +248,18 @@ app.get("/sheets/:id", auth, async (req, res) => {
   res.json(s[0]);
 });
 
-// ---------- data (reads uploads/current.xlsx) ----------
+/* ----------------------------------------------------------------------------
+ * Data (reads uploads/current.xlsx)
+ * ------------------------------------------------------------------------- */
 app.get("/data/:sheetId", auth, async (req, res) => {
   try {
     const filePath = path.join(UPLOADS_DIR, "current.xlsx");
     if (!fs.existsSync(filePath)) return res.json([]);
 
-    const wb = xlsx.readFile(filePath, { cellDates: true });
+    const cbuf = fs.readFileSync(filePath);
+    const wb = XLSX.read(cbuf, { type: "buffer", cellDates: true });
     const sn = wb.SheetNames[0];
-    let rows = xlsx.utils.sheet_to_json(wb.Sheets[sn], { defval: "" });
+    let rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { defval: "" });
 
     if (req.user.role !== "admin") {
       const p = await query(
@@ -184,9 +279,7 @@ app.get("/data/:sheetId", auth, async (req, res) => {
         if (cols.length) {
           rows = rows.map((r) => {
             const o = {};
-            cols.forEach((c) => {
-              if (c in r) o[c] = r[c];
-            });
+            cols.forEach((c) => { if (c in r) o[c] = r[c]; });
             return o;
           });
         }
@@ -200,7 +293,9 @@ app.get("/data/:sheetId", auth, async (req, res) => {
   }
 });
 
-// ---------- users ----------
+/* ----------------------------------------------------------------------------
+ * Users
+ * ------------------------------------------------------------------------- */
 app.get("/users", auth, async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
   const users = await query("SELECT id,email,role FROM users ORDER BY id ASC", []);
@@ -218,23 +313,16 @@ app.post("/users", auth, async (req, res) => {
   res.json({ success: true });
 });
 
-// EDIT user (password and/or role), or RESET password
 app.patch("/users/:id", auth, async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
   const { id } = req.params;
   const { password, role, reset } = req.body || {};
 
   let newPassword = password;
-  if (reset) {
-    newPassword = genTempPassword();
-  }
+  if (reset) newPassword = genTempPassword();
 
   if (newPassword && role) {
-    await query("UPDATE users SET password=$1, role=$2 WHERE id=$3", [
-      newPassword,
-      role,
-      id,
-    ]);
+    await query("UPDATE users SET password=$1, role=$2 WHERE id=$3", [newPassword, role, id]);
   } else if (newPassword) {
     await query("UPDATE users SET password=$1 WHERE id=$2", [newPassword, id]);
   } else if (role) {
@@ -246,7 +334,6 @@ app.patch("/users/:id", auth, async (req, res) => {
   res.json({ success: true, newPassword: reset ? newPassword : undefined });
 });
 
-// DELETE user
 app.delete("/users/:id", auth, async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
   const { id } = req.params;
@@ -255,19 +342,19 @@ app.delete("/users/:id", auth, async (req, res) => {
   res.json({ success: true });
 });
 
-// ---------- permissions (upsert by composite) ----------
+/* ----------------------------------------------------------------------------
+ * Permissions (upsert)
+ * ------------------------------------------------------------------------- */
 app.post("/permissions", auth, async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
   const { sheetId, userId, allowed_columns, row_filters } = req.body || {};
 
   await query(
-    `
-    INSERT INTO permissions (sheet_id,user_id,allowed_columns,row_filters)
-    VALUES ($1,$2,$3,$4)
-    ON CONFLICT (sheet_id, user_id) DO UPDATE
-    SET allowed_columns = EXCLUDED.allowed_columns,
-        row_filters = EXCLUDED.row_filters;
-  `,
+    `INSERT INTO permissions (sheet_id,user_id,allowed_columns,row_filters)
+     VALUES ($1,$2,$3,$4)
+     ON CONFLICT (sheet_id, user_id) DO UPDATE
+     SET allowed_columns = EXCLUDED.allowed_columns,
+         row_filters = EXCLUDED.row_filters;`,
     [sheetId, userId, JSON.stringify(allowed_columns || []), JSON.stringify(row_filters || {})]
   );
 
@@ -291,5 +378,10 @@ app.get("/permissions", auth, async (req, res) => {
   });
 });
 
-app.listen(4000, () => console.log("✅ Backend running on :4000"));
+/* ----------------------------------------------------------------------------
+ * Start
+ * ------------------------------------------------------------------------- */
+app.listen(4000, () =>
+  console.log("✅ Backend running on :4000 • SheetJS:", XLSX?.version || "unknown")
+);
 

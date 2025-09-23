@@ -1,18 +1,21 @@
 -- USERS ----------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS users (
   id SERIAL PRIMARY KEY,
-  email TEXT UNIQUE,
-  password TEXT,
-  role TEXT
+  email TEXT NOT NULL UNIQUE,
+  password TEXT,            -- plain for now; switch to hash later
+  role TEXT NOT NULL DEFAULT 'producer'
 );
+
+-- helpful index for lookups by email (unique already, but keep explicit)
+CREATE INDEX IF NOT EXISTS users_email_idx ON users (email);
 
 -- SHEETS ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS sheets (
-  id TEXT PRIMARY KEY,                                -- keep your TEXT PK
-  uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  headers JSONB DEFAULT '[]'::jsonb,                  -- default for safety
-  filename TEXT,                                      -- <-- needed by backend
-  active BOOLEAN DEFAULT FALSE                        -- <-- needed by backend
+  id TEXT PRIMARY KEY,                                -- backend expects TEXT PK
+  uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  headers JSONB NOT NULL DEFAULT '[]'::jsonb,         -- safe default
+  filename TEXT,
+  active BOOLEAN NOT NULL DEFAULT FALSE               -- used by backend
 );
 
 -- At most one active sheet at a time
@@ -22,13 +25,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS sheets_one_active_true_idx
 -- PERMISSIONS ----------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS permissions (
   id SERIAL PRIMARY KEY,
-  sheet_id TEXT,
-  user_id INT,
-  allowed_columns JSONB DEFAULT '[]'::jsonb,
-  row_filters JSONB DEFAULT '{}'::jsonb
+  sheet_id TEXT NOT NULL,
+  user_id INT NOT NULL,
+  allowed_columns JSONB NOT NULL DEFAULT '[]'::jsonb,
+  row_filters JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
--- (Optional) lightweight FKs (won't fail if you ingest unknown sheet/user)
+-- Composite uniqueness for UPSERT in backend
+CREATE UNIQUE INDEX IF NOT EXISTS permissions_uniq
+  ON permissions (sheet_id, user_id);
+
+-- Optional lightweight FKs ---------------------------------------------------
 DO $$
 BEGIN
   IF NOT EXISTS (
