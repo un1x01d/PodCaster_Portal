@@ -45,6 +45,9 @@ export default function App() {
   const [condCol2, setCondCol2] = useState("");
   const [valueCol, setValueCol] = useState("");
 
+  // NEW: show/hide inline user management
+  const [showUsers, setShowUsers] = useState(false);
+
   // --- Auth ---
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -300,7 +303,16 @@ export default function App() {
       {/* Top Bar */}
       <div className="bg-blue-600 text-white px-6 py-4 flex justify-between items-center shadow">
         <h1 className="text-xl font-bold">📊 Dashboard</h1>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
+          {user.role === "admin" && (
+            <button
+              onClick={() => setShowUsers((s) => !s)}
+              className="bg-amber-500 hover:bg-amber-600 px-3 py-1 rounded-lg"
+              title="Toggle inline User Management panel"
+            >
+              {showUsers ? "Hide User Mgmt" : "Show User Mgmt"}
+            </button>
+          )}
           <span className="italic">{user.email}</span>
           <button
             onClick={() => {
@@ -312,6 +324,7 @@ export default function App() {
               setActiveFilename("");
               setSelectedFileName("");
               setCondCol1(""); setCondCol2(""); setValueCol(""); setSortConfig(null);
+              setShowUsers(false);
             }}
             className="bg-red-500 hover:bg-red-600 px-3 py-1 rounded-lg"
           >
@@ -522,6 +535,13 @@ export default function App() {
           </div>
         )}
       </div>
+
+      {/* INLINE USER MANAGEMENT (Admin only) */}
+      {user.role === "admin" && showUsers && (
+        <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200">
+          <UserManagement token={token} sheetId={sheetId} />
+        </div>
+      )}
     </div>
   );
 
@@ -529,7 +549,8 @@ export default function App() {
     <Router>
       <nav className="bg-gray-800 text-white p-3 flex gap-4">
         <Link to="/">Dashboard</Link>
-        {user?.role === "admin" && <Link to="/users">Manage Users</Link>}
+        {/* you can safely remove this route if you no longer want a separate page */}
+        {user?.role === "admin" && <Link to="/users">Manage Users (legacy)</Link>}
       </nav>
       <Routes>
         <Route path="/" element={<Dashboard />} />
