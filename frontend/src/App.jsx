@@ -45,8 +45,15 @@ export default function App() {
   const [condCol2, setCondCol2] = useState("");
   const [valueCol, setValueCol] = useState("");
 
-  // NEW: show/hide inline user management
+  // Inline user management (admin)
   const [showUsers, setShowUsers] = useState(false);
+
+  // ===== PIVOT (dynamic headers) =====
+  const [pivotOn, setPivotOn] = useState(false);
+  const [pivotRowKey, setPivotRowKey] = useState("");
+  const [pivotColKey, setPivotColKey] = useState("");   // dynamic headers
+  const [pivotValKey, setPivotValKey] = useState("");
+  const [pivotAgg, setPivotAgg] = useState("sum");      // "sum" | "count"
 
   // --- Auth ---
   const handleLogin = async (e) => {
@@ -132,6 +139,13 @@ export default function App() {
       setValueCol("");
       setSortConfig(null);
 
+      // also reset pivot selections (optional)
+      setPivotOn(false);
+      setPivotRowKey("");
+      setPivotColKey("");
+      setPivotValKey("");
+      setPivotAgg("sum");
+
       // refresh active + data
       const res = await axios.get(`${API}/sheets/active`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -187,6 +201,50 @@ export default function App() {
     });
     return Object.values(map);
   }, [condCol1, condCol2, valueCol, sortedData]);
+
+  // ===== PIVOT COMPUTE (dynamic headers) =====
+  const { pivotHeaders, pivotRows } = React.useMemo(() => {
+    if (!pivotOn || !pivotRowKey || !pivotColKey) return { pivotHeaders: [], pivotRows: [] };
+
+    // dynamic header keys
+    const dynSet = new Set();
+    (sortedData || []).forEach(r => {
+      const k = r[pivotColKey];
+      if (k !== undefined && k !== null && k !== "") dynSet.add(String(k));
+    });
+    const dynHeaders = Array.from(dynSet).sort();
+
+    // group by row key
+    const groups = new Map();
+    (sortedData || []).forEach(r => {
+      const rowK = String(r[pivotRowKey] ?? "N/A");
+      const colK = String(r[pivotColKey] ?? "N/A");
+      let v = 1; // for count
+      if (pivotAgg === "sum") {
+        const num = parseFloat(String(r[pivotValKey] ?? "").replace(/[\$,]/g, ""));
+        v = Number.isFinite(num) ? num : 0;
+      }
+      if (!groups.has(rowK)) groups.set(rowK, {});
+      const rowObj = groups.get(rowK);
+      rowObj[colK] = (rowObj[colK] || 0) + v;
+    });
+
+    // emit with totals
+    const outRows = Array.from(groups.entries()).map(([rk, cols]) => {
+      const o = { [pivotRowKey]: rk };
+      let total = 0;
+      dynHeaders.forEach(h => {
+        const val = cols[h] || 0;
+        o[h] = val;
+        total += val;
+      });
+      o._Total = total;
+      return o;
+    }).sort((a,b) => String(a[pivotRowKey]).localeCompare(String(b[pivotRowKey])));
+
+    const headers2 = [pivotRowKey, ...dynHeaders, "_Total"];
+    return { pivotHeaders: headers2, pivotRows: outRows };
+  }, [pivotOn, pivotRowKey, pivotColKey, pivotValKey, pivotAgg, sortedData]);
 
   // --- Exports ---
   const exportCSV = () => {
@@ -261,6 +319,19 @@ export default function App() {
     }
   };
 
+  // Pivot export
+  const exportPivotXLSX = () => {
+    if (!pivotOn || !pivotRows.length) return;
+    try {
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.json_to_sheet(pivotRows, { header: pivotHeaders });
+      XLSX.utils.book_append_sheet(wb, ws, "Pivot");
+      XLSX.writeFile(wb, "pivot.xlsx");
+    } catch (e) {
+      console.error("Pivot export failed:", e);
+    }
+  };
+
   // --- Login Page ---
   if (!token || !user) {
     return (
@@ -325,6 +396,8 @@ export default function App() {
               setSelectedFileName("");
               setCondCol1(""); setCondCol2(""); setValueCol(""); setSortConfig(null);
               setShowUsers(false);
+              setPivotOn(false);
+              setPivotRowKey(""); setPivotColKey(""); setPivotValKey(""); setPivotAgg("sum");
             }}
             className="bg-red-500 hover:bg-red-600 px-3 py-1 rounded-lg"
           >
@@ -388,6 +461,47 @@ export default function App() {
           >
             Download PDF
           </button>
+        </div>
+
+        {/* ===== Pivot Controls (dynamic headers) ===== */}
+        <div className="flex flex-wrap gap-3 items-center ml-auto">
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={pivotOn} onChange={e => setPivotOn(e.target.checked)} />
+            <span className="font-semibold">Pivot mode</span>
+          </label>
+
+          {pivotOn && (
+            <>
+              <select className="border p-2 rounded"
+                value={pivotRowKey} onChange={e=>setPivotRowKey(e.target.value)}>
+                <option value="">Row key…</option>
+                {headers.map(h => <option key={h} value={h}>{h}</option>)}
+              </select>
+
+              <select className="border p-2 rounded"
+                value={pivotColKey} onChange={e=>setPivotColKey(e.target.value)}>
+                <option value="">Dynamic header…</option>
+                {headers.map(h => <option key={h} value={h}>{h}</option>)}
+              </select>
+
+              <select className="border p-2 rounded"
+                value={pivotValKey} onChange={e=>setPivotValKey(e.target.value)} disabled={pivotAgg==="count"}>
+                <option value="">{pivotAgg==="count" ? "— (count)" : "Value…"}</option>
+                {headers.map(h => <option key={h} value={h}>{h}</option>)}
+              </select>
+
+              <select className="border p-2 rounded"
+                value={pivotAgg} onChange={e=>setPivotAgg(e.target.value)}>
+                <option value="sum">sum</option>
+                <option value="count">count</option>
+              </select>
+
+              <button onClick={exportPivotXLSX}
+                className={`px-3 py-2 rounded ${pivotRows.length ? "bg-purple-600 text-white" : "bg-gray-300 cursor-not-allowed"}`}>
+                Export Pivot
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -489,6 +603,41 @@ export default function App() {
         )}
       </div>
 
+      {/* ===== Pivot Table (dynamic headers) ===== */}
+      {pivotOn && (
+        <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200">
+          <div className="p-3 font-semibold">📌 Pivot Table</div>
+          {pivotRows.length ? (
+            <div className="overflow-auto">
+              <table className="table-auto border-collapse w-full text-sm">
+                <thead className="sticky top-0 bg-amber-600 text-white">
+                  <tr>
+                    {pivotHeaders.map(h => (
+                      <th key={h} className="border px-3 py-2 whitespace-nowrap">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {pivotRows.map((r, i) => (
+                    <tr key={i} className="odd:bg-gray-50 even:bg-white">
+                      {pivotHeaders.map(h => (
+                        <td key={h} className="border px-3 py-2 whitespace-nowrap">
+                          {typeof r[h] === "number" ? r[h].toLocaleString() : (r[h] ?? "")}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="text-gray-500 p-4">
+              Set <b>Row key</b>, <b>Dynamic header</b>, and {pivotAgg === "count" ? "" : <b>Value</b>} to generate a pivot.
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Full Data Table */}
       <div className="flex-1 overflow-auto m-4 bg-white rounded-xl shadow-lg border border-gray-200">
         {sortedData?.length > 0 ? (
@@ -549,7 +698,7 @@ export default function App() {
     <Router>
       <nav className="bg-gray-800 text-white p-3 flex gap-4">
         <Link to="/">Dashboard</Link>
-        {/* you can safely remove this route if you no longer want a separate page */}
+        {/* Legacy route kept; safe to remove if you only want inline panel */}
         {user?.role === "admin" && <Link to="/users">Manage Users (legacy)</Link>}
       </nav>
       <Routes>

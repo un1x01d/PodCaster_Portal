@@ -2,7 +2,7 @@
 FROM node:20-alpine AS build
 WORKDIR /app
 COPY frontend/package.json ./package.json
-# COPY frontend/package-lock.json ./package-lock.json
+#COPY frontend/package-lock.json ./package-lock.json
 RUN npm ci || npm i
 COPY frontend/. .
 ARG VITE_API_URL=http://localhost:4000
