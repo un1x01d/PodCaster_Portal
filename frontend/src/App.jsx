@@ -139,7 +139,7 @@ export default function App() {
       setValueCol("");
       setSortConfig(null);
 
-      // also reset pivot selections (optional)
+      // also reset pivot selections
       setPivotOn(false);
       setPivotRowKey("");
       setPivotColKey("");
@@ -246,7 +246,7 @@ export default function App() {
     return { pivotHeaders: headers2, pivotRows: outRows };
   }, [pivotOn, pivotRowKey, pivotColKey, pivotValKey, pivotAgg, sortedData]);
 
-  // --- Exports ---
+  // --- Exports (SheetJS) ---
   const exportCSV = () => {
     try {
       const fileName = "report.csv";
@@ -319,17 +319,19 @@ export default function App() {
     }
   };
 
-  // Pivot export
-  const exportPivotXLSX = () => {
-    if (!pivotOn || !pivotRows.length) return;
-    try {
-      const wb = XLSX.utils.book_new();
-      const ws = XLSX.utils.json_to_sheet(pivotRows, { header: pivotHeaders });
-      XLSX.utils.book_append_sheet(wb, ws, "Pivot");
-      XLSX.writeFile(wb, "pivot.xlsx");
-    } catch (e) {
-      console.error("Pivot export failed:", e);
-    }
+  // --- resets ---
+  const resetSummary = () => {
+    setCondCol1("");
+    setCondCol2("");
+    setValueCol("");
+  };
+
+  const resetPivot = () => {
+    // keep pivotOn as-is; just clear selections and default agg
+    setPivotRowKey("");
+    setPivotColKey("");
+    setPivotValKey("");
+    setPivotAgg("sum");
   };
 
   // --- Login Page ---
@@ -496,9 +498,30 @@ export default function App() {
                 <option value="count">count</option>
               </select>
 
-              <button onClick={exportPivotXLSX}
-                className={`px-3 py-2 rounded ${pivotRows.length ? "bg-purple-600 text-white" : "bg-gray-300 cursor-not-allowed"}`}>
+              <button
+                onClick={() => {
+                  if (!pivotOn || !pivotRows.length) return;
+                  try {
+                    const wb = XLSX.utils.book_new();
+                    const ws = XLSX.utils.json_to_sheet(pivotRows, { header: pivotHeaders });
+                    XLSX.utils.book_append_sheet(wb, ws, "Pivot");
+                    XLSX.writeFile(wb, "pivot.xlsx");
+                  } catch (e) {
+                    console.error("Pivot export failed:", e);
+                  }
+                }}
+                className={`px-3 py-2 rounded ${pivotRows.length ? "bg-purple-600 text-white" : "bg-gray-300 cursor-not-allowed"}`}
+              >
                 Export Pivot
+              </button>
+
+              {/* Reset Pivot */}
+              <button
+                onClick={resetPivot}
+                className="px-3 py-2 bg-gray-200 hover:bg-gray-300 rounded text-sm"
+                title="Clear Row key / Dynamic header / Value (keeps Pivot mode on)"
+              >
+                Reset
               </button>
             </>
           )}
@@ -554,6 +577,15 @@ export default function App() {
               ))}
             </select>
           </div>
+
+          {/* Reset Summary */}
+          <button
+            onClick={resetSummary}
+            className="h-10 self-end px-3 py-2 bg-gray-200 hover:bg-gray-300 rounded text-sm"
+            title="Clear Condition 1, Condition 2, and Value"
+          >
+            Reset
+          </button>
         </div>
 
         {condCol1 && condCol2 && valueCol && summaryData?.length > 0 ? (
