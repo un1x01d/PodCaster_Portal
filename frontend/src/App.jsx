@@ -24,6 +24,104 @@ import "./index.css";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
 
+/* -------------------------------------------------------
+ * SearchableSelect (no deps, popover w/ search input)
+ * -----------------------------------------------------*/
+function SearchableSelect({
+  options = [],           // [{ value, label }]
+  value = "",
+  onChange = () => {},
+  placeholder = "Select…",
+  className = "",
+  disabled = false,
+  buttonClassName = "border p-2 rounded min-w-[10rem] bg-white",
+  panelWidth = 260,       // px
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const btnRef = useRef(null);
+  const panelRef = useRef(null);
+
+  const selected = options.find(o => String(o.value) === String(value));
+  const filtered = q
+    ? options.filter(o => o.label.toLowerCase().includes(q.toLowerCase()))
+    : options;
+
+  useEffect(() => {
+    function onDocClick(e) {
+      const b = btnRef.current;
+      const p = panelRef.current;
+      if (!b || !p) return;
+      if (b.contains(e.target) || p.contains(e.target)) return;
+      setOpen(false);
+    }
+    function onEsc(e) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onEsc);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!open) setQ("");
+  }, [open]);
+
+  return (
+    <div className={`relative inline-block ${className}`}>
+      <button
+        ref={btnRef}
+        type="button"
+        disabled={disabled}
+        onClick={() => !disabled && setOpen(o => !o)}
+        className={`${buttonClassName} flex items-center justify-between gap-2 ${disabled ? "bg-gray-100 cursor-not-allowed text-gray-400" : ""}`}
+        title={selected?.label || placeholder}
+      >
+        <span className="truncate">{selected?.label || placeholder}</span>
+        <span className="opacity-70">▾</span>
+      </button>
+
+      {open && !disabled && (
+        <div
+          ref={panelRef}
+          className="absolute z-50 mt-1 bg-white border rounded shadow-lg p-2"
+          style={{ width: panelWidth }}
+        >
+          <input
+            autoFocus
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Type to search…"
+            className="w-full border rounded px-2 py-1 mb-2"
+          />
+          <div className="max-h-56 overflow-auto">
+            {filtered.length ? (
+              filtered.map(o => (
+                <div
+                  key={String(o.value)}
+                  className={`px-2 py-1 rounded cursor-pointer hover:bg-blue-50 ${String(o.value) === String(value) ? "bg-blue-100" : ""}`}
+                  title={o.label}
+                  onClick={() => {
+                    onChange({ target: { value: o.value } });
+                    setOpen(false);
+                  }}
+                >
+                  {o.label}
+                </div>
+              ))
+            ) : (
+              <div className="text-gray-500 text-sm px-2 py-1">No matches</div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(localStorage.getItem("token") || "");
@@ -61,6 +159,9 @@ export default function App() {
   const [pivotColKey, setPivotColKey] = useState("");   // dynamic headers
   const [pivotValKey, setPivotValKey] = useState("");
   const [pivotAgg, setPivotAgg] = useState("sum");      // "sum" | "count"
+
+  // Totals column (per-sheet persisted)
+  const [totalsCol, setTotalsCol] = useState("");
 
   // charts: 2-decimal formatting
   const fmt2 = (n) =>
@@ -105,10 +206,12 @@ export default function App() {
         if (res.data?.sheetId) {
           setSheetId(res.data.sheetId);
           setActiveFilename(res.data.filename || "");
+          setTotalsCol(res.data.totals_column || "");
           await loadData(res.data.sheetId);
         } else {
           setSheetId(null);
           setActiveFilename("");
+          setTotalsCol("");
           setData([]);
           setHeaders([]);
         }
@@ -187,6 +290,7 @@ export default function App() {
       if (res.data?.sheetId) {
         setSheetId(res.data.sheetId);
         setActiveFilename(res.data.filename || uploadRes.data?.filename || "");
+        setTotalsCol(res.data.totals_column || "");
         await loadData(res.data.sheetId);
       }
       alert("✅ Upload complete");
@@ -237,7 +341,6 @@ export default function App() {
       await axios.delete(`${API}/groups/${id}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      // if the removed group was selected for quick folder creation, clear it
       if (String(newFolderGroupId) === String(id)) setNewFolderGroupId("");
       await fetchMeta();
     } catch (e) {
@@ -343,6 +446,18 @@ export default function App() {
     "#14b8a6","#84cc16"
   ];
 
+  // --- Totals Sum (for selected totalsCol) ---
+  const totalsSum = React.useMemo(() => {
+    if (!totalsCol) return null;
+    let sum = 0;
+    for (const r of sortedData) {
+      const raw = String(r[totalsCol] ?? "").replace(/[\$,]/g, "");
+      const num = parseFloat(raw);
+      if (Number.isFinite(num)) sum += num;
+    }
+    return sum;
+  }, [sortedData, totalsCol]);
+
   // --- Exports (SheetJS) ---
   const exportCSV = () => {
     try {
@@ -430,6 +545,33 @@ export default function App() {
     setPivotAgg("sum");
   };
 
+  // helpers to build options
+  const headerOptions = headers.map(h => ({ value: h, label: h }));
+  const folderOptions = [{ value: "", label: "Folder (optional)…" }].concat(
+    folders.map(f => ({
+      value: String(f.id),
+      label: `${f.name}${f.group_name ? ` — ${f.group_name}` : ""}`,
+    }))
+  );
+  const groupOptions = [{ value: "", label: "(no group)" }].concat(
+    groups.map(g => ({ value: String(g.id), label: g.name }))
+  );
+  const totalsOptions = [{ value: "", label: "Totals column…" }].concat(headerOptions);
+
+  // Persist totals column (admin)
+  const saveTotalsColumn = async (col) => {
+    if (!sheetId) return;
+    try {
+      await axios.patch(`${API}/sheets/${sheetId}`, { totals_column: col || null }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setTotalsCol(col || "");
+    } catch (e) {
+      console.error("save totals_column failed", e);
+      alert("❌ Could not save totals column");
+    }
+  };
+
   // --- Login Page ---
   if (!token || !user) {
     return (
@@ -492,6 +634,7 @@ export default function App() {
               setHeaders([]);
               setActiveFilename("");
               setSelectedFileName("");
+              setTotalsCol("");
               setCondCol1(""); setCondCol2(""); setValueCol(""); setSortConfig(null);
               setShowUsers(false);
               setPivotOn(false);
@@ -525,19 +668,13 @@ export default function App() {
             </label>
 
             {/* Folder selection */}
-            <select
-              className="border p-2 rounded"
+            <SearchableSelect
+              options={[{ value: "", label: "Folder (optional)…" }, ...folderOptions.slice(1)]}
               value={selectedFolderId}
               onChange={(e)=>setSelectedFolderId(e.target.value)}
-              title="Choose folder (optional) to store a copy of the uploaded file"
-            >
-              <option value="">Folder (optional)…</option>
-              {folders.map(f => (
-                <option key={f.id} value={f.id}>
-                  {f.name}{f.group_name ? ` — ${f.group_name}` : ""}
-                </option>
-              ))}
-            </select>
+              placeholder="Folder (optional)…"
+              className="ml-1"
+            />
 
             <button
               onClick={handleUpload}
@@ -554,14 +691,13 @@ export default function App() {
                 placeholder="New folder name"
                 autoComplete="off"
               />
-              <select
-                className="border rounded p-2"
+              <SearchableSelect
+                options={groupOptions}
                 value={newFolderGroupId}
                 onChange={(e)=>setNewFolderGroupId(e.target.value)}
-              >
-                <option value="">(no group)</option>
-                {groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
-              </select>
+                placeholder="(no group)"
+                panelWidth={220}
+              />
               <button
                 onClick={createFolder}
                 className="bg-gray-700 hover:bg-gray-800 text-white px-3 py-2 rounded"
@@ -569,49 +705,6 @@ export default function App() {
               >
                 Add Folder
               </button>
-            </div>
-
-            {/* NEW: Compact lists with delete actions */}
-            <div className="flex flex-wrap gap-6 items-start ml-4">
-              {/* Folders list */}
-              <div>
-                <div className="text-sm font-semibold mb-1">Folders</div>
-                <div className="max-h-36 overflow-auto border rounded p-2 w-72 bg-gray-50">
-                  {folders.length ? folders.map(f => (
-                    <div key={f.id} className="flex justify-between items-center py-1">
-                      <span className="truncate" title={`${f.name}${f.group_name ? ` — ${f.group_name}` : ""}`}>
-                        {f.name}{f.group_name ? ` — ${f.group_name}` : ""}
-                      </span>
-                      <button
-                        className="text-red-600 hover:text-red-700 px-2"
-                        title="Delete folder"
-                        onClick={() => deleteFolder(f.id)}
-                      >
-                        🗑️
-                      </button>
-                    </div>
-                  )) : <div className="text-gray-500 text-sm">No folders</div>}
-                </div>
-              </div>
-
-              {/* Groups list */}
-              <div>
-                <div className="text-sm font-semibold mb-1">Groups</div>
-                <div className="max-h-36 overflow-auto border rounded p-2 w-64 bg-gray-50">
-                  {groups.length ? groups.map(g => (
-                    <div key={g.id} className="flex justify-between items-center py-1">
-                      <span className="truncate" title={g.name}>{g.name}</span>
-                      <button
-                        className="text-red-600 hover:text-red-700 px-2"
-                        title="Delete group"
-                        onClick={() => deleteGroup(g.id)}
-                      >
-                        🗑️
-                      </button>
-                    </div>
-                  )) : <div className="text-gray-500 text-sm">No groups</div>}
-                </div>
-              </div>
             </div>
           </>
         )}
@@ -645,67 +738,19 @@ export default function App() {
           </button>
         </div>
 
-        {/* ===== Pivot Controls (dynamic headers) ===== */}
-        <div className="flex flex-wrap gap-3 items-center ml-auto">
-          <label className="flex items-center gap-2">
-            <input type="checkbox" checked={pivotOn} onChange={e => setPivotOn(e.target.checked)} />
-            <span className="font-semibold">Pivot mode</span>
-          </label>
-
-          {pivotOn && (
-            <>
-              <select className="border p-2 rounded"
-                value={pivotRowKey} onChange={e=>setPivotRowKey(e.target.value)}>
-                <option value="">Row key…</option>
-                {headers.map(h => <option key={h} value={h}>{h}</option>)}
-              </select>
-
-              <select className="border p-2 rounded"
-                value={pivotColKey} onChange={e=>setPivotColKey(e.target.value)}>
-                <option value="">Dynamic header…</option>
-                {headers.map(h => <option key={h} value={h}>{h}</option>)}
-              </select>
-
-              <select className="border p-2 rounded"
-                value={pivotValKey} onChange={e=>setPivotValKey(e.target.value)} disabled={pivotAgg==="count"}>
-                <option value="">{pivotAgg==="count" ? "— (count)" : "Value…"}</option>
-                {headers.map(h => <option key={h} value={h}>{h}</option>)}
-              </select>
-
-              <select className="border p-2 rounded"
-                value={pivotAgg} onChange={e=>setPivotAgg(e.target.value)}>
-                <option value="sum">sum</option>
-                <option value="count">count</option>
-              </select>
-
-              <button
-                onClick={() => {
-                  if (!pivotOn || !pivotRows.length) return;
-                  try {
-                    const wb = XLSX.utils.book_new();
-                    const ws = XLSX.utils.json_to_sheet(pivotRows, { header: pivotHeaders });
-                    XLSX.utils.book_append_sheet(wb, ws, "Pivot");
-                    XLSX.writeFile(wb, "pivot.xlsx");
-                  } catch (e) {
-                    console.error("Pivot export failed:", e);
-                  }
-                }}
-                className={`px-3 py-2 rounded ${pivotRows.length ? "bg-purple-600 text-white" : "bg-gray-300 cursor-not-allowed"}`}
-              >
-                Export Pivot
-              </button>
-
-              {/* Reset Pivot */}
-              <button
-                onClick={resetPivot}
-                className="px-3 py-2 bg-gray-200 hover:bg-gray-300 rounded text-sm"
-                title="Clear Row key / Dynamic header / Value (keeps Pivot mode on)"
-              >
-                Reset
-              </button>
-            </>
-          )}
-        </div>
+        {/* Totals column (admin, persisted per sheet) */}
+        {user.role === "admin" && (
+          <div className="ml-auto flex items-center gap-2">
+            <span className="text-sm text-gray-600">Totals:</span>
+            <SearchableSelect
+              options={totalsOptions}
+              value={totalsCol}
+              onChange={(e)=>saveTotalsColumn(e.target.value)}
+              placeholder="Totals column…"
+              panelWidth={260}
+            />
+          </div>
+        )}
       </div>
 
       {/* Two-Condition Controls */}
@@ -714,48 +759,36 @@ export default function App() {
         <div className="flex gap-4 mb-4 flex-wrap">
           <div>
             <label className="block text-sm font-semibold">Condition 1:</label>
-            <select
+            <SearchableSelect
+              options={[{value:"",label:"-- Select --"}, ...headers.map(h=>({value:h,label:h}))]}
               value={condCol1}
-              onChange={(e) => setCondCol1(e.target.value)}
-              className="border p-2 rounded w-64"
-            >
-              <option value="">-- Select --</option>
-              {headers.map((h) => (
-                <option key={h} value={h}>
-                  {h}
-                </option>
-              ))}
-            </select>
+              onChange={(e)=>setCondCol1(e.target.value)}
+              placeholder="-- Select --"
+              className="w-64"
+              panelWidth={280}
+            />
           </div>
           <div>
             <label className="block text-sm font-semibold">Condition 2:</label>
-            <select
+            <SearchableSelect
+              options={[{value:"",label:"-- Select --"}, ...headers.map(h=>({value:h,label:h}))]}
               value={condCol2}
-              onChange={(e) => setCondCol2(e.target.value)}
-              className="border p-2 rounded w-64"
-            >
-              <option value="">-- Select --</option>
-              {headers.map((h) => (
-                <option key={h} value={h}>
-                  {h}
-                </option>
-              ))}
-            </select>
+              onChange={(e)=>setCondCol2(e.target.value)}
+              placeholder="-- Select --"
+              className="w-64"
+              panelWidth={280}
+            />
           </div>
           <div>
             <label className="block text-sm font-semibold">Value Column:</label>
-            <select
+            <SearchableSelect
+              options={[{value:"",label:"-- Select --"}, ...headers.map(h=>({value:h,label:h}))]}
               value={valueCol}
-              onChange={(e) => setValueCol(e.target.value)}
-              className="border p-2 rounded w-64"
-            >
-              <option value="">-- Select --</option>
-              {headers.map((h) => (
-                <option key={h} value={h}>
-                  {h}
-                </option>
-              ))}
-            </select>
+              onChange={(e)=>setValueCol(e.target.value)}
+              placeholder="-- Select --"
+              className="w-64"
+              panelWidth={280}
+            />
           </div>
 
           {/* Reset Summary */}
@@ -839,7 +872,7 @@ export default function App() {
                       key={k}
                       dataKey={k}
                       stackId="pivot"
-                      fill={seriesColors[idx % seriesColors.length]}
+                      fill={["#4f46e5","#22c55e","#f59e0b","#ef4444","#06b6d4","#a855f7","#10b981","#eab308","#3b82f6","#f97316","#14b8a6","#84cc16"][idx % 12]}
                       name={k}
                     />
                   ))}
@@ -890,43 +923,52 @@ export default function App() {
       {/* Full Data Table */}
       <div className="flex-1 overflow-auto m-4 bg-white rounded-xl shadow-lg border border-gray-200">
         {sortedData?.length > 0 ? (
-          <table className="table-auto border-collapse w-full text-sm">
-            <thead className="sticky top-0 bg-blue-700 text-white shadow-sm">
-              <tr>
-                {headers.map((h) => (
-                  <th
-                    key={h}
-                    className="border border-gray-200 px-4 py-2 text-left whitespace-nowrap cursor-pointer"
-                    onClick={() => requestSort(h)}
-                  >
-                    {h}
-                    {sortConfig?.key === h
-                      ? sortConfig.direction === "asc"
-                        ? " ▲"
-                        : " ▼"
-                      : " ⬍"}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {sortedData.map((row, i) => (
-                <tr
-                  key={i}
-                  className="odd:bg-gray-50 even:bg-white hover:bg-blue-50"
-                >
+          <>
+            <table className="table-auto border-collapse w-full text-sm">
+              <thead className="sticky top-0 bg-blue-700 text-white shadow-sm">
+                <tr>
                   {headers.map((h) => (
-                    <td
+                    <th
                       key={h}
-                      className="border border-gray-200 px-4 py-2 whitespace-nowrap"
+                      className="border border-gray-200 px-4 py-2 text-left whitespace-nowrap cursor-pointer"
+                      onClick={() => requestSort(h)}
                     >
-                      {row[h] || ""}
-                    </td>
+                      {h}
+                      {sortConfig?.key === h
+                        ? sortConfig.direction === "asc"
+                          ? " ▲"
+                          : " ▼"
+                        : " ⬍"}
+                    </th>
                   ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {sortedData.map((row, i) => (
+                  <tr
+                    key={i}
+                    className="odd:bg-gray-50 even:bg-white hover:bg-blue-50"
+                  >
+                    {headers.map((h) => (
+                      <td
+                        key={h}
+                        className="border border-gray-200 px-4 py-2 whitespace-nowrap"
+                      >
+                        {row[h] || ""}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            {/* Totals summary under table */}
+            {totalsCol ? (
+              <div className="p-3 text-sm bg-gray-50 border-t">
+                Σ Total of <b>{totalsCol}</b>: <span className="font-semibold">${fmt2(totalsSum ?? 0)}</span>
+              </div>
+            ) : null}
+          </>
         ) : (
           <div className="text-gray-500 text-center py-10">
             📂 Upload or refresh to see data

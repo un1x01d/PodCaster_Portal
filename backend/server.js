@@ -1,3 +1,4 @@
+
 import express from "express";
 import cors from "cors";
 import multer from "multer";
@@ -135,8 +136,9 @@ async function initDb() {
     );
   `);
   await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS folder_id INT;`);
+  await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS totals_column TEXT;`);
 
-  // clean up duplicate actives then enforce unique partial index
+  // clean duplicate actives, then re-enforce unique partial index
   await pool.query(`
     DO $$
     BEGIN
@@ -234,7 +236,7 @@ app.get("/healthz", (_req, res) =>
 );
 
 /* ----------------------------------------------------------------------------
- * Multer (simple: disk to tmp, 100MB limit, no type filter)
+ * Multer
  * ------------------------------------------------------------------------- */
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, TMP_DIR),
@@ -247,8 +249,6 @@ const upload = multer({
 
 /* ----------------------------------------------------------------------------
  * Upload
- * - still writes uploads/current.xlsx (unchanged)
- * - optional folderId copies to uploads/folders/<id>-<name>/<timestamp>_<original>.xlsx
  * ------------------------------------------------------------------------- */
 app.post("/upload", auth, upload.single("file"), async (req, res) => {
   try {
@@ -350,15 +350,23 @@ app.post("/upload", auth, upload.single("file"), async (req, res) => {
  * Sheets meta
  * ------------------------------------------------------------------------- */
 app.get("/sheets/active", auth, async (_req, res) => {
-  const s = await query("SELECT id, headers, filename FROM sheets WHERE active = TRUE LIMIT 1", []);
+  const s = await query("SELECT id, headers, filename, totals_column FROM sheets WHERE active = TRUE LIMIT 1", []);
   if (!s.length) return res.json(null);
-  res.json({ sheetId: s[0].id, headers: s[0].headers, filename: s[0].filename });
+  res.json({ sheetId: s[0].id, headers: s[0].headers, filename: s[0].filename, totals_column: s[0].totals_column || null });
 });
 
 app.get("/sheets/:id", auth, async (req, res) => {
-  const s = await query("SELECT id, headers, active, filename FROM sheets WHERE id=$1", [req.params.id]);
+  const s = await query("SELECT id, headers, active, filename, totals_column FROM sheets WHERE id=$1", [req.params.id]);
   if (!s.length) return res.status(404).json({ error: "not_found" });
   res.json(s[0]);
+});
+
+// NEW: set per-sheet totals column (admin)
+app.patch("/sheets/:id", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const { totals_column } = req.body || {};
+  await query("UPDATE sheets SET totals_column = $1 WHERE id = $2", [totals_column || null, req.params.id]);
+  res.json({ success: true });
 });
 
 /* ----------------------------------------------------------------------------
@@ -560,7 +568,6 @@ app.post("/groups", auth, async (req, res) => {
 app.delete("/groups/:id", auth, async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
   const gid = Number(req.params.id);
-  // detach folders from the group, remove group permissions and memberships, then delete
   await query(`UPDATE folders SET group_id = NULL WHERE group_id = $1`, [gid]);
   await query(`DELETE FROM group_permissions WHERE group_id = $1`, [gid]);
   await query(`DELETE FROM user_groups WHERE group_id = $1`, [gid]);
@@ -680,7 +687,6 @@ app.post("/folders", auth, async (req, res) => {
 app.delete("/folders/:id", auth, async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
   const fid = Number(req.params.id);
-  // detach from sheets first to avoid dangling references
   await query(`UPDATE sheets SET folder_id = NULL WHERE folder_id = $1`, [fid]);
   await query(`DELETE FROM folders WHERE id = $1`, [fid]);
   res.json({ success: true });
