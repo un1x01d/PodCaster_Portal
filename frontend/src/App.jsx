@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   BrowserRouter as Router,
   Routes,
@@ -40,6 +40,13 @@ export default function App() {
   const [file, setFile] = useState(null);
   const [selectedFileName, setSelectedFileName] = useState("");
 
+  // folders
+  const [folders, setFolders] = useState([]);
+  const [selectedFolderId, setSelectedFolderId] = useState("");
+  const newFolderNameRef = useRef(null);
+  const [groups, setGroups] = useState([]);
+  const [newFolderGroupId, setNewFolderGroupId] = useState("");
+
   // Two-condition summary
   const [condCol1, setCondCol1] = useState("");
   const [condCol2, setCondCol2] = useState("");
@@ -54,6 +61,13 @@ export default function App() {
   const [pivotColKey, setPivotColKey] = useState("");   // dynamic headers
   const [pivotValKey, setPivotValKey] = useState("");
   const [pivotAgg, setPivotAgg] = useState("sum");      // "sum" | "count"
+
+  // charts: 2-decimal formatting
+  const fmt2 = (n) =>
+    Number(n ?? 0).toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
 
   // --- Auth ---
   const handleLogin = async (e) => {
@@ -105,6 +119,25 @@ export default function App() {
     if (token && user) init();
   }, [token, user]);
 
+  // fetch folders + groups (for admin)
+  const fetchMeta = async () => {
+    if (user?.role !== "admin") return;
+    try {
+      const [fRes, gRes] = await Promise.all([
+        axios.get(`${API}/folders`, { headers: { Authorization: `Bearer ${token}` } }),
+        axios.get(`${API}/groups`, { headers: { Authorization: `Bearer ${token}` } }),
+      ]);
+      setFolders(fRes.data || []);
+      setGroups(gRes.data || []);
+    } catch (e) {
+      console.error("meta fetch failed", e);
+    }
+  };
+
+  useEffect(() => {
+    if (token && user) fetchMeta();
+  }, [token, user]);
+
   // --- Data Load ---
   const loadData = async (sid = sheetId) => {
     if (!sid) return;
@@ -125,6 +158,7 @@ export default function App() {
     if (!file) return;
     const formData = new FormData();
     formData.append("file", file);
+    if (selectedFolderId) formData.append("folderId", String(selectedFolderId));
     try {
       const uploadRes = await axios.post(`${API}/upload`, formData, {
         headers: {
@@ -139,7 +173,7 @@ export default function App() {
       setValueCol("");
       setSortConfig(null);
 
-      // also reset pivot selections
+      // reset pivot selections
       setPivotOn(false);
       setPivotRowKey("");
       setPivotColKey("");
@@ -155,9 +189,60 @@ export default function App() {
         setActiveFilename(res.data.filename || uploadRes.data?.filename || "");
         await loadData(res.data.sheetId);
       }
+      alert("✅ Upload complete");
     } catch (e) {
       console.error("upload failed", e);
       alert("❌ Upload failed");
+    }
+  };
+
+  // create folder (admin)
+  const createFolder = async () => {
+    const name = newFolderNameRef.current?.value?.trim() || "";
+    if (!name) return;
+    try {
+      await axios.post(`${API}/folders`, {
+        name,
+        groupId: newFolderGroupId ? Number(newFolderGroupId) : null,
+      }, { headers: { Authorization: `Bearer ${token}` }});
+      if (newFolderNameRef.current) newFolderNameRef.current.value = "";
+      setNewFolderGroupId("");
+      await fetchMeta();
+      alert("✅ Folder created");
+    } catch (e) {
+      console.error("create folder failed", e);
+      alert("❌ Could not create folder (name or group already used?)");
+    }
+  };
+
+  // delete folder (admin)
+  const deleteFolder = async (id) => {
+    if (!window.confirm("Delete this folder? (Saved copies stay on disk; sheets will detach)")) return;
+    try {
+      await axios.delete(`${API}/folders/${id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (String(selectedFolderId) === String(id)) setSelectedFolderId("");
+      await fetchMeta();
+    } catch (e) {
+      console.error("delete folder failed", e);
+      alert("❌ Could not delete folder");
+    }
+  };
+
+  // delete group (admin)
+  const deleteGroup = async (id) => {
+    if (!window.confirm("Delete this group and its memberships/permissions?")) return;
+    try {
+      await axios.delete(`${API}/groups/${id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      // if the removed group was selected for quick folder creation, clear it
+      if (String(newFolderGroupId) === String(id)) setNewFolderGroupId("");
+      await fetchMeta();
+    } catch (e) {
+      console.error("delete group failed", e);
+      alert("❌ Could not delete group");
     }
   };
 
@@ -246,7 +331,7 @@ export default function App() {
     return { pivotHeaders: headers2, pivotRows: outRows };
   }, [pivotOn, pivotRowKey, pivotColKey, pivotValKey, pivotAgg, sortedData]);
 
-  // === NEW: series keys + colors for Pivot Chart ===
+  // series keys for Pivot Chart
   const pivotSeriesKeys = React.useMemo(() => {
     if (!pivotHeaders?.length || !pivotRowKey) return [];
     return pivotHeaders.filter(h => h !== pivotRowKey && h !== "_Total");
@@ -339,7 +424,6 @@ export default function App() {
   };
 
   const resetPivot = () => {
-    // keep pivotOn as-is; just clear selections and default agg
     setPivotRowKey("");
     setPivotColKey("");
     setPivotValKey("");
@@ -439,12 +523,96 @@ export default function App() {
                 {selectedFileName || activeFilename || "No file selected"}
               </span>
             </label>
+
+            {/* Folder selection */}
+            <select
+              className="border p-2 rounded"
+              value={selectedFolderId}
+              onChange={(e)=>setSelectedFolderId(e.target.value)}
+              title="Choose folder (optional) to store a copy of the uploaded file"
+            >
+              <option value="">Folder (optional)…</option>
+              {folders.map(f => (
+                <option key={f.id} value={f.id}>
+                  {f.name}{f.group_name ? ` — ${f.group_name}` : ""}
+                </option>
+              ))}
+            </select>
+
             <button
               onClick={handleUpload}
               className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg"
             >
               Upload & Load
             </button>
+
+            {/* Quick create folder */}
+            <div className="flex items-center gap-2 ml-2">
+              <input
+                ref={newFolderNameRef}
+                className="border rounded p-2 w-44"
+                placeholder="New folder name"
+                autoComplete="off"
+              />
+              <select
+                className="border rounded p-2"
+                value={newFolderGroupId}
+                onChange={(e)=>setNewFolderGroupId(e.target.value)}
+              >
+                <option value="">(no group)</option>
+                {groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+              </select>
+              <button
+                onClick={createFolder}
+                className="bg-gray-700 hover:bg-gray-800 text-white px-3 py-2 rounded"
+                title="Create folder and (optionally) assign to a group"
+              >
+                Add Folder
+              </button>
+            </div>
+
+            {/* NEW: Compact lists with delete actions */}
+            <div className="flex flex-wrap gap-6 items-start ml-4">
+              {/* Folders list */}
+              <div>
+                <div className="text-sm font-semibold mb-1">Folders</div>
+                <div className="max-h-36 overflow-auto border rounded p-2 w-72 bg-gray-50">
+                  {folders.length ? folders.map(f => (
+                    <div key={f.id} className="flex justify-between items-center py-1">
+                      <span className="truncate" title={`${f.name}${f.group_name ? ` — ${f.group_name}` : ""}`}>
+                        {f.name}{f.group_name ? ` — ${f.group_name}` : ""}
+                      </span>
+                      <button
+                        className="text-red-600 hover:text-red-700 px-2"
+                        title="Delete folder"
+                        onClick={() => deleteFolder(f.id)}
+                      >
+                        🗑️
+                      </button>
+                    </div>
+                  )) : <div className="text-gray-500 text-sm">No folders</div>}
+                </div>
+              </div>
+
+              {/* Groups list */}
+              <div>
+                <div className="text-sm font-semibold mb-1">Groups</div>
+                <div className="max-h-36 overflow-auto border rounded p-2 w-64 bg-gray-50">
+                  {groups.length ? groups.map(g => (
+                    <div key={g.id} className="flex justify-between items-center py-1">
+                      <span className="truncate" title={g.name}>{g.name}</span>
+                      <button
+                        className="text-red-600 hover:text-red-700 px-2"
+                        title="Delete group"
+                        onClick={() => deleteGroup(g.id)}
+                      >
+                        🗑️
+                      </button>
+                    </div>
+                  )) : <div className="text-gray-500 text-sm">No groups</div>}
+                </div>
+              </div>
+            </div>
           </>
         )}
 
@@ -606,8 +774,8 @@ export default function App() {
               <BarChart data={summaryData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey={condCol2} />
-                <YAxis />
-                <Tooltip />
+                <YAxis tickFormatter={fmt2} />
+                <Tooltip formatter={(val) => fmt2(val)} />
                 <Legend />
                 <Bar dataKey="total" fill="url(#colorUv)" />
                 <defs>
@@ -652,7 +820,7 @@ export default function App() {
         <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200">
           <div className="p-3 font-semibold">📌 Pivot</div>
 
-          {/* NEW: Pivot Chart */}
+          {/* Pivot Chart */}
           {pivotRows.length && pivotSeriesKeys.length ? (
             <div className="px-3 pb-3">
               <ResponsiveContainer width="100%" height={320}>
@@ -663,8 +831,8 @@ export default function App() {
                     tick={{ fontSize: 12 }}
                     interval={0}
                   />
-                  <YAxis />
-                  <Tooltip />
+                  <YAxis tickFormatter={fmt2} />
+                  <Tooltip formatter={(val) => fmt2(val)} />
                   <Legend />
                   {pivotSeriesKeys.map((k, idx) => (
                     <Bar
@@ -779,7 +947,6 @@ export default function App() {
     <Router>
       <nav className="bg-gray-800 text-white p-3 flex gap-4">
         <Link to="/">Dashboard</Link>
-        {/* Legacy route kept; safe to remove if you only want inline panel */}
         {user?.role === "admin" && <Link to="/users">Manage Users (legacy)</Link>}
       </nav>
       <Routes>
