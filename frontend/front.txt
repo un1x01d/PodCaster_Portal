@@ -1,0 +1,1470 @@
+import React, { useEffect, useMemo, useState } from "react";
+import axios from "axios";
+import UserManagement from "./UserManagement";
+import {
+  Chart as ChartJS,
+  BarElement,
+  CategoryScale,
+  LinearScale,
+  Tooltip,
+  Legend,
+} from "chart.js";
+import { Bar } from "react-chartjs-2";
+
+ChartJS.register(BarElement, CategoryScale, LinearScale, Tooltip, Legend);
+
+const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
+
+export default function App() {
+  // auth
+  const [token, setToken] = useState(localStorage.getItem("token") || "");
+  const [user, setUser] = useState(null);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+
+  // data
+  const [data, setData] = useState([]);
+  const [headers, setHeaders] = useState([]);
+  const [sheetMeta, setSheetMeta] = useState(null);
+
+  // ui
+  const [file, setFile] = useState(null);
+  const [sortConfig, setSortConfig] = useState(null);
+  const [filterText, setFilterText] = useState({}); // {col: string}
+  const [calcColumn, setCalcColumn] = useState("");
+  const [cond1, setCond1] = useState("");
+  const [cond2, setCond2] = useState("");
+  const [condVal1, setCondVal1] = useState("");
+  const [condVal2, setCondVal2] = useState("");
+  const [groupCol, setGroupCol] = useState("");
+  const [showUsers, setShowUsers] = useState(false);
+
+  // decode JWT
+  const decode = (t) => {
+    try {
+      const p = JSON.parse(atob(t.split(".")[1]));
+      setUser(p);
+    } catch {
+      setUser(null);
+    }
+  };
+
+  useEffect(() => {
+    if (token) decode(token);
+  }, [token]);
+
+  const auth = useMemo(
+    () => ({ headers: { Authorization: `Bearer ${token}` } }),
+    [token]
+  );
+
+  const loadMeta = async () => {
+    try {
+      const m = await axios.get(`${API}/sheets/meta`, auth);
+      setSheetMeta(m.data);
+      if (m.data?.headers?.length && !calcColumn) {
+        // pick first numeric-looking column
+        const cols = m.data.headers;
+        setHeaders(cols);
+      }
+    } catch (e) {
+      console.error("meta failed", e.message);
+    }
+  };
+
+  const loadData = async () => {
+    try {
+      const r = await axios.get(`${API}/data`, auth);
+      setData(r.data || []);
+      if (r.data?.length) {
+        const cols = Object.keys(r.data[0]);
+        setHeaders(cols);
+        if (!calcColumn) {
+          const numeric = cols.find((c) =>
+            r.data.some((row) => {
+              if (!row[c]) return false;
+              const num = parseFloat(String(row[c]).replace(/[\$,]/g, ""));
+              return !isNaN(num);
+            })
+          );
+          setCalcColumn(numeric || cols[0]);
+        }
+        if (!cond1 && cols.length) setCond1(cols[0]);
+        if (!cond2 && cols.length > 1) setCond2(cols[1]);
+        if (!groupCol && cols.length) setGroupCol(cols[0]);
+      }
+    } catch (e) {
+      console.error("load failed", e.message);
+    }
+  };
+
+  useEffect(() => {
+    if (token && user) {
+      loadMeta();
+      loadData();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, user]);
+
+  // login
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    try {
+      const r = await axios.post(`${API}/login`, { email, password });
+      localStorage.setItem("token", r.data.token);
+      setToken(r.data.token);
+      decode(r.data.token);
+    } catch {
+      alert("❌ Invalid login");
+    }
+  };
+
+  // upload (admin)
+  const handleUpload = async () => {
+    if (!file) return;
+    const form = new FormData();
+    form.append("file", file);
+    try {
+      await axios.post(`${API}/upload`, form, {
+        headers: { "Content-Type": "multipart/form-data", Authorization: `Bearer ${token}` },
+      });
+      // clear conditions on new upload
+      setFilterText({});
+      setCond1(""); setCond2(""); setCondVal1(""); setCondVal2("");
+      setGroupCol("");
+      setCalcColumn("");
+      await loadMeta();
+      await loadData();
+    } catch {
+      alert("❌ Upload failed");
+    }
+  };
+
+  // sorting
+  const requestSort = (key) => {
+    let direction = "asc";
+    if (sortConfig && sortConfig.key === key && sortConfig.direction === "asc") direction = "desc";
+    setSortConfig({ key, direction });
+  };
+
+  // filtering
+  const filtered = useMemo(() => {
+    let rows = [...data];
+    // apply per-column contains filter
+    Object.entries(filterText).forEach(([k, v]) => {
+      const needle = String(v || "").toLowerCase();
+      if (needle) {
+        rows = rows.filter((r) => String(r[k] ?? "").toLowerCase().includes(needle));
+      }
+    });
+    // sorting
+    if (sortConfig) {
+      const { key, direction } = sortConfig;
+      rows.sort((a, b) => {
+        const av = a[key] ?? "";
+        const bv = b[key] ?? "";
+        if (av < bv) return direction === "asc" ? -1 : 1;
+        if (av > bv) return direction === "asc" ? 1 : -1;
+        return 0;
+      });
+    }
+    return rows;
+  }, [data, filterText, sortConfig]);
+
+  // totals
+  const total = useMemo(() => {
+    if (!calcColumn) return 0;
+    return filtered.reduce((acc, r) => {
+      const num = parseFloat(String(r[calcColumn] ?? "").replace(/[\$,]/g, ""));
+      return acc + (isNaN(num) ? 0 : num);
+    }, 0);
+  }, [filtered, calcColumn]);
+
+  // two-condition sum
+  const twoSum = useMemo(() => {
+    if (!cond1 || !cond2 || !condVal1 || !condVal2 || !calcColumn) return 0;
+    return filtered.reduce((acc, r) => {
+      if (String(r[cond1]) === condVal1 && String(r[cond2]) === condVal2) {
+        const num = parseFloat(String(r[calcColumn] ?? "").replace(/[\$,]/g, ""));
+        return acc + (isNaN(num) ? 0 : num);
+      }
+      return acc;
+    }, 0);
+  }, [filtered, cond1, cond2, condVal1, condVal2, calcColumn]);
+
+  // chart data (grouped by groupCol for rows matching both conditions)
+  const chartData = useMemo(() => {
+    if (!groupCol || !calcColumn || !cond1 || !cond2 || !condVal1 || !condVal2) return null;
+    const agg = {};
+    filtered.forEach((r) => {
+      if (String(r[cond1]) === condVal1 && String(r[cond2]) === condVal2) {
+        const key = String(r[groupCol] ?? "N/A");
+        const num = parseFloat(String(r[calcColumn] ?? "").replace(/[\$,]/g, ""));
+        agg[key] = (agg[key] || 0) + (isNaN(num) ? 0 : num);
+      }
+    });
+    const labels = Object.keys(agg);
+    const values = labels.map((k) => agg[k]);
+
+    // gradient fill via scriptable option (simple opacity)
+    return {
+      labels,
+      datasets: [
+        {
+          label: `${calcColumn} by ${groupCol}`,
+          data: values,
+          backgroundColor: values.map(() => "rgba(99, 102, 241, 0.6)"), // indigo-ish
+          borderColor: values.map(() => "rgba(99, 102, 241, 1)"),
+          borderWidth: 1,
+        },
+      ],
+    };
+  }, [filtered, groupCol, calcColumn, cond1, cond2, condVal1, condVal2]);
+
+  // login screen
+  if (!token || !user) {
+    return (
+      <div className="w-screen h-screen flex items-center justify-center bg-gradient-to-br from-blue-100 to-indigo-200">
+        <form onSubmit={handleLogin} className="bg-white shadow-lg rounded-xl p-8 w-96 border">
+          <h2 className="text-2xl font-bold mb-6 text-center text-gray-700">🔐 Podcaster Portal</h2>
+          <input className="w-full border p-3 mb-3 rounded" type="email" placeholder="Email"
+            value={email} onChange={(e) => setEmail(e.target.value)} />
+          <input className="w-full border p-3 mb-6 rounded" type="password" placeholder="Password"
+            value={password} onChange={(e) => setPassword(e.target.value)} />
+          <button className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg font-semibold">
+            Login
+          </button>
+        </form>
+      </div>
+    );
+  }
+
+  // export helpers (use ?token= for headerless download)
+  const dl = (kind) => {
+    const t = encodeURIComponent(token);
+    window.open(`${API}/export/${kind}?token=${t}`, "_blank");
+  };
+
+  // values list for a column (unique)
+  const uniqueVals = (col) => {
+    const set = new Set(filtered.map((r) => String(r[col] ?? "")));
+    return Array.from(set).filter((x) => x !== "");
+  };
+
+  return (
+    <div className="w-screen min-h-screen flex flex-col bg-gray-50">
+      {/* Top bar */}
+      <div className="bg-blue-600 text-white px-6 py-4 flex justify-between items-center shadow">
+        <div className="flex items-center gap-4">
+          <h1 className="text-xl font-bold">📊 Podcaster Dashboard</h1>
+          {sheetMeta?.filename && (
+            <span className="px-2 py-1 bg-blue-500/40 rounded text-sm">
+              {sheetMeta.filename}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-3">
+          {user.role === "admin" && (
+            <button
+              onClick={() => setShowUsers(true)}
+              className="bg-indigo-500 hover:bg-indigo-600 px-3 py-1 rounded-lg"
+            >
+              Manage Users
+            </button>
+          )}
+          <span className="italic">{user.email}</span>
+          <button
+            onClick={() => {
+              localStorage.removeItem("token");
+              setToken("");
+              setUser(null);
+              setData([]);
+            }}
+            className="bg-red-500 hover:bg-red-600 px-3 py-1 rounded-lg"
+          >
+            Logout
+          </button>
+        </div>
+      </div>
+
+      {/* Admin controls */}
+      {user.role === "admin" && (
+        <div className="flex flex-wrap gap-3 p-4 bg-white shadow-sm border-b items-center">
+          <input
+            type="file"
+            onChange={(e) => setFile(e.target.files[0])}
+            className="border p-2 rounded"
+          />
+          <button
+            onClick={handleUpload}
+            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg"
+          >
+            Upload & Load
+          </button>
+          <div className="ml-auto flex gap-2">
+            <button
+              onClick={() => dl("csv")}
+              className="bg-slate-600 hover:bg-slate-700 text-white px-3 py-2 rounded"
+            >
+              Export CSV
+            </button>
+            <button
+              onClick={() => dl("xlsx")}
+              className="bg-slate-600 hover:bg-slate-700 text-white px-3 py-2 rounded"
+            >
+              Export XLSX
+            </button>
+            <button
+              onClick={() => dl("pdf")}
+              className="bg-slate-600 hover:bg-slate-700 text-white px-3 py-2 rounded"
+            >
+              Export PDF
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Two-condition controls + chart (top) */}
+      {headers.length > 0 && (
+        <div className="bg-white border-b shadow-sm">
+          <div className="p-4 flex flex-wrap gap-3 items-end">
+            <div>
+              <label className="block text-xs font-semibold">Calc Column</label>
+              <select
+                className="border p-2 rounded w-56"
+                value={calcColumn}
+                onChange={(e) => setCalcColumn(e.target.value)}
+              >
+                {headers.map((h) => (
+                  <option key={h} value={h}>{h}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold">Condition 1 (Column)</label>
+              <select
+                className="border p-2 rounded w-64"
+                value={cond1}
+                onChange={(e) => {
+                  setCond1(e.target.value);
+                  setCondVal1("");
+                }}
+              >
+                <option value="">--</option>
+                {headers.map((h) => (
+                  <option key={h} value={h}>{h}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold">Value</label>
+              <select
+                className="border p-2 rounded w-64"
+                value={condVal1}
+                onChange={(e) => setCondVal1(e.target.value)}
+              >
+                <option value="">--</option>
+                {cond1 &&
+                  uniqueVals(cond1).map((v) => (
+                    <option key={v} value={v}>{v}</option>
+                  ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold">Condition 2 (Column)</label>
+              <select
+                className="border p-2 rounded w-64"
+                value={cond2}
+                onChange={(e) => {
+                  setCond2(e.target.value);
+                  setCondVal2("");
+                }}
+              >
+                <option value="">--</option>
+                {headers.map((h) => (
+                  <option key={h} value={h}>{h}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold">Value</label>
+              <select
+                className="border p-2 rounded w-64"
+                value={condVal2}
+                onChange={(e) => setCondVal2(e.target.value)}
+              >
+                <option value="">--</option>
+                {cond2 &&
+                  uniqueVals(cond2).map((v) => (
+                    <option key={v} value={v}>{v}</option>
+                  ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold">Group By (Chart X)</label>
+              <select
+                className="border p-2 rounded w-64"
+                value={groupCol}
+                onChange={(e) => setGroupCol(e.target.value)}
+              >
+                <option value="">--</option>
+                {headers.map((h) => (
+                  <option key={h} value={h}>{h}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="ml-auto">
+              <div className="text-sm font-semibold">Two-Condition Sum</div>
+              <div className="text-xl font-bold text-indigo-700">
+                ${twoSum.toLocaleString()}
+              </div>
+            </div>
+          </div>
+
+          <div className="px-4 pb-4">
+            {chartData ? (
+              <div className="bg-white rounded-lg shadow p-4">
+                <Bar
+                  data={chartData}
+                  options={{
+                    responsive: true,
+                    plugins: { legend: { display: true } },
+                    scales: {
+                      y: { title: { display: true, text: "$" } },
+                      x: { title: { display: true, text: groupCol || "" } },
+                    },
+                  }}
+                />
+              </div>
+            ) : (
+              <div className="text-gray-500 italic p-4">📊 Set Calc Column, both Conditions + Group By to render chart.</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Totals banner */}
+      {calcColumn && (
+        <div className="p-3 bg-indigo-100 border-b border-indigo-200 font-semibold">
+          Total {calcColumn}: <span className="text-indigo-800">${total.toLocaleString()}</span>
+        </div>
+      )}
+
+      {/* Table filters + table (50-row viewport scroll) */}
+      <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200">
+        {/* Column filters */}
+        {headers.length > 0 && (
+          <div className="p-3 border-b bg-gray-50 grid gap-2" style={{ gridTemplateColumns: `repeat(${Math.min(headers.length, 6)}, minmax(0, 1fr))` }}>
+            {headers.map((h) => (
+              <div key={h} className="flex flex-col">
+                <label className="text-xs font-semibold mb-1">{h}</label>
+                <input
+                  className="border p-2 rounded"
+                  placeholder="filter…"
+                  value={filterText[h] || ""}
+                  onChange={(e) =>
+                    setFilterText((prev) => ({ ...prev, [h]: e.target.value }))
+                  }
+                />
+              </div>
+            ))}
+            <div className="flex items-end">
+              <button
+                className="px-3 py-2 bg-gray-200 rounded"
+                onClick={() => setFilterText({})}
+              >
+                Reset Filters
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Table body */}
+        <div
+          className="overflow-auto"
+          style={{ maxHeight: `${Math.max(50, Math.min(200, filtered.length)) * 38}px` }} /* ~38px/row */
+        >
+          {filtered.length > 0 ? (
+            <table className="table-auto border-collapse w-full text-sm">
+              <thead className="sticky top-0 bg-blue-700 text-white shadow-sm">
+                <tr>
+                  {headers.map((h) => (
+                    <th
+                      key={h}
+                      className="border border-gray-200 px-4 py-2 text-left whitespace-nowrap cursor-pointer"
+                      onClick={() => requestSort(h)}
+                    >
+                      {h}
+                      {sortConfig?.key === h
+                        ? sortConfig.direction === "asc"
+                          ? " ▲"
+                          : " ▼"
+                        : " ⬍"}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((row, idx) => (
+                  <tr key={idx} className="odd:bg-gray-50 even:bg-white hover:bg-blue-50">
+                    {headers.map((h) => (
+                      <td key={h} className="border border-gray-200 px-4 py-2 whitespace-nowrap">
+                        {row[h] ?? ""}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div className="text-gray-500 text-center py-10">📂 Upload or adjust filters to see rows</div>
+          )}
+        </div>
+      </div>
+
+      {/* User Management page */}
+      {showUsers && user.role === "admin" && (
+        <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200">
+          <UserManagement token={token} onClose={() => setShowUsers(false)} headers={headers} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+import React, { useState, useEffect } from "react";
+import axios from "axios";
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [token, setToken] = useState(localStorage.getItem("token") || "");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [data, setData] = useState([]);
+  const [headers, setHeaders] = useState([]);
+  const [sortConfig, setSortConfig] = useState(null);
+  const [file, setFile] = useState(null);
+
+  // One selected column for totals
+  const [calcColumn, setCalcColumn] = useState("");
+
+  // --- Authentication ---
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    try {
+      const res = await axios.post("http://localhost:4000/login", {
+        email,
+        password,
+      });
+      localStorage.setItem("token", res.data.token);
+      setToken(res.data.token);
+      decodeToken(res.data.token);
+    } catch {
+      alert("❌ Invalid login");
+    }
+  };
+
+  const decodeToken = (t) => {
+    try {
+      const payload = JSON.parse(atob(t.split(".")[1]));
+      setUser(payload);
+    } catch {
+      setUser(null);
+    }
+  };
+
+  useEffect(() => {
+    if (token) decodeToken(token);
+  }, [token]);
+
+  // --- Data Load ---
+  const loadData = async () => {
+    try {
+      const res = await axios.get("http://localhost:4000/data", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setData(res.data);
+      if (res.data.length > 0) {
+        const cols = Object.keys(res.data[0]);
+        setHeaders(cols);
+
+        // Default: first numeric-looking column
+        if (!calcColumn) {
+          const numericCol = cols.find((c) =>
+            res.data.some((row) => {
+              if (!row[c]) return false;
+              let clean = String(row[c]).replace(/[\$,]/g, "");
+              return !isNaN(parseFloat(clean));
+            })
+          );
+          setCalcColumn(numericCol || "");
+        }
+      }
+    } catch (err) {
+      console.error("❌ Load data failed:", err.message);
+    }
+  };
+
+  // Auto-load data after login
+  useEffect(() => {
+    if (token && user) {
+      loadData();
+    }
+  }, [token, user]);
+
+  // --- File Upload ---
+  const handleUpload = async () => {
+    if (!file) return;
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      await axios.post("http://localhost:4000/upload", formData, {
+        headers: {
+          "Content-Type": "multipart/form-data",
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      loadData();
+    } catch {
+      alert("❌ Upload failed");
+    }
+  };
+
+  // --- Sorting ---
+  const sortedData = React.useMemo(() => {
+    let rows = [...data];
+    if (sortConfig) {
+      const { key, direction } = sortConfig;
+      rows.sort((a, b) => {
+        const aVal = a[key] ?? "";
+        const bVal = b[key] ?? "";
+        if (aVal < bVal) return direction === "asc" ? -1 : 1;
+        if (aVal > bVal) return direction === "asc" ? 1 : -1;
+        return 0;
+      });
+    }
+    return rows;
+  }, [data, sortConfig]);
+
+  const requestSort = (key) => {
+    let direction = "asc";
+    if (sortConfig && sortConfig.key === key && sortConfig.direction === "asc") {
+      direction = "desc";
+    }
+    setSortConfig({ key, direction });
+  };
+
+  // --- Totals ---
+  const total = React.useMemo(() => {
+    if (!calcColumn) return 0;
+    return sortedData.reduce((acc, row) => {
+      if (!row[calcColumn]) return acc;
+
+      // Clean up: remove $, commas, spaces
+      let raw = String(row[calcColumn]).trim();
+      let clean = raw.replace(/[\$,]/g, "");
+      const num = parseFloat(clean);
+
+      return acc + (isNaN(num) ? 0 : num);
+    }, 0);
+  }, [sortedData, calcColumn]);
+
+  // --- Login Page ---
+  if (!token || !user) {
+    return (
+      <div className="w-screen h-screen flex items-center justify-center bg-gradient-to-br from-blue-100 to-indigo-200">
+        <form
+          onSubmit={handleLogin}
+          className="bg-white shadow-lg rounded-xl p-8 w-96 border"
+        >
+          <h2 className="text-2xl font-bold mb-6 text-center text-gray-700">
+            🔐 Podcaster Portal
+          </h2>
+          <input
+            type="email"
+            placeholder="Email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="w-full border p-3 mb-3 rounded focus:ring focus:ring-blue-200"
+          />
+          <input
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="w-full border p-3 mb-6 rounded focus:ring focus:ring-blue-200"
+          />
+          <button
+            type="submit"
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg font-semibold"
+          >
+            Login
+          </button>
+        </form>
+      </div>
+    );
+  }
+
+  // --- Dashboard ---
+  return (
+    <div className="w-screen h-screen flex flex-col bg-gray-50">
+      {/* Top Bar */}
+      <div className="bg-blue-600 text-white px-6 py-4 flex justify-between items-center shadow">
+        <h1 className="text-xl font-bold">📊 Podcaster Dashboard</h1>
+        <div className="flex items-center gap-4">
+          <span className="italic">{user.email}</span>
+          <button
+            onClick={() => {
+              localStorage.removeItem("token");
+              setToken("");
+              setUser(null);
+              setData([]);
+            }}
+            className="bg-red-500 hover:bg-red-600 px-3 py-1 rounded-lg"
+          >
+            Logout
+          </button>
+        </div>
+      </div>
+
+      {/* Controls */}
+      <div className="flex gap-3 p-4 bg-white shadow-sm border-b items-center">
+        {user.role === "admin" && (
+          <>
+            <input
+              type="file"
+              onChange={(e) => setFile(e.target.files[0])}
+              className="border p-2 rounded"
+            />
+            <button
+              onClick={handleUpload}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg"
+            >
+              Upload & Load
+            </button>
+          </>
+        )}
+        <button
+          onClick={loadData}
+          className="bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded-lg"
+        >
+          Refresh
+        </button>
+
+        {/* Dropdown for totals column */}
+        {headers.length > 0 && (
+          <div className="ml-6 flex items-center gap-2">
+            <label className="font-semibold">Totals Column:</label>
+            <select
+              value={calcColumn}
+              onChange={(e) => setCalcColumn(e.target.value)}
+              className="border p-2 rounded text-sm"
+            >
+              {headers.map((h) => (
+                <option key={h} value={h}>
+                  {h}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+      </div>
+
+      {/* Totals at the top */}
+      {calcColumn && (
+        <div className="p-4 bg-indigo-100 border-b border-gray-200 font-bold">
+          {calcColumn}:{" "}
+          <span className="text-indigo-800">${total.toLocaleString()}</span>
+        </div>
+      )}
+
+      {/* Table */}
+      <div className="flex-1 overflow-auto m-4 bg-white rounded-xl shadow-lg border border-gray-200">
+        {data.length > 0 ? (
+          <table className="table-auto border-collapse w-full text-sm">
+            <thead className="sticky top-0 bg-blue-700 text-white shadow-sm">
+              <tr>
+                {headers.map((h) => (
+                  <th
+                    key={h}
+                    className="border border-gray-200 px-4 py-2 text-left whitespace-nowrap cursor-pointer"
+                    onClick={() => requestSort(h)}
+                  >
+                    {h}
+                    {sortConfig?.key === h
+                      ? sortConfig.direction === "asc"
+                        ? " ▲"
+                        : " ▼"
+                      : " ⬍"}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {sortedData.map((row, i) => (
+                <tr
+                  key={i}
+                  className="odd:bg-gray-50 even:bg-white hover:bg-blue-50"
+                >
+                  {headers.map((h) => (
+                    <td
+                      key={h}
+                      className="border border-gray-200 px-4 py-2 whitespace-nowrap"
+                    >
+                      {row[h] || ""}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <div className="text-gray-500 text-center py-10">
+            📂 Upload or refresh to see data
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+import React, { useState, useEffect } from "react";
+import axios from "axios";
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+} from "recharts";
+
+export default function Dashboard({ token, user }) {
+  const [data, setData] = useState([]);
+  const [headers, setHeaders] = useState([]);
+  const [file, setFile] = useState(null);
+  const [filters, setFilters] = useState({});
+  const [calcColumn, setCalcColumn] = useState("");
+
+  // --- Two condition inputs ---
+  const [cond1Col, setCond1Col] = useState("");
+  const [cond2Col, setCond2Col] = useState("");
+  const [valueCol, setValueCol] = useState("");
+
+  const loadData = async () => {
+    try {
+      const res = await axios.get("http://localhost:4000/data", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setData(res.data);
+      if (res.data.length > 0) {
+        const cols = Object.keys(res.data[0]);
+        setHeaders(cols);
+
+        if (!calcColumn) {
+          const numericCol = cols.find((c) =>
+            res.data.some((row) => {
+              if (!row[c]) return false;
+              let clean = String(row[c]).replace(/[\$,]/g, "");
+              return !isNaN(parseFloat(clean));
+            })
+          );
+          setCalcColumn(numericCol || "");
+        }
+      }
+    } catch (err) {
+      console.error("❌ Load data failed:", err.message);
+    }
+  };
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  const handleUpload = async () => {
+    if (!file) return;
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      await axios.post("http://localhost:4000/upload", formData, {
+        headers: {
+          "Content-Type": "multipart/form-data",
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      loadData();
+    } catch {
+      alert("❌ Upload failed");
+    }
+  };
+
+  // --- Filtering ---
+  const filteredData = React.useMemo(() => {
+    return data.filter((row) =>
+      Object.entries(filters).every(([col, val]) =>
+        val ? String(row[col]) === val : true
+      )
+    );
+  }, [data, filters]);
+
+  // --- Totals ---
+  const total = React.useMemo(() => {
+    if (!calcColumn) return 0;
+    return filteredData.reduce((acc, row) => {
+      if (!row[calcColumn]) return acc;
+      let raw = String(row[calcColumn]).replace(/[\$,]/g, "");
+      const num = parseFloat(raw);
+      return acc + (isNaN(num) ? 0 : num);
+    }, 0);
+  }, [filteredData, calcColumn]);
+
+  // --- Two conditions summary ---
+  const twoConditionTotal = React.useMemo(() => {
+    if (!cond1Col || !cond2Col || !valueCol) return 0;
+    return filteredData.reduce((acc, row) => {
+      if (filters[cond1Col] && String(row[cond1Col]) !== filters[cond1Col]) return acc;
+      if (filters[cond2Col] && String(row[cond2Col]) !== filters[cond2Col]) return acc;
+
+      let raw = String(row[valueCol] || "").replace(/[\$,]/g, "");
+      const num = parseFloat(raw);
+      return acc + (isNaN(num) ? 0 : num);
+    }, 0);
+  }, [filteredData, cond1Col, cond2Col, valueCol, filters]);
+
+  // --- Chart Data based on 2 conditions ---
+  const chartData = React.useMemo(() => {
+    if (!cond1Col || !cond2Col || !valueCol) return [];
+    const monthCol = headers.find((h) => h.toLowerCase().includes("month"));
+    if (!monthCol) return [];
+
+    const grouped = {};
+    filteredData.forEach((row) => {
+      if (filters[cond1Col] && String(row[cond1Col]) !== filters[cond1Col]) return;
+      if (filters[cond2Col] && String(row[cond2Col]) !== filters[cond2Col]) return;
+
+      const month = row[monthCol];
+      let raw = String(row[valueCol] || "").replace(/[\$,]/g, "");
+      const num = parseFloat(raw);
+      if (!isNaN(num)) grouped[month] = (grouped[month] || 0) + num;
+    });
+
+    return Object.entries(grouped).map(([month, total]) => ({ month, total }));
+  }, [filteredData, cond1Col, cond2Col, valueCol, headers, filters]);
+
+  return (
+    <div className="w-screen h-[calc(100vh-64px)] flex flex-col bg-gray-50">
+      {/* Controls */}
+      <div className="flex gap-3 p-4 bg-white shadow-sm border-b items-center">
+        {user.role === "admin" && (
+          <>
+            <input type="file" onChange={(e) => setFile(e.target.files[0])} className="border p-2 rounded" />
+            <button
+              onClick={handleUpload}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg"
+            >
+              Upload & Load
+            </button>
+          </>
+        )}
+        <button
+          onClick={loadData}
+          className="bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded-lg"
+        >
+          Refresh
+        </button>
+
+        {headers.length > 0 && (
+          <div className="ml-6 flex items-center gap-2">
+            <label className="font-semibold">Totals Column:</label>
+            <select
+              value={calcColumn}
+              onChange={(e) => setCalcColumn(e.target.value)}
+              className="border p-2 rounded text-sm"
+            >
+              {headers.map((h) => (
+                <option key={h}>{h}</option>
+              ))}
+            </select>
+          </div>
+        )}
+      </div>
+
+      {/* Totals */}
+      {calcColumn && (
+        <div className="p-4 bg-indigo-100 border-b font-bold">
+          {calcColumn}: <span className="text-indigo-800">${total.toLocaleString()}</span>
+        </div>
+      )}
+
+      {/* Two Conditions Summary */}
+      <div className="p-4 bg-white border-b shadow-sm flex gap-4 items-center">
+        <label>Condition 1:</label>
+        <select value={cond1Col} onChange={(e) => setCond1Col(e.target.value)} className="border p-2 rounded">
+          <option value="">Select column</option>
+          {headers.map((h) => <option key={h}>{h}</option>)}
+        </select>
+
+        <label>Condition 2:</label>
+        <select value={cond2Col} onChange={(e) => setCond2Col(e.target.value)} className="border p-2 rounded">
+          <option value="">Select column</option>
+          {headers.map((h) => <option key={h}>{h}</option>)}
+        </select>
+
+        <label>Value:</label>
+        <select value={valueCol} onChange={(e) => setValueCol(e.target.value)} className="border p-2 rounded">
+          <option value="">Select column</option>
+          {headers.map((h) => <option key={h}>{h}</option>)}
+        </select>
+
+        <div className="ml-4 font-bold">
+          Result: <span className="text-indigo-700">${twoConditionTotal.toLocaleString()}</span>
+        </div>
+      </div>
+
+      {/* Chart */}
+      <div className="h-64 p-4 bg-white border-b">
+        {chartData.length > 0 ? (
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={chartData}>
+              <XAxis dataKey="month" />
+              <YAxis />
+              <Tooltip />
+              <Legend />
+              <Bar dataKey="total" fill="url(#grad)" />
+              <defs>
+                <linearGradient id="grad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#4f46e5" stopOpacity={0.8} />
+                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0.8} />
+                </linearGradient>
+              </defs>
+            </BarChart>
+          </ResponsiveContainer>
+        ) : (
+          <div className="text-gray-500 text-center">📊 No chart data available</div>
+        )}
+      </div>
+
+      {/* Table with dropdown filters */}
+      <div className="flex-1 overflow-auto m-4 bg-white rounded-xl shadow-lg border">
+        {filteredData.length > 0 ? (
+          <table className="table-auto border-collapse w-full text-sm">
+            <thead className="sticky top-0 bg-blue-700 text-white">
+              <tr>
+                {headers.map((h) => (
+                  <th key={h} className="border px-4 py-2">
+                    <select
+                      value={filters[h] || ""}
+                      onChange={(e) =>
+                        setFilters({ ...filters, [h]: e.target.value })
+                      }
+                      className="text-black text-xs border rounded"
+                    >
+                      <option value="">All</option>
+                      {[...new Set(data.map((row) => row[h]))].map((val, i) => (
+                        <option key={i} value={val}>
+                          {val}
+                        </option>
+                      ))}
+                    </select>
+                    <div>{h}</div>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filteredData.slice(0, 50).map((row, i) => (
+                <tr key={i} className="odd:bg-gray-50 even:bg-white hover:bg-blue-50">
+                  {headers.map((h) => (
+                    <td key={h} className="border px-4 py-2 whitespace-nowrap">
+                      {row[h] || ""}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <div className="text-gray-500 text-center py-10">📂 No data</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Ensure full-height layout */
+html, body, #root {
+  height: 100%;
+}
+
+import React from "react";
+import ReactDOM from "react-dom/client";
+import App from "./App.jsx";
+import "./index.css";
+import "react-grid-layout/css/styles.css";
+import "react-resizable/css/styles.css";
+
+ReactDOM.createRoot(document.getElementById("root")).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
+
+import React from "react";
+import ReactDOM from "react-dom/client";
+import App from "./App.jsx";
+import "./index.css";
+
+ReactDOM.createRoot(document.getElementById("root")).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
+
+import React, { useEffect, useMemo, useState } from "react";
+import axios from "axios";
+
+const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
+
+export default function UserManagement({ token, onClose, headers }) {
+  const [users, setUsers] = useState([]);
+  const [newUser, setNewUser] = useState({
+    email: "",
+    password: "",
+    role: "producer",
+  });
+
+  const [selected, setSelected] = useState(null);
+  const [editRole, setEditRole] = useState("producer");
+  const [editPassword, setEditPassword] = useState("");
+
+  // permissions-ish (simple)
+  const [rowFiltersKV, setRowFiltersKV] = useState([{ col: "", val: "" }]);
+  const [allowedCols, setAllowedCols] = useState([]);
+
+  const auth = useMemo(
+    () => ({ headers: { Authorization: `Bearer ${token}` } }),
+    [token]
+  );
+
+  const load = async () => {
+    const r = await axios.get(`${API}/users`, auth);
+    setUsers(r.data || []);
+  };
+
+  useEffect(() => {
+    load().catch(console.error);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!selected) return;
+    const u = users.find((x) => x.id === selected);
+    if (!u) return;
+    setEditRole(u.role || "producer");
+
+    // hydrate filters & allowed cols
+    const f = u.filters || {};
+    const kv = Object.entries(f).map(([col, val]) => ({ col, val: String(val) }));
+    setRowFiltersKV(kv.length ? kv : [{ col: "", val: "" }]);
+    const ac = u.allowed_columns || [];
+    setAllowedCols(Array.isArray(ac) ? ac : []);
+  }, [selected, users]);
+
+  const addUser = async (e) => {
+    e.preventDefault();
+    await axios.post(
+      `${API}/users`,
+      { ...newUser, filters: {}, allowed_columns: [] },
+      auth
+    );
+    setNewUser({ email: "", password: "", role: "producer" });
+    await load();
+    alert("✅ User created");
+  };
+
+  const saveEdits = async () => {
+    if (!selected) return;
+    const filters = {};
+    rowFiltersKV.forEach(({ col, val }) => {
+      if (col && val !== "") filters[col] = val;
+    });
+    const payload = {
+      role: editRole,
+      filters,
+      allowed_columns: allowedCols,
+    };
+    if (editPassword) payload.password = editPassword;
+
+    await axios.put(`${API}/users/${selected}`, payload, auth);
+    setEditPassword("");
+    await load();
+    alert("✅ User updated");
+  };
+
+  const resetPassword = async () => {
+    if (!selected) return;
+    const r = await axios.post(`${API}/users/${selected}/reset`, {}, auth);
+    alert(`Temporary password: ${r.data?.tempPassword}`);
+  };
+
+  const deleteUser = async (id) => {
+    if (!confirm("Delete this user?")) return;
+    await axios.delete(`${API}/users/${id}`, auth);
+    if (selected === id) setSelected(null);
+    await load();
+  };
+
+  const addFilterRow = () =>
+    setRowFiltersKV((p) => [...p, { col: "", val: "" }]);
+  const removeFilterRow = (i) =>
+    setRowFiltersKV((p) => p.filter((_, idx) => idx !== i));
+
+  return (
+    <div className="p-4">
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-xl font-bold">👤 User Management</h2>
+        <button className="px-3 py-1 bg-gray-200 rounded" onClick={onClose}>
+          Close
+        </button>
+      </div>
+
+      {/* Create user */}
+      <form
+        onSubmit={addUser}
+        className="bg-white border rounded-lg p-4 flex flex-wrap gap-3 items-end mb-6"
+      >
+        <div>
+          <label className="block text-sm font-semibold">Email</label>
+          <input
+            className="border p-2 rounded w-64"
+            type="email"
+            value={newUser.email}
+            onChange={(e) => setNewUser((s) => ({ ...s, email: e.target.value }))}
+            required
+            autoComplete="off"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-semibold">Password</label>
+          <input
+            className="border p-2 rounded w-48"
+            type="password"
+            value={newUser.password}
+            onChange={(e) =>
+              setNewUser((s) => ({ ...s, password: e.target.value }))
+            }
+            required
+            autoComplete="new-password"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-semibold">Role</label>
+          <select
+            className="border p-2 rounded w-40"
+            value={newUser.role}
+            onChange={(e) => setNewUser((s) => ({ ...s, role: e.target.value }))}
+          >
+            <option value="producer">producer</option>
+            <option value="admin">admin</option>
+            <option value="client">client</option>
+            <option value="lawyer">lawyer</option>
+          </select>
+        </div>
+        <button className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg">
+          Add User
+        </button>
+      </form>
+
+      {/* Users table */}
+      <div className="bg-white border rounded-lg p-4 mb-6">
+        <table className="table-auto w-full text-sm border">
+          <thead className="bg-gray-100">
+            <tr>
+              <th className="p-2 border">ID</th>
+              <th className="p-2 border">Email</th>
+              <th className="p-2 border">Role</th>
+              <th className="p-2 border">Actions</th>
+              <th className="p-2 border">Select</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(users || []).map((u) => (
+              <tr key={u.id} className="odd:bg-gray-50">
+                <td className="p-2 border">{u.id}</td>
+                <td className="p-2 border">{u.email}</td>
+                <td className="p-2 border">{u.role}</td>
+                <td className="p-2 border">
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      className="px-3 py-1 bg-amber-500 text-white rounded"
+                      onClick={() => {
+                        setSelected(u.id);
+                        setEditRole(u.role);
+                        setEditPassword("");
+                        const f = u.filters || {};
+                        const kv = Object.entries(f).map(([col, val]) => ({
+                          col,
+                          val: String(val),
+                        }));
+                        setRowFiltersKV(kv.length ? kv : [{ col: "", val: "" }]);
+                        const ac = u.allowed_columns || [];
+                        setAllowedCols(Array.isArray(ac) ? ac : []);
+                      }}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      className="px-3 py-1 bg-indigo-600 text-white rounded"
+                      onClick={() => {
+                        setSelected(u.id);
+                        resetPassword();
+                      }}
+                    >
+                      Reset Pass
+                    </button>
+                    <button
+                      className="px-3 py-1 bg-red-600 text-white rounded"
+                      onClick={() => deleteUser(u.id)}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </td>
+                <td className="p-2 border">
+                  <button
+                    className={`px-3 py-1 rounded ${
+                      selected === u.id ? "bg-green-600 text-white" : "bg-gray-200"
+                    }`}
+                    onClick={() => setSelected(u.id)}
+                  >
+                    {selected === u.id ? "Selected" : "Select"}
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {!users?.length && (
+              <tr>
+                <td className="p-2 border text-gray-500" colSpan={5}>
+                  No users
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Edit panel */}
+      {selected && (
+        <div className="bg-white border rounded-lg p-4">
+          <h3 className="text-lg font-semibold mb-3">Edit User #{selected}</h3>
+
+          <div className="flex flex-wrap gap-3 mb-6">
+            <div>
+              <label className="block text-sm font-semibold">Role</label>
+              <select
+                className="border p-2 rounded w-40"
+                value={editRole}
+                onChange={(e) => setEditRole(e.target.value)}
+              >
+                <option value="producer">producer</option>
+                <option value="admin">admin</option>
+                <option value="client">client</option>
+                <option value="lawyer">lawyer</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-semibold">New Password</label>
+              <input
+                className="border p-2 rounded w-60"
+                type="password"
+                placeholder="leave blank to keep"
+                value={editPassword}
+                onChange={(e) => setEditPassword(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="mb-6">
+            <label className="block text-sm font-semibold mb-1">Allowed Columns</label>
+            <select
+              multiple
+              className="border p-2 rounded w-full h-40"
+              value={allowedCols}
+              onChange={(e) =>
+                setAllowedCols([...e.target.selectedOptions].map((o) => o.value))
+              }
+            >
+              {(headers || []).map((h) => (
+                <option key={h} value={h}>
+                  {h}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500 mt-1">Hold Ctrl/Cmd to multi-select.</p>
+          </div>
+
+          <div className="mb-6">
+            <label className="block text-sm font-semibold mb-2">Row Filters (Column = Value)</label>
+            {rowFiltersKV.map((kv, i) => (
+              <div key={i} className="flex gap-2 mb-2">
+                <select
+                  className="border p-2 rounded w-64"
+                  value={kv.col}
+                  onChange={(e) =>
+                    setRowFiltersKV((p) =>
+                      p.map((x, idx) => (idx === i ? { ...x, col: e.target.value } : x))
+                    )
+                  }
+                >
+                  <option value="">-- Column --</option>
+                  {(headers || []).map((h) => (
+                    <option key={h} value={h}>
+                      {h}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  className="border p-2 rounded w-64"
+                  placeholder="Value"
+                  value={kv.val}
+                  onChange={(e) =>
+                    setRowFiltersKV((p) =>
+                      p.map((x, idx) => (idx === i ? { ...x, val: e.target.value } : x))
+                    )
+                  }
+                />
+                <button className="px-3 py-2 bg-gray-200 rounded" onClick={() => removeFilterRow(i)}>
+                  Remove
+                </button>
+              </div>
+            ))}
+            <button className="px-3 py-2 bg-gray-200 rounded" onClick={addFilterRow}>
+              + Add Filter
+            </button>
+          </div>
+
+          <div className="flex gap-2">
+            <button className="px-4 py-2 bg-green-600 text-white rounded" onClick={saveEdits}>
+              Save
+            </button>
+            <button className="px-4 py-2 bg-gray-200 rounded" onClick={() => setSelected(null)}>
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+

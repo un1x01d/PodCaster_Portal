@@ -3,11 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "private": true,
-  "description": "Express API for Podcaster Portal",
-  "scripts": {
-    "dev": "nodemon server.js",
-    "start": "node server.js"
-  },
+  "scripts": { "dev": "nodemon server.js", "start": "node server.js" },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
@@ -15,13 +11,9 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^1.4.5-lts.1",
     "pg": "^8.11.5",
-    "xlsx": "^0.18.5"
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
-  "devDependencies": {
-    "nodemon": "^3.1.0"
-  },
-  "engines": {
-    "node": ">=18.18"
-  }
+  "devDependencies": { "nodemon": "^3.1.0" },
+  "engines": { "node": ">=18.18" }
 }
 
