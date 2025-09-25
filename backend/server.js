@@ -1,4 +1,3 @@
-// backend/server.js
 import express from "express";
 import cors from "cors";
 import multer from "multer";
@@ -14,7 +13,6 @@ import { fileURLToPath } from "url";
  * ------------------------------------------------------------------------- */
 const app = express();
 
-/* Explicit CORS (preflight handled), tiny access log */
 const corsOpts = {
   origin: true,
   credentials: true,
@@ -65,9 +63,10 @@ function genTempPassword(len = 12) {
 }
 
 /* ----------------------------------------------------------------------------
- * DB init (idempotent)
+ * DB init (idempotent + schema self-heal)
  * ------------------------------------------------------------------------- */
 async function initDb() {
+  // USERS
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY,
@@ -76,6 +75,34 @@ async function initDb() {
       role TEXT NOT NULL DEFAULT 'producer'
     );
   `);
+
+  // GROUPS (and self-heal created_at + unique index)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS groups (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE
+    );
+  `);
+  await pool.query(`
+    ALTER TABLE groups
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS groups_name_key ON groups (name);`);
+
+  // USER_GROUPS (membership)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_groups (
+      id SERIAL PRIMARY KEY,
+      user_id INT NOT NULL,
+      group_id INT NOT NULL
+    );
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS user_groups_uniq
+      ON user_groups (user_id, group_id);
+  `);
+
+  // SHEETS
   await pool.query(`
     CREATE TABLE IF NOT EXISTS sheets (
       id TEXT PRIMARY KEY,
@@ -85,10 +112,36 @@ async function initDb() {
       active BOOLEAN NOT NULL DEFAULT FALSE
     );
   `);
+
+  // Clean duplicates for active sheets (keep newest)
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'sheets'
+      ) THEN
+        WITH actives AS (
+          SELECT id, uploaded_at,
+                 ROW_NUMBER() OVER (ORDER BY uploaded_at DESC, id DESC) AS rn
+          FROM sheets
+          WHERE active = TRUE
+        )
+        UPDATE sheets s
+           SET active = FALSE
+          FROM actives a
+         WHERE s.id = a.id
+           AND a.rn > 1;
+      END IF;
+    END $$;
+  `);
+  await pool.query(`DROP INDEX IF EXISTS sheets_one_active_true_idx;`);
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS sheets_one_active_true_idx
       ON sheets (active) WHERE active;
   `);
+
+  // USER permissions (per user per sheet)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS permissions (
       id SERIAL PRIMARY KEY,
@@ -102,6 +155,23 @@ async function initDb() {
     CREATE UNIQUE INDEX IF NOT EXISTS permissions_uniq
       ON permissions (sheet_id, user_id);
   `);
+
+  // GROUP permissions (per group per sheet)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS group_permissions (
+      id SERIAL PRIMARY KEY,
+      sheet_id TEXT NOT NULL,
+      group_id INT NOT NULL,
+      allowed_columns JSONB NOT NULL DEFAULT '[]'::jsonb,
+      row_filters JSONB NOT NULL DEFAULT '{}'::jsonb
+    );
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS group_permissions_uniq
+      ON group_permissions (sheet_id, group_id);
+  `);
+
+  // seed admin
   await pool.query(`
     INSERT INTO users (email,password,role)
     VALUES ('admin@example.com','admin123','admin')
@@ -153,10 +223,7 @@ const upload = multer({
 });
 
 /* ----------------------------------------------------------------------------
- * Upload (SIMPLE PATH):
- * - Try buffer parse (XLSX/ODS/BIFF).
- * - If fails, try string parse (CSV/XML/HTML <table>).
- * - If still fails and error mentions "Invalid HTML: could not find <table>", return 422.
+ * Upload (robust parse; writes uploads/current.xlsx)
  * ------------------------------------------------------------------------- */
 app.post("/upload", auth, upload.single("file"), async (req, res) => {
   try {
@@ -169,7 +236,6 @@ app.post("/upload", auth, upload.single("file"), async (req, res) => {
     console.log(`[upload] name=${originalName} mime=${req.file.mimetype}`);
 
     let rows = [];
-    // 1) Buffer parse first (handles real XLSX/ODS/legacy XLS containers)
     try {
       const buf = fs.readFileSync(tmpPath);
       const wb = XLSX.read(buf, { type: "buffer", cellDates: true });
@@ -177,7 +243,6 @@ app.post("/upload", auth, upload.single("file"), async (req, res) => {
       if (!sn) throw new Error("no_sheets_buffer");
       rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { defval: "" });
     } catch (eBuf) {
-      // 2) String parse (CSV / SpreadsheetML XML / HTML with <table>)
       try {
         const str = fs.readFileSync(tmpPath, "utf8");
         const wb = XLSX.read(str, { type: "string", cellDates: true });
@@ -188,22 +253,18 @@ app.post("/upload", auth, upload.single("file"), async (req, res) => {
         const msg = String(eStr?.message || eBuf?.message || "");
         fs.unlink(tmpPath, () => {});
         if (msg.includes("Invalid HTML: could not find <table>")) {
-          console.warn("[upload] html content without tables");
           return res.status(422).json({
             error: "html_without_tables",
-            message:
-              "This file is an HTML page without <table> elements. Re-export as CSV/XLSX or upload HTML with a <table>."
+            message: "This file is HTML without <table>. Re-export as CSV/XLSX or include a table."
           });
         }
-        console.error("[upload] parse failed:", msg);
         return res.status(400).json({
           error: "unreadable_spreadsheet",
-          message: "Could not parse file as CSV/XLSX/XML/HTML-table. Verify the export."
+          message: "Could not parse file as CSV/XLSX/XML/HTML-table."
         });
       }
     }
 
-    // Write normalized workbook to uploads/current.xlsx
     const dest = path.join(UPLOADS_DIR, "current.xlsx");
     const wbOut = XLSX.utils.book_new();
     const wsOut = XLSX.utils.json_to_sheet(rows);
@@ -249,7 +310,7 @@ app.get("/sheets/:id", auth, async (req, res) => {
 });
 
 /* ----------------------------------------------------------------------------
- * Data (reads uploads/current.xlsx)
+ * Data (apply user + group permissions)
  * ------------------------------------------------------------------------- */
 app.get("/data/:sheetId", auth, async (req, res) => {
   try {
@@ -262,27 +323,65 @@ app.get("/data/:sheetId", auth, async (req, res) => {
     let rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { defval: "" });
 
     if (req.user.role !== "admin") {
-      const p = await query(
+      const userId = req.user.id;
+      const sheetId = req.params.sheetId;
+
+      // user-level permission
+      const up = await query(
         "SELECT allowed_columns, row_filters FROM permissions WHERE sheet_id=$1 AND user_id=$2 LIMIT 1",
-        [req.params.sheetId, req.user.id]
+        [sheetId, userId]
       );
-      if (p.length) {
-        const allowed = p[0].allowed_columns ?? [];
-        const filters = p[0].row_filters ?? {};
-        if (filters && Object.keys(filters).length) {
-          const fObj = typeof filters === "object" ? filters : JSON.parse(filters);
-          rows = rows.filter((r) =>
-            Object.entries(fObj).every(([col, val]) => String(r[col] ?? "") === String(val))
-          );
+      let allowedCols = new Set(
+        Array.isArray(up[0]?.allowed_columns) ? up[0].allowed_columns : (up[0]?.allowed_columns ? JSON.parse(up[0].allowed_columns) : [])
+      );
+      let allFilters = [];
+      if (up.length) {
+        const fObj = typeof up[0].row_filters === "object" ? up[0].row_filters : JSON.parse(up[0].row_filters || "{}");
+        if (Object.keys(fObj).length) allFilters.push(fObj);
+      }
+
+      // group memberships
+      const gRows = await query(
+        `SELECT g.id
+           FROM groups g
+           JOIN user_groups ug ON ug.group_id = g.id
+          WHERE ug.user_id = $1`,
+        [userId]
+      );
+      const groupIds = gRows.map(r => r.id);
+      if (groupIds.length) {
+        const gp = await query(
+          `SELECT allowed_columns, row_filters
+             FROM group_permissions
+            WHERE sheet_id=$1
+              AND group_id = ANY($2::int[])`,
+          [sheetId, groupIds]
+        );
+        for (const r of gp) {
+          const ac = Array.isArray(r.allowed_columns) ? r.allowed_columns
+            : (r.allowed_columns ? JSON.parse(r.allowed_columns) : []);
+          ac.forEach(c => allowedCols.add(c));
+          const fObj = typeof r.row_filters === "object" ? r.row_filters : JSON.parse(r.row_filters || "{}");
+          if (Object.keys(fObj).length) allFilters.push(fObj);
         }
-        const cols = Array.isArray(allowed) ? allowed : JSON.parse(allowed || "[]");
-        if (cols.length) {
-          rows = rows.map((r) => {
-            const o = {};
-            cols.forEach((c) => { if (c in r) o[c] = r[c]; });
-            return o;
-          });
-        }
+      }
+
+      // Apply filters (AND across all filter objects; each filter object is equality on its keys)
+      if (allFilters.length) {
+        rows = rows.filter(row =>
+          allFilters.every(fobj =>
+            Object.entries(fobj).every(([k, v]) => String(row[k] ?? "") === String(v))
+          )
+        );
+      }
+
+      // Apply allowed columns (union). If none specified anywhere, keep all.
+      if (allowedCols.size) {
+        rows = rows.map(r => {
+          const o = {};
+          allowedCols.forEach(c => { if (c in r) o[c] = r[c]; });
+          return o;
+        });
       }
     }
 
@@ -338,12 +437,13 @@ app.delete("/users/:id", auth, async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
   const { id } = req.params;
   await query("DELETE FROM permissions WHERE user_id=$1", [id]);
+  await query("DELETE FROM user_groups WHERE user_id=$1", [id]);
   await query("DELETE FROM users WHERE id=$1", [id]);
   res.json({ success: true });
 });
 
 /* ----------------------------------------------------------------------------
- * Permissions (upsert)
+ * User-level Permissions (upsert & get)
  * ------------------------------------------------------------------------- */
 app.post("/permissions", auth, async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
@@ -370,6 +470,121 @@ app.get("/permissions", auth, async (req, res) => {
   );
   if (!rows.length) return res.json({ allowed_columns: [], row_filters: {} });
 
+  const allowed = rows[0].allowed_columns ?? [];
+  const filters = rows[0].row_filters ?? {};
+  res.json({
+    allowed_columns: Array.isArray(allowed) ? allowed : JSON.parse(allowed),
+    row_filters: typeof filters === "object" ? filters : JSON.parse(filters),
+  });
+});
+
+/* ----------------------------------------------------------------------------
+ * Groups + Membership
+ * ------------------------------------------------------------------------- */
+app.get("/groups", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  try {
+    const rows = await query(`SELECT id, name, created_at FROM groups ORDER BY name ASC`, []);
+    res.json(rows);
+  } catch (e) {
+    console.error("groups list failed:", e);
+    res.status(500).json({ error: "groups_list_failed" });
+  }
+});
+
+app.post("/groups", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const { name } = req.body || {};
+  if (!name || !name.trim()) return res.status(400).json({ error: "name_required" });
+  try {
+    const r = await query(
+      `INSERT INTO groups (name) VALUES ($1) RETURNING id, name, created_at`,
+      [name.trim()]
+    );
+    res.json(r[0]);
+  } catch (e) {
+    if (e.code === "23505") return res.status(409).json({ error: "group_exists" });
+    console.error("group create failed:", e);
+    res.status(500).json({ error: "group_create_failed" });
+  }
+});
+
+app.get("/groups/:id/users", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const gid = Number(req.params.id);
+  const rows = await query(
+    `SELECT u.id, u.email, u.role
+       FROM user_groups ug
+       JOIN users u ON u.id = ug.user_id
+      WHERE ug.group_id = $1
+      ORDER BY u.email ASC`,
+    [gid]
+  );
+  res.json(rows);
+});
+
+app.post("/groups/:id/users", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const gid = Number(req.params.id);
+  const { userId } = req.body || {};
+  if (!userId) return res.status(400).json({ error: "userId_required" });
+  await query(
+    `INSERT INTO user_groups (user_id, group_id)
+     VALUES ($1,$2)
+     ON CONFLICT (user_id, group_id) DO NOTHING`,
+    [userId, gid]
+  );
+  res.json({ success: true });
+});
+
+app.delete("/groups/:id/users/:userId", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const gid = Number(req.params.id);
+  const uid = Number(req.params.userId);
+  await query(`DELETE FROM user_groups WHERE user_id=$1 AND group_id=$2`, [uid, gid]);
+  res.json({ success: true });
+});
+
+app.get("/my-groups", auth, async (req, res) => {
+  const rows = await query(
+    `SELECT g.id, g.name
+       FROM groups g
+       JOIN user_groups ug ON ug.group_id = g.id
+      WHERE ug.user_id = $1
+      ORDER BY g.name ASC`,
+    [req.user.id]
+  );
+  res.json(rows);
+});
+
+/* ----------------------------------------------------------------------------
+ * Group-level Permissions (upsert & get)
+ * ------------------------------------------------------------------------- */
+app.post("/group-permissions", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const { sheetId, groupId, allowed_columns, row_filters } = req.body || {};
+  await query(
+    `INSERT INTO group_permissions (sheet_id, group_id, allowed_columns, row_filters)
+     VALUES ($1,$2,$3,$4)
+     ON CONFLICT (sheet_id, group_id) DO UPDATE
+     SET allowed_columns = EXCLUDED.allowed_columns,
+         row_filters = EXCLUDED.row_filters;`,
+    [sheetId, groupId, JSON.stringify(allowed_columns || []), JSON.stringify(row_filters || {})]
+  );
+  res.json({ success: true });
+});
+
+app.get("/group-permissions", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const { groupId, sheetId } = req.query;
+  const rows = await query(
+    `SELECT allowed_columns, row_filters
+       FROM group_permissions
+      WHERE sheet_id=$1 AND group_id=$2
+      LIMIT 1`,
+    [sheetId, groupId]
+  );
+  if (!rows.length) return res.json({ allowed_columns: [], row_filters: {} });
   const allowed = rows[0].allowed_columns ?? [];
   const filters = rows[0].row_filters ?? {};
   res.json({

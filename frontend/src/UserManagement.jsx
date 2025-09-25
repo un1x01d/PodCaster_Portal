@@ -3,465 +3,447 @@ import axios from "axios";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
 
-const OPS = [
-  { v: "eq", label: "equals" },
-  { v: "neq", label: "≠ equals" },
-  { v: "contains", label: "contains" },
-  { v: "in", label: "in (csv)" },
-  { v: "notIn", label: "not in (csv)" },
-  { v: "gte", label: "≥ gte (num/date)" },
-  { v: "lte", label: "≤ lte (num/date)" },
-];
-
 export default function UserManagement({ token, sheetId }) {
   const [users, setUsers] = useState([]);
-  const [headers, setHeaders] = useState([]);
-  const [selectedUserId, setSelectedUserId] = useState(null);
-
-  // create user
   const [newUser, setNewUser] = useState({ email: "", password: "", role: "producer" });
 
-  // permissions state
-  const [allowedMode, setAllowedMode] = useState("none"); // none | all | custom
-  const [allowedColumns, setAllowedColumns] = useState([]); // used when custom
-  const [rowRules, setRowRules] = useState([
-    { col: "", op: "eq", val: "" }
-  ]);
+  // user-level permissions UI
+  const [selectedUserId, setSelectedUserId] = useState(null);
+  const [headers, setHeaders] = useState([]);
+  const [userAllowedCols, setUserAllowedCols] = useState(new Set());
+  const [userFilterKey, setUserFilterKey] = useState("");
+  const [userFilterVal, setUserFilterVal] = useState("");
 
-  // edit/reset password
-  const [editingUserId, setEditingUserId] = useState(null);
-  const [editRole, setEditRole] = useState("producer");
-  const [editPassword, setEditPassword] = useState("");
+  // groups
+  const [groups, setGroups] = useState([]);
+  const [newGroupName, setNewGroupName] = useState("");
+  const [selectedGroupId, setSelectedGroupId] = useState(null);
+  const [groupMembers, setGroupMembers] = useState([]);
+  const [groupAddUserId, setGroupAddUserId] = useState("");
+  const [groupAllowedCols, setGroupAllowedCols] = useState(new Set());
+  const [groupFilterKey, setGroupFilterKey] = useState("");
+  const [groupFilterVal, setGroupFilterVal] = useState("");
 
-  const auth = useMemo(() => ({ headers: { Authorization: `Bearer ${token}` } }), [token]);
+  // fetch users
+  const fetchUsers = async () => {
+    const res = await axios.get(`${API}/users`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    setUsers(res.data || []);
+  };
 
-  const refreshUsers = async () => {
-    const resUsers = await axios.get(`${API}/users`, auth);
-    setUsers(resUsers.data || []);
+  // fetch active sheet headers (for checkboxes)
+  const fetchActiveHeaders = async () => {
+    const res = await axios.get(`${API}/sheets/active`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const h = res.data?.headers || [];
+    setHeaders(Array.isArray(h) ? h : []);
+  };
+
+  const fetchGroups = async () => {
+    const res = await axios.get(`${API}/groups`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    setGroups(res.data || []);
+  };
+
+  const fetchGroupMembers = async (gid) => {
+    if (!gid) return setGroupMembers([]);
+    const res = await axios.get(`${API}/groups/${gid}/users`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    setGroupMembers(res.data || []);
+  };
+
+  const loadUserPermissions = async (uid) => {
+    if (!uid || !sheetId) {
+      setUserAllowedCols(new Set());
+      setUserFilterKey(""); setUserFilterVal("");
+      return;
+    }
+    const res = await axios.get(`${API}/permissions`, {
+      headers: { Authorization: `Bearer ${token}` },
+      params: { userId: uid, sheetId }
+    });
+    const allowed = res.data?.allowed_columns || [];
+    const filters = res.data?.row_filters || {};
+    setUserAllowedCols(new Set(allowed));
+    const [k, v] = Object.entries(filters)[0] || ["", ""];
+    setUserFilterKey(k); setUserFilterVal(v);
+  };
+
+  const loadGroupPermissions = async (gid) => {
+    if (!gid || !sheetId) {
+      setGroupAllowedCols(new Set());
+      setGroupFilterKey(""); setGroupFilterVal("");
+      return;
+    }
+    const res = await axios.get(`${API}/group-permissions`, {
+      headers: { Authorization: `Bearer ${token}` },
+      params: { groupId: gid, sheetId }
+    });
+    const allowed = res.data?.allowed_columns || [];
+    const filters = res.data?.row_filters || {};
+    setGroupAllowedCols(new Set(allowed));
+    const [k, v] = Object.entries(filters)[0] || ["", ""];
+    setGroupFilterKey(k); setGroupFilterVal(v);
   };
 
   useEffect(() => {
-    const load = async () => {
-      await refreshUsers();
-      let hdrs = [];
-      if (sheetId) {
-        const resSheet = await axios.get(`${API}/sheets/${sheetId}`, auth);
-        hdrs = resSheet.data?.headers || [];
-      } else {
-        const resActive = await axios.get(`${API}/sheets/active`, auth);
-        hdrs = resActive.data?.headers || [];
-      }
-      setHeaders(hdrs);
-    };
-    load().catch(console.error);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, sheetId]);
+    fetchUsers();
+    fetchActiveHeaders();
+    fetchGroups();
+  }, []);
 
-  // load existing permissions for selected user
   useEffect(() => {
-    const loadPerms = async () => {
-      if (!selectedUserId || !sheetId) return;
-      const res = await axios.get(
-        `${API}/permissions?userId=${selectedUserId}&sheetId=${sheetId}`,
-        auth
-      );
-      const perms = res.data || { allowed_columns: [], row_filters: {} };
-
-      // columns
-      if (Array.isArray(perms.allowed_columns) && perms.allowed_columns.includes("*")) {
-        setAllowedMode("all");
-        setAllowedColumns([]);
-      } else if (Array.isArray(perms.allowed_columns) && perms.allowed_columns.length > 0) {
-        setAllowedMode("custom");
-        setAllowedColumns(perms.allowed_columns);
-      } else {
-        setAllowedMode("none");
-        setAllowedColumns([]);
-      }
-
-      // rows: normalize to [{col, op, val}]
-      const rf = perms.row_filters || {};
-      const rules = Object.entries(rf).flatMap(([col, cond]) => {
-        if (cond && typeof cond === "object" && !Array.isArray(cond)) {
-          return Object.entries(cond).map(([op, val]) => ({
-            col,
-            op,
-            val: Array.isArray(val) ? val.join(",") : String(val ?? "")
-          }));
-        }
-        return [{ col, op: "eq", val: String(cond ?? "") }];
-      });
-      setRowRules(rules.length ? rules : [{ col: "", op: "eq", val: "" }]);
-
-      // preload edit role
-      const u = users.find((x) => x.id === selectedUserId);
-      if (u) setEditRole(u.role || "producer");
-    };
-    loadPerms().catch(console.error);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (selectedUserId) loadUserPermissions(selectedUserId);
   }, [selectedUserId, sheetId]);
 
-  // --- create user
-  const createUser = async (e) => {
-    e.preventDefault();
-    await axios.post(`${API}/users`, newUser, auth);
+  useEffect(() => {
+    if (selectedGroupId) {
+      fetchGroupMembers(selectedGroupId);
+      loadGroupPermissions(selectedGroupId);
+    }
+  }, [selectedGroupId, sheetId]);
+
+  const toggleUserAllowed = (h) => {
+    setUserAllowedCols(prev => {
+      const next = new Set(prev);
+      if (next.has(h)) next.delete(h); else next.add(h);
+      return next;
+    });
+  };
+
+  const toggleGroupAllowed = (h) => {
+    setGroupAllowedCols(prev => {
+      const next = new Set(prev);
+      if (next.has(h)) next.delete(h); else next.add(h);
+      return next;
+    });
+  };
+
+  // --- Actions: users ---
+  const addUser = async () => {
+    if (!newUser.email || !newUser.password) return;
+    await axios.post(`${API}/users`, newUser, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
     setNewUser({ email: "", password: "", role: "producer" });
-    await refreshUsers();
+    fetchUsers();
   };
 
-  // --- build payload + save permissions
-  const savePermissions = async () => {
-    if (!selectedUserId || !sheetId) {
-      alert("Pick a user first.");
-      return;
-    }
-
-    // columns
-    let allowed_columns = [];
-    if (allowedMode === "all") allowed_columns = ["*"];
-    else if (allowedMode === "custom") allowed_columns = allowedColumns; // empty custom = deny all
-
-    // rows
-    const row_filters = {};
-    for (const { col, op, val } of rowRules) {
-      if (!col || val === "") continue;
-      if (!row_filters[col]) row_filters[col] = {};
-      if (op === "in" || op === "notIn") {
-        row_filters[col][op] = val.split(",").map((s) => s.trim()).filter(Boolean);
-      } else {
-        row_filters[col][op] = val;
-      }
-    }
-    // collapse single-op objects to scalar eq when appropriate for nicer display later
-    for (const k of Object.keys(row_filters)) {
-      const ops = Object.keys(row_filters[k]);
-      if (ops.length === 1 && ops[0] === "eq") {
-        row_filters[k] = row_filters[k].eq;
-      }
-    }
-
-    try {
-      await axios.post(
-        `${API}/permissions`,
-        { sheetId, userId: selectedUserId, allowed_columns, row_filters },
-        auth
-      );
-      alert("✅ Permissions saved");
-    } catch (e) {
-      const msg = e?.response?.data?.error || e.message;
-      alert(`❌ Save failed: ${msg}`);
-    }
+  const resetPassword = async (id) => {
+    const res = await axios.patch(`${API}/users/${id}`, { reset: true }, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    alert(`Temp password: ${res.data?.newPassword || "(see server log)"}`);
   };
 
-  // --- user edits
-  const saveUserEdits = async (userId) => {
-    if (!editPassword && !editRole) {
-      alert("Nothing to update");
-      return;
-    }
-    await axios.patch(
-      `${API}/users/${userId}`,
-      { password: editPassword || undefined, role: editRole || undefined },
-      auth
-    );
-    setEditingUserId(null);
-    setEditPassword("");
-    await refreshUsers();
-    alert("✅ User updated");
+  const changeRole = async (id, role) => {
+    await axios.patch(`${API}/users/${id}`, { role }, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    fetchUsers();
   };
 
-  const resetPassword = async (userId) => {
-    const res = await axios.patch(`${API}/users/${userId}`, { reset: true }, auth);
-    const temp = res.data?.newPassword;
-    await refreshUsers();
-    alert(`✅ Temporary password: ${temp}`);
+  const deleteUser = async (id) => {
+    if (!confirm("Delete user?")) return;
+    await axios.delete(`${API}/users/${id}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (selectedUserId === id) setSelectedUserId(null);
+    fetchUsers();
   };
 
-  const deleteUser = async (userId) => {
-    if (!confirm("Delete this user? This cannot be undone.")) return;
-    await axios.delete(`${API}/users/${userId}`, auth);
-    if (selectedUserId === userId) {
-      setSelectedUserId(null);
-      setAllowedMode("none");
-      setAllowedColumns([]);
-      setRowRules([{ col: "", op: "eq", val: "" }]);
-    }
-    await refreshUsers();
-    alert("🗑️ User deleted");
+  const saveUserPermissions = async () => {
+    if (!selectedUserId || !sheetId) return;
+    const allowed_columns = Array.from(userAllowedCols);
+    const row_filters = userFilterKey ? { [userFilterKey]: userFilterVal } : {};
+    await axios.post(`${API}/permissions`, {
+      sheetId, userId: selectedUserId, allowed_columns, row_filters
+    }, { headers: { Authorization: `Bearer ${token}` }});
+    alert("User permissions saved");
   };
 
-  // UI helpers
-  const addRule = () => setRowRules((p) => [...p, { col: "", op: "eq", val: "" }]);
-  const removeRule = (idx) => setRowRules((p) => p.filter((_, i) => i !== idx));
-  const setRule = (idx, patch) => setRowRules((p) => p.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+  // --- Actions: groups ---
+  const createGroup = async () => {
+    if (!newGroupName.trim()) return;
+    await axios.post(`${API}/groups`, { name: newGroupName.trim() }, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    setNewGroupName("");
+    fetchGroups();
+  };
+
+  const addUserToGroup = async () => {
+    if (!selectedGroupId || !groupAddUserId) return;
+    await axios.post(`${API}/groups/${selectedGroupId}/users`, { userId: Number(groupAddUserId) }, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    setGroupAddUserId("");
+    fetchGroupMembers(selectedGroupId);
+  };
+
+  const removeUserFromGroup = async (uid) => {
+    if (!selectedGroupId) return;
+    await axios.delete(`${API}/groups/${selectedGroupId}/users/${uid}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    fetchGroupMembers(selectedGroupId);
+  };
+
+  const saveGroupPermissions = async () => {
+    if (!selectedGroupId || !sheetId) return;
+    const allowed_columns = Array.from(groupAllowedCols);
+    const row_filters = groupFilterKey ? { [groupFilterKey]: groupFilterVal } : {};
+    await axios.post(`${API}/group-permissions`, {
+      sheetId, groupId: selectedGroupId, allowed_columns, row_filters
+    }, { headers: { Authorization: `Bearer ${token}` }});
+    alert("Group permissions saved");
+  };
+
+  // helpers
+  const userById = useMemo(() => {
+    const m = new Map();
+    users.forEach(u => m.set(u.id, u));
+    return m;
+  }, [users]);
 
   return (
-    <div className="p-6 space-y-6">
-      <h1 className="text-2xl font-bold">👤 User Management</h1>
+    <div className="p-4 grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* USERS PANEL */}
+      <div className="bg-white border rounded-xl shadow p-4">
+        <h3 className="font-bold text-lg mb-3">Users</h3>
 
-      {/* Create user */}
-      <form onSubmit={createUser} className="bg-white border rounded-lg p-4 flex flex-wrap gap-3 items-end">
-        <div>
-          <label className="block text-sm font-semibold">Email</label>
+        {/* add user */}
+        <div className="flex flex-col gap-2 mb-4">
           <input
-            className="border p-2 rounded w-64"
+            className="border rounded p-2"
+            placeholder="email"
             value={newUser.email}
-            onChange={(e) => setNewUser((u) => ({ ...u, email: e.target.value }))}
-            required
-            type="email"
+            onChange={e => setNewUser({ ...newUser, email: e.target.value })}
           />
-        </div>
-        <div>
-          <label className="block text-sm font-semibold">Password</label>
           <input
-            className="border p-2 rounded w-48"
+            className="border rounded p-2"
+            placeholder="password"
             value={newUser.password}
-            onChange={(e) => setNewUser((u) => ({ ...u, password: e.target.value }))}
-            required
-            type="password"
+            onChange={e => setNewUser({ ...newUser, password: e.target.value })}
           />
-        </div>
-        <div>
-          <label className="block text-sm font-semibold">Role</label>
           <select
-            className="border p-2 rounded w-40"
+            className="border rounded p-2"
             value={newUser.role}
-            onChange={(e) => setNewUser((u) => ({ ...u, role: e.target.value }))}
+            onChange={e => setNewUser({ ...newUser, role: e.target.value })}
           >
             <option value="producer">producer</option>
             <option value="admin">admin</option>
-            <option value="client">client</option>
-            <option value="lawyer">lawyer</option>
           </select>
+          <button className="bg-blue-600 hover:bg-blue-700 text-white rounded p-2" onClick={addUser}>
+            Add User
+          </button>
         </div>
-        <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg">
-          Add User
-        </button>
-      </form>
 
-      {/* Users table */}
-      <div className="bg-white border rounded-lg p-4">
-        <h2 className="text-lg font-semibold mb-3">Users</h2>
-        <table className="table-auto w-full text-sm border">
-          <thead className="bg-gray-100">
-            <tr>
-              <th className="p-2 border">ID</th>
-              <th className="p-2 border">Email</th>
-              <th className="p-2 border">Role</th>
-              <th className="p-2 border">Actions</th>
-              <th className="p-2 border">Select for Permissions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.map((u) => {
-              const isEditing = editingUserId === u.id;
-              return (
-                <tr key={u.id} className="odd:bg-gray-50 align-top">
-                  <td className="p-2 border">{u.id}</td>
-                  <td className="p-2 border">{u.email}</td>
-                  <td className="p-2 border">
-                    {isEditing ? (
-                      <select className="border p-1 rounded" value={editRole} onChange={(e) => setEditRole(e.target.value)}>
-                        <option value="producer">producer</option>
-                        <option value="admin">admin</option>
-                        <option value="client">client</option>
-                        <option value="lawyer">lawyer</option>
-                      </select>
-                    ) : (
-                      u.role
-                    )}
-                  </td>
-                  <td className="p-2 border">
-                    {isEditing ? (
-                      <div className="flex gap-2 items-center">
-                        <input
-                          type="password"
-                          placeholder="New password (optional)"
-                          className="border p-1 rounded"
-                          value={editPassword}
-                          onChange={(e) => setEditPassword(e.target.value)}
-                        />
-                        <button className="px-3 py-1 bg-green-600 text-white rounded" onClick={() => saveUserEdits(u.id)}>
-                          Save
-                        </button>
-                        <button
-                          className="px-3 py-1 bg-gray-300 rounded"
-                          onClick={() => {
-                            setEditingUserId(null);
-                            setEditPassword("");
-                            setEditRole(u.role || "producer");
-                          }}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          className="px-3 py-1 bg-blue-600 text-white rounded"
-                          onClick={() => {
-                            setEditingUserId(u.id);
-                            setEditPassword("");
-                            setEditRole(u.role || "producer");
-                          }}
-                        >
-                          Edit
-                        </button>
-                        <button
-                          className="px-3 py-1 bg-amber-500 text-white rounded"
-                          onClick={() => resetPassword(u.id)}
-                          title="Reset to temporary password"
-                        >
-                          Reset Pass
-                        </button>
-                        <button className="px-3 py-1 bg-red-600 text-white rounded" onClick={() => deleteUser(u.id)}>
-                          Delete
-                        </button>
-                      </div>
-                    )}
-                  </td>
-                  <td className="p-2 border">
-                    <button
-                      className={`px-3 py-1 rounded ${selectedUserId === u.id ? "bg-green-600 text-white" : "bg-gray-200"}`}
-                      onClick={() => setSelectedUserId(u.id)}
-                    >
-                      {selectedUserId === u.id ? "Selected" : "Select"}
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-            {!users.length && (
-              <tr>
-                <td className="p-2 text-gray-500" colSpan={5}>
-                  No users
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+        {/* list users */}
+        <div className="max-h-64 overflow-auto border rounded">
+          {users.map((u) => (
+            <div
+              key={u.id}
+              className={`flex items-center justify-between px-3 py-2 border-b cursor-pointer ${
+                selectedUserId === u.id ? "bg-blue-50" : "bg-white"
+              }`}
+              onClick={() => setSelectedUserId(u.id)}
+            >
+              <div>
+                <div className="font-medium">{u.email}</div>
+                <div className="text-xs text-gray-500">id: {u.id}</div>
+              </div>
+              <div className="flex items-center gap-2">
+                <select
+                  className="border rounded p-1 text-sm"
+                  value={u.role}
+                  onChange={(e) => changeRole(u.id, e.target.value)}
+                  onClick={(e)=>e.stopPropagation()}
+                >
+                  <option value="producer">producer</option>
+                  <option value="admin">admin</option>
+                </select>
+                <button
+                  className="text-xs bg-amber-500 hover:bg-amber-600 text-white px-2 py-1 rounded"
+                  onClick={(e)=>{e.stopPropagation(); resetPassword(u.id);}}
+                >Reset</button>
+                <button
+                  className="text-xs bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded"
+                  onClick={(e)=>{e.stopPropagation(); deleteUser(u.id);}}
+                >Delete</button>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* user permissions */}
+        {selectedUserId && (
+          <div className="mt-4">
+            <h4 className="font-semibold mb-2">User Permissions (sheet: {sheetId || "—"})</h4>
+            <div className="text-xs text-gray-500 mb-2">
+              Select columns allowed for this user. Leave all unchecked to allow all.
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-auto border rounded p-2">
+              {headers.map(h => (
+                <label key={h} className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={userAllowedCols.has(h)}
+                    onChange={() => toggleUserAllowed(h)}
+                  />
+                  <span className="text-sm">{h}</span>
+                </label>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-2 mt-3">
+              <span className="text-sm">Row filter:</span>
+              <select
+                className="border rounded p-1"
+                value={userFilterKey}
+                onChange={e=>setUserFilterKey(e.target.value)}
+              >
+                <option value="">(none)</option>
+                {headers.map(h => <option key={h} value={h}>{h}</option>)}
+              </select>
+              <input
+                className="border rounded p-1"
+                placeholder="value"
+                value={userFilterVal}
+                onChange={e=>setUserFilterVal(e.target.value)}
+              />
+              <button
+                className="bg-green-600 hover:bg-green-700 text-white rounded px-3 py-1"
+                onClick={saveUserPermissions}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Permissions editor */}
-      <div className="bg-white border rounded-lg p-4">
-        <h2 className="text-lg font-semibold mb-3">Permissions</h2>
-        {!selectedUserId ? (
-          <p className="text-gray-500">Select a user above.</p>
-        ) : (
-          <>
-            {/* Column access mode */}
-            <div className="mb-4">
-              <div className="font-semibold mb-1">Column Access</div>
-              <div className="flex gap-4 items-center">
-                <label className="flex items-center gap-2">
-                  <input
-                    type="radio"
-                    name="allowedMode"
-                    value="none"
-                    checked={allowedMode === "none"}
-                    onChange={() => setAllowedMode("none")}
-                  />
-                  <span>None (default-deny)</span>
-                </label>
-                <label className="flex items-center gap-2">
-                  <input
-                    type="radio"
-                    name="allowedMode"
-                    value="all"
-                    checked={allowedMode === "all"}
-                    onChange={() => setAllowedMode("all")}
-                  />
-                  <span>All columns</span>
-                </label>
-                <label className="flex items-center gap-2">
-                  <input
-                    type="radio"
-                    name="allowedMode"
-                    value="custom"
-                    checked={allowedMode === "custom"}
-                    onChange={() => setAllowedMode("custom")}
-                  />
-                  <span>Custom</span>
-                </label>
-              </div>
-              {allowedMode === "custom" && (
-                <div className="mt-3">
-                  <select
-                    multiple
-                    className="border p-2 rounded w-full h-40"
-                    value={allowedColumns}
-                    onChange={(e) =>
-                      setAllowedColumns([...e.target.selectedOptions].map((o) => o.value))
-                    }
-                  >
-                    {headers.map((h) => (
-                      <option key={h} value={h}>
-                        {h}
-                      </option>
-                    ))}
-                  </select>
-                  <p className="text-xs text-gray-500 mt-1">Hold Ctrl/Cmd to select multiple.</p>
-                </div>
-              )}
+      {/* GROUPS PANEL */}
+      <div className="bg-white border rounded-xl shadow p-4">
+        <h3 className="font-bold text-lg mb-3">Groups</h3>
+
+        <div className="flex gap-2 mb-3">
+          <input
+            className="border rounded p-2 flex-1"
+            placeholder="New group name"
+            value={newGroupName}
+            onChange={e=>setNewGroupName(e.target.value)}
+          />
+          <button className="bg-blue-600 hover:bg-blue-700 text-white rounded px-3" onClick={createGroup}>
+            Create
+          </button>
+        </div>
+
+        <div className="max-h-64 overflow-auto border rounded">
+          {groups.map(g => (
+            <div
+              key={g.id}
+              className={`px-3 py-2 border-b cursor-pointer ${selectedGroupId === g.id ? "bg-blue-50" : "bg-white"}`}
+              onClick={()=>setSelectedGroupId(g.id)}
+            >
+              <div className="font-medium">{g.name}</div>
+              <div className="text-xs text-gray-500">id: {g.id}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* group members */}
+        {selectedGroupId && (
+          <div className="mt-4">
+            <h4 className="font-semibold mb-2">Members</h4>
+
+            <div className="flex gap-2 mb-2">
+              <select
+                className="border rounded p-2 flex-1"
+                value={groupAddUserId}
+                onChange={e=>setGroupAddUserId(e.target.value)}
+              >
+                <option value="">Select user…</option>
+                {users
+                  .filter(u => !groupMembers.some(m => m.id === u.id))
+                  .map(u => <option key={u.id} value={u.id}>{u.email}</option>)
+                }
+              </select>
+              <button className="bg-green-600 hover:bg-green-700 text-white rounded px-3" onClick={addUserToGroup}>
+                Add
+              </button>
             </div>
 
-            {/* Row filters with ops */}
-            <div className="mb-4">
-              <div className="font-semibold mb-2">Row Filters (AND)</div>
-              {rowRules.map((r, idx) => (
-                <div key={idx} className="flex flex-wrap gap-2 mb-2">
-                  <select
-                    className="border p-2 rounded w-56"
-                    value={r.col}
-                    onChange={(e) => setRule(idx, { col: e.target.value })}
-                  >
-                    <option value="">-- Column --</option>
-                    {headers.map((h) => (
-                      <option key={h} value={h}>
-                        {h}
-                      </option>
-                    ))}
-                  </select>
-
-                  <select
-                    className="border p-2 rounded w-44"
-                    value={r.op}
-                    onChange={(e) => setRule(idx, { op: e.target.value })}
-                  >
-                    {OPS.map((o) => (
-                      <option key={o.v} value={o.v}>
-                        {o.label}
-                      </option>
-                    ))}
-                  </select>
-
-                  <input
-                    className="border p-2 rounded w-72"
-                    placeholder={r.op === "in" || r.op === "notIn" ? "a, b, c" : "value"}
-                    value={r.val}
-                    onChange={(e) => setRule(idx, { val: e.target.value })}
-                  />
-
-                  <button className="px-3 py-2 bg-gray-200 rounded" onClick={() => removeRule(idx)}>
-                    Remove
-                  </button>
+            <div className="max-h-40 overflow-auto border rounded">
+              {groupMembers.map(m => (
+                <div key={m.id} className="flex items-center justify-between px-3 py-2 border-b">
+                  <div>{m.email}</div>
+                  <button
+                    className="text-xs bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded"
+                    onClick={()=>removeUserFromGroup(m.id)}
+                  >Remove</button>
                 </div>
               ))}
-              <button className="px-3 py-2 bg-gray-200 rounded" onClick={addRule}>
-                + Add Filter
-              </button>
-              <p className="text-xs text-gray-500 mt-1">
-                Notes: <code>in/notIn</code> take comma-separated values. <code>gte/lte</code> work for numbers or ISO dates.
-              </p>
+              {!groupMembers.length && <div className="text-sm text-gray-500 p-3">No members yet.</div>}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* GROUP PERMISSIONS PANEL */}
+      <div className="bg-white border rounded-xl shadow p-4">
+        <h3 className="font-bold text-lg mb-3">Group Permissions</h3>
+        {selectedGroupId ? (
+          <>
+            <div className="text-sm text-gray-600 mb-2">For selected group (id: {selectedGroupId}) & current sheet: {sheetId || "—"}</div>
+
+            <div className="text-xs text-gray-500 mb-1">
+              Columns allowed (leave empty for all):
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-auto border rounded p-2">
+              {headers.map(h => (
+                <label key={h} className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={groupAllowedCols.has(h)}
+                    onChange={() => toggleGroupAllowed(h)}
+                  />
+                  <span className="text-sm">{h}</span>
+                </label>
+              ))}
             </div>
 
-            <button
-              className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg"
-              onClick={savePermissions}
-            >
-              Save Permissions
-            </button>
+            <div className="flex items-center gap-2 mt-3">
+              <span className="text-sm">Row filter:</span>
+              <select
+                className="border rounded p-1"
+                value={groupFilterKey}
+                onChange={e=>setGroupFilterKey(e.target.value)}
+              >
+                <option value="">(none)</option>
+                {headers.map(h => <option key={h} value={h}>{h}</option>)}
+              </select>
+              <input
+                className="border rounded p-1"
+                placeholder="value"
+                value={groupFilterVal}
+                onChange={e=>setGroupFilterVal(e.target.value)}
+              />
+              <button
+                className="bg-green-600 hover:bg-green-700 text-white rounded px-3 py-1"
+                onClick={saveGroupPermissions}
+              >
+                Save
+              </button>
+            </div>
           </>
+        ) : (
+          <div className="text-gray-500">Select a group to edit permissions.</div>
         )}
       </div>
     </div>
