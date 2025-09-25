@@ -246,6 +246,18 @@ export default function App() {
     return { pivotHeaders: headers2, pivotRows: outRows };
   }, [pivotOn, pivotRowKey, pivotColKey, pivotValKey, pivotAgg, sortedData]);
 
+  // === NEW: series keys + colors for Pivot Chart ===
+  const pivotSeriesKeys = React.useMemo(() => {
+    if (!pivotHeaders?.length || !pivotRowKey) return [];
+    return pivotHeaders.filter(h => h !== pivotRowKey && h !== "_Total");
+  }, [pivotHeaders, pivotRowKey]);
+
+  const seriesColors = [
+    "#4f46e5","#22c55e","#f59e0b","#ef4444","#06b6d4",
+    "#a855f7","#10b981","#eab308","#3b82f6","#f97316",
+    "#14b8a6","#84cc16"
+  ];
+
   // --- Exports (SheetJS) ---
   const exportCSV = () => {
     try {
@@ -635,10 +647,47 @@ export default function App() {
         )}
       </div>
 
-      {/* ===== Pivot Table (dynamic headers) ===== */}
+      {/* ===== Pivot (Chart + Table) ===== */}
       {pivotOn && (
         <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200">
-          <div className="p-3 font-semibold">📌 Pivot Table</div>
+          <div className="p-3 font-semibold">📌 Pivot</div>
+
+          {/* NEW: Pivot Chart */}
+          {pivotRows.length && pivotSeriesKeys.length ? (
+            <div className="px-3 pb-3">
+              <ResponsiveContainer width="100%" height={320}>
+                <BarChart data={pivotRows}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis
+                    dataKey={pivotRowKey}
+                    tick={{ fontSize: 12 }}
+                    interval={0}
+                  />
+                  <YAxis />
+                  <Tooltip />
+                  <Legend />
+                  {pivotSeriesKeys.map((k, idx) => (
+                    <Bar
+                      key={k}
+                      dataKey={k}
+                      stackId="pivot"
+                      fill={seriesColors[idx % seriesColors.length]}
+                      name={k}
+                    />
+                  ))}
+                </BarChart>
+              </ResponsiveContainer>
+              <div className="text-xs text-gray-500 mt-2">
+                Stacked by <b>{pivotColKey}</b>. X-axis is <b>{pivotRowKey}</b>. Aggregation: <b>{pivotAgg}</b>{pivotAgg === "sum" && pivotValKey ? <> on <b>{pivotValKey}</b></> : null}.
+              </div>
+            </div>
+          ) : (
+            <div className="text-gray-500 px-3 pb-3">
+              Select a <b>Row key</b>, <b>Dynamic header</b>, and {pivotAgg === "count" ? "aggregation" : <b>Value</b>} to render a chart.
+            </div>
+          )}
+
+          {/* Pivot Table */}
           {pivotRows.length ? (
             <div className="overflow-auto">
               <table className="table-auto border-collapse w-full text-sm">
