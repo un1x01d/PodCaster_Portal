@@ -669,7 +669,7 @@ export default function App() {
 
             {/* Folder selection */}
             <SearchableSelect
-              options={[{ value: "", label: "Folder (optional)…" }, ...folderOptions.slice(1)]}
+              options={folderOptions}
               value={selectedFolderId}
               onChange={(e)=>setSelectedFolderId(e.target.value)}
               placeholder="Folder (optional)…"
@@ -705,6 +705,49 @@ export default function App() {
               >
                 Add Folder
               </button>
+            </div>
+
+            {/* Compact lists with delete actions */}
+            <div className="flex flex-wrap gap-6 items-start ml-4">
+              {/* Folders list */}
+              <div>
+                <div className="text-sm font-semibold mb-1">Folders</div>
+                <div className="max-h-36 overflow-auto border rounded p-2 w-72 bg-gray-50">
+                  {folders.length ? folders.map(f => (
+                    <div key={f.id} className="flex justify-between items-center py-1">
+                      <span className="truncate" title={`${f.name}${f.group_name ? ` — ${f.group_name}` : ""}`}>
+                        {f.name}{f.group_name ? ` — ${f.group_name}` : ""}
+                      </span>
+                      <button
+                        className="text-red-600 hover:text-red-700 px-2"
+                        title="Delete folder"
+                        onClick={() => deleteFolder(f.id)}
+                      >
+                        🗑️
+                      </button>
+                    </div>
+                  )) : <div className="text-gray-500 text-sm">No folders</div>}
+                </div>
+              </div>
+
+              {/* Groups list */}
+              <div>
+                <div className="text-sm font-semibold mb-1">Groups</div>
+                <div className="max-h-36 overflow-auto border rounded p-2 w-64 bg-gray-50">
+                  {groups.length ? groups.map(g => (
+                    <div key={g.id} className="flex justify-between items-center py-1">
+                      <span className="truncate" title={g.name}>{g.name}</span>
+                      <button
+                        className="text-red-600 hover:text-red-700 px-2"
+                        title="Delete group"
+                        onClick={() => deleteGroup(g.id)}
+                      >
+                        🗑️
+                      </button>
+                    </div>
+                  )) : <div className="text-gray-500 text-sm">No groups</div>}
+                </div>
+              </div>
             </div>
           </>
         )}
@@ -751,6 +794,80 @@ export default function App() {
             />
           </div>
         )}
+
+        {/* ===== Pivot Controls (dynamic headers) ===== */}
+        <div className="flex flex-wrap gap-3 items-center ml-4">
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={pivotOn}
+              onChange={(e) => setPivotOn(e.target.checked)}
+            />
+            <span className="font-semibold">Pivot mode</span>
+          </label>
+
+          {pivotOn && (
+            <>
+              <SearchableSelect
+                options={[{ value: "", label: "Row key…" }, ...headers.map(h => ({ value: h, label: h }))]}
+                value={pivotRowKey}
+                onChange={(e) => setPivotRowKey(e.target.value)}
+                placeholder="Row key…"
+              />
+
+              <SearchableSelect
+                options={[{ value: "", label: "Dynamic header…" }, ...headers.map(h => ({ value: h, label: h }))]}
+                value={pivotColKey}
+                onChange={(e) => setPivotColKey(e.target.value)}
+                placeholder="Dynamic header…"
+              />
+
+              <SearchableSelect
+                options={[{ value: "", label: pivotAgg === "count" ? "— (count)" : "Value…" }, ...headers.map(h => ({ value: h, label: h }))]}
+                value={pivotValKey}
+                onChange={(e) => setPivotValKey(e.target.value)}
+                placeholder={pivotAgg === "count" ? "— (count)" : "Value…"}
+                disabled={pivotAgg === "count"}
+              />
+
+              <SearchableSelect
+                options={[
+                  { value: "sum", label: "sum" },
+                  { value: "count", label: "count" },
+                ]}
+                value={pivotAgg}
+                onChange={(e) => setPivotAgg(e.target.value)}
+                placeholder="Aggregation…"
+                panelWidth={180}
+              />
+
+              <button
+                onClick={() => {
+                  if (!pivotOn || !pivotRows.length) return;
+                  try {
+                    const wb = XLSX.utils.book_new();
+                    const ws = XLSX.utils.json_to_sheet(pivotRows, { header: pivotHeaders });
+                    XLSX.utils.book_append_sheet(wb, ws, "Pivot");
+                    XLSX.writeFile(wb, "pivot.xlsx");
+                  } catch (e) {
+                    console.error("Pivot export failed:", e);
+                  }
+                }}
+                className={`px-3 py-2 rounded ${pivotRows.length ? "bg-purple-600 text-white" : "bg-gray-300 cursor-not-allowed"}`}
+              >
+                Export Pivot
+              </button>
+
+              <button
+                onClick={resetPivot}
+                className="px-3 py-2 bg-gray-200 hover:bg-gray-300 rounded text-sm"
+                title="Clear Row key / Dynamic header / Value (keeps Pivot mode on)"
+              >
+                Reset
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Two-Condition Controls */}
