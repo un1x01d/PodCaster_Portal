@@ -61,6 +61,17 @@ function genTempPassword(len = 12) {
   for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
   return out;
 }
+function sanitizeName(s = "") {
+  return String(s).trim().replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 80) || "folder";
+}
+function timestamp() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+}
+function ensureDir(p) {
+  fs.mkdirSync(p, { recursive: true });
+}
 
 /* ----------------------------------------------------------------------------
  * DB init (idempotent + schema self-heal)
@@ -76,30 +87,37 @@ async function initDb() {
     );
   `);
 
-  // GROUPS (and self-heal created_at + unique index)
+  // GROUPS
   await pool.query(`
     CREATE TABLE IF NOT EXISTS groups (
       id SERIAL PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE
+      name TEXT NOT NULL UNIQUE,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `);
-  await pool.query(`
-    ALTER TABLE groups
-    ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
-  `);
-  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS groups_name_key ON groups (name);`);
 
   // USER_GROUPS (membership)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_groups (
       id SERIAL PRIMARY KEY,
       user_id INT NOT NULL,
-      group_id INT NOT NULL
+      group_id INT NOT NULL,
+      UNIQUE(user_id, group_id)
+    );
+  `);
+
+  // FOLDERS
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS folders (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      group_id INT,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `);
   await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS user_groups_uniq
-      ON user_groups (user_id, group_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS folders_group_unique
+      ON folders (group_id) WHERE group_id IS NOT NULL;
   `);
 
   // SHEETS
@@ -109,11 +127,14 @@ async function initDb() {
       uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       headers JSONB NOT NULL DEFAULT '[]'::jsonb,
       filename TEXT,
-      active BOOLEAN NOT NULL DEFAULT FALSE
+      active BOOLEAN NOT NULL DEFAULT FALSE,
+      folder_id INT
     );
   `);
+  await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS totals_column TEXT;`);
+  await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS stored_path TEXT;`);
 
-  // Clean duplicates for active sheets (keep newest)
+  // clean duplicate actives, then re-enforce unique partial index
   await pool.query(`
     DO $$
     BEGIN
@@ -141,34 +162,28 @@ async function initDb() {
       ON sheets (active) WHERE active;
   `);
 
-  // USER permissions (per user per sheet)
+  // USER permissions
   await pool.query(`
     CREATE TABLE IF NOT EXISTS permissions (
       id SERIAL PRIMARY KEY,
       sheet_id TEXT NOT NULL,
       user_id INT NOT NULL,
       allowed_columns JSONB NOT NULL DEFAULT '[]'::jsonb,
-      row_filters JSONB NOT NULL DEFAULT '{}'::jsonb
+      row_filters JSONB NOT NULL DEFAULT '{}'::jsonb,
+      UNIQUE (sheet_id, user_id)
     );
   `);
-  await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS permissions_uniq
-      ON permissions (sheet_id, user_id);
-  `);
 
-  // GROUP permissions (per group per sheet)
+  // GROUP permissions
   await pool.query(`
     CREATE TABLE IF NOT EXISTS group_permissions (
       id SERIAL PRIMARY KEY,
       sheet_id TEXT NOT NULL,
       group_id INT NOT NULL,
       allowed_columns JSONB NOT NULL DEFAULT '[]'::jsonb,
-      row_filters JSONB NOT NULL DEFAULT '{}'::jsonb
+      row_filters JSONB NOT NULL DEFAULT '{}'::jsonb,
+      UNIQUE (sheet_id, group_id)
     );
-  `);
-  await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS group_permissions_uniq
-      ON group_permissions (sheet_id, group_id);
   `);
 
   // seed admin
@@ -211,7 +226,35 @@ app.get("/healthz", (_req, res) =>
 );
 
 /* ----------------------------------------------------------------------------
- * Multer (simple: disk to tmp, 100MB limit, no type filter)
+ * GROUP → SHEETS (group-only association)
+ * ------------------------------------------------------------------------- */
+app.get("/groups/:id/sheets", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const gid = Number(req.params.id);
+  try {
+    // Only sheets associated with this group:
+    // - in a folder owned by this group, OR
+    // - explicitly referenced by group_permissions for this group.
+    const rows = await query(
+      `SELECT DISTINCT s.id, s.filename, s.uploaded_at, s.folder_id, f.name AS folder_name
+         FROM sheets s
+         LEFT JOIN folders f ON f.id = s.folder_id
+         LEFT JOIN group_permissions gp
+                ON gp.sheet_id = s.id
+               AND gp.group_id = $1
+        WHERE (f.group_id = $1) OR (gp.group_id IS NOT NULL)
+        ORDER BY s.uploaded_at DESC`,
+      [gid]
+    );
+    res.json(rows);
+  } catch (e) {
+    console.error("group sheets failed:", e);
+    res.status(500).json({ error: "group_sheets_failed" });
+  }
+});
+
+/* ----------------------------------------------------------------------------
+ * Multer
  * ------------------------------------------------------------------------- */
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, TMP_DIR),
@@ -223,17 +266,18 @@ const upload = multer({
 });
 
 /* ----------------------------------------------------------------------------
- * Upload (robust parse; writes uploads/current.xlsx)
+ * Upload
  * ------------------------------------------------------------------------- */
 app.post("/upload", auth, upload.single("file"), async (req, res) => {
   try {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     if (!req.file) return res.status(400).json({ error: "No file" });
 
-    const originalName = req.file.originalname || "uploaded";
+    const originalName = req.file.originalname || "uploaded.xlsx";
     const tmpPath = req.file.path;
+    const folderId = req.body?.folderId ? parseInt(req.body.folderId, 10) : null;
 
-    console.log(`[upload] name=${originalName} mime=${req.file.mimetype}`);
+    console.log(`[upload] name=${originalName} mime=${req.file.mimetype} folderId=${folderId ?? "—"}`);
 
     let rows = [];
     try {
@@ -265,13 +309,41 @@ app.post("/upload", auth, upload.single("file"), async (req, res) => {
       }
     }
 
-    const dest = path.join(UPLOADS_DIR, "current.xlsx");
+    // Normalize to XLSX buffer
     const wbOut = XLSX.utils.book_new();
     const wsOut = XLSX.utils.json_to_sheet(rows);
     XLSX.utils.book_append_sheet(wbOut, wsOut, "Sheet1");
-    if (fs.existsSync(dest)) fs.unlinkSync(dest);
     const xbuf = XLSX.write(wbOut, { bookType: "xlsx", type: "buffer" });
-    fs.writeFileSync(dest, xbuf);
+
+    // 1) Write the app's current file
+    const currentDest = path.join(UPLOADS_DIR, "current.xlsx");
+    if (fs.existsSync(currentDest)) fs.unlinkSync(currentDest);
+    fs.writeFileSync(currentDest, xbuf);
+
+    // 2) If folderId provided, also persist a copy in that folder; track stored_path
+    let assignedFolderId = null;
+    let stored_relpath = null;
+    if (Number.isInteger(folderId)) {
+      const f = await query(
+        `SELECT f.id, f.name, g.name AS group_name
+           FROM folders f
+           LEFT JOIN groups g ON g.id = f.group_id
+          WHERE f.id = $1
+          LIMIT 1`,
+        [folderId]
+      );
+      if (f.length) {
+        assignedFolderId = f[0].id;
+        const safeFolderName = sanitizeName(`${f[0].id}-${f[0].name}`);
+        const targetDir = path.join(UPLOADS_DIR, "folders", safeFolderName);
+        ensureDir(targetDir);
+        const stampedName = `${timestamp()}_${sanitizeName(originalName.replace(/\.[^/.]+$/, ""))}.xlsx`;
+        const folderDest = path.join(targetDir, stampedName);
+        fs.writeFileSync(folderDest, xbuf);
+        stored_relpath = path.relative(UPLOADS_DIR, folderDest);
+      }
+    }
+
     fs.unlink(tmpPath, () => {});
 
     const headers = Object.keys(rows[0] || {});
@@ -279,12 +351,12 @@ app.post("/upload", auth, upload.single("file"), async (req, res) => {
 
     await query("UPDATE sheets SET active = FALSE", []);
     await query(
-      "INSERT INTO sheets (id, headers, active, filename) VALUES ($1,$2,$3,$4)",
-      [sheetId, JSON.stringify(headers), true, originalName]
+      "INSERT INTO sheets (id, headers, active, filename, folder_id, stored_path) VALUES ($1,$2,$3,$4,$5,$6)",
+      [sheetId, JSON.stringify(headers), true, originalName, assignedFolderId, stored_relpath]
     );
 
-    console.log(`[upload] OK sheetId=${sheetId} rows=${rows.length} headers=${headers.length}`);
-    res.json({ sheetId, headers, rows: rows.length, active: true, filename: originalName });
+    console.log(`[upload] OK sheetId=${sheetId} rows=${rows.length} headers=${headers.length} folder=${assignedFolderId ?? "—"}`);
+    res.json({ sheetId, headers, rows: rows.length, active: true, filename: originalName, folderId: assignedFolderId });
   } catch (e) {
     console.error("upload failed:", e);
     if (e?.code === "LIMIT_FILE_SIZE") {
@@ -298,19 +370,95 @@ app.post("/upload", auth, upload.single("file"), async (req, res) => {
  * Sheets meta
  * ------------------------------------------------------------------------- */
 app.get("/sheets/active", auth, async (_req, res) => {
-  const s = await query("SELECT id, headers, filename FROM sheets WHERE active = TRUE LIMIT 1", []);
+  const s = await query("SELECT id, headers, filename, totals_column FROM sheets WHERE active = TRUE LIMIT 1", []);
   if (!s.length) return res.json(null);
-  res.json({ sheetId: s[0].id, headers: s[0].headers, filename: s[0].filename });
+  res.json({ sheetId: s[0].id, headers: s[0].headers, filename: s[0].filename, totals_column: s[0].totals_column || null });
 });
 
 app.get("/sheets/:id", auth, async (req, res) => {
-  const s = await query("SELECT id, headers, active, filename FROM sheets WHERE id=$1", [req.params.id]);
+  const s = await query("SELECT id, headers, active, filename, totals_column FROM sheets WHERE id=$1", [req.params.id]);
   if (!s.length) return res.status(404).json({ error: "not_found" });
   res.json(s[0]);
 });
 
+// set per-sheet totals column (admin)
+app.patch("/sheets/:id", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const { totals_column } = req.body || {};
+  await query("UPDATE sheets SET totals_column = $1 WHERE id = $2", [totals_column || null, req.params.id]);
+  res.json({ success: true });
+});
+
 /* ----------------------------------------------------------------------------
- * Data (apply user + group permissions)
+ * Load a stored sheet -> current.xlsx + set active
+ * ------------------------------------------------------------------------- */
+app.post("/load-sheet", auth, async (req, res) => {
+  try {
+    const { sheetId } = req.body || {};
+    if (!sheetId) return res.status(400).json({ error: "sheetId_required" });
+
+    const rows = await query(
+      `SELECT s.id, s.filename, s.folder_id, s.stored_path, f.name AS folder_name, f.group_id
+         FROM sheets s
+         LEFT JOIN folders f ON f.id = s.folder_id
+        WHERE s.id = $1
+        LIMIT 1`,
+      [sheetId]
+    );
+    if (!rows.length) return res.status(404).json({ error: "sheet_not_found" });
+    const s = rows[0];
+
+    // Access control: admin OR member of folder's group
+    if (req.user.role !== "admin") {
+      if (!s.group_id) return res.status(403).json({ error: "forbidden_no_group" });
+      const m = await query(
+        `SELECT 1 FROM user_groups WHERE user_id = $1 AND group_id = $2 LIMIT 1`,
+        [req.user.id, s.group_id]
+      );
+      if (!m.length) return res.status(403).json({ error: "forbidden" });
+    }
+
+    // Resolve stored path (backfill if missing)
+    let rel = s.stored_path;
+    if (!rel) {
+      if (!s.folder_id || !s.folder_name) {
+        return res.status(409).json({ error: "no_stored_copy" });
+      }
+      const safeFolderName = sanitizeName(`${s.folder_id}-${s.folder_name}`);
+      const dir = path.join(UPLOADS_DIR, "folders", safeFolderName);
+      if (!fs.existsSync(dir)) return res.status(409).json({ error: "folder_dir_missing" });
+      const files = fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith(".xlsx"));
+      if (!files.length) return res.status(409).json({ error: "no_xlsx_in_folder" });
+      let newest = null;
+      let newestTime = -1;
+      for (const fn of files) {
+        const fp = path.join(dir, fn);
+        const st = fs.statSync(fp);
+        if (st.mtimeMs > newestTime) { newestTime = st.mtimeMs; newest = fn; }
+      }
+      rel = path.relative(UPLOADS_DIR, path.join(dir, newest));
+      await query(`UPDATE sheets SET stored_path=$1 WHERE id=$2`, [rel, sheetId]);
+    }
+
+    const abs = path.join(UPLOADS_DIR, rel);
+    if (!fs.existsSync(abs)) return res.status(409).json({ error: "stored_file_missing" });
+
+    const currentDest = path.join(UPLOADS_DIR, "current.xlsx");
+    if (fs.existsSync(currentDest)) fs.unlinkSync(currentDest);
+    fs.copyFileSync(abs, currentDest);
+
+    await query("UPDATE sheets SET active = FALSE", []);
+    await query("UPDATE sheets SET active = TRUE WHERE id = $1", [sheetId]);
+
+    res.json({ success: true, sheetId });
+  } catch (e) {
+    console.error("load-sheet failed:", e);
+    res.status(500).json({ error: "load_failed" });
+  }
+});
+
+/* ----------------------------------------------------------------------------
+ * Data (with user + group permissions)
  * ------------------------------------------------------------------------- */
 app.get("/data/:sheetId", auth, async (req, res) => {
   try {
@@ -326,21 +474,25 @@ app.get("/data/:sheetId", auth, async (req, res) => {
       const userId = req.user.id;
       const sheetId = req.params.sheetId;
 
-      // user-level permission
+      // USER overrides GROUP
       const up = await query(
         "SELECT allowed_columns, row_filters FROM permissions WHERE sheet_id=$1 AND user_id=$2 LIMIT 1",
         [sheetId, userId]
       );
-      let allowedCols = new Set(
-        Array.isArray(up[0]?.allowed_columns) ? up[0].allowed_columns : (up[0]?.allowed_columns ? JSON.parse(up[0].allowed_columns) : [])
-      );
-      let allFilters = [];
-      if (up.length) {
-        const fObj = typeof up[0].row_filters === "object" ? up[0].row_filters : JSON.parse(up[0].row_filters || "{}");
-        if (Object.keys(fObj).length) allFilters.push(fObj);
-      }
+      const userAllowedArr = Array.isArray(up[0]?.allowed_columns)
+        ? up[0].allowed_columns
+        : (up[0]?.allowed_columns ? JSON.parse(up[0].allowed_columns) : []);
+      const userAllowedSet = new Set(userAllowedArr.filter(Boolean));
+      const userFiltersObj = typeof up[0]?.row_filters === "object"
+        ? (up[0]?.row_filters || {})
+        : JSON.parse(up[0]?.row_filters || "{}");
 
-      // group memberships
+      const userHasCols = userAllowedSet.size > 0;
+      const userHasFilter = Object.keys(userFiltersObj).length > 0;
+
+      // Gather group perms
+      let groupAllowedSet = new Set();
+      let groupFilters = [];
       const gRows = await query(
         `SELECT g.id
            FROM groups g
@@ -360,26 +512,36 @@ app.get("/data/:sheetId", auth, async (req, res) => {
         for (const r of gp) {
           const ac = Array.isArray(r.allowed_columns) ? r.allowed_columns
             : (r.allowed_columns ? JSON.parse(r.allowed_columns) : []);
-          ac.forEach(c => allowedCols.add(c));
-          const fObj = typeof r.row_filters === "object" ? r.row_filters : JSON.parse(r.row_filters || "{}");
-          if (Object.keys(fObj).length) allFilters.push(fObj);
+          ac.forEach(c => { if (c) groupAllowedSet.add(c); });
+          const fObj = typeof r.row_filters === "object" ? (r.row_filters || {}) : JSON.parse(r.row_filters || "{}");
+          if (Object.keys(fObj).length) groupFilters.push(fObj);
         }
       }
 
-      // Apply filters (AND across all filter objects; each filter object is equality on its keys)
-      if (allFilters.length) {
+      // row filters (user overrides)
+      if (userHasFilter) {
         rows = rows.filter(row =>
-          allFilters.every(fobj =>
+          Object.entries(userFiltersObj).every(([k, v]) => String(row[k] ?? "") === String(v))
+        );
+      } else if (groupFilters.length) {
+        rows = rows.filter(row =>
+          groupFilters.every(fobj =>
             Object.entries(fobj).every(([k, v]) => String(row[k] ?? "") === String(v))
           )
         );
       }
 
-      // Apply allowed columns (union). If none specified anywhere, keep all.
-      if (allowedCols.size) {
+      // column restrictions (user overrides)
+      if (userHasCols) {
         rows = rows.map(r => {
           const o = {};
-          allowedCols.forEach(c => { if (c in r) o[c] = r[c]; });
+          userAllowedSet.forEach(c => { if (c in r) o[c] = r[c]; });
+          return o;
+        });
+      } else if (groupAllowedSet.size > 0) {
+        rows = rows.map(r => {
+          const o = {};
+          groupAllowedSet.forEach(c => { if (c in r) o[c] = r[c]; });
           return o;
         });
       }
@@ -443,7 +605,7 @@ app.delete("/users/:id", auth, async (req, res) => {
 });
 
 /* ----------------------------------------------------------------------------
- * User-level Permissions (upsert & get)
+ * User-level Permissions
  * ------------------------------------------------------------------------- */
 app.post("/permissions", auth, async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
@@ -509,6 +671,16 @@ app.post("/groups", auth, async (req, res) => {
   }
 });
 
+app.delete("/groups/:id", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const gid = Number(req.params.id);
+  await query(`UPDATE folders SET group_id = NULL WHERE group_id = $1`, [gid]);
+  await query(`DELETE FROM group_permissions WHERE group_id = $1`, [gid]);
+  await query(`DELETE FROM user_groups WHERE group_id = $1`, [gid]);
+  await query(`DELETE FROM groups WHERE id = $1`, [gid]);
+  res.json({ success: true });
+});
+
 app.get("/groups/:id/users", auth, async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
   const gid = Number(req.params.id);
@@ -545,20 +717,8 @@ app.delete("/groups/:id/users/:userId", auth, async (req, res) => {
   res.json({ success: true });
 });
 
-app.get("/my-groups", auth, async (req, res) => {
-  const rows = await query(
-    `SELECT g.id, g.name
-       FROM groups g
-       JOIN user_groups ug ON ug.group_id = g.id
-      WHERE ug.user_id = $1
-      ORDER BY g.name ASC`,
-    [req.user.id]
-  );
-  res.json(rows);
-});
-
 /* ----------------------------------------------------------------------------
- * Group-level Permissions (upsert & get)
+ * Group-level Permissions
  * ------------------------------------------------------------------------- */
 app.post("/group-permissions", auth, async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
@@ -591,6 +751,169 @@ app.get("/group-permissions", auth, async (req, res) => {
     allowed_columns: Array.isArray(allowed) ? allowed : JSON.parse(allowed),
     row_filters: typeof filters === "object" ? filters : JSON.parse(filters),
   });
+});
+
+/* ----------------------------------------------------------------------------
+ * Folders
+ * ------------------------------------------------------------------------- */
+app.get("/folders", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const rows = await query(
+    `SELECT f.id, f.name, f.group_id, g.name AS group_name, f.created_at
+       FROM folders f
+       LEFT JOIN groups g ON g.id = f.group_id
+      ORDER BY f.id ASC`,
+    []
+  );
+  res.json(rows);
+});
+
+app.post("/folders", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const { name, groupId } = req.body || {};
+  if (!name || !name.trim()) return res.status(400).json({ error: "name_required" });
+  try {
+    const vals = [name.trim(), groupId ?? null];
+    const r = await query(
+      `INSERT INTO folders (name, group_id)
+       VALUES ($1, $2)
+       RETURNING id, name, group_id, created_at`,
+      vals
+    );
+    res.json(r[0]);
+  } catch (e) {
+    if (e.code === "23505") {
+      return res.status(409).json({ error: "folder_or_group_conflict" });
+    }
+    console.error("folder create failed:", e);
+    res.status(500).json({ error: "folder_create_failed" });
+  }
+});
+
+// NEW: update a folder's group association
+app.patch("/folders/:id", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const fid = Number(req.params.id);
+  const { groupId } = req.body || {};
+  try {
+    await query(`UPDATE folders SET group_id = $1 WHERE id = $2`, [groupId ?? null, fid]);
+    res.json({ success: true });
+  } catch (e) {
+    if (e.code === "23505") {
+      return res.status(409).json({ error: "folder_or_group_conflict" });
+    }
+    console.error("folder update failed:", e);
+    res.status(500).json({ error: "folder_update_failed" });
+  }
+});
+
+app.delete("/folders/:id", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const fid = Number(req.params.id);
+  await query(`UPDATE sheets SET folder_id = NULL WHERE folder_id = $1`, [fid]);
+  await query(`DELETE FROM folders WHERE id = $1`, [fid]);
+  res.json({ success: true });
+});
+
+/* ----------------------------------------------------------------------------
+ * My Files (files visible to the current user)
+ * ------------------------------------------------------------------------- */
+app.get("/my-files", auth, async (req, res) => {
+  try {
+    if (req.user.role === "admin") {
+      const rows = await query(
+        `SELECT s.id, s.filename, s.uploaded_at, f.name AS folder_name
+           FROM sheets s
+           LEFT JOIN folders f ON f.id = s.folder_id
+          ORDER BY s.uploaded_at DESC
+          LIMIT 50`,
+        []
+      );
+      return res.json(rows);
+    }
+
+    const rows = await query(
+      `SELECT s.id, s.filename, s.uploaded_at, f.name AS folder_name
+         FROM sheets s
+         JOIN folders f ON f.id = s.folder_id
+         WHERE f.group_id IN (
+           SELECT ug.group_id
+             FROM user_groups ug
+            WHERE ug.user_id = $1
+         )
+        ORDER BY s.uploaded_at DESC
+        LIMIT 50`,
+      [req.user.id]
+    );
+    return res.json(rows);
+  } catch (e) {
+    console.error("my-files failed:", e);
+    res.status(500).json({ error: "my_files_failed" });
+  }
+});
+
+/* ----------------------------------------------------------------------------
+ * Folder files listing (admin)
+ * ------------------------------------------------------------------------- */
+app.get("/folders/:id/files", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const fid = Number(req.params.id);
+  try {
+    const rows = await query(
+      `SELECT s.id, s.filename, s.uploaded_at, s.active
+         FROM sheets s
+        WHERE s.folder_id = $1
+        ORDER BY s.uploaded_at DESC`,
+      [fid]
+    );
+    res.json(rows);
+  } catch (e) {
+    console.error("folder files failed:", e);
+    res.status(500).json({ error: "folder_files_failed" });
+  }
+});
+
+/* ----------------------------------------------------------------------------
+ * Delete a sheet (admin) + remove stored file + cleanup
+ * ------------------------------------------------------------------------- */
+app.delete("/sheets/:id", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const sid = String(req.params.id);
+  try {
+    const rows = await query(
+      `SELECT id, active, stored_path FROM sheets WHERE id = $1 LIMIT 1`,
+      [sid]
+    );
+    if (!rows.length) return res.status(404).json({ error: "not_found" });
+    const s = rows[0];
+
+    // Remove file on disk if exists
+    if (s.stored_path) {
+      const abs = path.join(UPLOADS_DIR, s.stored_path);
+      if (abs.startsWith(UPLOADS_DIR) && fs.existsSync(abs)) {
+        try { fs.unlinkSync(abs); } catch {}
+      }
+    }
+
+    // If active, clear current.xlsx and unset active
+    if (s.active) {
+      const currentDest = path.join(UPLOADS_DIR, "current.xlsx");
+      if (fs.existsSync(currentDest)) {
+        try { fs.unlinkSync(currentDest); } catch {}
+      }
+    }
+
+    // Cleanup permissions
+    await query(`DELETE FROM permissions WHERE sheet_id=$1`, [sid]);
+    await query(`DELETE FROM group_permissions WHERE sheet_id=$1`, [sid]);
+    // Delete sheet
+    await query(`DELETE FROM sheets WHERE id=$1`, [sid]);
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error("delete sheet failed:", e);
+    res.status(500).json({ error: "delete_sheet_failed" });
+  }
 });
 
 /* ----------------------------------------------------------------------------

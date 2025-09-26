@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from "react";
+// App.jsx
+import React, { useState, useEffect, useRef } from "react";
 import {
   BrowserRouter as Router,
   Routes,
@@ -24,6 +25,118 @@ import "./index.css";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
 
+/* SearchableSelect (unchanged) */
+function SearchableSelect({
+  options = [],
+  value = "",
+  onChange = () => {},
+  placeholder = "Select…",
+  className = "",
+  disabled = false,
+  buttonClassName = "border p-2 rounded min-w-[10rem] bg-white",
+  panelWidth = 260,
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const btnRef = useRef(null);
+  const panelRef = useRef(null);
+
+  const selected = options.find(o => String(o.value) === String(value));
+  const filtered = q
+    ? options.filter(o => o.label.toLowerCase().includes(q.toLowerCase()))
+    : options;
+
+  useEffect(() => {
+    function onDocClick(e) {
+      const b = btnRef.current;
+      const p = panelRef.current;
+      if (!b || !p) return;
+      if (b.contains(e.target) || p.contains(e.target)) return;
+      setOpen(false);
+    }
+    function onEsc(e) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onEsc);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!open) setQ("");
+  }, [open]);
+
+  return (
+    <div className={`relative inline-block ${className}`}>
+      <button
+        ref={btnRef}
+        type="button"
+        disabled={disabled}
+        onClick={() => !disabled && setOpen(o => !o)}
+        className={`${buttonClassName} flex items-center justify-between gap-2 ${disabled ? "bg-gray-100 cursor-not-allowed text-gray-400" : ""}`}
+        title={selected?.label || placeholder}
+      >
+        <span className="truncate">{selected?.label || placeholder}</span>
+        <span className="opacity-70">▾</span>
+      </button>
+
+      {open && !disabled && (
+        <div
+          ref={panelRef}
+          className="absolute z-50 mt-1 bg-white border rounded shadow-lg p-2"
+          style={{ width: panelWidth }}
+        >
+          <input
+            autoFocus
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Type to search…"
+            className="w-full border rounded px-2 py-1 mb-2"
+          />
+          <div className="max-h-56 overflow-auto">
+            {filtered.length ? (
+              filtered.map(o => (
+                <div
+                  key={String(o.value)}
+                  className={`px-2 py-1 rounded cursor-pointer hover:bg-blue-50 ${String(o.value) === String(value) ? "bg-blue-100" : ""}`}
+                  title={o.label}
+                  onClick={() => {
+                    onChange({ target: { value: o.value } });
+                    setOpen(false);
+                  }}
+                >
+                  {o.label}
+                </div>
+              ))
+            ) : (
+              <div className="text-gray-500 text-sm px-2 py-1">No matches</div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Modal({ open, onClose, title, children, widthClass = "max-w-3xl" }) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className={`relative bg-white rounded-xl shadow-xl w-[95vw] ${widthClass} max-h-[85vh] overflow-auto`}>
+        <div className="p-4 border-b flex items-center justify-between">
+          <div className="font-bold">{title}</div>
+          <button onClick={onClose} className="text-gray-600 hover:text-black">✕</button>
+        </div>
+        <div className="p-4">{children}</div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(localStorage.getItem("token") || "");
@@ -40,20 +153,47 @@ export default function App() {
   const [file, setFile] = useState(null);
   const [selectedFileName, setSelectedFileName] = useState("");
 
+  // folders (admin upload only)
+  const [folders, setFolders] = useState([]);
+  const [selectedFolderId, setSelectedFolderId] = useState("");
+  const newFolderNameRef = useRef(null);
+  const [groups, setGroups] = useState([]);
+  const [newFolderGroupId, setNewFolderGroupId] = useState("");
+
+  // My Files modal
+  const [selectOpen, setSelectOpen] = useState(false);
+  const [myFiles, setMyFiles] = useState([]);
+  const [myFilesLoading, setMyFilesLoading] = useState(false);
+
+  // Admin Folder Files modal
+  const [folderFilesOpen, setFolderFilesOpen] = useState(false);
+  const [folderFilesLoading, setFolderFilesLoading] = useState(false);
+  const [folderFiles, setFolderFiles] = useState([]);
+  const [folderFilesMeta, setFolderFilesMeta] = useState({ id: null, name: "" });
+
   // Two-condition summary
   const [condCol1, setCondCol1] = useState("");
   const [condCol2, setCondCol2] = useState("");
   const [valueCol, setValueCol] = useState("");
 
-  // Inline user management (admin)
+  // toggle removed, keep state placeholder
   const [showUsers, setShowUsers] = useState(false);
 
-  // ===== PIVOT (dynamic headers) =====
+  // Pivot
   const [pivotOn, setPivotOn] = useState(false);
   const [pivotRowKey, setPivotRowKey] = useState("");
-  const [pivotColKey, setPivotColKey] = useState("");   // dynamic headers
+  const [pivotColKey, setPivotColKey] = useState("");
   const [pivotValKey, setPivotValKey] = useState("");
-  const [pivotAgg, setPivotAgg] = useState("sum");      // "sum" | "count"
+  const [pivotAgg, setPivotAgg] = useState("sum");
+
+  // Totals
+  const [totalsCol, setTotalsCol] = useState("");
+
+  const fmt2 = (n) =>
+    Number(n ?? 0).toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
 
   // --- Auth ---
   const handleLogin = async (e) => {
@@ -81,7 +221,7 @@ export default function App() {
     if (token) decodeToken(token);
   }, [token]);
 
-  // --- Init: fetch active sheet then data ---
+  // --- Init active sheet then data ---
   useEffect(() => {
     const init = async () => {
       try {
@@ -91,10 +231,12 @@ export default function App() {
         if (res.data?.sheetId) {
           setSheetId(res.data.sheetId);
           setActiveFilename(res.data.filename || "");
+          setTotalsCol(res.data.totals_column || "");
           await loadData(res.data.sheetId);
         } else {
           setSheetId(null);
           setActiveFilename("");
+          setTotalsCol("");
           setData([]);
           setHeaders([]);
         }
@@ -103,6 +245,23 @@ export default function App() {
       }
     };
     if (token && user) init();
+  }, [token, user]);
+
+  const fetchMeta = async () => {
+    if (user?.role !== "admin") return;
+    try {
+      const [fRes, gRes] = await Promise.all([
+        axios.get(`${API}/folders`, { headers: { Authorization: `Bearer ${token}` } }),
+        axios.get(`${API}/groups`, { headers: { Authorization: `Bearer ${token}` } }),
+      ]);
+      setFolders(fRes.data || []);
+      setGroups(gRes.data || []);
+    } catch (e) {
+      console.error("meta fetch failed", e);
+    }
+  };
+  useEffect(() => {
+    if (token && user) fetchMeta();
   }, [token, user]);
 
   // --- Data Load ---
@@ -125,6 +284,7 @@ export default function App() {
     if (!file) return;
     const formData = new FormData();
     formData.append("file", file);
+    if (selectedFolderId) formData.append("folderId", String(selectedFolderId));
     try {
       const uploadRes = await axios.post(`${API}/upload`, formData, {
         headers: {
@@ -133,31 +293,163 @@ export default function App() {
         },
       });
 
-      // Clear filters on new upload
-      setCondCol1("");
-      setCondCol2("");
-      setValueCol("");
+      setCondCol1(""); setCondCol2(""); setValueCol("");
       setSortConfig(null);
+      setPivotOn(false); setPivotRowKey(""); setPivotColKey(""); setPivotValKey(""); setPivotAgg("sum");
 
-      // also reset pivot selections
-      setPivotOn(false);
-      setPivotRowKey("");
-      setPivotColKey("");
-      setPivotValKey("");
-      setPivotAgg("sum");
-
-      // refresh active + data
       const res = await axios.get(`${API}/sheets/active`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.data?.sheetId) {
         setSheetId(res.data.sheetId);
         setActiveFilename(res.data.filename || uploadRes.data?.filename || "");
+        setTotalsCol(res.data.totals_column || "");
         await loadData(res.data.sheetId);
       }
+      alert("✅ Upload complete");
     } catch (e) {
       console.error("upload failed", e);
       alert("❌ Upload failed");
+    }
+  };
+
+  // --- Create folder (admin)
+  const createFolder = async () => {
+    const name = newFolderNameRef.current?.value?.trim() || "";
+    if (!name) return;
+    try {
+      await axios.post(`${API}/folders`, {
+        name,
+        groupId: newFolderGroupId ? Number(newFolderGroupId) : null,
+      }, { headers: { Authorization: `Bearer ${token}` }});
+      if (newFolderNameRef.current) newFolderNameRef.current.value = "";
+      setNewFolderGroupId("");
+      await fetchMeta();
+      alert("✅ Folder created");
+    } catch (e) {
+      console.error("create folder failed", e);
+      alert("❌ Could not create folder (name or group already used?)");
+    }
+  };
+
+  const deleteFolder = async (id) => {
+    if (!window.confirm("Delete this folder?")) return;
+    try {
+      await axios.delete(`${API}/folders/${id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (String(selectedFolderId) === String(id)) setSelectedFolderId("");
+      await fetchMeta();
+    } catch (e) {
+      console.error("delete folder failed", e);
+      alert("❌ Could not delete folder");
+    }
+  };
+
+  const deleteGroup = async (id) => {
+    if (!window.confirm("Delete this group and its memberships/permissions?")) return;
+    try {
+      await axios.delete(`${API}/groups/${id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (String(newFolderGroupId) === String(id)) setNewFolderGroupId("");
+      await fetchMeta();
+    } catch (e) {
+      console.error("delete group failed", e);
+      alert("❌ Could not delete group");
+    }
+  };
+
+  // --- My Files modal data
+  const openSelect = async () => {
+    setSelectOpen(true);
+    setMyFilesLoading(true);
+    try {
+      const r = await axios.get(`${API}/my-files`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setMyFiles(r.data || []);
+    } catch (e) {
+      console.error("my-files failed", e);
+      setMyFiles([]);
+    } finally {
+      setMyFilesLoading(false);
+    }
+  };
+  const loadStored = async (id) => {
+    try {
+      await axios.post(`${API}/load-sheet`, { sheetId: id }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const res = await axios.get(`${API}/sheets/active`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.data?.sheetId) {
+        setSheetId(res.data.sheetId);
+        setActiveFilename(res.data.filename || "");
+        setTotalsCol(res.data.totals_column || "");
+        await loadData(res.data.sheetId);
+      }
+      setSelectOpen(false);
+    } catch (e) {
+      console.error("load-sheet failed", e);
+      alert("❌ Could not load the selected sheet");
+    }
+  };
+
+  // --- Admin: Folder Files modal helpers
+  const openFolderFiles = async (fid, fname) => {
+    setFolderFilesMeta({ id: fid, name: fname });
+    setFolderFilesOpen(true);
+    setFolderFilesLoading(true);
+    try {
+      const r = await axios.get(`${API}/folders/${fid}/files`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setFolderFiles(r.data || []);
+    } catch (e) {
+      console.error("folder files failed", e);
+      setFolderFiles([]);
+    } finally {
+      setFolderFilesLoading(false);
+    }
+  };
+
+  const deleteSheet = async (sid) => {
+    if (!window.confirm("Delete this file permanently?")) return;
+    try {
+      await axios.delete(`${API}/sheets/${sid}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      // Refresh modal list(s)
+      if (folderFilesOpen) {
+        await openFolderFiles(folderFilesMeta.id, folderFilesMeta.name);
+      }
+      // Also refresh Select Sheet modal list
+      if (selectOpen) {
+        await openSelect();
+      }
+      // If it was the active sheet, clear UI state
+      if (String(sheetId) === String(sid)) {
+        const res = await axios.get(`${API}/sheets/active`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.data) {
+          setSheetId(null);
+          setActiveFilename("");
+          setTotalsCol("");
+          setData([]);
+          setHeaders([]);
+        } else {
+          setSheetId(res.data.sheetId);
+          setActiveFilename(res.data.filename || "");
+          setTotalsCol(res.data.totals_column || "");
+          await loadData(res.data.sheetId);
+        }
+      }
+    } catch (e) {
+      console.error("delete sheet failed", e);
+      alert("❌ Could not delete file");
     }
   };
 
@@ -185,7 +477,7 @@ export default function App() {
     setSortConfig({ key, direction });
   };
 
-  // --- Two-condition Summary ---
+  // Two-condition Summary
   const summaryData = React.useMemo(() => {
     if (!condCol1 || !condCol2 || !valueCol) return [];
     const map = {};
@@ -202,11 +494,9 @@ export default function App() {
     return Object.values(map);
   }, [condCol1, condCol2, valueCol, sortedData]);
 
-  // ===== PIVOT COMPUTE (dynamic headers) =====
+  // Pivot compute
   const { pivotHeaders, pivotRows } = React.useMemo(() => {
     if (!pivotOn || !pivotRowKey || !pivotColKey) return { pivotHeaders: [], pivotRows: [] };
-
-    // dynamic header keys
     const dynSet = new Set();
     (sortedData || []).forEach(r => {
       const k = r[pivotColKey];
@@ -214,12 +504,11 @@ export default function App() {
     });
     const dynHeaders = Array.from(dynSet).sort();
 
-    // group by row key
     const groups = new Map();
     (sortedData || []).forEach(r => {
       const rowK = String(r[pivotRowKey] ?? "N/A");
       const colK = String(r[pivotColKey] ?? "N/A");
-      let v = 1; // for count
+      let v = 1;
       if (pivotAgg === "sum") {
         const num = parseFloat(String(r[pivotValKey] ?? "").replace(/[\$,]/g, ""));
         v = Number.isFinite(num) ? num : 0;
@@ -229,7 +518,6 @@ export default function App() {
       rowObj[colK] = (rowObj[colK] || 0) + v;
     });
 
-    // emit with totals
     const outRows = Array.from(groups.entries()).map(([rk, cols]) => {
       const o = { [pivotRowKey]: rk };
       let total = 0;
@@ -246,7 +534,22 @@ export default function App() {
     return { pivotHeaders: headers2, pivotRows: outRows };
   }, [pivotOn, pivotRowKey, pivotColKey, pivotValKey, pivotAgg, sortedData]);
 
-  // --- Exports (SheetJS) ---
+  const pivotSeriesKeys = React.useMemo(() => {
+    if (!pivotHeaders?.length || !pivotRowKey) return [];
+    return pivotHeaders.filter(h => h !== pivotRowKey && h !== "_Total");
+  }, [pivotHeaders, pivotRowKey]);
+
+  const totalsSum = React.useMemo(() => {
+    if (!totalsCol) return null;
+    let sum = 0;
+    for (const r of sortedData) {
+      const raw = String(r[totalsCol] ?? "").replace(/[\$,]/g, "");
+      const num = parseFloat(raw);
+      if (Number.isFinite(num)) sum += num;
+    }
+    return sum;
+  }, [sortedData, totalsCol]);
+
   const exportCSV = () => {
     try {
       const fileName = "report.csv";
@@ -319,19 +622,41 @@ export default function App() {
     }
   };
 
-  // --- resets ---
   const resetSummary = () => {
     setCondCol1("");
     setCondCol2("");
     setValueCol("");
   };
-
   const resetPivot = () => {
-    // keep pivotOn as-is; just clear selections and default agg
     setPivotRowKey("");
     setPivotColKey("");
     setPivotValKey("");
     setPivotAgg("sum");
+  };
+
+  const headerOptions = headers.map(h => ({ value: h, label: h }));
+  const folderOptions = [{ value: "", label: "Folder (optional)…" }].concat(
+    folders.map(f => ({
+      value: String(f.id),
+      label: `${f.name}${f.group_name ? ` — ${f.group_name}` : ""}`,
+    }))
+  );
+  const groupOptions = [{ value: "", label: "(no group)" }].concat(
+    groups.map(g => ({ value: String(g.id), label: g.name }))
+  );
+  const totalsOptions = [{ value: "", label: "Totals column…" }].concat(headerOptions);
+
+  const saveTotalsColumn = async (col) => {
+    if (!sheetId) return;
+    try {
+      await axios.patch(`${API}/sheets/${sheetId}`, { totals_column: col || null }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setTotalsCol(col || "");
+    } catch (e) {
+      console.error("save totals_column failed", e);
+      alert("❌ Could not save totals column");
+    }
   };
 
   // --- Login Page ---
@@ -377,15 +702,14 @@ export default function App() {
       <div className="bg-blue-600 text-white px-6 py-4 flex justify-between items-center shadow">
         <h1 className="text-xl font-bold">📊 Dashboard</h1>
         <div className="flex items-center gap-3">
-          {user.role === "admin" && (
-            <button
-              onClick={() => setShowUsers((s) => !s)}
-              className="bg-amber-500 hover:bg-amber-600 px-3 py-1 rounded-lg"
-              title="Toggle inline User Management panel"
-            >
-              {showUsers ? "Hide User Mgmt" : "Show User Mgmt"}
-            </button>
-          )}
+          {/* Removed inline User Management toggle */}
+          <button
+            onClick={openSelect}
+            className="bg-gray-900 hover:bg-black px-3 py-1 rounded-lg"
+            title="Choose a sheet you have access to"
+          >
+            Select Sheet
+          </button>
           <span className="italic">{user.email}</span>
           <button
             onClick={() => {
@@ -396,6 +720,7 @@ export default function App() {
               setHeaders([]);
               setActiveFilename("");
               setSelectedFileName("");
+              setTotalsCol("");
               setCondCol1(""); setCondCol2(""); setValueCol(""); setSortConfig(null);
               setShowUsers(false);
               setPivotOn(false);
@@ -427,12 +752,98 @@ export default function App() {
                 {selectedFileName || activeFilename || "No file selected"}
               </span>
             </label>
+
+            {/* Folder selection */}
+            <SearchableSelect
+              options={folderOptions}
+              value={selectedFolderId}
+              onChange={(e)=>setSelectedFolderId(e.target.value)}
+              placeholder="Folder (optional)…"
+              className="ml-1"
+            />
+
             <button
               onClick={handleUpload}
               className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg"
             >
               Upload & Load
             </button>
+
+            {/* Quick create folder */}
+            <div className="flex items-center gap-2 ml-2">
+              <input
+                ref={newFolderNameRef}
+                className="border rounded p-2 w-44"
+                placeholder="New folder name"
+                autoComplete="off"
+              />
+              <SearchableSelect
+                options={groupOptions}
+                value={newFolderGroupId}
+                onChange={(e)=>setNewFolderGroupId(e.target.value)}
+                placeholder="(no group)"
+                panelWidth={220}
+              />
+              <button
+                onClick={createFolder}
+                className="bg-gray-700 hover:bg-gray-800 text-white px-3 py-2 rounded"
+                title="Create folder and (optionally) assign to a group"
+              >
+                Add Folder
+              </button>
+            </div>
+
+            {/* Compact lists with delete actions + NEW Files button */}
+            <div className="flex flex-wrap gap-6 items-start ml-4">
+              {/* Folders list */}
+              <div>
+                <div className="text-sm font-semibold mb-1">Folders</div>
+                <div className="max-h-36 overflow-auto border rounded p-2 w-96 bg-gray-50">
+                  {folders.length ? folders.map(f => (
+                    <div key={f.id} className="flex justify-between items-center py-1 gap-2">
+                      <span className="truncate" title={`${f.name}${f.group_name ? ` — ${f.group_name}` : ""}`}>
+                        {f.name}{f.group_name ? ` — ${f.group_name}` : ""}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          className="text-blue-600 hover:text-blue-700 px-2"
+                          title="Manage files in this folder"
+                          onClick={() => openFolderFiles(f.id, f.name)}
+                        >
+                          Files
+                        </button>
+                        <button
+                          className="text-red-600 hover:text-red-700 px-2"
+                          title="Delete folder"
+                          onClick={() => deleteFolder(f.id)}
+                        >
+                          🗑️
+                        </button>
+                      </div>
+                    </div>
+                  )) : <div className="text-gray-500 text-sm">No folders</div>}
+                </div>
+              </div>
+
+              {/* Groups list */}
+              <div>
+                <div className="text-sm font-semibold mb-1">Groups</div>
+                <div className="max-h-36 overflow-auto border rounded p-2 w-64 bg-gray-50">
+                  {groups.length ? groups.map(g => (
+                    <div key={g.id} className="flex justify-between items-center py-1">
+                      <span className="truncate" title={g.name}>{g.name}</span>
+                      <button
+                        className="text-red-600 hover:text-red-700 px-2"
+                        title="Delete group"
+                        onClick={() => deleteGroup(g.id)}
+                      >
+                        🗑️
+                      </button>
+                    </div>
+                  )) : <div className="text-gray-500 text-sm">No groups</div>}
+                </div>
+              </div>
+            </div>
           </>
         )}
 
@@ -443,7 +854,7 @@ export default function App() {
           Refresh
         </button>
 
-        {/* Export buttons for all users */}
+        {/* Export buttons */}
         <div className="flex gap-3 ml-0 md:ml-6">
           <button
             onClick={exportCSV}
@@ -465,38 +876,65 @@ export default function App() {
           </button>
         </div>
 
-        {/* ===== Pivot Controls (dynamic headers) ===== */}
-        <div className="flex flex-wrap gap-3 items-center ml-auto">
+        {/* Totals column (admin, persisted per sheet) */}
+        {user.role === "admin" && (
+          <div className="ml-auto flex items-center gap-2">
+            <span className="text-sm text-gray-600">Totals:</span>
+            <SearchableSelect
+              options={headerOptions.length ? [{ value: "", label: "Totals column…" }, ...headerOptions] : [{ value:"", label:"Totals column…"}]}
+              value={totalsCol}
+              onChange={(e)=>saveTotalsColumn(e.target.value)}
+              placeholder="Totals column…"
+              panelWidth={260}
+            />
+          </div>
+        )}
+
+        {/* Pivot Controls */}
+        <div className="flex flex-wrap gap-3 items-center ml-4">
           <label className="flex items-center gap-2">
-            <input type="checkbox" checked={pivotOn} onChange={e => setPivotOn(e.target.checked)} />
+            <input
+              type="checkbox"
+              checked={pivotOn}
+              onChange={(e) => setPivotOn(e.target.checked)}
+            />
             <span className="font-semibold">Pivot mode</span>
           </label>
 
           {pivotOn && (
             <>
-              <select className="border p-2 rounded"
-                value={pivotRowKey} onChange={e=>setPivotRowKey(e.target.value)}>
-                <option value="">Row key…</option>
-                {headers.map(h => <option key={h} value={h}>{h}</option>)}
-              </select>
+              <SearchableSelect
+                options={[{ value: "", label: "Row key…" }, ...headers.map(h => ({ value: h, label: h }))]}
+                value={pivotRowKey}
+                onChange={(e) => setPivotRowKey(e.target.value)}
+                placeholder="Row key…"
+              />
 
-              <select className="border p-2 rounded"
-                value={pivotColKey} onChange={e=>setPivotColKey(e.target.value)}>
-                <option value="">Dynamic header…</option>
-                {headers.map(h => <option key={h} value={h}>{h}</option>)}
-              </select>
+              <SearchableSelect
+                options={[{ value: "", label: "Dynamic header…" }, ...headers.map(h => ({ value: h, label: h }))]}
+                value={pivotColKey}
+                onChange={(e) => setPivotColKey(e.target.value)}
+                placeholder="Dynamic header…"
+              />
 
-              <select className="border p-2 rounded"
-                value={pivotValKey} onChange={e=>setPivotValKey(e.target.value)} disabled={pivotAgg==="count"}>
-                <option value="">{pivotAgg==="count" ? "— (count)" : "Value…"}</option>
-                {headers.map(h => <option key={h} value={h}>{h}</option>)}
-              </select>
+              <SearchableSelect
+                options={[{ value: "", label: pivotAgg === "count" ? "— (count)" : "Value…" }, ...headers.map(h => ({ value: h, label: h }))]}
+                value={pivotValKey}
+                onChange={(e) => setPivotValKey(e.target.value)}
+                placeholder={pivotAgg === "count" ? "— (count)" : "Value…"}
+                disabled={pivotAgg === "count"}
+              />
 
-              <select className="border p-2 rounded"
-                value={pivotAgg} onChange={e=>setPivotAgg(e.target.value)}>
-                <option value="sum">sum</option>
-                <option value="count">count</option>
-              </select>
+              <SearchableSelect
+                options={[
+                  { value: "sum", label: "sum" },
+                  { value: "count", label: "count" },
+                ]}
+                value={pivotAgg}
+                onChange={(e) => setPivotAgg(e.target.value)}
+                placeholder="Aggregation…"
+                panelWidth={180}
+              />
 
               <button
                 onClick={() => {
@@ -515,7 +953,6 @@ export default function App() {
                 Export Pivot
               </button>
 
-              {/* Reset Pivot */}
               <button
                 onClick={resetPivot}
                 className="px-3 py-2 bg-gray-200 hover:bg-gray-300 rounded text-sm"
@@ -528,57 +965,114 @@ export default function App() {
         </div>
       </div>
 
-      {/* Two-Condition Controls */}
+      {/* 👉 Pivot (Chart + Table) — moved ABOVE Two-Condition section */}
+      {pivotOn && (
+        <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200">
+          <div className="p-3 font-semibold">📌 Pivot</div>
+
+          {/* Pivot Chart */}
+          {pivotOn &&
+           pivotRowKey &&
+           pivotColKey &&
+           (pivotAgg === "count" || pivotValKey) &&
+           pivotRows.length > 0 &&
+           pivotSeriesKeys.length > 0 ? (
+            <div className="px-3 pb-3">
+              <ResponsiveContainer width="100%" height={320}>
+                <BarChart data={pivotRows}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey={pivotRowKey} />
+                  <YAxis />
+                  <Tooltip />
+                  <Legend />
+                  <defs>
+                    <linearGradient id="pivotOrange" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#f97316" stopOpacity={0.9} />
+                      <stop offset="95%" stopColor="#fdba74" stopOpacity={0.25} />
+                    </linearGradient>
+                  </defs>
+                  {pivotSeriesKeys.map((k) => (
+                    <Bar key={k} dataKey={k} stackId="pivot" fill="url(#pivotOrange)" />
+                  ))}
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <div className="text-xs text-gray-500 px-3 pb-3">
+              Select Row/Dynamic/Value to render.
+            </div>
+          )}
+
+          {/* Pivot Table */}
+          {pivotRows.length ? (
+            <div className="overflow-auto px-3 pb-3">
+              <table className="table-auto border-collapse w-full text-sm">
+                <thead className="bg-orange-500 text-white">
+                  <tr>
+                    {pivotHeaders.map((h) => (
+                      <th key={h} className="p-2 border text-left whitespace-nowrap">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {pivotRows.map((row, i) => (
+                    <tr key={i} className="odd:bg-gray-50 even:bg-white">
+                      {pivotHeaders.map((h) => (
+                        <td key={h} className="p-2 border whitespace-nowrap">
+                          {Number.isFinite(row[h])
+                            ? row[h].toLocaleString()
+                            : row[h]}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </div>
+      )}
+
+      {/* Two-Condition Controls & Chart — now BELOW Pivot */}
       <div className="p-4 bg-white border-t border-gray-200">
         <h2 className="text-lg font-bold mb-2">📊 Two-Condition Summary</h2>
         <div className="flex gap-4 mb-4 flex-wrap">
           <div>
             <label className="block text-sm font-semibold">Condition 1:</label>
-            <select
+            <SearchableSelect
+              options={[{value:"",label:"-- Select --"}, ...headers.map(h=>({value:h,label:h}))]}
               value={condCol1}
-              onChange={(e) => setCondCol1(e.target.value)}
-              className="border p-2 rounded w-64"
-            >
-              <option value="">-- Select --</option>
-              {headers.map((h) => (
-                <option key={h} value={h}>
-                  {h}
-                </option>
-              ))}
-            </select>
+              onChange={(e)=>setCondCol1(e.target.value)}
+              placeholder="-- Select --"
+              className="w-64"
+              panelWidth={280}
+            />
           </div>
           <div>
             <label className="block text-sm font-semibold">Condition 2:</label>
-            <select
+            <SearchableSelect
+              options={[{value:"",label:"-- Select --"}, ...headers.map(h=>({value:h,label:h}))]}
               value={condCol2}
-              onChange={(e) => setCondCol2(e.target.value)}
-              className="border p-2 rounded w-64"
-            >
-              <option value="">-- Select --</option>
-              {headers.map((h) => (
-                <option key={h} value={h}>
-                  {h}
-                </option>
-              ))}
-            </select>
+              onChange={(e)=>setCondCol2(e.target.value)}
+              placeholder="-- Select --"
+              className="w-64"
+              panelWidth={280}
+            />
           </div>
           <div>
             <label className="block text-sm font-semibold">Value Column:</label>
-            <select
+            <SearchableSelect
+              options={[{value:"",label:"-- Select --"}, ...headers.map(h=>({value:h,label:h}))]}
               value={valueCol}
-              onChange={(e) => setValueCol(e.target.value)}
-              className="border p-2 rounded w-64"
-            >
-              <option value="">-- Select --</option>
-              {headers.map((h) => (
-                <option key={h} value={h}>
-                  {h}
-                </option>
-              ))}
-            </select>
+              onChange={(e)=>setValueCol(e.target.value)}
+              placeholder="-- Select --"
+              className="w-64"
+              panelWidth={280}
+            />
           </div>
 
-          {/* Reset Summary */}
           <button
             onClick={resetSummary}
             className="h-10 self-end px-3 py-2 bg-gray-200 hover:bg-gray-300 rounded text-sm"
@@ -594,21 +1088,21 @@ export default function App() {
               <BarChart data={summaryData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey={condCol2} />
-                <YAxis />
-                <Tooltip />
+                <YAxis tickFormatter={fmt2} />
+                <Tooltip formatter={(val) => fmt2(val)} />
                 <Legend />
-                <Bar dataKey="total" fill="url(#colorUv)" />
                 <defs>
-                  <linearGradient id="colorUv" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#4f46e5" stopOpacity={0.8} />
-                    <stop offset="95%" stopColor="#818cf8" stopOpacity={0.2} />
+                  <linearGradient id="twoCondGreen" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#16a34a" stopOpacity={0.9} />
+                    <stop offset="95%" stopColor="#86efac" stopOpacity={0.25} />
                   </linearGradient>
                 </defs>
+                <Bar dataKey="total" fill="url(#twoCondGreen)" />
               </BarChart>
             </ResponsiveContainer>
 
             <table className="table-auto border-collapse w-full text-sm mt-6">
-              <thead className="bg-indigo-600 text-white">
+              <thead className="bg-green-600 text-white">
                 <tr>
                   <th className="p-2 border">{condCol1}</th>
                   <th className="p-2 border">{condCol2}</th>
@@ -635,94 +1129,164 @@ export default function App() {
         )}
       </div>
 
-      {/* ===== Pivot Table (dynamic headers) ===== */}
-      {pivotOn && (
-        <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200">
-          <div className="p-3 font-semibold">📌 Pivot Table</div>
-          {pivotRows.length ? (
-            <div className="overflow-auto">
-              <table className="table-auto border-collapse w-full text-sm">
-                <thead className="sticky top-0 bg-amber-600 text-white">
-                  <tr>
-                    {pivotHeaders.map(h => (
-                      <th key={h} className="border px-3 py-2 whitespace-nowrap">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {pivotRows.map((r, i) => (
-                    <tr key={i} className="odd:bg-gray-50 even:bg-white">
-                      {pivotHeaders.map(h => (
-                        <td key={h} className="border px-3 py-2 whitespace-nowrap">
-                          {typeof r[h] === "number" ? r[h].toLocaleString() : (r[h] ?? "")}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="text-gray-500 p-4">
-              Set <b>Row key</b>, <b>Dynamic header</b>, and {pivotAgg === "count" ? "" : <b>Value</b>} to generate a pivot.
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Full Data Table */}
+      {/* Data Table */}
       <div className="flex-1 overflow-auto m-4 bg-white rounded-xl shadow-lg border border-gray-200">
         {sortedData?.length > 0 ? (
-          <table className="table-auto border-collapse w-full text-sm">
-            <thead className="sticky top-0 bg-blue-700 text-white shadow-sm">
-              <tr>
-                {headers.map((h) => (
-                  <th
-                    key={h}
-                    className="border border-gray-200 px-4 py-2 text-left whitespace-nowrap cursor-pointer"
-                    onClick={() => requestSort(h)}
+          <>
+            <div className="p-3 text-sm text-gray-600">
+              {activeFilename ? <>Loaded: <b>{activeFilename}</b></> : "No sheet loaded"}
+            </div>
+            <table className="table-auto border-collapse w-full text-sm">
+              <thead className="sticky top-0 bg-blue-700 text-white shadow-sm">
+                <tr>
+                  {headers.map((h) => (
+                    <th
+                      key={h}
+                      className="border border-gray-200 px-4 py-2 text-left whitespace-nowrap cursor-pointer"
+                      onClick={() => requestSort(h)}
+                    >
+                      {h}
+                      {sortConfig?.key === h
+                        ? sortConfig.direction === "asc"
+                          ? " ▲"
+                          : " ▼"
+                        : " ⬍"}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {sortedData.map((row, i) => (
+                  <tr
+                    key={i}
+                    className="odd:bg-gray-50 even:bg-white hover:bg-blue-50"
                   >
-                    {h}
-                    {sortConfig?.key === h
-                      ? sortConfig.direction === "asc"
-                        ? " ▲"
-                        : " ▼"
-                      : " ⬍"}
-                  </th>
+                    {headers.map((h) => (
+                      <td
+                        key={h}
+                        className="border border-gray-200 px-4 py-2 whitespace-nowrap"
+                      >
+                        {row[h] || ""}
+                      </td>
+                    ))}
+                  </tr>
                 ))}
+              </tbody>
+            </table>
+
+            {totalsCol ? (
+              <div className="p-3 text-sm bg-gray-50 border-t">
+                Σ Total of <b>{totalsCol}</b>: <span className="font-semibold">
+                  {Number.isFinite(totalsSum) ? `$${fmt2(totalsSum)}` : "—"}
+                </span>
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <div className="text-gray-500 text-center py-10">
+            📂 Use <b>Select Sheet</b> to pick a file you have access to, or upload (admin).
+          </div>
+        )}
+      </div>
+
+      {/* Inline User Management (Admin) — removed per request */}
+      {/* {user.role === "admin" && showUsers && (
+        <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200">
+          <UserManagement token={token} sheetId={sheetId} />
+        </div>
+      )} */}
+
+      {/* Select Sheet Modal (all users) */}
+      <Modal open={selectOpen} onClose={() => setSelectOpen(false)} title="Select a Sheet">
+        {myFilesLoading ? (
+          <div>Loading…</div>
+        ) : myFiles.length ? (
+          <div className="overflow-auto">
+            <table className="table-auto border-collapse w-full text-sm">
+              <thead className="bg-gray-100">
+                <tr>
+                  <th className="p-2 border text-left">Filename</th>
+                  <th className="p-2 border text-left">Folder</th>
+                  <th className="p-2 border text-left">Uploaded</th>
+                  <th className="p-2 border text-left">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {myFiles.map(f => (
+                  <tr key={f.id} className="odd:bg-white even:bg-gray-50">
+                    <td className="p-2 border">{f.filename}</td>
+                    <td className="p-2 border">{f.folder_name || "—"}</td>
+                    <td className="p-2 border">{new Date(f.uploaded_at).toLocaleString()}</td>
+                    <td className="p-2 border">
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => loadStored(f.id)}
+                          className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded"
+                        >
+                          Load
+                        </button>
+                        {user.role === "admin" && (
+                          <button
+                            onClick={() => deleteSheet(f.id)}
+                            className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded"
+                            title="Delete file (admin)"
+                          >
+                            Delete
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="text-gray-500">No files found.</div>
+        )}
+      </Modal>
+
+      {/* Admin Folder Files Modal */}
+      <Modal
+        open={folderFilesOpen}
+        onClose={() => setFolderFilesOpen(false)}
+        title={`Files in: ${folderFilesMeta.name || ""}`}
+        widthClass="max-w-4xl"
+      >
+        {folderFilesLoading ? (
+          <div>Loading…</div>
+        ) : folderFiles.length ? (
+          <table className="table-auto border-collapse w-full text-sm">
+            <thead className="bg-gray-100">
+              <tr>
+                <th className="p-2 border text-left">Filename</th>
+                <th className="p-2 border text-left">Uploaded</th>
+                <th className="p-2 border text-left">Active</th>
+                <th className="p-2 border"></th>
               </tr>
             </thead>
             <tbody>
-              {sortedData.map((row, i) => (
-                <tr
-                  key={i}
-                  className="odd:bg-gray-50 even:bg-white hover:bg-blue-50"
-                >
-                  {headers.map((h) => (
-                    <td
-                      key={h}
-                      className="border border-gray-200 px-4 py-2 whitespace-nowrap"
+              {folderFiles.map(f => (
+                <tr key={f.id} className="odd:bg-white even:bg-gray-50">
+                  <td className="p-2 border">{f.filename}</td>
+                  <td className="p-2 border">{new Date(f.uploaded_at).toLocaleString()}</td>
+                  <td className="p-2 border">{f.active ? "Yes" : "No"}</td>
+                  <td className="p-2 border">
+                    <button
+                      onClick={() => deleteSheet(f.id)}
+                      className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded"
                     >
-                      {row[h] || ""}
-                    </td>
-                  ))}
+                      Delete
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         ) : (
-          <div className="text-gray-500 text-center py-10">
-            📂 Upload or refresh to see data
-          </div>
+          <div className="text-gray-500">No files in this folder.</div>
         )}
-      </div>
-
-      {/* INLINE USER MANAGEMENT (Admin only) */}
-      {user.role === "admin" && showUsers && (
-        <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200">
-          <UserManagement token={token} sheetId={sheetId} />
-        </div>
-      )}
+      </Modal>
     </div>
   );
 
@@ -730,7 +1294,6 @@ export default function App() {
     <Router>
       <nav className="bg-gray-800 text-white p-3 flex gap-4">
         <Link to="/">Dashboard</Link>
-        {/* Legacy route kept; safe to remove if you only want inline panel */}
         {user?.role === "admin" && <Link to="/users">Manage Users (legacy)</Link>}
       </nav>
       <Routes>
