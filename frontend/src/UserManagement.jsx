@@ -50,7 +50,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
   const [selectedGroupSheetId, setSelectedGroupSheetId] = useState(null);
   const [groupSheetHeaders, setGroupSheetHeaders] = useState([]);
 
-  // Templates
+  // Templates (now scoped by group)
   const [templates, setTemplates] = useState(loadTemplates());
   const [newTplNameUser, setNewTplNameUser] = useState("");
   const [newTplNameGroup, setNewTplNameGroup] = useState("");
@@ -116,7 +116,8 @@ export default function UserManagement({ token /* sheetId not required */ }) {
           const res = await axios.get(`${API}/groups/${gid}/sheets`, {
             headers: { Authorization: `Bearer ${token}` },
           });
-          (res.data || []).forEach((r) => agg.push(r));
+          // Keep group context on each sheet record
+          (res.data || []).forEach((r) => agg.push({ ...r, _group_id: gid }));
         } catch (e) {
           console.error("fetchGroupSheets(for user) failed", e);
         }
@@ -365,22 +366,45 @@ export default function UserManagement({ token /* sheetId not required */ }) {
 
   /** ---------------------------
    * Template: create / apply / delete
+   * (scoped per group)
    * --------------------------- */
-  const makeTemplate = (name, columns, row_filters) => ({
+  const makeTemplate = (name, columns, row_filters, groupId) => ({
     id: Date.now().toString(36),
     name: String(name || "").trim(),
     columns: Array.from(new Set(columns || [])),
     row_filters: row_filters && typeof row_filters === "object" ? row_filters : {},
+    groupId: Number.isInteger(groupId) ? groupId : null,
     created_at: new Date().toISOString()
   });
 
-  // User panel
+  // Determine current groupId for selected user sheet
+  const currentUserSheetGroupId = useMemo(() => {
+    if (!selectedUserSheetId) return null;
+    const s = userSheets.find(ss => String(ss.id) === String(selectedUserSheetId));
+    return s?._group_id ?? null;
+  }, [selectedUserSheetId, userSheets]);
+
+  // Visible templates (filtered by group) for user panel
+  const visibleUserTemplates = useMemo(() => {
+    if (!currentUserSheetGroupId) return [];
+    return (templates || []).filter(t => t.groupId === currentUserSheetGroupId);
+  }, [templates, currentUserSheetGroupId]);
+
+  // Visible templates (filtered by group) for group panel
+  const visibleGroupTemplates = useMemo(() => {
+    if (!selectedGroupId) return [];
+    return (templates || []).filter(t => t.groupId === selectedGroupId);
+  }, [templates, selectedGroupId]);
+
+  // User panel: save template
   const handleSaveTemplateFromUser = () => {
     if (!newTplNameUser.trim()) { alert("Enter template name"); return; }
+    if (!currentUserSheetGroupId) { alert("Select a sheet (with group) first"); return; }
     const tpl = makeTemplate(
       newTplNameUser,
       Array.from(userAllowedCols),
-      userFilterKey ? { [userFilterKey]: userFilterVal } : {}
+      userFilterKey ? { [userFilterKey]: userFilterVal } : {},
+      currentUserSheetGroupId
     );
     const next = [tpl, ...templates];
     setTemplates(next);
@@ -393,9 +417,13 @@ export default function UserManagement({ token /* sheetId not required */ }) {
     setSelectedTplUser(tplId);
     const tpl = templates.find(t => t.id === tplId);
     if (!tpl) return;
-    setUserAllowedCols(new Set(tpl.columns || []));
+    // Intersect template columns with CURRENT sheet headers
+    const cols = (tpl.columns || []).filter(c => userSheetHeaders.includes(c));
+    setUserAllowedCols(new Set(cols));
     const [k, v] = Object.entries(tpl.row_filters || {})[0] || ["", ""];
-    setUserFilterKey(k); setUserFilterVal(v);
+    const validKey = k && userSheetHeaders.includes(k) ? k : "";
+    setUserFilterKey(validKey);
+    setUserFilterVal(validKey ? v : "");
   };
 
   const handleDeleteTemplate = (tplId) => {
@@ -406,13 +434,15 @@ export default function UserManagement({ token /* sheetId not required */ }) {
     if (selectedTplGroup === tplId) setSelectedTplGroup("");
   };
 
-  // Group panel
+  // Group panel: save template
   const handleSaveTemplateFromGroup = () => {
     if (!newTplNameGroup.trim()) { alert("Enter template name"); return; }
+    if (!selectedGroupId) { alert("Select a group first"); return; }
     const tpl = makeTemplate(
       newTplNameGroup,
       Array.from(groupAllowedCols),
-      groupFilterKey ? { [groupFilterKey]: groupFilterVal } : {}
+      groupFilterKey ? { [groupFilterKey]: groupFilterVal } : {},
+      selectedGroupId
     );
     const next = [tpl, ...templates];
     setTemplates(next);
@@ -425,10 +455,40 @@ export default function UserManagement({ token /* sheetId not required */ }) {
     setSelectedTplGroup(tplId);
     const tpl = templates.find(t => t.id === tplId);
     if (!tpl) return;
-    setGroupAllowedCols(new Set(tpl.columns || []));
+    // Intersect template columns with CURRENT sheet headers
+    const cols = (tpl.columns || []).filter(c => groupSheetHeaders.includes(c));
+    setGroupAllowedCols(new Set(cols));
     const [k, v] = Object.entries(tpl.row_filters || {})[0] || ["", ""];
-    setGroupFilterKey(k); setGroupFilterVal(v);
+    const validKey = k && groupSheetHeaders.includes(k) ? k : "";
+    setGroupFilterKey(validKey);
+    setGroupFilterVal(validKey ? v : "");
   };
+
+  // Auto re-apply selected template after switching sheets (user scope)
+  useEffect(() => {
+    if (!selectedUserSheetId || !selectedTplUser) return;
+    const tpl = templates.find(t => t.id === selectedTplUser);
+    if (!tpl) return;
+    const cols = (tpl.columns || []).filter(c => userSheetHeaders.includes(c));
+    setUserAllowedCols(new Set(cols));
+    const [k, v] = Object.entries(tpl.row_filters || {})[0] || ["", ""];
+    const validKey = k && userSheetHeaders.includes(k) ? k : "";
+    setUserFilterKey(validKey);
+    setUserFilterVal(validKey ? v : "");
+  }, [selectedUserSheetId, selectedTplUser, userSheetHeaders, templates]);
+
+  // Auto re-apply selected template after switching sheets (group scope)
+  useEffect(() => {
+    if (!selectedGroupSheetId || !selectedTplGroup) return;
+    const tpl = templates.find(t => t.id === selectedTplGroup);
+    if (!tpl) return;
+    const cols = (tpl.columns || []).filter(c => groupSheetHeaders.includes(c));
+    setGroupAllowedCols(new Set(cols));
+    const [k, v] = Object.entries(tpl.row_filters || {})[0] || ["", ""];
+    const validKey = k && groupSheetHeaders.includes(k) ? k : "";
+    setGroupFilterKey(validKey);
+    setGroupFilterVal(validKey ? v : "");
+  }, [selectedGroupSheetId, selectedTplGroup, groupSheetHeaders, templates]);
 
   const userById = useMemo(() => {
     const m = new Map();
@@ -533,7 +593,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
               <span className="text-xs text-gray-500 ml-2">(latest 10)</span>
             </div>
 
-            {/* Template toolbar */}
+            {/* Template toolbar (shows only templates for this sheet's group) */}
             <div className="flex flex-wrap items-center gap-2 mb-3">
               <input
                 className="border rounded px-2 py-1"
@@ -544,6 +604,8 @@ export default function UserManagement({ token /* sheetId not required */ }) {
               <button
                 className="bg-gray-700 hover:bg-gray-800 text-white rounded px-3 py-1"
                 onClick={handleSaveTemplateFromUser}
+                disabled={!selectedUserSheetId || !currentUserSheetGroupId}
+                title={selectedUserSheetId ? "Save current selection as a template (group-scoped)" : "Pick a sheet first"}
               >
                 Save as Template
               </button>
@@ -551,9 +613,11 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                 className="border rounded p-2"
                 value={selectedTplUser}
                 onChange={(e)=>handleApplyTemplateToUser(e.target.value)}
+                disabled={!selectedUserSheetId || !currentUserSheetGroupId}
+                title={selectedUserSheetId ? "Apply a saved template to this sheet" : "Pick a sheet first"}
               >
                 <option value="">Load template…</option>
-                {templates.map(t => (
+                {visibleUserTemplates.map(t => (
                   <option key={t.id} value={t.id}>{t.name}</option>
                 ))}
               </select>
@@ -707,7 +771,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
               </select>
               <span className="text-xs text-gray-500">(latest 10)</span>
 
-              {/* Template toolbar */}
+              {/* Template toolbar (shows only this group's templates) */}
               <input
                 className="border rounded px-2 py-1"
                 placeholder="Template name"
@@ -717,6 +781,8 @@ export default function UserManagement({ token /* sheetId not required */ }) {
               <button
                 className="bg-gray-700 hover:bg-gray-800 text-white rounded px-3 py-1"
                 onClick={handleSaveTemplateFromGroup}
+                disabled={!selectedGroupId}
+                title={selectedGroupId ? "Save current selection as a template (group-scoped)" : "Pick a group first"}
               >
                 Save as Template
               </button>
@@ -724,9 +790,11 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                 className="border rounded p-2"
                 value={selectedTplGroup}
                 onChange={(e)=>handleApplyTemplateToGroup(e.target.value)}
+                disabled={!selectedGroupId || !selectedGroupSheetId}
+                title={selectedGroupId ? "Apply a saved template to this group's sheet" : "Pick a group first"}
               >
                 <option value="">Load template…</option>
-                {templates.map(t => (
+                {visibleGroupTemplates.map(t => (
                   <option key={t.id} value={t.id}>{t.name}</option>
                 ))}
               </select>

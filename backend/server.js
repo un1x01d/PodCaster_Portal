@@ -1,3 +1,4 @@
+// server.js
 import express from "express";
 import cors from "cors";
 import multer from "multer";
@@ -183,6 +184,15 @@ async function initDb() {
       allowed_columns JSONB NOT NULL DEFAULT '[]'::jsonb,
       row_filters JSONB NOT NULL DEFAULT '{}'::jsonb,
       UNIQUE (sheet_id, group_id)
+    );
+  `);
+
+  // NEW: per-sheet template store (group-style)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS sheet_templates (
+      sheet_id TEXT PRIMARY KEY,
+      allowed_columns JSONB NOT NULL DEFAULT '[]'::jsonb,
+      row_filters JSONB NOT NULL DEFAULT '{}'::jsonb
     );
   `);
 
@@ -377,6 +387,40 @@ app.patch("/sheets/:id", auth, async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
   const { totals_column } = req.body || {};
   await query("UPDATE sheets SET totals_column = $1 WHERE id = $2", [totals_column || null, req.params.id]);
+  res.json({ success: true });
+});
+
+/* ----------------------------------------------------------------------------
+ * NEW: per-sheet template endpoints (admin)
+ * ------------------------------------------------------------------------- */
+app.get("/sheets/:id/template", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const sheetId = String(req.params.id);
+  const rows = await query(
+    `SELECT allowed_columns, row_filters FROM sheet_templates WHERE sheet_id = $1 LIMIT 1`,
+    [sheetId]
+  );
+  if (!rows.length) return res.json({ allowed_columns: [], row_filters: {} });
+  const allowed = rows[0].allowed_columns ?? [];
+  const filters = rows[0].row_filters ?? {};
+  res.json({
+    allowed_columns: Array.isArray(allowed) ? allowed : JSON.parse(allowed),
+    row_filters: typeof filters === "object" ? filters : JSON.parse(filters),
+  });
+});
+
+app.post("/sheets/:id/template", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const sheetId = String(req.params.id);
+  const { allowed_columns, row_filters } = req.body || {};
+  await query(
+    `INSERT INTO sheet_templates (sheet_id, allowed_columns, row_filters)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (sheet_id) DO UPDATE
+     SET allowed_columns = EXCLUDED.allowed_columns,
+         row_filters = EXCLUDED.row_filters`,
+    [sheetId, JSON.stringify(allowed_columns || []), JSON.stringify(row_filters || {})]
+  );
   res.json({ success: true });
 });
 
@@ -887,6 +931,7 @@ app.delete("/sheets/:id", auth, async (req, res) => {
     // Cleanup permissions
     await query(`DELETE FROM permissions WHERE sheet_id=$1`, [sid]);
     await query(`DELETE FROM group_permissions WHERE sheet_id=$1`, [sid]);
+    await query(`DELETE FROM sheet_templates WHERE sheet_id=$1`, [sid]);
     // Delete sheet
     await query(`DELETE FROM sheets WHERE id=$1`, [sid]);
 
