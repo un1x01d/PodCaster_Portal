@@ -225,6 +225,25 @@ app.get("/healthz", (_req, res) =>
   res.json({ ok: true, xlsx: XLSX?.version || "unknown" })
 );
 
+app.get("/groups/:id/sheets", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const gid = Number(req.params.id);
+  try {
+    const rows = await query(
+      `SELECT s.id, s.filename, s.uploaded_at, s.folder_id, f.name AS folder_name
+         FROM sheets s
+         JOIN folders f ON f.id = s.folder_id
+        WHERE f.group_id = $1
+        ORDER BY s.uploaded_at DESC`,
+      [gid]
+    );
+    res.json(rows);
+  } catch (e) {
+    console.error("group sheets failed:", e);
+    res.status(500).json({ error: "group_sheets_failed" });
+  }
+});
+
 /* ----------------------------------------------------------------------------
  * Multer
  * ------------------------------------------------------------------------- */
@@ -312,7 +331,7 @@ app.post("/upload", auth, upload.single("file"), async (req, res) => {
         const stampedName = `${timestamp()}_${sanitizeName(originalName.replace(/\.[^/.]+$/, ""))}.xlsx`;
         const folderDest = path.join(targetDir, stampedName);
         fs.writeFileSync(folderDest, xbuf);
-        stored_relpath = path.relative(UPLOADS_DIR, folderDest); // e.g. "folders/12-Team_A/202409..._File.xlsx"
+        stored_relpath = path.relative(UPLOADS_DIR, folderDest);
       }
     }
 
@@ -401,7 +420,6 @@ app.post("/load-sheet", auth, async (req, res) => {
       if (!fs.existsSync(dir)) return res.status(409).json({ error: "folder_dir_missing" });
       const files = fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith(".xlsx"));
       if (!files.length) return res.status(409).json({ error: "no_xlsx_in_folder" });
-      // pick newest by mtime
       let newest = null;
       let newestTime = -1;
       for (const fn of files) {
@@ -416,7 +434,6 @@ app.post("/load-sheet", auth, async (req, res) => {
     const abs = path.join(UPLOADS_DIR, rel);
     if (!fs.existsSync(abs)) return res.status(409).json({ error: "stored_file_missing" });
 
-    // Copy to current.xlsx and mark active
     const currentDest = path.join(UPLOADS_DIR, "current.xlsx");
     if (fs.existsSync(currentDest)) fs.unlinkSync(currentDest);
     fs.copyFileSync(abs, currentDest);
@@ -448,19 +465,26 @@ app.get("/data/:sheetId", auth, async (req, res) => {
       const userId = req.user.id;
       const sheetId = req.params.sheetId;
 
+      // ---- USER OVERRIDES GROUP LOGIC (only change) ----
       const up = await query(
         "SELECT allowed_columns, row_filters FROM permissions WHERE sheet_id=$1 AND user_id=$2 LIMIT 1",
         [sheetId, userId]
       );
-      let allowedCols = new Set(
-        Array.isArray(up[0]?.allowed_columns) ? up[0].allowed_columns : (up[0]?.allowed_columns ? JSON.parse(up[0].allowed_columns) : [])
-      );
-      let allFilters = [];
-      if (up.length) {
-        const fObj = typeof up[0].row_filters === "object" ? up[0].row_filters : JSON.parse(up[0].row_filters || "{}");
-        if (Object.keys(fObj).length) allFilters.push(fObj);
-      }
+      // Normalize user perms
+      const userAllowedArr = Array.isArray(up[0]?.allowed_columns)
+        ? up[0].allowed_columns
+        : (up[0]?.allowed_columns ? JSON.parse(up[0].allowed_columns) : []);
+      const userAllowedSet = new Set(userAllowedArr.filter(Boolean));
+      const userFiltersObj = typeof up[0]?.row_filters === "object"
+        ? (up[0]?.row_filters || {})
+        : JSON.parse(up[0]?.row_filters || "{}");
 
+      const userHasCols = userAllowedSet.size > 0;
+      const userHasFilter = Object.keys(userFiltersObj).length > 0;
+
+      // Gather group perms
+      let groupAllowedSet = new Set();
+      let groupFilters = [];
       const gRows = await query(
         `SELECT g.id
            FROM groups g
@@ -480,27 +504,45 @@ app.get("/data/:sheetId", auth, async (req, res) => {
         for (const r of gp) {
           const ac = Array.isArray(r.allowed_columns) ? r.allowed_columns
             : (r.allowed_columns ? JSON.parse(r.allowed_columns) : []);
-          ac.forEach(c => allowedCols.add(c));
-          const fObj = typeof r.row_filters === "object" ? r.row_filters : JSON.parse(r.row_filters || "{}");
-          if (Object.keys(fObj).length) allFilters.push(fObj);
+          ac.forEach(c => { if (c) groupAllowedSet.add(c); });
+          const fObj = typeof r.row_filters === "object" ? (r.row_filters || {}) : JSON.parse(r.row_filters || "{}");
+          if (Object.keys(fObj).length) groupFilters.push(fObj);
         }
       }
 
-      if (allFilters.length) {
+      // Apply row filters:
+      // - If user has a row_filter, it OVERRIDES any group filters.
+      // - Else, apply combined group filters (AND of all provided).
+      if (userHasFilter) {
         rows = rows.filter(row =>
-          allFilters.every(fobj =>
+          Object.entries(userFiltersObj).every(([k, v]) => String(row[k] ?? "") === String(v))
+        );
+      } else if (groupFilters.length) {
+        rows = rows.filter(row =>
+          groupFilters.every(fobj =>
             Object.entries(fobj).every(([k, v]) => String(row[k] ?? "") === String(v))
           )
         );
       }
 
-      if (allowedCols.size) {
+      // Apply column restrictions:
+      // - If user has allowed_columns (non-empty), those OVERRIDE and are the only columns shown.
+      // - Else if any group allowed_columns exist, show union of those.
+      // - Else (no user and no group restrictions), show all columns (no reduction).
+      if (userHasCols) {
         rows = rows.map(r => {
           const o = {};
-          allowedCols.forEach(c => { if (c in r) o[c] = r[c]; });
+          userAllowedSet.forEach(c => { if (c in r) o[c] = r[c]; });
+          return o;
+        });
+      } else if (groupAllowedSet.size > 0) {
+        rows = rows.map(r => {
+          const o = {};
+          groupAllowedSet.forEach(c => { if (c in r) o[c] = r[c]; });
           return o;
         });
       }
+      // ---- END OVERRIDE LOGIC ----
     }
 
     res.json(rows);
@@ -788,6 +830,70 @@ app.get("/my-files", auth, async (req, res) => {
   } catch (e) {
     console.error("my-files failed:", e);
     res.status(500).json({ error: "my_files_failed" });
+  }
+});
+
+/* ----------------------------------------------------------------------------
+ * NEW: Folder files listing (admin)
+ * ------------------------------------------------------------------------- */
+app.get("/folders/:id/files", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const fid = Number(req.params.id);
+  try {
+    const rows = await query(
+      `SELECT s.id, s.filename, s.uploaded_at, s.active
+         FROM sheets s
+        WHERE s.folder_id = $1
+        ORDER BY s.uploaded_at DESC`,
+      [fid]
+    );
+    res.json(rows);
+  } catch (e) {
+    console.error("folder files failed:", e);
+    res.status(500).json({ error: "folder_files_failed" });
+  }
+});
+
+/* ----------------------------------------------------------------------------
+ * NEW: Delete a sheet (admin) + remove stored file + cleanup
+ * ------------------------------------------------------------------------- */
+app.delete("/sheets/:id", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const sid = String(req.params.id);
+  try {
+    const rows = await query(
+      `SELECT id, active, stored_path FROM sheets WHERE id = $1 LIMIT 1`,
+      [sid]
+    );
+    if (!rows.length) return res.status(404).json({ error: "not_found" });
+    const s = rows[0];
+
+    // Remove file on disk if exists
+    if (s.stored_path) {
+      const abs = path.join(UPLOADS_DIR, s.stored_path);
+      if (abs.startsWith(UPLOADS_DIR) && fs.existsSync(abs)) {
+        try { fs.unlinkSync(abs); } catch {}
+      }
+    }
+
+    // If active, clear current.xlsx and unset active
+    if (s.active) {
+      const currentDest = path.join(UPLOADS_DIR, "current.xlsx");
+      if (fs.existsSync(currentDest)) {
+        try { fs.unlinkSync(currentDest); } catch {}
+      }
+    }
+
+    // Cleanup permissions
+    await query(`DELETE FROM permissions WHERE sheet_id=$1`, [sid]);
+    await query(`DELETE FROM group_permissions WHERE sheet_id=$1`, [sid]);
+    // Delete sheet
+    await query(`DELETE FROM sheets WHERE id=$1`, [sid]);
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error("delete sheet failed:", e);
+    res.status(500).json({ error: "delete_sheet_failed" });
   }
 });
 
