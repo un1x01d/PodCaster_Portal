@@ -1,3 +1,4 @@
+// App.jsx
 import React, { useState, useEffect, useRef } from "react";
 import {
   BrowserRouter as Router,
@@ -175,6 +176,7 @@ export default function App() {
   const [condCol2, setCondCol2] = useState("");
   const [valueCol, setValueCol] = useState("");
 
+  // toggle removed, keep state placeholder
   const [showUsers, setShowUsers] = useState(false);
 
   // Pivot
@@ -344,6 +346,20 @@ export default function App() {
     }
   };
 
+  const deleteGroup = async (id) => {
+    if (!window.confirm("Delete this group and its memberships/permissions?")) return;
+    try {
+      await axios.delete(`${API}/groups/${id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (String(newFolderGroupId) === String(id)) setNewFolderGroupId("");
+      await fetchMeta();
+    } catch (e) {
+      console.error("delete group failed", e);
+      alert("❌ Could not delete group");
+    }
+  };
+
   // --- My Files modal data
   const openSelect = async () => {
     setSelectOpen(true);
@@ -405,8 +421,14 @@ export default function App() {
       await axios.delete(`${API}/sheets/${sid}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      // Refresh modal list
-      await openFolderFiles(folderFilesMeta.id, folderFilesMeta.name);
+      // Refresh modal list(s)
+      if (folderFilesOpen) {
+        await openFolderFiles(folderFilesMeta.id, folderFilesMeta.name);
+      }
+      // Also refresh Select Sheet modal list
+      if (selectOpen) {
+        await openSelect();
+      }
       // If it was the active sheet, clear UI state
       if (String(sheetId) === String(sid)) {
         const res = await axios.get(`${API}/sheets/active`, {
@@ -680,15 +702,7 @@ export default function App() {
       <div className="bg-blue-600 text-white px-6 py-4 flex justify-between items-center shadow">
         <h1 className="text-xl font-bold">📊 Dashboard</h1>
         <div className="flex items-center gap-3">
-          {user.role === "admin" && (
-            <button
-              onClick={() => setShowUsers((s) => !s)}
-              className="bg-amber-500 hover:bg-amber-600 px-3 py-1 rounded-lg"
-              title="Toggle inline User Management panel"
-            >
-              {showUsers ? "Hide User Mgmt" : "Show User Mgmt"}
-            </button>
-          )}
+          {/* Removed inline User Management toggle */}
           <button
             onClick={openSelect}
             className="bg-gray-900 hover:bg-black px-3 py-1 rounded-lg"
@@ -808,6 +822,25 @@ export default function App() {
                       </div>
                     </div>
                   )) : <div className="text-gray-500 text-sm">No folders</div>}
+                </div>
+              </div>
+
+              {/* Groups list */}
+              <div>
+                <div className="text-sm font-semibold mb-1">Groups</div>
+                <div className="max-h-36 overflow-auto border rounded p-2 w-64 bg-gray-50">
+                  {groups.length ? groups.map(g => (
+                    <div key={g.id} className="flex justify-between items-center py-1">
+                      <span className="truncate" title={g.name}>{g.name}</span>
+                      <button
+                        className="text-red-600 hover:text-red-700 px-2"
+                        title="Delete group"
+                        onClick={() => deleteGroup(g.id)}
+                      >
+                        🗑️
+                      </button>
+                    </div>
+                  )) : <div className="text-gray-500 text-sm">No groups</div>}
                 </div>
               </div>
             </div>
@@ -932,7 +965,77 @@ export default function App() {
         </div>
       </div>
 
-      {/* Two-Condition Controls & Chart */}
+      {/* 👉 Pivot (Chart + Table) — moved ABOVE Two-Condition section */}
+      {pivotOn && (
+        <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200">
+          <div className="p-3 font-semibold">📌 Pivot</div>
+
+          {/* Pivot Chart */}
+          {pivotOn &&
+           pivotRowKey &&
+           pivotColKey &&
+           (pivotAgg === "count" || pivotValKey) &&
+           pivotRows.length > 0 &&
+           pivotSeriesKeys.length > 0 ? (
+            <div className="px-3 pb-3">
+              <ResponsiveContainer width="100%" height={320}>
+                <BarChart data={pivotRows}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey={pivotRowKey} />
+                  <YAxis />
+                  <Tooltip />
+                  <Legend />
+                  <defs>
+                    <linearGradient id="pivotOrange" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#f97316" stopOpacity={0.9} />
+                      <stop offset="95%" stopColor="#fdba74" stopOpacity={0.25} />
+                    </linearGradient>
+                  </defs>
+                  {pivotSeriesKeys.map((k) => (
+                    <Bar key={k} dataKey={k} stackId="pivot" fill="url(#pivotOrange)" />
+                  ))}
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <div className="text-xs text-gray-500 px-3 pb-3">
+              Select Row/Dynamic/Value to render.
+            </div>
+          )}
+
+          {/* Pivot Table */}
+          {pivotRows.length ? (
+            <div className="overflow-auto px-3 pb-3">
+              <table className="table-auto border-collapse w-full text-sm">
+                <thead className="bg-orange-500 text-white">
+                  <tr>
+                    {pivotHeaders.map((h) => (
+                      <th key={h} className="p-2 border text-left whitespace-nowrap">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {pivotRows.map((row, i) => (
+                    <tr key={i} className="odd:bg-gray-50 even:bg-white">
+                      {pivotHeaders.map((h) => (
+                        <td key={h} className="p-2 border whitespace-nowrap">
+                          {Number.isFinite(row[h])
+                            ? row[h].toLocaleString()
+                            : row[h]}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </div>
+      )}
+
+      {/* Two-Condition Controls & Chart — now BELOW Pivot */}
       <div className="p-4 bg-white border-t border-gray-200">
         <h2 className="text-lg font-bold mb-2">📊 Two-Condition Summary</h2>
         <div className="flex gap-4 mb-4 flex-wrap">
@@ -979,64 +1082,52 @@ export default function App() {
           </button>
         </div>
 
-        {/* Chart + table */}
-        {/* ... unchanged from previous answer ... */}
-        <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={summaryData}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey={condCol2} />
-            <YAxis tickFormatter={fmt2} />
-            <Tooltip formatter={(val) => fmt2(val)} />
-            <Legend />
-            <Bar dataKey="total" fill="url(#colorUv)" />
-            <defs>
-              <linearGradient id="colorUv" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#4f46e5" stopOpacity={0.8} />
-                <stop offset="95%" stopColor="#818cf8" stopOpacity={0.2} />
-              </linearGradient>
-            </defs>
-          </BarChart>
-        </ResponsiveContainer>
-
         {condCol1 && condCol2 && valueCol && summaryData?.length > 0 ? (
-          <table className="table-auto border-collapse w-full text-sm mt-6">
-            <thead className="bg-indigo-600 text-white">
-              <tr>
-                <th className="p-2 border">{condCol1}</th>
-                <th className="p-2 border">{condCol2}</th>
-                <th className="p-2 border">Total {valueCol}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {summaryData.map((row, i) => (
-                <tr key={i} className="odd:bg-gray-50 even:bg-white">
-                  <td className="p-2 border">{row[condCol1]}</td>
-                  <td className="p-2 border">{row[condCol2]}</td>
-                  <td className="p-2 border font-semibold">
-                    ${row.total.toLocaleString()}
-                  </td>
+          <>
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={summaryData}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey={condCol2} />
+                <YAxis tickFormatter={fmt2} />
+                <Tooltip formatter={(val) => fmt2(val)} />
+                <Legend />
+                <defs>
+                  <linearGradient id="twoCondGreen" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#16a34a" stopOpacity={0.9} />
+                    <stop offset="95%" stopColor="#86efac" stopOpacity={0.25} />
+                  </linearGradient>
+                </defs>
+                <Bar dataKey="total" fill="url(#twoCondGreen)" />
+              </BarChart>
+            </ResponsiveContainer>
+
+            <table className="table-auto border-collapse w-full text-sm mt-6">
+              <thead className="bg-green-600 text-white">
+                <tr>
+                  <th className="p-2 border">{condCol1}</th>
+                  <th className="p-2 border">{condCol2}</th>
+                  <th className="p-2 border">Total {valueCol}</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {summaryData.map((row, i) => (
+                  <tr key={i} className="odd:bg-gray-50 even:bg-white">
+                    <td className="p-2 border">{row[condCol1]}</td>
+                    <td className="p-2 border">{row[condCol2]}</td>
+                    <td className="p-2 border font-semibold">
+                      ${row.total.toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
         ) : (
           <p className="text-gray-500">
             ℹ️ Select two conditions and a value column to see results.
           </p>
         )}
       </div>
-
-      {/* Pivot (Chart + Table) */}
-      {pivotOn && (
-        <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200">
-          <div className="p-3 font-semibold">📌 Pivot</div>
-          {/* chart + table unchanged */}
-          {/* ... */}
-          <div className="text-xs text-gray-500 px-3 pb-3">
-            Select Row/Dynamic/Value to render.
-          </div>
-        </div>
-      )}
 
       {/* Data Table */}
       <div className="flex-1 overflow-auto m-4 bg-white rounded-xl shadow-lg border border-gray-200">
@@ -1098,12 +1189,12 @@ export default function App() {
         )}
       </div>
 
-      {/* Inline User Management (Admin) */}
-      {user.role === "admin" && showUsers && (
+      {/* Inline User Management (Admin) — removed per request */}
+      {/* {user.role === "admin" && showUsers && (
         <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200">
           <UserManagement token={token} sheetId={sheetId} />
         </div>
-      )}
+      )} */}
 
       {/* Select Sheet Modal (all users) */}
       <Modal open={selectOpen} onClose={() => setSelectOpen(false)} title="Select a Sheet">
@@ -1117,7 +1208,7 @@ export default function App() {
                   <th className="p-2 border text-left">Filename</th>
                   <th className="p-2 border text-left">Folder</th>
                   <th className="p-2 border text-left">Uploaded</th>
-                  <th className="p-2 border"></th>
+                  <th className="p-2 border text-left">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -1127,12 +1218,23 @@ export default function App() {
                     <td className="p-2 border">{f.folder_name || "—"}</td>
                     <td className="p-2 border">{new Date(f.uploaded_at).toLocaleString()}</td>
                     <td className="p-2 border">
-                      <button
-                        onClick={() => loadStored(f.id)}
-                        className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded"
-                      >
-                        Load
-                      </button>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => loadStored(f.id)}
+                          className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded"
+                        >
+                          Load
+                        </button>
+                        {user.role === "admin" && (
+                          <button
+                            onClick={() => deleteSheet(f.id)}
+                            className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded"
+                            title="Delete file (admin)"
+                          >
+                            Delete
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -1144,7 +1246,7 @@ export default function App() {
         )}
       </Modal>
 
-      {/* NEW: Admin Folder Files Modal */}
+      {/* Admin Folder Files Modal */}
       <Modal
         open={folderFilesOpen}
         onClose={() => setFolderFilesOpen(false)}
