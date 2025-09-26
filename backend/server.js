@@ -1,4 +1,3 @@
-
 import express from "express";
 import cors from "cors";
 import multer from "multer";
@@ -70,6 +69,9 @@ function timestamp() {
   const pad = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
+function ensureDir(p) {
+  fs.mkdirSync(p, { recursive: true });
+}
 
 /* ----------------------------------------------------------------------------
  * DB init (idempotent + schema self-heal)
@@ -89,26 +91,19 @@ async function initDb() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS groups (
       id SERIAL PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE
+      name TEXT NOT NULL UNIQUE,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `);
-  await pool.query(`
-    ALTER TABLE groups
-    ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
-  `);
-  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS groups_name_key ON groups (name);`);
 
   // USER_GROUPS (membership)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_groups (
       id SERIAL PRIMARY KEY,
       user_id INT NOT NULL,
-      group_id INT NOT NULL
+      group_id INT NOT NULL,
+      UNIQUE(user_id, group_id)
     );
-  `);
-  await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS user_groups_uniq
-      ON user_groups (user_id, group_id);
   `);
 
   // FOLDERS
@@ -132,11 +127,12 @@ async function initDb() {
       uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       headers JSONB NOT NULL DEFAULT '[]'::jsonb,
       filename TEXT,
-      active BOOLEAN NOT NULL DEFAULT FALSE
+      active BOOLEAN NOT NULL DEFAULT FALSE,
+      folder_id INT
     );
   `);
-  await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS folder_id INT;`);
   await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS totals_column TEXT;`);
+  await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS stored_path TEXT;`);
 
   // clean duplicate actives, then re-enforce unique partial index
   await pool.query(`
@@ -173,12 +169,9 @@ async function initDb() {
       sheet_id TEXT NOT NULL,
       user_id INT NOT NULL,
       allowed_columns JSONB NOT NULL DEFAULT '[]'::jsonb,
-      row_filters JSONB NOT NULL DEFAULT '{}'::jsonb
+      row_filters JSONB NOT NULL DEFAULT '{}'::jsonb,
+      UNIQUE (sheet_id, user_id)
     );
-  `);
-  await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS permissions_uniq
-      ON permissions (sheet_id, user_id);
   `);
 
   // GROUP permissions
@@ -188,12 +181,9 @@ async function initDb() {
       sheet_id TEXT NOT NULL,
       group_id INT NOT NULL,
       allowed_columns JSONB NOT NULL DEFAULT '[]'::jsonb,
-      row_filters JSONB NOT NULL DEFAULT '{}'::jsonb
+      row_filters JSONB NOT NULL DEFAULT '{}'::jsonb,
+      UNIQUE (sheet_id, group_id)
     );
-  `);
-  await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS group_permissions_uniq
-      ON group_permissions (sheet_id, group_id);
   `);
 
   // seed admin
@@ -302,8 +292,9 @@ app.post("/upload", auth, upload.single("file"), async (req, res) => {
     if (fs.existsSync(currentDest)) fs.unlinkSync(currentDest);
     fs.writeFileSync(currentDest, xbuf);
 
-    // 2) If folderId provided, also persist a copy in that folder
+    // 2) If folderId provided, also persist a copy in that folder; track stored_path
     let assignedFolderId = null;
+    let stored_relpath = null;
     if (Number.isInteger(folderId)) {
       const f = await query(
         `SELECT f.id, f.name, g.name AS group_name
@@ -317,10 +308,11 @@ app.post("/upload", auth, upload.single("file"), async (req, res) => {
         assignedFolderId = f[0].id;
         const safeFolderName = sanitizeName(`${f[0].id}-${f[0].name}`);
         const targetDir = path.join(UPLOADS_DIR, "folders", safeFolderName);
-        fs.mkdirSync(targetDir, { recursive: true });
+        ensureDir(targetDir);
         const stampedName = `${timestamp()}_${sanitizeName(originalName.replace(/\.[^/.]+$/, ""))}.xlsx`;
         const folderDest = path.join(targetDir, stampedName);
         fs.writeFileSync(folderDest, xbuf);
+        stored_relpath = path.relative(UPLOADS_DIR, folderDest); // e.g. "folders/12-Team_A/202409..._File.xlsx"
       }
     }
 
@@ -331,8 +323,8 @@ app.post("/upload", auth, upload.single("file"), async (req, res) => {
 
     await query("UPDATE sheets SET active = FALSE", []);
     await query(
-      "INSERT INTO sheets (id, headers, active, filename, folder_id) VALUES ($1,$2,$3,$4,$5)",
-      [sheetId, JSON.stringify(headers), true, originalName, assignedFolderId]
+      "INSERT INTO sheets (id, headers, active, filename, folder_id, stored_path) VALUES ($1,$2,$3,$4,$5,$6)",
+      [sheetId, JSON.stringify(headers), true, originalName, assignedFolderId, stored_relpath]
     );
 
     console.log(`[upload] OK sheetId=${sheetId} rows=${rows.length} headers=${headers.length} folder=${assignedFolderId ?? "—"}`);
@@ -361,12 +353,82 @@ app.get("/sheets/:id", auth, async (req, res) => {
   res.json(s[0]);
 });
 
-// NEW: set per-sheet totals column (admin)
+// set per-sheet totals column (admin)
 app.patch("/sheets/:id", auth, async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
   const { totals_column } = req.body || {};
   await query("UPDATE sheets SET totals_column = $1 WHERE id = $2", [totals_column || null, req.params.id]);
   res.json({ success: true });
+});
+
+/* ----------------------------------------------------------------------------
+ * Load a stored sheet -> current.xlsx + set active
+ * ------------------------------------------------------------------------- */
+app.post("/load-sheet", auth, async (req, res) => {
+  try {
+    const { sheetId } = req.body || {};
+    if (!sheetId) return res.status(400).json({ error: "sheetId_required" });
+
+    const rows = await query(
+      `SELECT s.id, s.filename, s.folder_id, s.stored_path, f.name AS folder_name, f.group_id
+         FROM sheets s
+         LEFT JOIN folders f ON f.id = s.folder_id
+        WHERE s.id = $1
+        LIMIT 1`,
+      [sheetId]
+    );
+    if (!rows.length) return res.status(404).json({ error: "sheet_not_found" });
+    const s = rows[0];
+
+    // Access control: admin OR member of folder's group
+    if (req.user.role !== "admin") {
+      if (!s.group_id) return res.status(403).json({ error: "forbidden_no_group" });
+      const m = await query(
+        `SELECT 1 FROM user_groups WHERE user_id = $1 AND group_id = $2 LIMIT 1`,
+        [req.user.id, s.group_id]
+      );
+      if (!m.length) return res.status(403).json({ error: "forbidden" });
+    }
+
+    // Resolve stored path (backfill if missing)
+    let rel = s.stored_path;
+    if (!rel) {
+      if (!s.folder_id || !s.folder_name) {
+        return res.status(409).json({ error: "no_stored_copy" });
+      }
+      const safeFolderName = sanitizeName(`${s.folder_id}-${s.folder_name}`);
+      const dir = path.join(UPLOADS_DIR, "folders", safeFolderName);
+      if (!fs.existsSync(dir)) return res.status(409).json({ error: "folder_dir_missing" });
+      const files = fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith(".xlsx"));
+      if (!files.length) return res.status(409).json({ error: "no_xlsx_in_folder" });
+      // pick newest by mtime
+      let newest = null;
+      let newestTime = -1;
+      for (const fn of files) {
+        const fp = path.join(dir, fn);
+        const st = fs.statSync(fp);
+        if (st.mtimeMs > newestTime) { newestTime = st.mtimeMs; newest = fn; }
+      }
+      rel = path.relative(UPLOADS_DIR, path.join(dir, newest));
+      await query(`UPDATE sheets SET stored_path=$1 WHERE id=$2`, [rel, sheetId]);
+    }
+
+    const abs = path.join(UPLOADS_DIR, rel);
+    if (!fs.existsSync(abs)) return res.status(409).json({ error: "stored_file_missing" });
+
+    // Copy to current.xlsx and mark active
+    const currentDest = path.join(UPLOADS_DIR, "current.xlsx");
+    if (fs.existsSync(currentDest)) fs.unlinkSync(currentDest);
+    fs.copyFileSync(abs, currentDest);
+
+    await query("UPDATE sheets SET active = FALSE", []);
+    await query("UPDATE sheets SET active = TRUE WHERE id = $1", [sheetId]);
+
+    res.json({ success: true, sheetId });
+  } catch (e) {
+    console.error("load-sheet failed:", e);
+    res.status(500).json({ error: "load_failed" });
+  }
 });
 
 /* ----------------------------------------------------------------------------
@@ -690,6 +752,43 @@ app.delete("/folders/:id", auth, async (req, res) => {
   await query(`UPDATE sheets SET folder_id = NULL WHERE folder_id = $1`, [fid]);
   await query(`DELETE FROM folders WHERE id = $1`, [fid]);
   res.json({ success: true });
+});
+
+/* ----------------------------------------------------------------------------
+ * My Files (files visible to the current user)
+ * ------------------------------------------------------------------------- */
+app.get("/my-files", auth, async (req, res) => {
+  try {
+    if (req.user.role === "admin") {
+      const rows = await query(
+        `SELECT s.id, s.filename, s.uploaded_at, f.name AS folder_name
+           FROM sheets s
+           LEFT JOIN folders f ON f.id = s.folder_id
+          ORDER BY s.uploaded_at DESC
+          LIMIT 50`,
+        []
+      );
+      return res.json(rows);
+    }
+
+    const rows = await query(
+      `SELECT s.id, s.filename, s.uploaded_at, f.name AS folder_name
+         FROM sheets s
+         JOIN folders f ON f.id = s.folder_id
+         WHERE f.group_id IN (
+           SELECT ug.group_id
+             FROM user_groups ug
+            WHERE ug.user_id = $1
+         )
+        ORDER BY s.uploaded_at DESC
+        LIMIT 50`,
+      [req.user.id]
+    );
+    return res.json(rows);
+  } catch (e) {
+    console.error("my-files failed:", e);
+    res.status(500).json({ error: "my_files_failed" });
+  }
 });
 
 /* ----------------------------------------------------------------------------

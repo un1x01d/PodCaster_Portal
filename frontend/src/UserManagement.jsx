@@ -3,13 +3,17 @@ import axios from "axios";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
 
-export default function UserManagement({ token, sheetId }) {
+export default function UserManagement({ token, sheetId: _ignoredActive }) {
   const [users, setUsers] = useState([]);
   const [newUser, setNewUser] = useState({ email: "", password: "", role: "producer" });
 
+  // permissions target: pick a stored sheet first
+  const [sheets, setSheets] = useState([]);
+  const [selectedSheetId, setSelectedSheetId] = useState("");
+  const [headers, setHeaders] = useState([]);
+
   // user-level permissions UI
   const [selectedUserId, setSelectedUserId] = useState(null);
-  const [headers, setHeaders] = useState([]);
   const [userAllowedCols, setUserAllowedCols] = useState(new Set());
   const [userFilterKey, setUserFilterKey] = useState("");
   const [userFilterVal, setUserFilterVal] = useState("");
@@ -24,7 +28,7 @@ export default function UserManagement({ token, sheetId }) {
   const [groupFilterKey, setGroupFilterKey] = useState("");
   const [groupFilterVal, setGroupFilterVal] = useState("");
 
-  // fetch users
+  // ===== fetchers =====
   const fetchUsers = async () => {
     const res = await axios.get(`${API}/users`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -32,20 +36,34 @@ export default function UserManagement({ token, sheetId }) {
     setUsers(res.data || []);
   };
 
-  // fetch active sheet headers (for checkboxes)
-  const fetchActiveHeaders = async () => {
-    const res = await axios.get(`${API}/sheets/active`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const h = res.data?.headers || [];
-    setHeaders(Array.isArray(h) ? h : []);
-  };
-
   const fetchGroups = async () => {
     const res = await axios.get(`${API}/groups`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     setGroups(res.data || []);
+  };
+
+  const fetchMySheets = async () => {
+    const res = await axios.get(`${API}/my-sheets`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const list = res.data || [];
+    setSheets(list);
+    if (!selectedSheetId && list.length) {
+      setSelectedSheetId(String(list[0].id));
+    }
+  };
+
+  const fetchSheetHeaders = async (sid) => {
+    if (!sid) {
+      setHeaders([]);
+      return;
+    }
+    const res = await axios.get(`${API}/sheets/${sid}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const h = res.data?.headers || [];
+    setHeaders(Array.isArray(h) ? h : []);
   };
 
   const fetchGroupMembers = async (gid) => {
@@ -56,15 +74,15 @@ export default function UserManagement({ token, sheetId }) {
     setGroupMembers(res.data || []);
   };
 
-  const loadUserPermissions = async (uid) => {
-    if (!uid || !sheetId) {
+  const loadUserPermissions = async (uid, sid = selectedSheetId) => {
+    if (!uid || !sid) {
       setUserAllowedCols(new Set());
       setUserFilterKey(""); setUserFilterVal("");
       return;
     }
     const res = await axios.get(`${API}/permissions`, {
       headers: { Authorization: `Bearer ${token}` },
-      params: { userId: uid, sheetId }
+      params: { userId: uid, sheetId: sid }
     });
     const allowed = res.data?.allowed_columns || [];
     const filters = res.data?.row_filters || {};
@@ -73,15 +91,15 @@ export default function UserManagement({ token, sheetId }) {
     setUserFilterKey(k); setUserFilterVal(v);
   };
 
-  const loadGroupPermissions = async (gid) => {
-    if (!gid || !sheetId) {
+  const loadGroupPermissions = async (gid, sid = selectedSheetId) => {
+    if (!gid || !sid) {
       setGroupAllowedCols(new Set());
       setGroupFilterKey(""); setGroupFilterVal("");
       return;
     }
     const res = await axios.get(`${API}/group-permissions`, {
       headers: { Authorization: `Bearer ${token}` },
-      params: { groupId: gid, sheetId }
+      params: { groupId: gid, sheetId: sid }
     });
     const allowed = res.data?.allowed_columns || [];
     const filters = res.data?.row_filters || {};
@@ -90,23 +108,39 @@ export default function UserManagement({ token, sheetId }) {
     setGroupFilterKey(k); setGroupFilterVal(v);
   };
 
+  // ===== effects =====
   useEffect(() => {
     fetchUsers();
-    fetchActiveHeaders();
     fetchGroups();
+    fetchMySheets();
   }, []);
 
   useEffect(() => {
-    if (selectedUserId) loadUserPermissions(selectedUserId);
-  }, [selectedUserId, sheetId]);
+    // when sheet changes -> get headers
+    if (selectedSheetId) fetchSheetHeaders(selectedSheetId);
+    // and reload current user/group permissions against this sheet
+    if (selectedUserId) loadUserPermissions(selectedUserId, selectedSheetId);
+    if (selectedGroupId) {
+      fetchGroupMembers(selectedGroupId);
+      loadGroupPermissions(selectedGroupId, selectedSheetId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSheetId]);
+
+  useEffect(() => {
+    if (selectedUserId) loadUserPermissions(selectedUserId, selectedSheetId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedUserId]);
 
   useEffect(() => {
     if (selectedGroupId) {
       fetchGroupMembers(selectedGroupId);
-      loadGroupPermissions(selectedGroupId);
+      loadGroupPermissions(selectedGroupId, selectedSheetId);
     }
-  }, [selectedGroupId, sheetId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedGroupId]);
 
+  // ===== local toggles =====
   const toggleUserAllowed = (h) => {
     setUserAllowedCols(prev => {
       const next = new Set(prev);
@@ -123,7 +157,7 @@ export default function UserManagement({ token, sheetId }) {
     });
   };
 
-  // --- Actions: users ---
+  // ===== actions: users =====
   const addUser = async () => {
     if (!newUser.email || !newUser.password) return;
     await axios.post(`${API}/users`, newUser, {
@@ -157,16 +191,16 @@ export default function UserManagement({ token, sheetId }) {
   };
 
   const saveUserPermissions = async () => {
-    if (!selectedUserId || !sheetId) return;
+    if (!selectedUserId || !selectedSheetId) return;
     const allowed_columns = Array.from(userAllowedCols);
     const row_filters = userFilterKey ? { [userFilterKey]: userFilterVal } : {};
     await axios.post(`${API}/permissions`, {
-      sheetId, userId: selectedUserId, allowed_columns, row_filters
+      sheetId: selectedSheetId, userId: selectedUserId, allowed_columns, row_filters
     }, { headers: { Authorization: `Bearer ${token}` }});
     alert("User permissions saved");
   };
 
-  // --- Actions: groups ---
+  // ===== actions: groups =====
   const createGroup = async () => {
     if (!newGroupName.trim()) return;
     await axios.post(`${API}/groups`, { name: newGroupName.trim() }, {
@@ -194,16 +228,16 @@ export default function UserManagement({ token, sheetId }) {
   };
 
   const saveGroupPermissions = async () => {
-    if (!selectedGroupId || !sheetId) return;
+    if (!selectedGroupId || !selectedSheetId) return;
     const allowed_columns = Array.from(groupAllowedCols);
     const row_filters = groupFilterKey ? { [groupFilterKey]: groupFilterVal } : {};
     await axios.post(`${API}/group-permissions`, {
-      sheetId, groupId: selectedGroupId, allowed_columns, row_filters
+      sheetId: selectedSheetId, groupId: selectedGroupId, allowed_columns, row_filters
     }, { headers: { Authorization: `Bearer ${token}` }});
     alert("Group permissions saved");
   };
 
-  // helpers
+  // ===== helpers =====
   const userById = useMemo(() => {
     const m = new Map();
     users.forEach(u => m.set(u.id, u));
@@ -212,6 +246,29 @@ export default function UserManagement({ token, sheetId }) {
 
   return (
     <div className="p-4 grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* SHEET PICKER (permissions target) */}
+      <div className="lg:col-span-3 flex items-end justify-between mb-1">
+        <h2 className="text-xl font-bold">User Management</h2>
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-gray-600">Permissions for sheet:</span>
+          <select
+            className="border rounded p-2 min-w-[16rem]"
+            value={selectedSheetId}
+            onChange={e => setSelectedSheetId(e.target.value)}
+          >
+            {sheets.length ? (
+              sheets.map(s => (
+                <option key={s.id} value={s.id}>
+                  {new Date(s.uploaded_at).toLocaleString()} — {s.filename} {s.folder_id ? `(folder ${s.folder_id})` : ""}
+                </option>
+              ))
+            ) : (
+              <option value="">(no sheets found)</option>
+            )}
+          </select>
+        </div>
+      </div>
+
       {/* USERS PANEL */}
       <div className="bg-white border rounded-xl shadow p-4">
         <h3 className="font-bold text-lg mb-3">Users</h3>
@@ -283,7 +340,9 @@ export default function UserManagement({ token, sheetId }) {
         {/* user permissions */}
         {selectedUserId && (
           <div className="mt-4">
-            <h4 className="font-semibold mb-2">User Permissions (sheet: {sheetId || "—"})</h4>
+            <h4 className="font-semibold mb-2">
+              User Permissions — sheet: {selectedSheetId || "—"}
+            </h4>
             <div className="text-xs text-gray-500 mb-2">
               Select columns allowed for this user. Leave all unchecked to allow all.
             </div>
@@ -299,6 +358,7 @@ export default function UserManagement({ token, sheetId }) {
                   <span className="text-sm">{h}</span>
                 </label>
               ))}
+              {!headers.length && <div className="text-sm text-gray-500 p-1 col-span-full">(select a sheet above)</div>}
             </div>
 
             <div className="flex items-center gap-2 mt-3">
@@ -307,6 +367,7 @@ export default function UserManagement({ token, sheetId }) {
                 className="border rounded p-1"
                 value={userFilterKey}
                 onChange={e=>setUserFilterKey(e.target.value)}
+                disabled={!headers.length}
               >
                 <option value="">(none)</option>
                 {headers.map(h => <option key={h} value={h}>{h}</option>)}
@@ -316,10 +377,12 @@ export default function UserManagement({ token, sheetId }) {
                 placeholder="value"
                 value={userFilterVal}
                 onChange={e=>setUserFilterVal(e.target.value)}
+                disabled={!headers.length}
               />
               <button
-                className="bg-green-600 hover:bg-green-700 text-white rounded px-3 py-1"
+                className="bg-green-600 hover:bg-green-700 text-white rounded px-3 py-1 disabled:opacity-50"
                 onClick={saveUserPermissions}
+                disabled={!selectedSheetId}
               >
                 Save
               </button>
@@ -400,7 +463,9 @@ export default function UserManagement({ token, sheetId }) {
         <h3 className="font-bold text-lg mb-3">Group Permissions</h3>
         {selectedGroupId ? (
           <>
-            <div className="text-sm text-gray-600 mb-2">For selected group (id: {selectedGroupId}) & current sheet: {sheetId || "—"}</div>
+            <div className="text-sm text-gray-600 mb-2">
+              For selected group (id: {selectedGroupId}) & sheet: {selectedSheetId || "—"}
+            </div>
 
             <div className="text-xs text-gray-500 mb-1">
               Columns allowed (leave empty for all):
@@ -416,6 +481,7 @@ export default function UserManagement({ token, sheetId }) {
                   <span className="text-sm">{h}</span>
                 </label>
               ))}
+              {!headers.length && <div className="text-sm text-gray-500 p-1 col-span-full">(select a sheet above)</div>}
             </div>
 
             <div className="flex items-center gap-2 mt-3">
@@ -424,6 +490,7 @@ export default function UserManagement({ token, sheetId }) {
                 className="border rounded p-1"
                 value={groupFilterKey}
                 onChange={e=>setGroupFilterKey(e.target.value)}
+                disabled={!headers.length}
               >
                 <option value="">(none)</option>
                 {headers.map(h => <option key={h} value={h}>{h}</option>)}
@@ -433,10 +500,12 @@ export default function UserManagement({ token, sheetId }) {
                 placeholder="value"
                 value={groupFilterVal}
                 onChange={e=>setGroupFilterVal(e.target.value)}
+                disabled={!headers.length}
               />
               <button
-                className="bg-green-600 hover:bg-green-700 text-white rounded px-3 py-1"
+                className="bg-green-600 hover:bg-green-700 text-white rounded px-3 py-1 disabled:opacity-50"
                 onClick={saveGroupPermissions}
+                disabled={!selectedSheetId}
               >
                 Save
               </button>

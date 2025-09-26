@@ -28,14 +28,14 @@ const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
  * SearchableSelect (no deps, popover w/ search input)
  * -----------------------------------------------------*/
 function SearchableSelect({
-  options = [],           // [{ value, label }]
+  options = [],
   value = "",
   onChange = () => {},
   placeholder = "Select…",
   className = "",
   disabled = false,
   buttonClassName = "border p-2 rounded min-w-[10rem] bg-white",
-  panelWidth = 260,       // px
+  panelWidth = 260,
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -122,6 +122,22 @@ function SearchableSelect({
   );
 }
 
+function Modal({ open, onClose, title, children, widthClass = "max-w-3xl" }) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className={`relative bg-white rounded-xl shadow-xl w-[95vw] ${widthClass} max-h-[85vh] overflow-auto`}>
+        <div className="p-4 border-b flex items-center justify-between">
+          <div className="font-bold">{title}</div>
+          <button onClick={onClose} className="text-gray-600 hover:text-black">✕</button>
+        </div>
+        <div className="p-4">{children}</div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(localStorage.getItem("token") || "");
@@ -138,32 +154,35 @@ export default function App() {
   const [file, setFile] = useState(null);
   const [selectedFileName, setSelectedFileName] = useState("");
 
-  // folders
+  // folders (admin upload only)
   const [folders, setFolders] = useState([]);
   const [selectedFolderId, setSelectedFolderId] = useState("");
   const newFolderNameRef = useRef(null);
   const [groups, setGroups] = useState([]);
   const [newFolderGroupId, setNewFolderGroupId] = useState("");
 
+  // My Files modal
+  const [selectOpen, setSelectOpen] = useState(false);
+  const [myFiles, setMyFiles] = useState([]);
+  const [myFilesLoading, setMyFilesLoading] = useState(false);
+
   // Two-condition summary
   const [condCol1, setCondCol1] = useState("");
   const [condCol2, setCondCol2] = useState("");
   const [valueCol, setValueCol] = useState("");
 
-  // Inline user management (admin)
   const [showUsers, setShowUsers] = useState(false);
 
-  // ===== PIVOT (dynamic headers) =====
+  // Pivot
   const [pivotOn, setPivotOn] = useState(false);
   const [pivotRowKey, setPivotRowKey] = useState("");
-  const [pivotColKey, setPivotColKey] = useState("");   // dynamic headers
+  const [pivotColKey, setPivotColKey] = useState("");
   const [pivotValKey, setPivotValKey] = useState("");
-  const [pivotAgg, setPivotAgg] = useState("sum");      // "sum" | "count"
+  const [pivotAgg, setPivotAgg] = useState("sum");
 
-  // Totals column (per-sheet persisted)
+  // Totals
   const [totalsCol, setTotalsCol] = useState("");
 
-  // charts: 2-decimal formatting
   const fmt2 = (n) =>
     Number(n ?? 0).toLocaleString(undefined, {
       minimumFractionDigits: 2,
@@ -196,7 +215,7 @@ export default function App() {
     if (token) decodeToken(token);
   }, [token]);
 
-  // --- Init: fetch active sheet then data ---
+  // --- Init active sheet then data ---
   useEffect(() => {
     const init = async () => {
       try {
@@ -222,7 +241,6 @@ export default function App() {
     if (token && user) init();
   }, [token, user]);
 
-  // fetch folders + groups (for admin)
   const fetchMeta = async () => {
     if (user?.role !== "admin") return;
     try {
@@ -236,7 +254,6 @@ export default function App() {
       console.error("meta fetch failed", e);
     }
   };
-
   useEffect(() => {
     if (token && user) fetchMeta();
   }, [token, user]);
@@ -270,20 +287,10 @@ export default function App() {
         },
       });
 
-      // Clear filters on new upload
-      setCondCol1("");
-      setCondCol2("");
-      setValueCol("");
+      setCondCol1(""); setCondCol2(""); setValueCol("");
       setSortConfig(null);
+      setPivotOn(false); setPivotRowKey(""); setPivotColKey(""); setPivotValKey(""); setPivotAgg("sum");
 
-      // reset pivot selections
-      setPivotOn(false);
-      setPivotRowKey("");
-      setPivotColKey("");
-      setPivotValKey("");
-      setPivotAgg("sum");
-
-      // refresh active + data
       const res = await axios.get(`${API}/sheets/active`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -300,7 +307,7 @@ export default function App() {
     }
   };
 
-  // create folder (admin)
+  // --- Create folder (admin)
   const createFolder = async () => {
     const name = newFolderNameRef.current?.value?.trim() || "";
     if (!name) return;
@@ -319,9 +326,8 @@ export default function App() {
     }
   };
 
-  // delete folder (admin)
   const deleteFolder = async (id) => {
-    if (!window.confirm("Delete this folder? (Saved copies stay on disk; sheets will detach)")) return;
+    if (!window.confirm("Delete this folder?")) return;
     try {
       await axios.delete(`${API}/folders/${id}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -334,7 +340,6 @@ export default function App() {
     }
   };
 
-  // delete group (admin)
   const deleteGroup = async (id) => {
     if (!window.confirm("Delete this group and its memberships/permissions?")) return;
     try {
@@ -346,6 +351,44 @@ export default function App() {
     } catch (e) {
       console.error("delete group failed", e);
       alert("❌ Could not delete group");
+    }
+  };
+
+  // --- My Files modal data
+  const openSelect = async () => {
+    setSelectOpen(true);
+    setMyFilesLoading(true);
+    try {
+      const r = await axios.get(`${API}/my-files`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setMyFiles(r.data || []);
+    } catch (e) {
+      console.error("my-files failed", e);
+      setMyFiles([]);
+    } finally {
+      setMyFilesLoading(false);
+    }
+  };
+  const loadStored = async (id) => {
+    try {
+      await axios.post(`${API}/load-sheet`, { sheetId: id }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      // refresh active + data
+      const res = await axios.get(`${API}/sheets/active`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.data?.sheetId) {
+        setSheetId(res.data.sheetId);
+        setActiveFilename(res.data.filename || "");
+        setTotalsCol(res.data.totals_column || "");
+        await loadData(res.data.sheetId);
+      }
+      setSelectOpen(false);
+    } catch (e) {
+      console.error("load-sheet failed", e);
+      alert("❌ Could not load the selected sheet");
     }
   };
 
@@ -373,7 +416,7 @@ export default function App() {
     setSortConfig({ key, direction });
   };
 
-  // --- Two-condition Summary ---
+  // Two-condition Summary
   const summaryData = React.useMemo(() => {
     if (!condCol1 || !condCol2 || !valueCol) return [];
     const map = {};
@@ -390,11 +433,9 @@ export default function App() {
     return Object.values(map);
   }, [condCol1, condCol2, valueCol, sortedData]);
 
-  // ===== PIVOT COMPUTE (dynamic headers) =====
+  // Pivot compute
   const { pivotHeaders, pivotRows } = React.useMemo(() => {
     if (!pivotOn || !pivotRowKey || !pivotColKey) return { pivotHeaders: [], pivotRows: [] };
-
-    // dynamic header keys
     const dynSet = new Set();
     (sortedData || []).forEach(r => {
       const k = r[pivotColKey];
@@ -402,12 +443,11 @@ export default function App() {
     });
     const dynHeaders = Array.from(dynSet).sort();
 
-    // group by row key
     const groups = new Map();
     (sortedData || []).forEach(r => {
       const rowK = String(r[pivotRowKey] ?? "N/A");
       const colK = String(r[pivotColKey] ?? "N/A");
-      let v = 1; // for count
+      let v = 1;
       if (pivotAgg === "sum") {
         const num = parseFloat(String(r[pivotValKey] ?? "").replace(/[\$,]/g, ""));
         v = Number.isFinite(num) ? num : 0;
@@ -417,7 +457,6 @@ export default function App() {
       rowObj[colK] = (rowObj[colK] || 0) + v;
     });
 
-    // emit with totals
     const outRows = Array.from(groups.entries()).map(([rk, cols]) => {
       const o = { [pivotRowKey]: rk };
       let total = 0;
@@ -434,19 +473,11 @@ export default function App() {
     return { pivotHeaders: headers2, pivotRows: outRows };
   }, [pivotOn, pivotRowKey, pivotColKey, pivotValKey, pivotAgg, sortedData]);
 
-  // series keys for Pivot Chart
   const pivotSeriesKeys = React.useMemo(() => {
     if (!pivotHeaders?.length || !pivotRowKey) return [];
     return pivotHeaders.filter(h => h !== pivotRowKey && h !== "_Total");
   }, [pivotHeaders, pivotRowKey]);
 
-  const seriesColors = [
-    "#4f46e5","#22c55e","#f59e0b","#ef4444","#06b6d4",
-    "#a855f7","#10b981","#eab308","#3b82f6","#f97316",
-    "#14b8a6","#84cc16"
-  ];
-
-  // --- Totals Sum (for selected totalsCol) ---
   const totalsSum = React.useMemo(() => {
     if (!totalsCol) return null;
     let sum = 0;
@@ -458,7 +489,6 @@ export default function App() {
     return sum;
   }, [sortedData, totalsCol]);
 
-  // --- Exports (SheetJS) ---
   const exportCSV = () => {
     try {
       const fileName = "report.csv";
@@ -531,13 +561,11 @@ export default function App() {
     }
   };
 
-  // --- resets ---
   const resetSummary = () => {
     setCondCol1("");
     setCondCol2("");
     setValueCol("");
   };
-
   const resetPivot = () => {
     setPivotRowKey("");
     setPivotColKey("");
@@ -545,7 +573,6 @@ export default function App() {
     setPivotAgg("sum");
   };
 
-  // helpers to build options
   const headerOptions = headers.map(h => ({ value: h, label: h }));
   const folderOptions = [{ value: "", label: "Folder (optional)…" }].concat(
     folders.map(f => ({
@@ -558,7 +585,6 @@ export default function App() {
   );
   const totalsOptions = [{ value: "", label: "Totals column…" }].concat(headerOptions);
 
-  // Persist totals column (admin)
   const saveTotalsColumn = async (col) => {
     if (!sheetId) return;
     try {
@@ -624,6 +650,13 @@ export default function App() {
               {showUsers ? "Hide User Mgmt" : "Show User Mgmt"}
             </button>
           )}
+          <button
+            onClick={openSelect}
+            className="bg-gray-900 hover:bg-black px-3 py-1 rounded-lg"
+            title="Choose a sheet you have access to"
+          >
+            Select Sheet
+          </button>
           <span className="italic">{user.email}</span>
           <button
             onClick={() => {
@@ -759,7 +792,7 @@ export default function App() {
           Refresh
         </button>
 
-        {/* Export buttons for all users */}
+        {/* Export buttons */}
         <div className="flex gap-3 ml-0 md:ml-6">
           <button
             onClick={exportCSV}
@@ -795,7 +828,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ===== Pivot Controls (dynamic headers) ===== */}
+        {/* Pivot Controls */}
         <div className="flex flex-wrap gap-3 items-center ml-4">
           <label className="flex items-center gap-2">
             <input
@@ -870,7 +903,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* Two-Condition Controls */}
+      {/* Two-Condition Controls & Chart */}
       <div className="p-4 bg-white border-t border-gray-200">
         <h2 className="text-lg font-bold mb-2">📊 Two-Condition Summary</h2>
         <div className="flex gap-4 mb-4 flex-wrap">
@@ -908,7 +941,6 @@ export default function App() {
             />
           </div>
 
-          {/* Reset Summary */}
           <button
             onClick={resetSummary}
             className="h-10 self-end px-3 py-2 bg-gray-200 hover:bg-gray-300 rounded text-sm"
@@ -965,22 +997,17 @@ export default function App() {
         )}
       </div>
 
-      {/* ===== Pivot (Chart + Table) ===== */}
+      {/* Pivot (Chart + Table) */}
       {pivotOn && (
         <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200">
           <div className="p-3 font-semibold">📌 Pivot</div>
 
-          {/* Pivot Chart */}
           {pivotRows.length && pivotSeriesKeys.length ? (
             <div className="px-3 pb-3">
               <ResponsiveContainer width="100%" height={320}>
                 <BarChart data={pivotRows}>
                   <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis
-                    dataKey={pivotRowKey}
-                    tick={{ fontSize: 12 }}
-                    interval={0}
-                  />
+                  <XAxis dataKey={pivotRowKey} tick={{ fontSize: 12 }} interval={0} />
                   <YAxis tickFormatter={fmt2} />
                   <Tooltip formatter={(val) => fmt2(val)} />
                   <Legend />
@@ -1005,7 +1032,6 @@ export default function App() {
             </div>
           )}
 
-          {/* Pivot Table */}
           {pivotRows.length ? (
             <div className="overflow-auto">
               <table className="table-auto border-collapse w-full text-sm">
@@ -1037,10 +1063,13 @@ export default function App() {
         </div>
       )}
 
-      {/* Full Data Table */}
+      {/* Data Table */}
       <div className="flex-1 overflow-auto m-4 bg-white rounded-xl shadow-lg border border-gray-200">
         {sortedData?.length > 0 ? (
           <>
+            <div className="p-3 text-sm text-gray-600">
+              {activeFilename ? <>Loaded: <b>{activeFilename}</b></> : "No sheet loaded"}
+            </div>
             <table className="table-auto border-collapse w-full text-sm">
               <thead className="sticky top-0 bg-blue-700 text-white shadow-sm">
                 <tr>
@@ -1079,7 +1108,6 @@ export default function App() {
               </tbody>
             </table>
 
-            {/* Totals summary under table */}
             {totalsCol ? (
               <div className="p-3 text-sm bg-gray-50 border-t">
                 Σ Total of <b>{totalsCol}</b>: <span className="font-semibold">${fmt2(totalsSum ?? 0)}</span>
@@ -1088,17 +1116,56 @@ export default function App() {
           </>
         ) : (
           <div className="text-gray-500 text-center py-10">
-            📂 Upload or refresh to see data
+            📂 Use <b>Select Sheet</b> to pick a file you have access to, or upload (admin).
           </div>
         )}
       </div>
 
-      {/* INLINE USER MANAGEMENT (Admin only) */}
+      {/* Inline User Management (Admin) */}
       {user.role === "admin" && showUsers && (
         <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200">
           <UserManagement token={token} sheetId={sheetId} />
         </div>
       )}
+
+      {/* Select Sheet Modal */}
+      <Modal open={selectOpen} onClose={() => setSelectOpen(false)} title="Select a Sheet">
+        {myFilesLoading ? (
+          <div>Loading…</div>
+        ) : myFiles.length ? (
+          <div className="overflow-auto">
+            <table className="table-auto border-collapse w-full text-sm">
+              <thead className="bg-gray-100">
+                <tr>
+                  <th className="p-2 border text-left">Filename</th>
+                  <th className="p-2 border text-left">Folder</th>
+                  <th className="p-2 border text-left">Uploaded</th>
+                  <th className="p-2 border"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {myFiles.map(f => (
+                  <tr key={f.id} className="odd:bg-white even:bg-gray-50">
+                    <td className="p-2 border">{f.filename}</td>
+                    <td className="p-2 border">{f.folder_name || "—"}</td>
+                    <td className="p-2 border">{new Date(f.uploaded_at).toLocaleString()}</td>
+                    <td className="p-2 border">
+                      <button
+                        onClick={() => loadStored(f.id)}
+                        className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded"
+                      >
+                        Load
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="text-gray-500">No files found.</div>
+        )}
+      </Modal>
     </div>
   );
 
