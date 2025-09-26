@@ -1,3 +1,4 @@
+// UserManagement.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 
@@ -24,9 +25,12 @@ export default function UserManagement({ token /* sheetId not required */ }) {
   const [users, setUsers] = useState([]);
   const [newUser, setNewUser] = useState({ email: "", password: "", role: "producer" });
 
-  // user-level permissions UI (select a sheet from user's groups)
+  // user-level permissions UI (now: select a GROUP first, then a SHEET from that group)
   const [selectedUserId, setSelectedUserId] = useState(null);
-  const [userSheets, setUserSheets] = useState([]);                // latest 10 for selected user
+  const [userGroupsForSelected, setUserGroupsForSelected] = useState([]); // [{id,name}]
+  const [selectedUserGroupId, setSelectedUserGroupId] = useState(null);
+
+  const [userSheets, setUserSheets] = useState([]);                // latest 10 for selected user's selected group
   const [selectedUserSheetId, setSelectedUserSheetId] = useState(null);
   const [userSheetHeaders, setUserSheetHeaders] = useState([]);
   const [userAllowedCols, setUserAllowedCols] = useState(new Set());
@@ -50,7 +54,10 @@ export default function UserManagement({ token /* sheetId not required */ }) {
   const [selectedGroupSheetId, setSelectedGroupSheetId] = useState(null);
   const [groupSheetHeaders, setGroupSheetHeaders] = useState([]);
 
-  // Templates (now scoped by group)
+  // Folders ↔ Group assignment (new section)
+  const [folders, setFolders] = useState([]);
+
+  // Templates (scoped by group)
   const [templates, setTemplates] = useState(loadTemplates());
   const [newTplNameUser, setNewTplNameUser] = useState("");
   const [newTplNameGroup, setNewTplNameGroup] = useState("");
@@ -72,6 +79,13 @@ export default function UserManagement({ token /* sheetId not required */ }) {
     setGroups(res.data || []);
   };
 
+  const fetchFolders = async () => {
+    const res = await axios.get(`${API}/folders`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    setFolders(res.data || []);
+  };
+
   const fetchGroupMembers = async (gid) => {
     if (!gid) return setGroupMembers([]);
     const res = await axios.get(`${API}/groups/${gid}/users`, {
@@ -80,69 +94,48 @@ export default function UserManagement({ token /* sheetId not required */ }) {
     setGroupMembers(res.data || []);
   };
 
-  // Helper: for a given user id, determine all groups they belong to using existing endpoints
+  // Helper: for a given user id, determine all groups they belong to
   const getGroupsForUser = async (uid) => {
-    // Use /groups then check /groups/:id/users for membership
-    const memberGroupIds = [];
+    const memberGroups = [];
     try {
-      const gRes = await axios.get(`${API}/groups`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const allGroups = gRes.data || [];
-      // Fetch members for each group (sequential to avoid hammering; still fine for admin UI)
-      for (const g of allGroups) {
+      // we already have 'groups' loaded; iterate and check membership
+      for (const g of groups) {
         const mRes = await axios.get(`${API}/groups/${g.id}/users`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         const ms = mRes.data || [];
         if (ms.some((m) => Number(m.id) === Number(uid))) {
-          memberGroupIds.push(g.id);
+          memberGroups.push({ id: g.id, name: g.name });
         }
       }
     } catch (e) {
       console.error("getGroupsForUser failed:", e);
     }
-    return memberGroupIds;
+    return memberGroups;
   };
 
-  // latest 10 sheets for the SELECTED USER (based on their groups)
-  const fetchUserSheets = async (uid) => {
-    if (!uid) { setUserSheets([]); return; }
+  // latest 10 sheets for the SELECTED USER and SELECTED GROUP
+  const fetchUserSheetsForGroup = async (gid) => {
+    if (!gid) { setUserSheets([]); return; }
     try {
-      const gids = await getGroupsForUser(uid);
-      const agg = [];
-      for (const gid of gids) {
-        try {
-          const res = await axios.get(`${API}/groups/${gid}/sheets`, {
-            headers: { Authorization: `Bearer ${token}` },
-          });
-          // Keep group context on each sheet record
-          (res.data || []).forEach((r) => agg.push({ ...r, _group_id: gid }));
-        } catch (e) {
-          console.error("fetchGroupSheets(for user) failed", e);
-        }
-      }
-      // dedupe by sheet id, sort desc, take latest 10
-      const map = new Map();
-      agg.forEach((s) => { map.set(String(s.id), s); });
-      const uniq = Array.from(map.values()).sort(
-        (a, b) => new Date(b.uploaded_at) - new Date(a.uploaded_at)
-      );
-      setUserSheets(uniq.slice(0, 10));
+      const res = await axios.get(`${API}/groups/${gid}/sheets`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const arr = (res.data || []).slice(0, 10); // server already sorts desc by uploaded_at
+      setUserSheets(arr);
     } catch (e) {
-      console.error("fetchUserSheets failed", e);
+      console.error("fetchUserSheetsForGroup failed", e);
       setUserSheets([]);
     }
   };
 
-  // list sheets for selected group
+  // list sheets for selected group (group permissions panel)
   const fetchGroupSheets = async (gid) => {
     if (!gid) { setGroupSheets([]); return; }
     try {
       const res = await axios.get(`${API}/groups/${gid}/sheets`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      // keep them as-is (server already sorts DESC by uploaded_at)
       setGroupSheets((res.data || []).slice(0, 10)); // limit latest 10
     } catch (e) {
       console.error("fetchGroupSheets failed", e);
@@ -208,21 +201,45 @@ export default function UserManagement({ token /* sheetId not required */ }) {
   useEffect(() => {
     fetchUsers();
     fetchGroups();
+    fetchFolders();
   }, []);
 
-  // when user changes, reload their 10 sheets and reset user-perms state
+  // when user changes → load their groups; reset user-perms state
   useEffect(() => {
-    if (selectedUserId) {
-      fetchUserSheets(selectedUserId);
+    (async () => {
+      setSelectedUserGroupId(null);
+      setUserGroupsForSelected([]);
       setSelectedUserSheetId(null);
+      setUserSheets([]);
       setUserSheetHeaders([]);
       setUserAllowedCols(new Set());
       setUserFilterKey(""); setUserFilterVal("");
       setSelectedTplUser("");
-    }
+
+      if (selectedUserId) {
+        const mg = await getGroupsForUser(selectedUserId);
+        setUserGroupsForSelected(mg);
+        // if exactly one group, auto-select it
+        if (mg.length === 1) setSelectedUserGroupId(mg[0].id);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedUserId]);
 
-  // when user sheet changes, load headers and that user's perms for that sheet
+  // when selected user-group changes → load that group's sheets (latest 10) and reset sheet/perms
+  useEffect(() => {
+    setSelectedUserSheetId(null);
+    setUserSheets([]);
+    setUserSheetHeaders([]);
+    setUserAllowedCols(new Set());
+    setUserFilterKey(""); setUserFilterVal("");
+    if (selectedUserGroupId) {
+      fetchUserSheetsForGroup(selectedUserGroupId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedUserGroupId]);
+
+  // when user sheet changes → load headers and that user's perms for that sheet
   useEffect(() => {
     if (selectedUserSheetId && selectedUserId) {
       fetchUserSheetHeaders(selectedUserSheetId);
@@ -234,7 +251,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
     }
   }, [selectedUserSheetId, selectedUserId]);
 
-  // when group changes, reload members & sheets, reset group-perms state
+  // when group changes → reload members & sheets, reset group-perms state
   useEffect(() => {
     if (selectedGroupId) {
       fetchGroupMembers(selectedGroupId);
@@ -247,7 +264,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
     }
   }, [selectedGroupId]);
 
-  // when selected sheet for the group changes, load headers + that group's perms
+  // when selected sheet for the group changes → load headers + that group's perms
   useEffect(() => {
     if (!selectedGroupSheetId || !selectedGroupId) {
       setGroupSheetHeaders([]);
@@ -310,7 +327,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
 
   const saveUserPermissions = async () => {
     if (!selectedUserId || !selectedUserSheetId) {
-      alert("Pick a user and a sheet first.");
+      alert("Pick a user and a group sheet first.");
       return;
     }
     const allowed_columns = Array.from(userAllowedCols);
@@ -399,7 +416,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
   // User panel: save template
   const handleSaveTemplateFromUser = () => {
     if (!newTplNameUser.trim()) { alert("Enter template name"); return; }
-    if (!currentUserSheetGroupId) { alert("Select a sheet (with group) first"); return; }
+    if (!currentUserSheetGroupId) { alert("Select a group & sheet first"); return; }
     const tpl = makeTemplate(
       newTplNameUser,
       Array.from(userAllowedCols),
@@ -434,7 +451,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
     if (selectedTplGroup === tplId) setSelectedTplGroup("");
   };
 
-  // Group panel: save template
+  // Group panel: save/apply template
   const handleSaveTemplateFromGroup = () => {
     if (!newTplNameGroup.trim()) { alert("Enter template name"); return; }
     if (!selectedGroupId) { alert("Select a group first"); return; }
@@ -455,7 +472,6 @@ export default function UserManagement({ token /* sheetId not required */ }) {
     setSelectedTplGroup(tplId);
     const tpl = templates.find(t => t.id === tplId);
     if (!tpl) return;
-    // Intersect template columns with CURRENT sheet headers
     const cols = (tpl.columns || []).filter(c => groupSheetHeaders.includes(c));
     setGroupAllowedCols(new Set(cols));
     const [k, v] = Object.entries(tpl.row_filters || {})[0] || ["", ""];
@@ -568,22 +584,39 @@ export default function UserManagement({ token /* sheetId not required */ }) {
           ))}
         </div>
 
-        {/* user permissions (select SHEET from user's groups, latest 10) */}
+        {/* user permissions (select GROUP, then SHEET from that group, latest 10) */}
         {selectedUserId && (
           <div className="mt-4">
             <h4 className="font-semibold mb-2">
               User Permissions — <span className="text-gray-600">{userById.get(selectedUserId)?.email}</span>
             </h4>
 
-            {/* Sheet selector (latest 10) */}
+            {/* Group selector for the selected user */}
+            <div className="mb-2">
+              <label className="text-sm font-semibold mr-2">Group:</label>
+              <select
+                className="border rounded p-2"
+                value={selectedUserGroupId ?? ""}
+                onChange={(e)=>setSelectedUserGroupId(e.target.value ? Number(e.target.value) : null)}
+              >
+                <option value="">Select a group…</option>
+                {userGroupsForSelected.map(g => (
+                  <option key={g.id} value={g.id}>{g.name}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Sheet selector (latest 10) — from selected group only */}
             <div className="mb-2">
               <label className="text-sm font-semibold mr-2">Sheet:</label>
               <select
                 className="border rounded p-2"
                 value={selectedUserSheetId || ""}
                 onChange={(e)=>setSelectedUserSheetId(e.target.value || null)}
+                disabled={!selectedUserGroupId}
+                title={!selectedUserGroupId ? "Pick a group first" : ""}
               >
-                <option value="">Select a sheet…</option>
+                <option value="">{selectedUserGroupId ? "Select a sheet…" : "Pick a group first"}</option>
                 {userSheets.map(s => (
                   <option key={s.id} value={s.id}>
                     {s.filename} — {s.folder_name || "—"} — {new Date(s.uploaded_at).toLocaleString()}
@@ -604,8 +637,8 @@ export default function UserManagement({ token /* sheetId not required */ }) {
               <button
                 className="bg-gray-700 hover:bg-gray-800 text-white rounded px-3 py-1"
                 onClick={handleSaveTemplateFromUser}
-                disabled={!selectedUserSheetId || !currentUserSheetGroupId}
-                title={selectedUserSheetId ? "Save current selection as a template (group-scoped)" : "Pick a sheet first"}
+                disabled={!selectedUserSheetId || !selectedUserGroupId}
+                title={selectedUserSheetId ? "Save current selection as a template (group-scoped)" : "Pick a group & sheet first"}
               >
                 Save as Template
               </button>
@@ -613,10 +646,11 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                 className="border rounded p-2"
                 value={selectedTplUser}
                 onChange={(e)=>handleApplyTemplateToUser(e.target.value)}
-                disabled={!selectedUserSheetId || !currentUserSheetGroupId}
-                title={selectedUserSheetId ? "Apply a saved template to this sheet" : "Pick a sheet first"}
+                disabled={!selectedUserSheetId || !selectedUserGroupId}
+                title={selectedUserSheetId ? "Apply a saved template to this sheet" : "Pick a group & sheet first"}
               >
                 <option value="">Load template…</option>
+                {/** Only show templates that match the current sheet's group */}
                 {visibleUserTemplates.map(t => (
                   <option key={t.id} value={t.id}>{t.name}</option>
                 ))}
@@ -676,7 +710,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                 </div>
               </>
             ) : (
-              <div className="text-gray-500 mt-2">Select a sheet to configure user permissions.</div>
+              <div className="text-gray-500 mt-2">Select a group and a sheet to configure user permissions.</div>
             )}
           </div>
         )}
@@ -686,6 +720,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
       <div className="bg-white border rounded-xl shadow p-4">
         <h3 className="font-bold text-lg mb-3">Groups</h3>
 
+        {/* You still have Create Group here in User Management (front page dashboard has no create UI) */}
         <div className="flex gap-2 mb-3">
           <input
             className="border rounded p-2 flex-1"
@@ -857,6 +892,59 @@ export default function UserManagement({ token /* sheetId not required */ }) {
         ) : (
           <div className="text-gray-500">Select a group to edit permissions.</div>
         )}
+      </div>
+
+      {/* NEW: FOLDER ↔ GROUP ASSIGNMENT */}
+      <div className="bg-white border rounded-xl shadow p-4 lg:col-span-3">
+        <h3 className="font-bold text-lg mb-3">Folder ↔ Group Assignment</h3>
+        <div className="overflow-auto border rounded">
+          <table className="table-auto border-collapse w-full text-sm">
+            <thead className="bg-gray-100">
+              <tr>
+                <th className="p-2 border text-left">Folder</th>
+                <th className="p-2 border text-left">Current Group</th>
+                <th className="p-2 border text-left">Assign Group</th>
+              </tr>
+            </thead>
+            <tbody>
+              {folders.map(f => (
+                <tr key={f.id} className="odd:bg-white even:bg-gray-50">
+                  <td className="p-2 border">{f.name}</td>
+                  <td className="p-2 border">{f.group_name || "—"}</td>
+                  <td className="p-2 border">
+                    <select
+                      className="border rounded p-1"
+                      value={f.group_id ?? ""}
+                      onChange={async (e) => {
+                        const newGid = e.target.value ? Number(e.target.value) : null;
+                        try {
+                          await axios.patch(`${API}/folders/${f.id}`, { groupId: newGid }, {
+                            headers: { Authorization: `Bearer ${token}` },
+                          });
+                          fetchFolders();
+                          // If this affects currently selected user/group views, refresh those too
+                          if (selectedGroupId) fetchGroupSheets(selectedGroupId);
+                          if (selectedUserGroupId) fetchUserSheetsForGroup(selectedUserGroupId);
+                        } catch (err) {
+                          console.error("update folder->group failed", err);
+                          alert("Could not update folder group");
+                        }
+                      }}
+                    >
+                      <option value="">(no group)</option>
+                      {groups.map(g => (
+                        <option key={g.id} value={g.id}>{g.name}</option>
+                      ))}
+                    </select>
+                  </td>
+                </tr>
+              ))}
+              {!folders.length && (
+                <tr><td className="p-3 text-gray-500" colSpan={3}>No folders.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );

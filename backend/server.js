@@ -1,4 +1,3 @@
-// server.js
 import express from "express";
 import cors from "cors";
 import multer from "multer";
@@ -187,15 +186,6 @@ async function initDb() {
     );
   `);
 
-  // NEW: per-sheet template store (group-style)
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS sheet_templates (
-      sheet_id TEXT PRIMARY KEY,
-      allowed_columns JSONB NOT NULL DEFAULT '[]'::jsonb,
-      row_filters JSONB NOT NULL DEFAULT '{}'::jsonb
-    );
-  `);
-
   // seed admin
   await pool.query(`
     INSERT INTO users (email,password,role)
@@ -235,15 +225,24 @@ app.get("/healthz", (_req, res) =>
   res.json({ ok: true, xlsx: XLSX?.version || "unknown" })
 );
 
+/* ----------------------------------------------------------------------------
+ * GROUP → SHEETS (group-only association)
+ * ------------------------------------------------------------------------- */
 app.get("/groups/:id/sheets", auth, async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
   const gid = Number(req.params.id);
   try {
+    // Only sheets associated with this group:
+    // - in a folder owned by this group, OR
+    // - explicitly referenced by group_permissions for this group.
     const rows = await query(
-      `SELECT s.id, s.filename, s.uploaded_at, s.folder_id, f.name AS folder_name
+      `SELECT DISTINCT s.id, s.filename, s.uploaded_at, s.folder_id, f.name AS folder_name
          FROM sheets s
-         JOIN folders f ON f.id = s.folder_id
-        WHERE f.group_id = $1
+         LEFT JOIN folders f ON f.id = s.folder_id
+         LEFT JOIN group_permissions gp
+                ON gp.sheet_id = s.id
+               AND gp.group_id = $1
+        WHERE (f.group_id = $1) OR (gp.group_id IS NOT NULL)
         ORDER BY s.uploaded_at DESC`,
       [gid]
     );
@@ -391,40 +390,6 @@ app.patch("/sheets/:id", auth, async (req, res) => {
 });
 
 /* ----------------------------------------------------------------------------
- * NEW: per-sheet template endpoints (admin)
- * ------------------------------------------------------------------------- */
-app.get("/sheets/:id/template", auth, async (req, res) => {
-  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-  const sheetId = String(req.params.id);
-  const rows = await query(
-    `SELECT allowed_columns, row_filters FROM sheet_templates WHERE sheet_id = $1 LIMIT 1`,
-    [sheetId]
-  );
-  if (!rows.length) return res.json({ allowed_columns: [], row_filters: {} });
-  const allowed = rows[0].allowed_columns ?? [];
-  const filters = rows[0].row_filters ?? {};
-  res.json({
-    allowed_columns: Array.isArray(allowed) ? allowed : JSON.parse(allowed),
-    row_filters: typeof filters === "object" ? filters : JSON.parse(filters),
-  });
-});
-
-app.post("/sheets/:id/template", auth, async (req, res) => {
-  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-  const sheetId = String(req.params.id);
-  const { allowed_columns, row_filters } = req.body || {};
-  await query(
-    `INSERT INTO sheet_templates (sheet_id, allowed_columns, row_filters)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (sheet_id) DO UPDATE
-     SET allowed_columns = EXCLUDED.allowed_columns,
-         row_filters = EXCLUDED.row_filters`,
-    [sheetId, JSON.stringify(allowed_columns || []), JSON.stringify(row_filters || {})]
-  );
-  res.json({ success: true });
-});
-
-/* ----------------------------------------------------------------------------
  * Load a stored sheet -> current.xlsx + set active
  * ------------------------------------------------------------------------- */
 app.post("/load-sheet", auth, async (req, res) => {
@@ -509,12 +474,11 @@ app.get("/data/:sheetId", auth, async (req, res) => {
       const userId = req.user.id;
       const sheetId = req.params.sheetId;
 
-      // ---- USER OVERRIDES GROUP LOGIC (only change) ----
+      // USER overrides GROUP
       const up = await query(
         "SELECT allowed_columns, row_filters FROM permissions WHERE sheet_id=$1 AND user_id=$2 LIMIT 1",
         [sheetId, userId]
       );
-      // Normalize user perms
       const userAllowedArr = Array.isArray(up[0]?.allowed_columns)
         ? up[0].allowed_columns
         : (up[0]?.allowed_columns ? JSON.parse(up[0].allowed_columns) : []);
@@ -554,9 +518,7 @@ app.get("/data/:sheetId", auth, async (req, res) => {
         }
       }
 
-      // Apply row filters:
-      // - If user has a row_filter, it OVERRIDES any group filters.
-      // - Else, apply combined group filters (AND of all provided).
+      // row filters (user overrides)
       if (userHasFilter) {
         rows = rows.filter(row =>
           Object.entries(userFiltersObj).every(([k, v]) => String(row[k] ?? "") === String(v))
@@ -569,10 +531,7 @@ app.get("/data/:sheetId", auth, async (req, res) => {
         );
       }
 
-      // Apply column restrictions:
-      // - If user has allowed_columns (non-empty), those OVERRIDE and are the only columns shown.
-      // - Else if any group allowed_columns exist, show union of those.
-      // - Else (no user and no group restrictions), show all columns (no reduction).
+      // column restrictions (user overrides)
       if (userHasCols) {
         rows = rows.map(r => {
           const o = {};
@@ -586,7 +545,6 @@ app.get("/data/:sheetId", auth, async (req, res) => {
           return o;
         });
       }
-      // ---- END OVERRIDE LOGIC ----
     }
 
     res.json(rows);
@@ -832,6 +790,23 @@ app.post("/folders", auth, async (req, res) => {
   }
 });
 
+// NEW: update a folder's group association
+app.patch("/folders/:id", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const fid = Number(req.params.id);
+  const { groupId } = req.body || {};
+  try {
+    await query(`UPDATE folders SET group_id = $1 WHERE id = $2`, [groupId ?? null, fid]);
+    res.json({ success: true });
+  } catch (e) {
+    if (e.code === "23505") {
+      return res.status(409).json({ error: "folder_or_group_conflict" });
+    }
+    console.error("folder update failed:", e);
+    res.status(500).json({ error: "folder_update_failed" });
+  }
+});
+
 app.delete("/folders/:id", auth, async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
   const fid = Number(req.params.id);
@@ -878,7 +853,7 @@ app.get("/my-files", auth, async (req, res) => {
 });
 
 /* ----------------------------------------------------------------------------
- * NEW: Folder files listing (admin)
+ * Folder files listing (admin)
  * ------------------------------------------------------------------------- */
 app.get("/folders/:id/files", auth, async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
@@ -899,7 +874,7 @@ app.get("/folders/:id/files", auth, async (req, res) => {
 });
 
 /* ----------------------------------------------------------------------------
- * NEW: Delete a sheet (admin) + remove stored file + cleanup
+ * Delete a sheet (admin) + remove stored file + cleanup
  * ------------------------------------------------------------------------- */
 app.delete("/sheets/:id", auth, async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
@@ -931,7 +906,6 @@ app.delete("/sheets/:id", auth, async (req, res) => {
     // Cleanup permissions
     await query(`DELETE FROM permissions WHERE sheet_id=$1`, [sid]);
     await query(`DELETE FROM group_permissions WHERE sheet_id=$1`, [sid]);
-    await query(`DELETE FROM sheet_templates WHERE sheet_id=$1`, [sid]);
     // Delete sheet
     await query(`DELETE FROM sheets WHERE id=$1`, [sid]);
 
