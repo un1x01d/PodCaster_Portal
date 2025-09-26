@@ -160,12 +160,11 @@ export default function App() {
   const [groups, setGroups] = useState([]);
   const [newFolderGroupId, setNewFolderGroupId] = useState("");
 
-  // My Files modal
-  const [selectOpen, setSelectOpen] = useState(false);
+  // Existing files list (under upload area)
   const [myFiles, setMyFiles] = useState([]);
   const [myFilesLoading, setMyFilesLoading] = useState(false);
 
-  // Admin Folder Files modal
+  // Admin Folder Files modal (still supported; no header table trigger now)
   const [folderFilesOpen, setFolderFilesOpen] = useState(false);
   const [folderFilesLoading, setFolderFilesLoading] = useState(false);
   const [folderFiles, setFolderFiles] = useState([]);
@@ -175,9 +174,6 @@ export default function App() {
   const [condCol1, setCondCol1] = useState("");
   const [condCol2, setCondCol2] = useState("");
   const [valueCol, setValueCol] = useState("");
-
-  // toggle removed, keep state placeholder
-  const [showUsers, setShowUsers] = useState(false);
 
   // Pivot
   const [pivotOn, setPivotOn] = useState(false);
@@ -264,6 +260,46 @@ export default function App() {
     if (token && user) fetchMeta();
   }, [token, user]);
 
+  // --- Existing files
+  const fetchMyFiles = async () => {
+    setMyFilesLoading(true);
+    try {
+      const r = await axios.get(`${API}/my-files`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      // Keep at most 12 for scrolling list
+      setMyFiles((r.data || []).slice(0, 12));
+    } catch (e) {
+      console.error("my-files failed", e);
+      setMyFiles([]);
+    } finally {
+      setMyFilesLoading(false);
+    }
+  };
+  useEffect(() => {
+    if (token && user) fetchMyFiles();
+  }, [token, user]);
+
+  const loadStored = async (id) => {
+    try {
+      await axios.post(`${API}/load-sheet`, { sheetId: id }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const res = await axios.get(`${API}/sheets/active`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.data?.sheetId) {
+        setSheetId(res.data.sheetId);
+        setActiveFilename(res.data.filename || "");
+        setTotalsCol(res.data.totals_column || "");
+        await loadData(res.data.sheetId);
+      }
+    } catch (e) {
+      console.error("load-sheet failed", e);
+      alert("❌ Could not load the selected sheet");
+    }
+  };
+
   // --- Data Load ---
   const loadData = async (sid = sheetId) => {
     if (!sid) return;
@@ -306,6 +342,7 @@ export default function App() {
         setTotalsCol(res.data.totals_column || "");
         await loadData(res.data.sheetId);
       }
+      await fetchMyFiles(); // refresh existing files list
       alert("✅ Upload complete");
     } catch (e) {
       console.error("upload failed", e);
@@ -346,58 +383,7 @@ export default function App() {
     }
   };
 
-  const deleteGroup = async (id) => {
-    if (!window.confirm("Delete this group and its memberships/permissions?")) return;
-    try {
-      await axios.delete(`${API}/groups/${id}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (String(newFolderGroupId) === String(id)) setNewFolderGroupId("");
-      await fetchMeta();
-    } catch (e) {
-      console.error("delete group failed", e);
-      alert("❌ Could not delete group");
-    }
-  };
-
-  // --- My Files modal data
-  const openSelect = async () => {
-    setSelectOpen(true);
-    setMyFilesLoading(true);
-    try {
-      const r = await axios.get(`${API}/my-files`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      setMyFiles(r.data || []);
-    } catch (e) {
-      console.error("my-files failed", e);
-      setMyFiles([]);
-    } finally {
-      setMyFilesLoading(false);
-    }
-  };
-  const loadStored = async (id) => {
-    try {
-      await axios.post(`${API}/load-sheet`, { sheetId: id }, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const res = await axios.get(`${API}/sheets/active`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.data?.sheetId) {
-        setSheetId(res.data.sheetId);
-        setActiveFilename(res.data.filename || "");
-        setTotalsCol(res.data.totals_column || "");
-        await loadData(res.data.sheetId);
-      }
-      setSelectOpen(false);
-    } catch (e) {
-      console.error("load-sheet failed", e);
-      alert("❌ Could not load the selected sheet");
-    }
-  };
-
-  // --- Admin: Folder Files modal helpers
+  // (UI trigger removed per request, but keep helpers and modal)
   const openFolderFiles = async (fid, fname) => {
     setFolderFilesMeta({ id: fid, name: fname });
     setFolderFilesOpen(true);
@@ -407,8 +393,8 @@ export default function App() {
         headers: { Authorization: `Bearer ${token}` },
       });
       setFolderFiles(r.data || []);
-    } catch (e) {
-      console.error("folder files failed", e);
+    } catch (err) {
+      console.error("folder files failed", err);
       setFolderFiles([]);
     } finally {
       setFolderFilesLoading(false);
@@ -421,15 +407,12 @@ export default function App() {
       await axios.delete(`${API}/sheets/${sid}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      // Refresh modal list(s)
+      // Refresh lists
       if (folderFilesOpen) {
         await openFolderFiles(folderFilesMeta.id, folderFilesMeta.name);
       }
-      // Also refresh Select Sheet modal list
-      if (selectOpen) {
-        await openSelect();
-      }
-      // If it was the active sheet, clear UI state
+      await fetchMyFiles();
+      // If it was the active sheet, clear or reload
       if (String(sheetId) === String(sid)) {
         const res = await axios.get(`${API}/sheets/active`, {
           headers: { Authorization: `Bearer ${token}` },
@@ -504,7 +487,7 @@ export default function App() {
     });
     const dynHeaders = Array.from(dynSet).sort();
 
-    const groups = new Map();
+    const groupsMap = new Map();
     (sortedData || []).forEach(r => {
       const rowK = String(r[pivotRowKey] ?? "N/A");
       const colK = String(r[pivotColKey] ?? "N/A");
@@ -513,12 +496,12 @@ export default function App() {
         const num = parseFloat(String(r[pivotValKey] ?? "").replace(/[\$,]/g, ""));
         v = Number.isFinite(num) ? num : 0;
       }
-      if (!groups.has(rowK)) groups.set(rowK, {});
-      const rowObj = groups.get(rowK);
+      if (!groupsMap.has(rowK)) groupsMap.set(rowK, {});
+      const rowObj = groupsMap.get(rowK);
       rowObj[colK] = (rowObj[colK] || 0) + v;
     });
 
-    const outRows = Array.from(groups.entries()).map(([rk, cols]) => {
+    const outRows = Array.from(groupsMap.entries()).map(([rk, cols]) => {
       const o = { [pivotRowKey]: rk };
       let total = 0;
       dynHeaders.forEach(h => {
@@ -538,6 +521,15 @@ export default function App() {
     if (!pivotHeaders?.length || !pivotRowKey) return [];
     return pivotHeaders.filter(h => h !== pivotRowKey && h !== "_Total");
   }, [pivotHeaders, pivotRowKey]);
+
+  // Grand total for pivot table (_Total column)
+  const pivotGrandTotal = React.useMemo(() => {
+    if (!pivotRows?.length) return 0;
+    return pivotRows.reduce((acc, r) => {
+      const v = Number(r._Total);
+      return acc + (Number.isFinite(v) ? v : 0);
+    }, 0);
+  }, [pivotRows]);
 
   const totalsSum = React.useMemo(() => {
     if (!totalsCol) return null;
@@ -599,7 +591,7 @@ export default function App() {
           body: summaryData.map((row) => [
             row[condCol1],
             row[condCol2],
-            row.total,
+            Number(row.total).toFixed(2),
           ]),
         });
       }
@@ -644,7 +636,6 @@ export default function App() {
   const groupOptions = [{ value: "", label: "(no group)" }].concat(
     groups.map(g => ({ value: String(g.id), label: g.name }))
   );
-  const totalsOptions = [{ value: "", label: "Totals column…" }].concat(headerOptions);
 
   const saveTotalsColumn = async (col) => {
     if (!sheetId) return;
@@ -702,14 +693,6 @@ export default function App() {
       <div className="bg-blue-600 text-white px-6 py-4 flex justify-between items-center shadow">
         <h1 className="text-xl font-bold">📊 Dashboard</h1>
         <div className="flex items-center gap-3">
-          {/* Removed inline User Management toggle */}
-          <button
-            onClick={openSelect}
-            className="bg-gray-900 hover:bg-black px-3 py-1 rounded-lg"
-            title="Choose a sheet you have access to"
-          >
-            Select Sheet
-          </button>
           <span className="italic">{user.email}</span>
           <button
             onClick={() => {
@@ -722,7 +705,6 @@ export default function App() {
               setSelectedFileName("");
               setTotalsCol("");
               setCondCol1(""); setCondCol2(""); setValueCol(""); setSortConfig(null);
-              setShowUsers(false);
               setPivotOn(false);
               setPivotRowKey(""); setPivotColKey(""); setPivotValKey(""); setPivotAgg("sum");
             }}
@@ -734,7 +716,7 @@ export default function App() {
       </div>
 
       {/* Controls */}
-      <div className="flex flex-wrap gap-3 p-4 bg-white shadow-sm border-b items-center">
+      <div className="flex flex-wrap gap-3 p-4 bg-white shadow-sm border-b items-start">
         {/* Upload (admin) */}
         {user.role === "admin" && (
           <>
@@ -753,7 +735,7 @@ export default function App() {
               </span>
             </label>
 
-            {/* Folder selection */}
+            {/* Folder selection (kept next to upload) */}
             <SearchableSelect
               options={folderOptions}
               value={selectedFolderId}
@@ -792,58 +774,6 @@ export default function App() {
                 Add Folder
               </button>
             </div>
-
-            {/* Compact lists with delete actions + NEW Files button */}
-            <div className="flex flex-wrap gap-6 items-start ml-4">
-              {/* Folders list */}
-              <div>
-                <div className="text-sm font-semibold mb-1">Folders</div>
-                <div className="max-h-36 overflow-auto border rounded p-2 w-96 bg-gray-50">
-                  {folders.length ? folders.map(f => (
-                    <div key={f.id} className="flex justify-between items-center py-1 gap-2">
-                      <span className="truncate" title={`${f.name}${f.group_name ? ` — ${f.group_name}` : ""}`}>
-                        {f.name}{f.group_name ? ` — ${f.group_name}` : ""}
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <button
-                          className="text-blue-600 hover:text-blue-700 px-2"
-                          title="Manage files in this folder"
-                          onClick={() => openFolderFiles(f.id, f.name)}
-                        >
-                          Files
-                        </button>
-                        <button
-                          className="text-red-600 hover:text-red-700 px-2"
-                          title="Delete folder"
-                          onClick={() => deleteFolder(f.id)}
-                        >
-                          🗑️
-                        </button>
-                      </div>
-                    </div>
-                  )) : <div className="text-gray-500 text-sm">No folders</div>}
-                </div>
-              </div>
-
-              {/* Groups list */}
-              <div>
-                <div className="text-sm font-semibold mb-1">Groups</div>
-                <div className="max-h-36 overflow-auto border rounded p-2 w-64 bg-gray-50">
-                  {groups.length ? groups.map(g => (
-                    <div key={g.id} className="flex justify-between items-center py-1">
-                      <span className="truncate" title={g.name}>{g.name}</span>
-                      <button
-                        className="text-red-600 hover:text-red-700 px-2"
-                        title="Delete group"
-                        onClick={() => deleteGroup(g.id)}
-                      >
-                        🗑️
-                      </button>
-                    </div>
-                  )) : <div className="text-gray-500 text-sm">No groups</div>}
-                </div>
-              </div>
-            </div>
           </>
         )}
 
@@ -854,34 +784,12 @@ export default function App() {
           Refresh
         </button>
 
-        {/* Export buttons */}
-        <div className="flex gap-3 ml-0 md:ml-6">
-          <button
-            onClick={exportCSV}
-            className="bg-gray-600 hover:bg-gray-700 text-white px-3 py-2 rounded-lg"
-          >
-            Download CSV
-          </button>
-          <button
-            onClick={exportXLSX}
-            className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-2 rounded-lg"
-          >
-            Download XLSX
-          </button>
-          <button
-            onClick={exportPDF}
-            className="bg-red-600 hover:bg-red-700 text-white px-3 py-2 rounded-lg"
-          >
-            Download PDF
-          </button>
-        </div>
-
         {/* Totals column (admin, persisted per sheet) */}
         {user.role === "admin" && (
           <div className="ml-auto flex items-center gap-2">
             <span className="text-sm text-gray-600">Totals:</span>
             <SearchableSelect
-              options={headerOptions.length ? [{ value: "", label: "Totals column…" }, ...headerOptions] : [{ value:"", label:"Totals column…"}]}
+              options={headers.length ? [{ value: "", label: "Totals column…" }, ...headers.map(h=>({value:h,label:h}))] : [{ value:"", label:"Totals column…"}]}
               value={totalsCol}
               onChange={(e)=>saveTotalsColumn(e.target.value)}
               placeholder="Totals column…"
@@ -890,16 +798,17 @@ export default function App() {
           </div>
         )}
 
-        {/* Pivot Controls */}
-        <div className="flex flex-wrap gap-3 items-center ml-4">
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={pivotOn}
-              onChange={(e) => setPivotOn(e.target.checked)}
-            />
-            <span className="font-semibold">Pivot mode</span>
-          </label>
+        {/* Pivot Controls (visible to all users) */}
+        <div className="w-full flex flex-wrap gap-3 items-center mt-3">
+          <button
+            onClick={() => setPivotOn(p => !p)}
+            className={`px-3 py-2 rounded font-semibold ${
+              pivotOn ? "bg-purple-600 text-white" : "bg-gray-200 hover:bg-gray-300"
+            }`}
+            title="Toggle Pivot mode"
+          >
+            {pivotOn ? "Pivot: On" : "Pivot: Off"}
+          </button>
 
           {pivotOn && (
             <>
@@ -965,7 +874,66 @@ export default function App() {
         </div>
       </div>
 
-      {/* 👉 Pivot (Chart + Table) — moved ABOVE Two-Condition section */}
+      {/* Existing Files list (shows ~5 rows height, scroll to 12 items) */}
+      <div className="px-4 pt-2 pb-0">
+        <div className="bg-white rounded-xl border shadow-sm p-3">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="font-semibold">📂 Existing Files</h3>
+            <button
+              className="text-sm px-2 py-1 border rounded hover:bg-gray-50"
+              onClick={fetchMyFiles}
+              title="Refresh list"
+            >
+              Refresh
+            </button>
+          </div>
+          {myFilesLoading ? (
+            <div>Loading…</div>
+          ) : myFiles.length ? (
+            <div className="overflow-auto max-h-52">
+              <table className="table-auto border-collapse w-full text-sm">
+                <thead className="bg-gray-100">
+                  <tr>
+                    <th className="p-2 border text-left">Filename</th>
+                    <th className="p-2 border text-left">Folder</th>
+                    <th className="p-2 border text-left">Uploaded</th>
+                    <th className="p-2 border"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {myFiles.slice(0, 12).map(f => (
+                    <tr key={f.id} className="odd:bg-white even:bg-gray-50">
+                      <td className="p-2 border">{f.filename}</td>
+                      <td className="p-2 border">{f.folder_name || "—"}</td>
+                      <td className="p-2 border">{new Date(f.uploaded_at).toLocaleString()}</td>
+                      <td className="p-2 border space-x-2">
+                        <button
+                          onClick={() => loadStored(f.id)}
+                          className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded"
+                        >
+                          Load
+                        </button>
+                        {user.role === "admin" && (
+                          <button
+                            onClick={() => deleteSheet(f.id)}
+                            className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded"
+                          >
+                            Delete
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="text-gray-500">No files found.</div>
+          )}
+        </div>
+      </div>
+
+      {/* Pivot (Chart + Table) — always on top of analytics */}
       {pivotOn && (
         <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200">
           <div className="p-3 font-semibold">📌 Pivot</div>
@@ -982,8 +950,8 @@ export default function App() {
                 <BarChart data={pivotRows}>
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey={pivotRowKey} />
-                  <YAxis />
-                  <Tooltip />
+                  <YAxis tickFormatter={fmt2} />
+                  <Tooltip formatter={(v) => fmt2(v)} />
                   <Legend />
                   <defs>
                     <linearGradient id="pivotOrange" x1="0" y1="0" x2="0" y2="1">
@@ -1003,7 +971,7 @@ export default function App() {
             </div>
           )}
 
-          {/* Pivot Table */}
+          {/* Pivot Table with Grand Total footer (2 decimals) */}
           {pivotRows.length ? (
             <div className="overflow-auto px-3 pb-3">
               <table className="table-auto border-collapse w-full text-sm">
@@ -1019,23 +987,42 @@ export default function App() {
                 <tbody>
                   {pivotRows.map((row, i) => (
                     <tr key={i} className="odd:bg-gray-50 even:bg-white">
-                      {pivotHeaders.map((h) => (
-                        <td key={h} className="p-2 border whitespace-nowrap">
-                          {Number.isFinite(row[h])
-                            ? row[h].toLocaleString()
-                            : row[h]}
-                        </td>
-                      ))}
+                      {pivotHeaders.map((h) => {
+                        const val = row[h];
+                        const display =
+                          typeof val === "number" ? fmt2(val) : val;
+                        return (
+                          <td key={h} className="p-2 border whitespace-nowrap">
+                            {display}
+                          </td>
+                        );
+                      })}
                     </tr>
                   ))}
                 </tbody>
+                <tfoot>
+                  <tr className="bg-orange-100 font-semibold">
+                    {pivotHeaders.map((h, idx) => {
+                      const isTotalCol = h === "_Total";
+                      return (
+                        <td key={h} className="p-2 border whitespace-nowrap">
+                          {isTotalCol
+                            ? fmt2(pivotGrandTotal)
+                            : idx === 0
+                              ? "Grand Total"
+                              : ""}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                </tfoot>
               </table>
             </div>
           ) : null}
         </div>
       )}
 
-      {/* Two-Condition Controls & Chart — now BELOW Pivot */}
+      {/* Two-Condition Controls & Chart — below Pivot */}
       <div className="p-4 bg-white border-t border-gray-200">
         <h2 className="text-lg font-bold mb-2">📊 Two-Condition Summary</h2>
         <div className="flex gap-4 mb-4 flex-wrap">
@@ -1115,7 +1102,7 @@ export default function App() {
                     <td className="p-2 border">{row[condCol1]}</td>
                     <td className="p-2 border">{row[condCol2]}</td>
                     <td className="p-2 border font-semibold">
-                      ${row.total.toLocaleString()}
+                      ${fmt2(row.total)}
                     </td>
                   </tr>
                 ))}
@@ -1184,69 +1171,12 @@ export default function App() {
           </>
         ) : (
           <div className="text-gray-500 text-center py-10">
-            📂 Use <b>Select Sheet</b> to pick a file you have access to, or upload (admin).
+            📂 Load a file from <b>Existing Files</b> above, or upload (admin).
           </div>
         )}
       </div>
 
-      {/* Inline User Management (Admin) — removed per request */}
-      {/* {user.role === "admin" && showUsers && (
-        <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200">
-          <UserManagement token={token} sheetId={sheetId} />
-        </div>
-      )} */}
-
-      {/* Select Sheet Modal (all users) */}
-      <Modal open={selectOpen} onClose={() => setSelectOpen(false)} title="Select a Sheet">
-        {myFilesLoading ? (
-          <div>Loading…</div>
-        ) : myFiles.length ? (
-          <div className="overflow-auto">
-            <table className="table-auto border-collapse w-full text-sm">
-              <thead className="bg-gray-100">
-                <tr>
-                  <th className="p-2 border text-left">Filename</th>
-                  <th className="p-2 border text-left">Folder</th>
-                  <th className="p-2 border text-left">Uploaded</th>
-                  <th className="p-2 border text-left">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {myFiles.map(f => (
-                  <tr key={f.id} className="odd:bg-white even:bg-gray-50">
-                    <td className="p-2 border">{f.filename}</td>
-                    <td className="p-2 border">{f.folder_name || "—"}</td>
-                    <td className="p-2 border">{new Date(f.uploaded_at).toLocaleString()}</td>
-                    <td className="p-2 border">
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => loadStored(f.id)}
-                          className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded"
-                        >
-                          Load
-                        </button>
-                        {user.role === "admin" && (
-                          <button
-                            onClick={() => deleteSheet(f.id)}
-                            className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded"
-                            title="Delete file (admin)"
-                          >
-                            Delete
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="text-gray-500">No files found.</div>
-        )}
-      </Modal>
-
-      {/* Admin Folder Files Modal */}
+      {/* Admin Folder Files Modal (still available if you wire a trigger later) */}
       <Modal
         open={folderFilesOpen}
         onClose={() => setFolderFilesOpen(false)}
