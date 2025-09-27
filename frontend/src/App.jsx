@@ -156,9 +156,6 @@ export default function App() {
   // folders (admin upload only)
   const [folders, setFolders] = useState([]);
   const [selectedFolderId, setSelectedFolderId] = useState("");
-  const newFolderNameRef = useRef(null);
-  const [groups, setGroups] = useState([]);
-  const [newFolderGroupId, setNewFolderGroupId] = useState("");
 
   // My Files modal
   const [selectOpen, setSelectOpen] = useState(false);
@@ -175,6 +172,7 @@ export default function App() {
   const [condCol1, setCondCol1] = useState("");
   const [condCol2, setCondCol2] = useState("");
   const [valueCol, setValueCol] = useState("");
+  const [twoOn, setTwoOn] = useState(false);
 
   // Pivot
   const [pivotOn, setPivotOn] = useState(false);
@@ -247,12 +245,8 @@ export default function App() {
   const fetchMeta = async () => {
     if (user?.role !== "admin") return;
     try {
-      const [fRes, gRes] = await Promise.all([
-        axios.get(`${API}/folders`, { headers: { Authorization: `Bearer ${token}` } }),
-        axios.get(`${API}/groups`, { headers: { Authorization: `Bearer ${token}` } }),
-      ]);
+      const fRes = await axios.get(`${API}/folders`, { headers: { Authorization: `Bearer ${token}` } });
       setFolders(fRes.data || []);
-      setGroups(gRes.data || []);
     } catch (e) {
       console.error("meta fetch failed", e);
     }
@@ -279,9 +273,13 @@ export default function App() {
   // --- File Upload (Admin only) ---
   const handleUpload = async () => {
     if (!file) return;
+    if (!selectedFolderId) {
+      alert("Please select a folder before uploading.");
+      return;
+    }
     const formData = new FormData();
     formData.append("file", file);
-    if (selectedFolderId) formData.append("folderId", String(selectedFolderId));
+    formData.append("folderId", String(selectedFolderId));
     try {
       const uploadRes = await axios.post(`${API}/upload`, formData, {
         headers: {
@@ -292,7 +290,8 @@ export default function App() {
 
       setCondCol1(""); setCondCol2(""); setValueCol("");
       setSortConfig(null);
-      setPivotOn(false); setPivotRowKey(""); setPivotColKey(""); setPivotValKey(""); setPivotAgg("sum");
+      setPivotOn(false); setTwoOn(false);
+      setPivotRowKey(""); setPivotColKey(""); setPivotValKey(""); setPivotAgg("sum");
 
       const res = await axios.get(`${API}/sheets/active`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -357,7 +356,7 @@ export default function App() {
     }
   };
 
-  // --- Admin: Folder Files modal helpers
+  // Admin: Folder Files modal helpers
   const openFolderFiles = async (fid, fname) => {
     setFolderFilesMeta({ id: fid, name: fname });
     setFolderFilesOpen(true);
@@ -425,7 +424,7 @@ export default function App() {
   const requestSort = (key) => {
     let direction = "asc";
     if (sortConfig && sortConfig.key === key && sortConfig.direction === "asc") {
-    direction = "desc";
+      direction = "desc";
     }
     setSortConfig({ key, direction });
   };
@@ -447,9 +446,10 @@ export default function App() {
     return Object.values(map);
   }, [condCol1, condCol2, valueCol, sortedData]);
 
-  // Pivot compute
+  // Pivot compute (compute when keys exist; do NOT gate on pivotOn)
   const { pivotHeaders, pivotRows } = React.useMemo(() => {
-    if (!pivotOn || !pivotRowKey || !pivotColKey) return { pivotHeaders: [], pivotRows: [] };
+    if (!pivotRowKey || !pivotColKey) return { pivotHeaders: [], pivotRows: [] };
+
     const dynSet = new Set();
     (sortedData || []).forEach(r => {
       const k = r[pivotColKey];
@@ -485,7 +485,7 @@ export default function App() {
 
     const headers2 = [pivotRowKey, ...dynHeaders, "_Total"];
     return { pivotHeaders: headers2, pivotRows: outRows };
-  }, [pivotOn, pivotRowKey, pivotColKey, pivotValKey, pivotAgg, sortedData]);
+  }, [pivotRowKey, pivotColKey, pivotValKey, pivotAgg, sortedData]);
 
   const pivotSeriesKeys = React.useMemo(() => {
     if (!pivotHeaders?.length || !pivotRowKey) return [];
@@ -588,14 +588,11 @@ export default function App() {
   };
 
   const headerOptions = headers.map(h => ({ value: h, label: h }));
-  const folderOptions = [{ value: "", label: "Folder (optional)…" }].concat(
+  const folderOptions = [{ value: "", label: "Folder (required)…" }].concat(
     folders.map(f => ({
       value: String(f.id),
-      label: `${f.name}${f.group_name ? ` — ${f.group_name}` : ""}`,
+      label: f.name,
     }))
-  );
-  const groupOptions = [{ value: "", label: "(no group)" }].concat(
-    groups.map(g => ({ value: String(g.id), label: g.name }))
   );
 
   const saveTotalsColumn = async (col) => {
@@ -614,13 +611,13 @@ export default function App() {
   // --- Login Page ---
   if (!token || !user) {
     return (
-      <div className="w-screen flex items-center justify-center bg-gradient-to-br from-blue-100 to-indigo-200">
+      <div className="w-full min-h-0 flex items-center justify-center bg-gradient-to-br from-blue-100 to-indigo-200 py-16">
         <form
           onSubmit={handleLogin}
           className="bg-white shadow-lg rounded-xl p-8 w-96 border"
         >
           <h2 className="text-2xl font-bold mb-6 text-center text-gray-700">
-            🔐 Podcaster Portal
+            🔐 Universal Analytics
           </h2>
           <input
             type="email"
@@ -638,7 +635,7 @@ export default function App() {
           />
           <button
             type="submit"
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg font-semibold"
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg font-semibold h-11"
           >
             Login
           </button>
@@ -649,14 +646,14 @@ export default function App() {
 
   // --- Dashboard ---
   const Dashboard = () => (
-    <div className="w-full flex flex-col bg-gray-50">
-      {/* Top Bar (darker green, white text) */}
+    <div className="w-full bg-gray-50">
+      {/* Top Bar */}
       <div className="bg-green-700 text-white px-6 py-4 flex justify-between items-center shadow">
         <h1 className="text-xl font-bold">📊 Dashboard</h1>
         <div className="flex items-center gap-3">
           <button
             onClick={openSelect}
-            className="bg-gray-900 hover:bg-black px-3 py-1 rounded-lg"
+            className="bg-gray-900 hover:bg-black px-3 py-1 rounded-lg h-10"
             title="Choose a sheet you have access to"
           >
             Select Sheet
@@ -674,21 +671,28 @@ export default function App() {
               setTotalsCol("");
               setCondCol1(""); setCondCol2(""); setValueCol(""); setSortConfig(null);
               setPivotOn(false);
+              setTwoOn(false);
               setPivotRowKey(""); setPivotColKey(""); setPivotValKey(""); setPivotAgg("sum");
             }}
-            className="bg-red-500 hover:bg-red-600 px-3 py-1 rounded-lg"
+            className="bg-red-500 hover:bg-red-600 px-3 py-1 rounded-lg h-10"
           >
             Logout
           </button>
         </div>
       </div>
 
+      {/* Top header line menu (light green) */}
+      <nav className="bg-green-200 text-gray-900 p-3 flex gap-4">
+        <Link to="/">Dashboard</Link>
+        {user?.role === "admin" && <Link to="/users">Manage Users</Link>}
+      </nav>
+
       {/* Controls */}
       <div className="flex flex-wrap gap-3 p-4 bg-white shadow-sm border-b items-center">
         {/* Upload (admin) */}
         {user.role === "admin" && (
           <>
-            <label className="flex items-center gap-3 border rounded p-2 bg-gray-50">
+            <label className="flex items-center gap-3 border rounded p-2 bg-gray-50 h-10">
               <input
                 type="file"
                 onChange={(e) => {
@@ -703,18 +707,24 @@ export default function App() {
               </span>
             </label>
 
-            {/* Folder selection */}
+            {/* Folder selection (required) */}
             <SearchableSelect
               options={folderOptions}
               value={selectedFolderId}
               onChange={(e)=>setSelectedFolderId(e.target.value)}
-              placeholder="Folder (optional)…"
+              placeholder="Folder (required)…"
               className="ml-1"
+              buttonClassName="border p-2 rounded min-w-[14rem] bg-white h-10"
             />
 
             <button
               onClick={handleUpload}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg"
+              disabled={!file || !selectedFolderId}
+              className={`${!file || !selectedFolderId
+                ? "bg-gray-300 cursor-not-allowed"
+                : "bg-blue-600 hover:bg-blue-700"
+              } text-white px-4 rounded-lg h-10`}
+              title={!file ? "Choose a file" : !selectedFolderId ? "Select a folder" : "Upload & Load"}
             >
               Upload & Load
             </button>
@@ -723,38 +733,48 @@ export default function App() {
 
         <button
           onClick={() => loadData()}
-          className="bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded-lg"
+          className="bg-green-600 hover:bg-green-700 text-white px-3 rounded-lg h-10"
         >
           Refresh
         </button>
 
-        {/* Export buttons + Pivot toggle */}
+        {/* Export buttons + Toggles */}
         <div className="flex gap-3 ml-0 md:ml-6 items-center">
           <button
             onClick={exportCSV}
-            className="bg-gray-600 hover:bg-gray-700 text-white px-3 py-2 rounded-lg"
+            className="bg-gray-600 hover:bg-gray-700 text-white px-3 rounded-lg h-10"
           >
             Download CSV
           </button>
           <button
             onClick={exportXLSX}
-            className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-2 rounded-lg"
+            className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 rounded-lg h-10"
           >
             Download XLSX
           </button>
           <button
             onClick={exportPDF}
-            className="bg-red-600 hover:bg-red-700 text-white px-3 py-2 rounded-lg"
+            className="bg-red-600 hover:bg-red-700 text-white px-3 rounded-lg h-10"
           >
             Download PDF
           </button>
 
+          {/* Pivot toggle */}
           <button
             onClick={() => setPivotOn((p) => !p)}
-            className="px-3 py-2 rounded-lg font-semibold bg-orange-500 text-white"
+            className="px-3 rounded-lg font-semibold bg-orange-500 text-white h-10"
             title="Toggle Pivot mode"
           >
             {pivotOn ? "Pivot: ON" : "Pivot: OFF"}
+          </button>
+
+          {/* Two-Condition toggle */}
+          <button
+            onClick={() => setTwoOn((t) => !t)}
+            className="px-3 rounded-lg font-semibold bg-green-600 text-white h-10"
+            title="Toggle Two-Condition summary"
+          >
+            {twoOn ? "2-Cond: ON" : "2-Cond: OFF"}
           </button>
         </div>
 
@@ -763,183 +783,95 @@ export default function App() {
           <div className="ml-auto flex items-center gap-2">
             <span className="text-sm text-gray-600">Totals:</span>
             <SearchableSelect
-              options={headers.length ? [{ value: "", label: "Totals column…" }, ...headers.map(h=>({value:h,label:h}))] : [{ value:"", label:"Totals column…"}]}
+              options={headers.length ? [{ value: "", label: "Totals column…" }, ...headerOptions] : [{ value:"", label:"Totals column…"}]}
               value={totalsCol}
               onChange={(e)=>saveTotalsColumn(e.target.value)}
               placeholder="Totals column…"
               panelWidth={260}
+              buttonClassName="border p-2 rounded min-w-[12rem] bg-white h-10"
             />
           </div>
         )}
       </div>
 
-      {/* Pivot Controls (visible only when ON) */}
+      {/* Pivot Controls */}
       {pivotOn && (
-        <div className="flex flex-wrap gap-3 items-center p-4 bg-white border-b">
-          <SearchableSelect
-            options={[{ value: "", label: "Row key…" }, ...headers.map(h => ({ value: h, label: h }))]}
-            value={pivotRowKey}
-            onChange={(e) => setPivotRowKey(e.target.value)}
-            placeholder="Row key…"
-          />
+        <div className="p-4 bg-orange-50 border-y border-orange-200">
+          <div className="flex flex-wrap items-end gap-3">
+            <SearchableSelect
+              options={[{ value: "", label: "Row key…" }, ...headers.map(h => ({ value: h, label: h }))]}
+              value={pivotRowKey}
+              onChange={(e) => setPivotRowKey(e.target.value)}
+              placeholder="Row key…"
+              buttonClassName="border p-2 rounded min-w-[14rem] bg-white h-10"
+            />
 
-          <SearchableSelect
-            options={[{ value: "", label: "Dynamic header…" }, ...headers.map(h => ({ value: h, label: h }))]}
-            value={pivotColKey}
-            onChange={(e) => setPivotColKey(e.target.value)}
-            placeholder="Dynamic header…"
-          />
+            <SearchableSelect
+              options={[{ value: "", label: "Dynamic header…" }, ...headers.map(h => ({ value: h, label: h }))]}
+              value={pivotColKey}
+              onChange={(e) => setPivotColKey(e.target.value)}
+              placeholder="Dynamic header…"
+              buttonClassName="border p-2 rounded min-w-[14rem] bg-white h-10"
+            />
 
-          <SearchableSelect
-            options={[{ value: "", label: pivotAgg === "count" ? "— (count)" : "Value…" }, ...headers.map(h => ({ value: h, label: h }))]}
-            value={pivotValKey}
-            onChange={(e) => setPivotValKey(e.target.value)}
-            placeholder={pivotAgg === "count" ? "— (count)" : "Value…"}
-            disabled={pivotAgg === "count"}
-          />
+            <SearchableSelect
+              options={[{ value: "", label: pivotAgg === "count" ? "— (count)" : "Value…" }, ...headers.map(h => ({ value: h, label: h }))]}
+              value={pivotValKey}
+              onChange={(e) => setPivotValKey(e.target.value)}
+              placeholder={pivotAgg === "count" ? "— (count)" : "Value…"}
+              disabled={pivotAgg === "count"}
+              buttonClassName="border p-2 rounded min-w-[14rem] bg-white h-10"
+            />
 
-          <SearchableSelect
-            options={[
-              { value: "sum", label: "sum" },
-              { value: "count", label: "count" },
-            ]}
-            value={pivotAgg}
-            onChange={(e) => setPivotAgg(e.target.value)}
-            placeholder="Aggregation…"
-            panelWidth={180}
-          />
+            <SearchableSelect
+              options={[
+                { value: "sum", label: "sum" },
+                { value: "count", label: "count" },
+              ]}
+              value={pivotAgg}
+              onChange={(e) => setPivotAgg(e.target.value)}
+              placeholder="Aggregation…"
+              panelWidth={180}
+              buttonClassName="border p-2 rounded min-w-[10rem] bg-white h-10"
+            />
 
-          <button
-            onClick={() => {
-              if (!pivotOn || !pivotRows.length) return;
-              try {
-                const wb = XLSX.utils.book_new();
-                const ws = XLSX.utils.json_to_sheet(pivotRows, { header: pivotHeaders });
-                XLSX.utils.book_append_sheet(wb, ws, "Pivot");
-                XLSX.writeFile(wb, "pivot.xlsx");
-              } catch (e) {
-                console.error("Pivot export failed:", e);
-              }
-            }}
-            className={`px-3 py-2 rounded ${pivotRows.length ? "bg-purple-600 text-white" : "bg-gray-300 cursor-not-allowed"}`}
-          >
-            Export Pivot
-          </button>
+            <div className="flex gap-2 ml-auto">
+              <button
+                onClick={() => {
+                  if (!pivotRows.length) return;
+                  try {
+                    const wb = XLSX.utils.book_new();
+                    const ws = XLSX.utils.json_to_sheet(pivotRows, { header: pivotHeaders });
+                    XLSX.utils.book_append_sheet(wb, ws, "Pivot");
+                    XLSX.writeFile(wb, "pivot.xlsx");
+                  } catch (e) {
+                    console.error("Pivot export failed:", e);
+                  }
+                }}
+                className={`px-3 rounded h-10 ${pivotRows.length ? "bg-orange-500 text-white" : "bg-gray-300 cursor-not-allowed text-gray-700"}`}
+                title={pivotRows.length ? "Export Pivot" : "Nothing to export yet"}
+              >
+                Export Pivot
+              </button>
 
-          <button
-            onClick={resetPivot}
-            className="px-3 py-2 bg-gray-200 hover:bg-gray-300 rounded text-sm"
-            title="Clear Row key / Dynamic header / Value (keeps Pivot mode on)"
-          >
-            Reset
-          </button>
+              <button
+                onClick={resetPivot}
+                className="px-3 bg-white border border-orange-300 rounded h-10"
+                title="Clear Row key / Dynamic header / Value (keeps Pivot mode on)"
+              >
+                Reset
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
-      {/* Two-Condition Controls & Chart */}
-      <div className="p-4 bg-white border-t border-gray-200">
-        <h2 className="text-lg font-bold mb-2">📊 Two-Condition Summary</h2>
-        <div className="flex gap-4 mb-4 flex-wrap">
-          <div>
-            <label className="block text-sm font-semibold">Condition 1:</label>
-            <SearchableSelect
-              options={[{value:"",label:"-- Select --"}, ...headers.map(h=>({value:h,label:h}))]}
-              value={condCol1}
-              onChange={(e)=>setCondCol1(e.target.value)}
-              placeholder="-- Select --"
-              className="w-64"
-              panelWidth={280}
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-semibold">Condition 2:</label>
-            <SearchableSelect
-              options={[{value:"",label:"-- Select --"}, ...headers.map(h=>({value:h,label:h}))]}
-              value={condCol2}
-              onChange={(e)=>setCondCol2(e.target.value)}
-              placeholder="-- Select --"
-              className="w-64"
-              panelWidth={280}
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-semibold">Value Column:</label>
-            <SearchableSelect
-              options={[{value:"",label:"-- Select --"}, ...headers.map(h=>({value:h,label:h}))]}
-              value={valueCol}
-              onChange={(e)=>setValueCol(e.target.value)}
-              placeholder="-- Select --"
-              className="w-64"
-              panelWidth={280}
-            />
-          </div>
-
-          <button
-            onClick={resetSummary}
-            className="h-10 self-end px-3 py-2 bg-gray-200 hover:bg-gray-300 rounded text-sm"
-            title="Clear Condition 1, Condition 2, and Value"
-          >
-            Reset
-          </button>
-        </div>
-
-        {condCol1 && condCol2 && valueCol && summaryData?.length > 0 ? (
-          <>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={summaryData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey={condCol2} />
-                <YAxis tickFormatter={fmt2} />
-                <Tooltip formatter={(val) => fmt2(val)} />
-                <Legend />
-                <defs>
-                  <linearGradient id="twoCondGreen" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#16a34a" stopOpacity={0.9} />
-                    <stop offset="95%" stopColor="#86efac" stopOpacity={0.25} />
-                  </linearGradient>
-                </defs>
-                <Bar dataKey="total" fill="url(#twoCondGreen)" />
-              </BarChart>
-            </ResponsiveContainer>
-
-            <table className="table-auto border-collapse w-full text-sm mt-6">
-              <thead className="bg-green-600 text-white">
-                <tr>
-                  <th className="p-2 border">{condCol1}</th>
-                  <th className="p-2 border">{condCol2}</th>
-                  <th className="p-2 border">Total {valueCol}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {summaryData.map((row, i) => (
-                  <tr key={i} className="odd:bg-gray-50 even:bg-white">
-                    <td className="p-2 border">{row[condCol1]}</td>
-                    <td className="p-2 border">{row[condCol2]}</td>
-                    <td className="p-2 border font-semibold">
-                      ${row.total.toLocaleString()}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </>
-        ) : (
-          <p className="text-gray-500">
-            ℹ️ Select two conditions and a value column to see results.
-          </p>
-        )}
-      </div>
-
-      {/* Pivot (Chart + Table) */}
+      {/* Pivot Chart + Table */}
       {pivotOn && (
         <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200">
           <div className="p-3 font-semibold">📌 Pivot</div>
 
-          {pivotRowKey &&
-           pivotColKey &&
-           (pivotAgg === "count" || pivotValKey) &&
-           pivotRows.length > 0 &&
-           pivotSeriesKeys.length > 0 ? (
+          {pivotRowKey && pivotColKey && (pivotAgg === "count" || pivotValKey) && pivotRows.length > 0 && pivotSeriesKeys.length > 0 ? (
             <div className="px-3 pb-3">
               <ResponsiveContainer width="100%" height={320}>
                 <BarChart data={pivotRows}>
@@ -962,7 +894,7 @@ export default function App() {
             </div>
           ) : (
             <div className="text-xs text-gray-500 px-3 pb-3">
-              Select Row/Dynamic/Value to render.
+              Select Row / Dynamic / Value to render.
             </div>
           )}
 
@@ -983,9 +915,7 @@ export default function App() {
                     <tr key={i} className="odd:bg-gray-50 even:bg-white">
                       {pivotHeaders.map((h) => (
                         <td key={h} className="p-2 border whitespace-nowrap">
-                          {Number.isFinite(row[h])
-                            ? row[h].toLocaleString()
-                            : row[h]}
+                          {Number.isFinite(row[h]) ? row[h].toLocaleString() : row[h]}
                         </td>
                       ))}
                     </tr>
@@ -997,8 +927,97 @@ export default function App() {
         </div>
       )}
 
+      {/* Two-Condition Controls & Chart — only when ON */}
+      {twoOn && (
+        <div className="p-4 bg-green-50 border-t border-green-200">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-bold text-green-800">📊 Two-Condition Summary</h2>
+            <button
+              onClick={resetSummary}
+              className="px-3 bg-white border border-green-300 rounded h-10 text-sm"
+              title="Clear Condition 1, Condition 2, and Value"
+            >
+              Reset
+            </button>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-3 sm:grid-cols-2 grid-cols-1 items-end">
+            <SearchableSelect
+              options={[{value:"",label:"-- Select --"}, ...headers.map(h=>({value:h,label:h}))]}
+              value={condCol1}
+              onChange={(e)=>setCondCol1(e.target.value)}
+              placeholder="Condition 1…"
+              buttonClassName="border p-2 rounded min-w-[14rem] bg-white h-10"
+              panelWidth={280}
+            />
+            <SearchableSelect
+              options={[{value:"",label:"-- Select --"}, ...headers.map(h=>({value:h,label:h}))]}
+              value={condCol2}
+              onChange={(e)=>setCondCol2(e.target.value)}
+              placeholder="Condition 2…"
+              buttonClassName="border p-2 rounded min-w-[14rem] bg-white h-10"
+              panelWidth={280}
+            />
+            <SearchableSelect
+              options={[{value:"",label:"-- Select --"}, ...headers.map(h=>({value:h,label:h}))]}
+              value={valueCol}
+              onChange={(e)=>setValueCol(e.target.value)}
+              placeholder="Value column…"
+              buttonClassName="border p-2 rounded min-w-[14rem] bg-white h-10"
+              panelWidth={280}
+            />
+          </div>
+
+          {condCol1 && condCol2 && valueCol && summaryData?.length > 0 ? (
+            <div className="mt-4">
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={summaryData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey={condCol2} />
+                  <YAxis tickFormatter={fmt2} />
+                  <Tooltip formatter={(val) => fmt2(val)} />
+                  <Legend />
+                  <defs>
+                    <linearGradient id="twoCondGreen" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#16a34a" stopOpacity={0.9} />
+                      <stop offset="95%" stopColor="#86efac" stopOpacity={0.25} />
+                    </linearGradient>
+                  </defs>
+                  <Bar dataKey="total" fill="url(#twoCondGreen)" />
+                </BarChart>
+              </ResponsiveContainer>
+
+              <table className="table-auto border-collapse w-full text-sm mt-6">
+                <thead className="bg-green-600 text-white">
+                  <tr>
+                    <th className="p-2 border">{condCol1}</th>
+                    <th className="p-2 border">{condCol2}</th>
+                    <th className="p-2 border">Total {valueCol}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {summaryData.map((row, i) => (
+                    <tr key={i} className="odd:bg-gray-50 even:bg-white">
+                      <td className="p-2 border">{row[condCol1]}</td>
+                      <td className="p-2 border">{row[condCol2]}</td>
+                      <td className="p-2 border font-semibold">
+                        ${row.total.toLocaleString()}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="text-gray-600 mt-3">
+              ℹ️ Select two conditions and a value column to see results.
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Data Table */}
-      <div className="overflow-auto m-4 bg-white rounded-xl shadow-lg border border-gray-200">
+      <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200">
         {sortedData?.length > 0 ? (
           <>
             <div className="p-3 text-sm text-gray-600">
@@ -1160,11 +1179,6 @@ export default function App() {
 
   return (
     <Router>
-      {/* Top header line menu → light green */}
-      <nav className="bg-green-200 text-gray-900 p-3 flex gap-4">
-        <Link to="/">Dashboard</Link>
-        {user?.role === "admin" && <Link to="/users">Manage Users</Link>}
-      </nav>
       <Routes>
         <Route path="/" element={<Dashboard />} />
         {user?.role === "admin" && (
