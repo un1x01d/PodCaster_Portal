@@ -160,11 +160,12 @@ export default function App() {
   const [groups, setGroups] = useState([]);
   const [newFolderGroupId, setNewFolderGroupId] = useState("");
 
-  // Existing files list (under upload area)
+  // My Files modal
+  const [selectOpen, setSelectOpen] = useState(false);
   const [myFiles, setMyFiles] = useState([]);
   const [myFilesLoading, setMyFilesLoading] = useState(false);
 
-  // Admin Folder Files modal (still supported; no header table trigger now)
+  // Admin Folder Files modal
   const [folderFilesOpen, setFolderFilesOpen] = useState(false);
   const [folderFilesLoading, setFolderFilesLoading] = useState(false);
   const [folderFiles, setFolderFiles] = useState([]);
@@ -260,46 +261,6 @@ export default function App() {
     if (token && user) fetchMeta();
   }, [token, user]);
 
-  // --- Existing files
-  const fetchMyFiles = async () => {
-    setMyFilesLoading(true);
-    try {
-      const r = await axios.get(`${API}/my-files`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      // Keep at most 12 for scrolling list
-      setMyFiles((r.data || []).slice(0, 12));
-    } catch (e) {
-      console.error("my-files failed", e);
-      setMyFiles([]);
-    } finally {
-      setMyFilesLoading(false);
-    }
-  };
-  useEffect(() => {
-    if (token && user) fetchMyFiles();
-  }, [token, user]);
-
-  const loadStored = async (id) => {
-    try {
-      await axios.post(`${API}/load-sheet`, { sheetId: id }, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const res = await axios.get(`${API}/sheets/active`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.data?.sheetId) {
-        setSheetId(res.data.sheetId);
-        setActiveFilename(res.data.filename || "");
-        setTotalsCol(res.data.totals_column || "");
-        await loadData(res.data.sheetId);
-      }
-    } catch (e) {
-      console.error("load-sheet failed", e);
-      alert("❌ Could not load the selected sheet");
-    }
-  };
-
   // --- Data Load ---
   const loadData = async (sid = sheetId) => {
     if (!sid) return;
@@ -342,7 +303,6 @@ export default function App() {
         setTotalsCol(res.data.totals_column || "");
         await loadData(res.data.sheetId);
       }
-      await fetchMyFiles(); // refresh existing files list
       alert("✅ Upload complete");
     } catch (e) {
       console.error("upload failed", e);
@@ -350,40 +310,54 @@ export default function App() {
     }
   };
 
-  // --- Create folder (admin)
-  const createFolder = async () => {
-    const name = newFolderNameRef.current?.value?.trim() || "";
-    if (!name) return;
+  // --- My Files modal data
+  const openSelect = async () => {
+    setSelectOpen(true);
+    setMyFilesLoading(true);
     try {
-      await axios.post(`${API}/folders`, {
-        name,
-        groupId: newFolderGroupId ? Number(newFolderGroupId) : null,
-      }, { headers: { Authorization: `Bearer ${token}` }});
-      if (newFolderNameRef.current) newFolderNameRef.current.value = "";
-      setNewFolderGroupId("");
-      await fetchMeta();
-      alert("✅ Folder created");
-    } catch (e) {
-      console.error("create folder failed", e);
-      alert("❌ Could not create folder (name or group already used?)");
-    }
-  };
-
-  const deleteFolder = async (id) => {
-    if (!window.confirm("Delete this folder?")) return;
-    try {
-      await axios.delete(`${API}/folders/${id}`, {
+      const r = await axios.get(`${API}/my-files`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (String(selectedFolderId) === String(id)) setSelectedFolderId("");
-      await fetchMeta();
+      setMyFiles(r.data || []);
     } catch (e) {
-      console.error("delete folder failed", e);
-      alert("❌ Could not delete folder");
+      console.error("my-files failed", e);
+      setMyFiles([]);
+    } finally {
+      setMyFilesLoading(false);
+    }
+  };
+  const refreshMyFiles = async () => {
+    try {
+      const r = await axios.get(`${API}/my-files`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setMyFiles(r.data || []);
+    } catch (e) {
+      console.error("refresh my-files failed", e);
+    }
+  };
+  const loadStored = async (id) => {
+    try {
+      await axios.post(`${API}/load-sheet`, { sheetId: id }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const res = await axios.get(`${API}/sheets/active`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.data?.sheetId) {
+        setSheetId(res.data.sheetId);
+        setActiveFilename(res.data.filename || "");
+        setTotalsCol(res.data.totals_column || "");
+        await loadData(res.data.sheetId);
+      }
+      setSelectOpen(false);
+    } catch (e) {
+      console.error("load-sheet failed", e);
+      alert("❌ Could not load the selected sheet");
     }
   };
 
-  // (UI trigger removed per request, but keep helpers and modal)
+  // --- Admin: Folder Files modal helpers
   const openFolderFiles = async (fid, fname) => {
     setFolderFilesMeta({ id: fid, name: fname });
     setFolderFilesOpen(true);
@@ -393,8 +367,8 @@ export default function App() {
         headers: { Authorization: `Bearer ${token}` },
       });
       setFolderFiles(r.data || []);
-    } catch (err) {
-      console.error("folder files failed", err);
+    } catch (e) {
+      console.error("folder files failed", e);
       setFolderFiles([]);
     } finally {
       setFolderFilesLoading(false);
@@ -407,12 +381,8 @@ export default function App() {
       await axios.delete(`${API}/sheets/${sid}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      // Refresh lists
-      if (folderFilesOpen) {
-        await openFolderFiles(folderFilesMeta.id, folderFilesMeta.name);
-      }
-      await fetchMyFiles();
-      // If it was the active sheet, clear or reload
+      if (folderFilesOpen) await openFolderFiles(folderFilesMeta.id, folderFilesMeta.name);
+      if (selectOpen) await refreshMyFiles();
       if (String(sheetId) === String(sid)) {
         const res = await axios.get(`${API}/sheets/active`, {
           headers: { Authorization: `Bearer ${token}` },
@@ -431,7 +401,7 @@ export default function App() {
         }
       }
     } catch (e) {
-      console.error("delete sheet failed", e);
+      console.error("delete sheet failed:", e);
       alert("❌ Could not delete file");
     }
   };
@@ -455,7 +425,7 @@ export default function App() {
   const requestSort = (key) => {
     let direction = "asc";
     if (sortConfig && sortConfig.key === key && sortConfig.direction === "asc") {
-      direction = "desc";
+    direction = "desc";
     }
     setSortConfig({ key, direction });
   };
@@ -487,7 +457,7 @@ export default function App() {
     });
     const dynHeaders = Array.from(dynSet).sort();
 
-    const groupsMap = new Map();
+    const groups = new Map();
     (sortedData || []).forEach(r => {
       const rowK = String(r[pivotRowKey] ?? "N/A");
       const colK = String(r[pivotColKey] ?? "N/A");
@@ -496,12 +466,12 @@ export default function App() {
         const num = parseFloat(String(r[pivotValKey] ?? "").replace(/[\$,]/g, ""));
         v = Number.isFinite(num) ? num : 0;
       }
-      if (!groupsMap.has(rowK)) groupsMap.set(rowK, {});
-      const rowObj = groupsMap.get(rowK);
+      if (!groups.has(rowK)) groups.set(rowK, {});
+      const rowObj = groups.get(rowK);
       rowObj[colK] = (rowObj[colK] || 0) + v;
     });
 
-    const outRows = Array.from(groupsMap.entries()).map(([rk, cols]) => {
+    const outRows = Array.from(groups.entries()).map(([rk, cols]) => {
       const o = { [pivotRowKey]: rk };
       let total = 0;
       dynHeaders.forEach(h => {
@@ -521,15 +491,6 @@ export default function App() {
     if (!pivotHeaders?.length || !pivotRowKey) return [];
     return pivotHeaders.filter(h => h !== pivotRowKey && h !== "_Total");
   }, [pivotHeaders, pivotRowKey]);
-
-  // Grand total for pivot table (_Total column)
-  const pivotGrandTotal = React.useMemo(() => {
-    if (!pivotRows?.length) return 0;
-    return pivotRows.reduce((acc, r) => {
-      const v = Number(r._Total);
-      return acc + (Number.isFinite(v) ? v : 0);
-    }, 0);
-  }, [pivotRows]);
 
   const totalsSum = React.useMemo(() => {
     if (!totalsCol) return null;
@@ -591,7 +552,7 @@ export default function App() {
           body: summaryData.map((row) => [
             row[condCol1],
             row[condCol2],
-            Number(row.total).toFixed(2),
+            row.total,
           ]),
         });
       }
@@ -653,7 +614,7 @@ export default function App() {
   // --- Login Page ---
   if (!token || !user) {
     return (
-      <div className="w-screen h-screen flex items-center justify-center bg-gradient-to-br from-blue-100 to-indigo-200">
+      <div className="w-screen flex items-center justify-center bg-gradient-to-br from-blue-100 to-indigo-200">
         <form
           onSubmit={handleLogin}
           className="bg-white shadow-lg rounded-xl p-8 w-96 border"
@@ -688,11 +649,18 @@ export default function App() {
 
   // --- Dashboard ---
   const Dashboard = () => (
-    <div className="w-screen h-screen flex flex-col bg-gray-50">
-      {/* Top Bar */}
-      <div className="bg-blue-600 text-white px-6 py-4 flex justify-between items-center shadow">
+    <div className="w-full flex flex-col bg-gray-50">
+      {/* Top Bar (darker green, white text) */}
+      <div className="bg-green-700 text-white px-6 py-4 flex justify-between items-center shadow">
         <h1 className="text-xl font-bold">📊 Dashboard</h1>
         <div className="flex items-center gap-3">
+          <button
+            onClick={openSelect}
+            className="bg-gray-900 hover:bg-black px-3 py-1 rounded-lg"
+            title="Choose a sheet you have access to"
+          >
+            Select Sheet
+          </button>
           <span className="italic">{user.email}</span>
           <button
             onClick={() => {
@@ -716,7 +684,7 @@ export default function App() {
       </div>
 
       {/* Controls */}
-      <div className="flex flex-wrap gap-3 p-4 bg-white shadow-sm border-b items-start">
+      <div className="flex flex-wrap gap-3 p-4 bg-white shadow-sm border-b items-center">
         {/* Upload (admin) */}
         {user.role === "admin" && (
           <>
@@ -735,7 +703,7 @@ export default function App() {
               </span>
             </label>
 
-            {/* Folder selection (kept next to upload) */}
+            {/* Folder selection */}
             <SearchableSelect
               options={folderOptions}
               value={selectedFolderId}
@@ -750,30 +718,6 @@ export default function App() {
             >
               Upload & Load
             </button>
-
-            {/* Quick create folder */}
-            <div className="flex items-center gap-2 ml-2">
-              <input
-                ref={newFolderNameRef}
-                className="border rounded p-2 w-44"
-                placeholder="New folder name"
-                autoComplete="off"
-              />
-              <SearchableSelect
-                options={groupOptions}
-                value={newFolderGroupId}
-                onChange={(e)=>setNewFolderGroupId(e.target.value)}
-                placeholder="(no group)"
-                panelWidth={220}
-              />
-              <button
-                onClick={createFolder}
-                className="bg-gray-700 hover:bg-gray-800 text-white px-3 py-2 rounded"
-                title="Create folder and (optionally) assign to a group"
-              >
-                Add Folder
-              </button>
-            </div>
           </>
         )}
 
@@ -783,6 +727,36 @@ export default function App() {
         >
           Refresh
         </button>
+
+        {/* Export buttons + Pivot toggle */}
+        <div className="flex gap-3 ml-0 md:ml-6 items-center">
+          <button
+            onClick={exportCSV}
+            className="bg-gray-600 hover:bg-gray-700 text-white px-3 py-2 rounded-lg"
+          >
+            Download CSV
+          </button>
+          <button
+            onClick={exportXLSX}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-2 rounded-lg"
+          >
+            Download XLSX
+          </button>
+          <button
+            onClick={exportPDF}
+            className="bg-red-600 hover:bg-red-700 text-white px-3 py-2 rounded-lg"
+          >
+            Download PDF
+          </button>
+
+          <button
+            onClick={() => setPivotOn((p) => !p)}
+            className="px-3 py-2 rounded-lg font-semibold bg-orange-500 text-white"
+            title="Toggle Pivot mode"
+          >
+            {pivotOn ? "Pivot: ON" : "Pivot: OFF"}
+          </button>
+        </div>
 
         {/* Totals column (admin, persisted per sheet) */}
         {user.role === "admin" && (
@@ -797,232 +771,72 @@ export default function App() {
             />
           </div>
         )}
+      </div>
 
-        {/* Pivot Controls (visible to all users) */}
-        <div className="w-full flex flex-wrap gap-3 items-center mt-3">
+      {/* Pivot Controls (visible only when ON) */}
+      {pivotOn && (
+        <div className="flex flex-wrap gap-3 items-center p-4 bg-white border-b">
+          <SearchableSelect
+            options={[{ value: "", label: "Row key…" }, ...headers.map(h => ({ value: h, label: h }))]}
+            value={pivotRowKey}
+            onChange={(e) => setPivotRowKey(e.target.value)}
+            placeholder="Row key…"
+          />
+
+          <SearchableSelect
+            options={[{ value: "", label: "Dynamic header…" }, ...headers.map(h => ({ value: h, label: h }))]}
+            value={pivotColKey}
+            onChange={(e) => setPivotColKey(e.target.value)}
+            placeholder="Dynamic header…"
+          />
+
+          <SearchableSelect
+            options={[{ value: "", label: pivotAgg === "count" ? "— (count)" : "Value…" }, ...headers.map(h => ({ value: h, label: h }))]}
+            value={pivotValKey}
+            onChange={(e) => setPivotValKey(e.target.value)}
+            placeholder={pivotAgg === "count" ? "— (count)" : "Value…"}
+            disabled={pivotAgg === "count"}
+          />
+
+          <SearchableSelect
+            options={[
+              { value: "sum", label: "sum" },
+              { value: "count", label: "count" },
+            ]}
+            value={pivotAgg}
+            onChange={(e) => setPivotAgg(e.target.value)}
+            placeholder="Aggregation…"
+            panelWidth={180}
+          />
+
           <button
-            onClick={() => setPivotOn(p => !p)}
-            className={`px-3 py-2 rounded font-semibold ${
-              pivotOn ? "bg-purple-600 text-white" : "bg-gray-200 hover:bg-gray-300"
-            }`}
-            title="Toggle Pivot mode"
+            onClick={() => {
+              if (!pivotOn || !pivotRows.length) return;
+              try {
+                const wb = XLSX.utils.book_new();
+                const ws = XLSX.utils.json_to_sheet(pivotRows, { header: pivotHeaders });
+                XLSX.utils.book_append_sheet(wb, ws, "Pivot");
+                XLSX.writeFile(wb, "pivot.xlsx");
+              } catch (e) {
+                console.error("Pivot export failed:", e);
+              }
+            }}
+            className={`px-3 py-2 rounded ${pivotRows.length ? "bg-purple-600 text-white" : "bg-gray-300 cursor-not-allowed"}`}
           >
-            {pivotOn ? "Pivot: On" : "Pivot: Off"}
+            Export Pivot
           </button>
 
-          {pivotOn && (
-            <>
-              <SearchableSelect
-                options={[{ value: "", label: "Row key…" }, ...headers.map(h => ({ value: h, label: h }))]}
-                value={pivotRowKey}
-                onChange={(e) => setPivotRowKey(e.target.value)}
-                placeholder="Row key…"
-              />
-
-              <SearchableSelect
-                options={[{ value: "", label: "Dynamic header…" }, ...headers.map(h => ({ value: h, label: h }))]}
-                value={pivotColKey}
-                onChange={(e) => setPivotColKey(e.target.value)}
-                placeholder="Dynamic header…"
-              />
-
-              <SearchableSelect
-                options={[{ value: "", label: pivotAgg === "count" ? "— (count)" : "Value…" }, ...headers.map(h => ({ value: h, label: h }))]}
-                value={pivotValKey}
-                onChange={(e) => setPivotValKey(e.target.value)}
-                placeholder={pivotAgg === "count" ? "— (count)" : "Value…"}
-                disabled={pivotAgg === "count"}
-              />
-
-              <SearchableSelect
-                options={[
-                  { value: "sum", label: "sum" },
-                  { value: "count", label: "count" },
-                ]}
-                value={pivotAgg}
-                onChange={(e) => setPivotAgg(e.target.value)}
-                placeholder="Aggregation…"
-                panelWidth={180}
-              />
-
-              <button
-                onClick={() => {
-                  if (!pivotOn || !pivotRows.length) return;
-                  try {
-                    const wb = XLSX.utils.book_new();
-                    const ws = XLSX.utils.json_to_sheet(pivotRows, { header: pivotHeaders });
-                    XLSX.utils.book_append_sheet(wb, ws, "Pivot");
-                    XLSX.writeFile(wb, "pivot.xlsx");
-                  } catch (e) {
-                    console.error("Pivot export failed:", e);
-                  }
-                }}
-                className={`px-3 py-2 rounded ${pivotRows.length ? "bg-purple-600 text-white" : "bg-gray-300 cursor-not-allowed"}`}
-              >
-                Export Pivot
-              </button>
-
-              <button
-                onClick={resetPivot}
-                className="px-3 py-2 bg-gray-200 hover:bg-gray-300 rounded text-sm"
-                title="Clear Row key / Dynamic header / Value (keeps Pivot mode on)"
-              >
-                Reset
-              </button>
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* Existing Files list (shows ~5 rows height, scroll to 12 items) */}
-      <div className="px-4 pt-2 pb-0">
-        <div className="bg-white rounded-xl border shadow-sm p-3">
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="font-semibold">📂 Existing Files</h3>
-            <button
-              className="text-sm px-2 py-1 border rounded hover:bg-gray-50"
-              onClick={fetchMyFiles}
-              title="Refresh list"
-            >
-              Refresh
-            </button>
-          </div>
-          {myFilesLoading ? (
-            <div>Loading…</div>
-          ) : myFiles.length ? (
-            <div className="overflow-auto max-h-52">
-              <table className="table-auto border-collapse w-full text-sm">
-                <thead className="bg-gray-100">
-                  <tr>
-                    <th className="p-2 border text-left">Filename</th>
-                    <th className="p-2 border text-left">Folder</th>
-                    <th className="p-2 border text-left">Uploaded</th>
-                    <th className="p-2 border"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {myFiles.slice(0, 12).map(f => (
-                    <tr key={f.id} className="odd:bg-white even:bg-gray-50">
-                      <td className="p-2 border">{f.filename}</td>
-                      <td className="p-2 border">{f.folder_name || "—"}</td>
-                      <td className="p-2 border">{new Date(f.uploaded_at).toLocaleString()}</td>
-                      <td className="p-2 border space-x-2">
-                        <button
-                          onClick={() => loadStored(f.id)}
-                          className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded"
-                        >
-                          Load
-                        </button>
-                        {user.role === "admin" && (
-                          <button
-                            onClick={() => deleteSheet(f.id)}
-                            className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded"
-                          >
-                            Delete
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="text-gray-500">No files found.</div>
-          )}
-        </div>
-      </div>
-
-      {/* Pivot (Chart + Table) — always on top of analytics */}
-      {pivotOn && (
-        <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200">
-          <div className="p-3 font-semibold">📌 Pivot</div>
-
-          {/* Pivot Chart */}
-          {pivotOn &&
-           pivotRowKey &&
-           pivotColKey &&
-           (pivotAgg === "count" || pivotValKey) &&
-           pivotRows.length > 0 &&
-           pivotSeriesKeys.length > 0 ? (
-            <div className="px-3 pb-3">
-              <ResponsiveContainer width="100%" height={320}>
-                <BarChart data={pivotRows}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey={pivotRowKey} />
-                  <YAxis tickFormatter={fmt2} />
-                  <Tooltip formatter={(v) => fmt2(v)} />
-                  <Legend />
-                  <defs>
-                    <linearGradient id="pivotOrange" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#f97316" stopOpacity={0.9} />
-                      <stop offset="95%" stopColor="#fdba74" stopOpacity={0.25} />
-                    </linearGradient>
-                  </defs>
-                  {pivotSeriesKeys.map((k) => (
-                    <Bar key={k} dataKey={k} stackId="pivot" fill="url(#pivotOrange)" />
-                  ))}
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          ) : (
-            <div className="text-xs text-gray-500 px-3 pb-3">
-              Select Row/Dynamic/Value to render.
-            </div>
-          )}
-
-          {/* Pivot Table with Grand Total footer (2 decimals) */}
-          {pivotRows.length ? (
-            <div className="overflow-auto px-3 pb-3">
-              <table className="table-auto border-collapse w-full text-sm">
-                <thead className="bg-orange-500 text-white">
-                  <tr>
-                    {pivotHeaders.map((h) => (
-                      <th key={h} className="p-2 border text-left whitespace-nowrap">
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {pivotRows.map((row, i) => (
-                    <tr key={i} className="odd:bg-gray-50 even:bg-white">
-                      {pivotHeaders.map((h) => {
-                        const val = row[h];
-                        const display =
-                          typeof val === "number" ? fmt2(val) : val;
-                        return (
-                          <td key={h} className="p-2 border whitespace-nowrap">
-                            {display}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-                <tfoot>
-                  <tr className="bg-orange-100 font-semibold">
-                    {pivotHeaders.map((h, idx) => {
-                      const isTotalCol = h === "_Total";
-                      return (
-                        <td key={h} className="p-2 border whitespace-nowrap">
-                          {isTotalCol
-                            ? fmt2(pivotGrandTotal)
-                            : idx === 0
-                              ? "Grand Total"
-                              : ""}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
-          ) : null}
+          <button
+            onClick={resetPivot}
+            className="px-3 py-2 bg-gray-200 hover:bg-gray-300 rounded text-sm"
+            title="Clear Row key / Dynamic header / Value (keeps Pivot mode on)"
+          >
+            Reset
+          </button>
         </div>
       )}
 
-      {/* Two-Condition Controls & Chart — below Pivot */}
+      {/* Two-Condition Controls & Chart */}
       <div className="p-4 bg-white border-t border-gray-200">
         <h2 className="text-lg font-bold mb-2">📊 Two-Condition Summary</h2>
         <div className="flex gap-4 mb-4 flex-wrap">
@@ -1102,7 +916,7 @@ export default function App() {
                     <td className="p-2 border">{row[condCol1]}</td>
                     <td className="p-2 border">{row[condCol2]}</td>
                     <td className="p-2 border font-semibold">
-                      ${fmt2(row.total)}
+                      ${row.total.toLocaleString()}
                     </td>
                   </tr>
                 ))}
@@ -1116,15 +930,82 @@ export default function App() {
         )}
       </div>
 
+      {/* Pivot (Chart + Table) */}
+      {pivotOn && (
+        <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200">
+          <div className="p-3 font-semibold">📌 Pivot</div>
+
+          {pivotRowKey &&
+           pivotColKey &&
+           (pivotAgg === "count" || pivotValKey) &&
+           pivotRows.length > 0 &&
+           pivotSeriesKeys.length > 0 ? (
+            <div className="px-3 pb-3">
+              <ResponsiveContainer width="100%" height={320}>
+                <BarChart data={pivotRows}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey={pivotRowKey} />
+                  <YAxis />
+                  <Tooltip />
+                  <Legend />
+                  <defs>
+                    <linearGradient id="pivotOrange" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#f97316" stopOpacity={0.9} />
+                      <stop offset="95%" stopColor="#fdba74" stopOpacity={0.25} />
+                    </linearGradient>
+                  </defs>
+                  {pivotSeriesKeys.map((k) => (
+                    <Bar key={k} dataKey={k} stackId="pivot" fill="url(#pivotOrange)" />
+                  ))}
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <div className="text-xs text-gray-500 px-3 pb-3">
+              Select Row/Dynamic/Value to render.
+            </div>
+          )}
+
+          {pivotRows.length ? (
+            <div className="overflow-auto px-3 pb-3">
+              <table className="table-auto border-collapse w-full text-sm">
+                <thead className="bg-orange-500 text-white">
+                  <tr>
+                    {pivotHeaders.map((h) => (
+                      <th key={h} className="p-2 border text-left whitespace-nowrap">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {pivotRows.map((row, i) => (
+                    <tr key={i} className="odd:bg-gray-50 even:bg-white">
+                      {pivotHeaders.map((h) => (
+                        <td key={h} className="p-2 border whitespace-nowrap">
+                          {Number.isFinite(row[h])
+                            ? row[h].toLocaleString()
+                            : row[h]}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </div>
+      )}
+
       {/* Data Table */}
-      <div className="flex-1 overflow-auto m-4 bg-white rounded-xl shadow-lg border border-gray-200">
+      <div className="overflow-auto m-4 bg-white rounded-xl shadow-lg border border-gray-200">
         {sortedData?.length > 0 ? (
           <>
             <div className="p-3 text-sm text-gray-600">
               {activeFilename ? <>Loaded: <b>{activeFilename}</b></> : "No sheet loaded"}
             </div>
             <table className="table-auto border-collapse w-full text-sm">
-              <thead className="sticky top-0 bg-blue-700 text-white shadow-sm">
+              <thead className="sticky top-0 bg-green-700 text-white shadow-sm">
                 <tr>
                   {headers.map((h) => (
                     <th
@@ -1171,12 +1052,69 @@ export default function App() {
           </>
         ) : (
           <div className="text-gray-500 text-center py-10">
-            📂 Load a file from <b>Existing Files</b> above, or upload (admin).
+            📂 Use <b>Select Sheet</b> to pick a file you have access to, or upload (admin).
           </div>
         )}
       </div>
 
-      {/* Admin Folder Files Modal (still available if you wire a trigger later) */}
+      {/* Select Sheet / Delete Files Modal */}
+      <Modal
+        open={selectOpen}
+        onClose={() => setSelectOpen(false)}
+        title={user.role === "admin" ? "Select or Delete a Sheet" : "Select a Sheet"}
+      >
+        {myFilesLoading ? (
+          <div>Loading…</div>
+        ) : myFiles.length ? (
+          <div className="overflow-auto">
+            <table className="table-auto border-collapse w-full text-sm">
+              <thead className="bg-gray-100">
+                <tr>
+                  <th className="p-2 border text-left">Filename</th>
+                  <th className="p-2 border text-left">Folder</th>
+                  <th className="p-2 border text-left">Uploaded</th>
+                  <th className="p-2 border"></th>
+                  {user.role === "admin" && <th className="p-2 border"></th>}
+                </tr>
+              </thead>
+              <tbody>
+                {myFiles.map(f => (
+                  <tr key={f.id} className="odd:bg-white even:bg-gray-50">
+                    <td className="p-2 border">{f.filename}</td>
+                    <td className="p-2 border">{f.folder_name || "—"}</td>
+                    <td className="p-2 border">{new Date(f.uploaded_at).toLocaleString()}</td>
+                    <td className="p-2 border">
+                      <button
+                        onClick={() => loadStored(f.id)}
+                        className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded"
+                      >
+                        Load
+                      </button>
+                    </td>
+                    {user.role === "admin" && (
+                      <td className="p-2 border">
+                        <button
+                          onClick={async () => {
+                            await deleteSheet(f.id);
+                            await refreshMyFiles();
+                          }}
+                          className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded"
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="text-gray-500">No files found.</div>
+        )}
+      </Modal>
+
+      {/* Admin Folder Files Modal */}
       <Modal
         open={folderFilesOpen}
         onClose={() => setFolderFilesOpen(false)}
@@ -1222,9 +1160,10 @@ export default function App() {
 
   return (
     <Router>
-      <nav className="bg-gray-800 text-white p-3 flex gap-4">
+      {/* Top header line menu → light green */}
+      <nav className="bg-green-200 text-gray-900 p-3 flex gap-4">
         <Link to="/">Dashboard</Link>
-        {user?.role === "admin" && <Link to="/users">Manage Users (legacy)</Link>}
+        {user?.role === "admin" && <Link to="/users">Manage Users</Link>}
       </nav>
       <Routes>
         <Route path="/" element={<Dashboard />} />
