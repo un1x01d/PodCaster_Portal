@@ -1,5 +1,5 @@
 // App.jsx
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useLayoutEffect } from "react";
 import { BrowserRouter as Router, Routes, Route, Link } from "react-router-dom";
 import axios from "axios";
 import {
@@ -11,6 +11,9 @@ import {
   Tooltip,
   Legend,
   ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell,
 } from "recharts";
 import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
@@ -83,7 +86,7 @@ function SearchableSelect({
       {open && !disabled && (
         <div
           ref={panelRef}
-          className="absolute z-50 mt-1 bg-white border rounded shadow-lg p-2"
+          className="absolute z-50 mt-1 bg-white border border-gray-200 rounded-xl shadow-xl p-2"
           style={{ width: panelWidth }}
         >
           <input
@@ -91,15 +94,15 @@ function SearchableSelect({
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Type to search…"
-            className="w-full border rounded px-2 py-1 mb-2"
+            className="w-full border border-gray-200 rounded-md px-2 py-1 mb-2 focus:outline-none focus:ring focus:ring-emerald-100"
           />
           <div className="max-h-56 overflow-auto">
             {filtered.length ? (
               filtered.map((o) => (
                 <div
                   key={String(o.value)}
-                  className={`px-2 py-1 rounded cursor-pointer hover:bg-blue-50 ${
-                    String(o.value) === String(value) ? "bg-blue-100" : ""
+                  className={`px-2 py-1 rounded-md cursor-pointer hover:bg-emerald-50 ${
+                    String(o.value) === String(value) ? "bg-emerald-100" : ""
                   }`}
                   title={o.label}
                   onClick={() => {
@@ -127,15 +130,212 @@ function Modal({ open, onClose, title, children, widthClass = "max-w-3xl" }) {
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
       <div
-        className={`relative bg-white rounded-xl shadow-xl w-[95vw] ${widthClass} max-h-[85vh] overflow-auto`}
+        className={`relative bg-white rounded-2xl shadow-2xl w-[95vw] ${widthClass} max-h-[85vh] overflow-auto border border-gray-100`}
       >
-        <div className="p-4 border-b flex items-center justify-between">
-          <div className="font-bold">{title}</div>
-          <button onClick={onClose} className="text-gray-600 hover:text-black">
+        <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-emerald-50 to-white">
+          <div className="font-bold text-gray-900">{title}</div>
+          <button
+            onClick={onClose}
+            className="text-gray-700 hover:text-black rounded-md px-2 py-1 hover:bg-gray-100"
+          >
             ✕
           </button>
         </div>
         <div className="p-4">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Column Filter Menu ---------------- */
+function ColumnFilterMenu({
+  anchorMapRef,
+  columnKey,
+  column,
+  allValues = [],
+  appliedSelected = null,
+  onApply,
+  onClear,
+  onClose,
+}) {
+  const panelRef = useRef(null);
+  const [q, setQ] = useState("");
+  const [coords, setCoords] = useState({ top: 0, left: 0 });
+  const [measured, setMeasured] = useState(false);
+
+  const values = Array.isArray(allValues) ? allValues : [];
+
+  const [localSet, setLocalSet] = useState(() => {
+    if (appliedSelected && appliedSelected.size > 0) {
+      return new Set([...appliedSelected]);
+    }
+    return new Set(values.map((v) => String(v)));
+  });
+
+  const [allChecked, setAllChecked] = useState(
+    !appliedSelected || appliedSelected.size === values.length
+  );
+
+  const shown = q
+    ? values.filter((v) => String(v).toLowerCase().includes(q.toLowerCase()))
+    : values;
+
+  const placeMenu = () => {
+    const a = anchorMapRef?.current?.[columnKey];
+    if (!a) return false;
+    const r = a.getBoundingClientRect();
+    if (!r || (r.left === 0 && r.right === 0 && r.top === 0 && r.bottom === 0)) return false;
+
+    const menuWidth = 256;
+    const pad = 8;
+    let left = r.left;
+    if (left + menuWidth + pad > window.innerWidth) {
+      left = Math.max(pad, window.innerWidth - menuWidth - pad);
+    }
+    const top = r.bottom + 6;
+    setCoords({ top, left });
+    setMeasured(true);
+    return true;
+  };
+
+  useLayoutEffect(() => {
+    let ok = placeMenu();
+    if (!ok) {
+      const id = requestAnimationFrame(() => placeMenu());
+      return () => cancelAnimationFrame(id);
+    }
+  }, [anchorMapRef, columnKey]);
+
+  useEffect(() => {
+    const onWin = () => placeMenu();
+    window.addEventListener("resize", onWin);
+    window.addEventListener("scroll", onWin, true);
+    return () => {
+      window.removeEventListener("resize", onWin);
+      window.removeEventListener("scroll", onWin, true);
+    };
+  }, []);
+
+  useEffect(() => {
+    function onDocClick(e) {
+      const p = panelRef.current;
+      const a = anchorMapRef?.current?.[columnKey];
+      if (!p || !a) return;
+      if (p.contains(e.target) || a.contains(e.target)) return;
+      onClose?.();
+    }
+    function onEsc(e) {
+      if (e.key === "Escape") onClose?.();
+    }
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onEsc);
+    };
+  }, [anchorMapRef, columnKey, onClose]);
+
+  useEffect(() => {
+    setAllChecked(localSet.size === values.length);
+  }, [localSet, values.length]);
+
+  const toggleValue = (val) => {
+    const sv = String(val);
+    const next = new Set(localSet);
+    if (next.has(sv)) next.delete(sv);
+    else next.add(sv);
+    setLocalSet(next);
+  };
+
+  const handleSelectAll = () => setLocalSet(new Set(values.map((v) => String(v))));
+  const handleClearAll = () => setLocalSet(new Set());
+  const handleApply = () => {
+    if (localSet.size === values.length) onApply(column, null);
+    else onApply(column, localSet);
+    onClose?.();
+  };
+
+  return (
+    <div
+      ref={panelRef}
+      className="fixed z-[9999] bg-white border border-gray-200 rounded-xl shadow-2xl p-3 w-64"
+      style={{ top: coords.top, left: coords.left, visibility: measured ? "visible" : "hidden" }}
+      role="dialog"
+      aria-label={`Filter ${column}`}
+    >
+      <div className="mb-2 font-semibold text-sm text-gray-800">Filter: {column}</div>
+
+      <input
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        placeholder="Search values…"
+        className="w-full border border-gray-200 rounded-md px-2 py-1 mb-2 text-gray-900 placeholder-gray-400 focus:outline-none focus:ring focus:ring-emerald-100"
+      />
+
+      <div className="flex gap-2 mb-2">
+        <button
+          className="text-[11px] px-2 py-1 rounded-md bg-white border border-gray-200 hover:bg-gray-50 text-gray-800 focus:outline-none focus:ring focus:ring-emerald-100"
+          onClick={handleSelectAll}
+          title="Select all values"
+        >
+          Select All
+        </button>
+        <button
+          className="text-[11px] px-2 py-1 rounded-md bg-white border border-gray-200 hover:bg-gray-50 text-gray-800 focus:outline-none focus:ring focus:ring-emerald-100"
+          onClick={handleClearAll}
+          title="Clear all selections"
+        >
+          Clear
+        </button>
+      </div>
+
+      <div className="max-h-56 overflow-auto border border-gray-200 rounded-md">
+        {shown.length ? (
+          shown.map((v, i) => {
+            const sv = String(v);
+            const checked = localSet.has(sv);
+            return (
+              <label
+                key={i}
+                className="flex items-center gap-2 px-2 py-1 text-sm hover:bg-emerald-50 cursor-pointer text-gray-900"
+                title={sv}
+              >
+                <input
+                  type="checkbox"
+                  className="cursor-pointer accent-emerald-600"
+                  checked={checked}
+                  onChange={() => toggleValue(v)}
+                />
+                <span className="truncate">{sv || "—"}</span>
+              </label>
+            );
+          })
+        ) : (
+          <div className="text-gray-500 text-xs p-2">No values</div>
+        )}
+      </div>
+
+      <div className="mt-3 flex justify-between items-center">
+        <div className="text-xs text-gray-600">
+          {allChecked ? "All selected" : `${localSet.size} selected`}
+        </div>
+        <div className="flex gap-2">
+          <button
+            className="px-3 py-1 text-sm rounded-md bg-white border border-gray-200 hover:bg-gray-50 text-gray-800 focus:outline-none focus:ring focus:ring-emerald-100"
+            onClick={() => {
+              onClear(column);
+              onClose?.();
+            }}
+          >
+            Clear Filter
+          </button>
+          <button
+            className="px-3 py-1 text-sm rounded-md bg-emerald-600 text-white hover:bg-emerald-700 shadow focus:outline-none focus:ring focus:ring-emerald-100"
+            onClick={handleApply}
+          >
+            Apply
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -154,6 +354,12 @@ export default function App() {
   const [data, setData] = useState([]);
   const [headers, setHeaders] = useState([]);
   const [sortConfig, setSortConfig] = useState(null);
+
+  // column filters
+  const [columnFilters, setColumnFilters] = useState({});
+  const [openFilterCol, setOpenFilterCol] = useState(null);
+  const filterAnchorRefs = useRef({});
+  const filterBtnRefs = useRef({});
 
   const [file, setFile] = useState(null);
   const [selectedFileName, setSelectedFileName] = useState("");
@@ -186,10 +392,13 @@ export default function App() {
   const [pivotValKey, setPivotValKey] = useState("");
   const [pivotAgg, setPivotAgg] = useState("sum");
 
-  // ref to the pivot chart container (to capture its SVG)
   const pivotChartRef = useRef(null);
 
-  // Totals
+  // Pie chart controls
+  const [pieMode, setPieMode] = useState("rows");
+  const [pieTopN, setPieTopN] = useState("10");
+
+  // Totals (kept in state for PDF, UI removed)
   const [totalsCol, setTotalsCol] = useState("");
 
   const fmt2 = (n) =>
@@ -275,6 +484,8 @@ export default function App() {
       const rows = res.data || [];
       setData(rows);
       setHeaders(rows.length ? Object.keys(rows[0]) : []);
+      setColumnFilters({});
+      setOpenFilterCol(null);
     } catch (err) {
       console.error("❌ Load data failed:", err.message);
     }
@@ -308,6 +519,8 @@ export default function App() {
       setPivotColKey("");
       setPivotValKey("");
       setPivotAgg("sum");
+      setColumnFilters({});
+      setOpenFilterCol(null);
 
       const res = await axios.get(`${API}/sheets/active`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -381,7 +594,7 @@ export default function App() {
     setFolderFilesLoading(true);
     try {
       const r = await axios.get(`${API}/folders/${fid}/files`, {
-        headers: { Authorization: { Authorization: `Bearer ${token}` } },
+        headers: { Authorization: `Bearer ${token}` },
       });
       setFolderFiles(r.data || []);
     } catch (e) {
@@ -410,6 +623,8 @@ export default function App() {
           setTotalsCol("");
           setData([]);
           setHeaders([]);
+          setColumnFilters({});
+          setOpenFilterCol(null);
         } else {
           setSheetId(res.data.sheetId);
           setActiveFilename(res.data.filename || "");
@@ -423,9 +638,41 @@ export default function App() {
     }
   };
 
+  /* -------- Filtering -------- */
+  const uniqueValuesByColumn = React.useMemo(() => {
+    const map = {};
+    for (const h of headers) {
+      const set = new Set();
+      for (const r of data) {
+        const v = r[h];
+        set.add(v == null || v === "" ? "" : String(v));
+      }
+      map[h] = Array.from(set.values()).sort((a, b) => String(a).localeCompare(String(b)));
+    }
+    return map;
+  }, [headers, data]);
+
+  const filteredData = React.useMemo(() => {
+    const activeCols = Object.keys(columnFilters).filter(
+      (c) => columnFilters[c] && columnFilters[c] instanceof Set && columnFilters[c].size > 0
+    );
+    if (!activeCols.length) return data;
+
+    return (data || []).filter((row) => {
+      for (const col of activeCols) {
+        const set = columnFilters[col];
+        if (!set || set.size === 0) return false;
+        const val = row[col];
+        const sval = val == null || val === "" ? "" : String(val);
+        if (!set.has(sval)) return false;
+      }
+      return true;
+    });
+  }, [data, columnFilters]);
+
   /* -------- Sorting -------- */
   const sortedData = React.useMemo(() => {
-    let rows = [...(data || [])];
+    let rows = [...(filteredData || [])];
     if (sortConfig) {
       const { key, direction } = sortConfig;
       rows.sort((a, b) => {
@@ -437,7 +684,7 @@ export default function App() {
       });
     }
     return rows;
-  }, [data, sortConfig]);
+  }, [filteredData, sortConfig]);
 
   const requestSort = (key) => {
     let direction = "asc";
@@ -446,7 +693,6 @@ export default function App() {
     }
     setSortConfig({ key, direction });
   };
-
   /* -------- Two-Condition Summary -------- */
   const summaryData = React.useMemo(() => {
     if (!condCol1 || !condCol2 || !valueCol) return [];
@@ -512,7 +758,7 @@ export default function App() {
     return pivotHeaders.filter((h) => h !== pivotRowKey && h !== "_Total");
   }, [pivotHeaders, pivotRowKey]);
 
-  /* -------- Totals Sum -------- */
+  /* -------- Totals Sum (for PDF header only) -------- */
   const totalsSum = React.useMemo(() => {
     if (!totalsCol) return null;
     let sum = 0;
@@ -524,7 +770,51 @@ export default function App() {
     return sum;
   }, [sortedData, totalsCol]);
 
-  /* -------- Utilities: measure & fit columns for PDF -------- */
+  /* -------- Pie Data (based on Pivot) -------- */
+  const pieData = React.useMemo(() => {
+    if (!pivotRows.length) return [];
+
+    const topN = Math.max(1, parseInt(pieTopN || "10", 10));
+    if (pieMode === "rows") {
+      const arr = pivotRows
+        .map((r) => ({
+          name: String(r[pivotRowKey]),
+          value: Number.isFinite(r._Total) ? r._Total : 0,
+        }))
+        .sort((a, b) => b.value - a.value);
+
+      const head = arr.slice(0, topN);
+      const tail = arr.slice(topN);
+      const other = tail.reduce((s, x) => s + x.value, 0);
+      return other > 0 ? [...head, { name: "Other", value: other }] : head;
+    } else {
+      const totalsByCol = {};
+      pivotSeriesKeys.forEach((k) => (totalsByCol[k] = 0));
+      pivotRows.forEach((row) => {
+        pivotSeriesKeys.forEach((k) => {
+          const v = Number(row[k]) || 0;
+          totalsByCol[k] += v;
+        });
+      });
+      const arr = Object.entries(totalsByCol)
+        .map(([k, v]) => ({ name: k, value: v }))
+        .sort((a, b) => b.value - a.value);
+
+      const head = arr.slice(0, topN);
+      const tail = arr.slice(topN);
+      const other = tail.reduce((s, x) => s + x.value, 0);
+      return other > 0 ? [...head, { name: "Other", value: other }] : head;
+    }
+  }, [pivotRows, pivotSeriesKeys, pieMode, pieTopN, pivotRowKey]);
+
+  // Color palette for pie slices
+  const PIE_COLORS = [
+    "#059669", "#10B981", "#34D399", "#6EE7B7", "#A7F3D0",
+    "#16A34A", "#22C55E", "#4ADE80", "#86EFAC", "#BBF7D0",
+    "#F59E0B", "#FCD34D", "#FDE68A", "#93C5FD", "#60A5FA",
+  ];
+
+  /* -------- Utilities for PDF sizing -------- */
   const measureFitColumns = (doc, cols, rows, opts = {}) => {
     const left = opts.left ?? 14;
     const right = opts.right ?? 14;
@@ -553,13 +843,11 @@ export default function App() {
 
     let { widths, total, inner } = measure();
 
-    // If too wide, drop font size down to minFont
     while (total > inner && fontSize > minFont) {
       fontSize -= 1;
       ({ widths, total, inner } = measure());
     }
 
-    // If still wide, scale proportionally to fit
     if (total > inner) {
       const scale = inner / total;
       widths = widths.map((w) => w * scale);
@@ -606,7 +894,6 @@ export default function App() {
     }
   };
 
-  // All-columns PDF (auto portrait/landscape, shrink to fit)
   const exportPDF = () => {
     try {
       const cols = headers || [];
@@ -618,7 +905,6 @@ export default function App() {
       let doc = new jsPDF({ orientation: "p" });
       const margins = { left: 14, right: 14, top: 34, bottom: 12 };
 
-      // Try portrait, switch to landscape if needed
       let fit = measureFitColumns(doc, cols, rows, {
         left: margins.left,
         right: margins.right,
@@ -658,11 +944,11 @@ export default function App() {
           fontSize: fit.fontSize,
           cellPadding: 1.2,
           overflow: "ellipsize",
-          lineColor: [230, 230, 230],
+          lineColor: [209, 250, 229],
           lineWidth: 0.1,
         },
         headStyles: {
-          fillColor: [34, 197, 94],
+          fillColor: [16, 185, 129],
           textColor: 255,
           halign: "left",
           valign: "middle",
@@ -687,7 +973,6 @@ export default function App() {
     }
   };
 
-  // Export Pivot (chart + full table) to PDF
   const exportPivotPDF = async () => {
     try {
       if (!pivotRows.length || !pivotHeaders.length) {
@@ -695,34 +980,38 @@ export default function App() {
         return;
       }
 
-      // 1) Capture the chart SVG as an image (if visible)
-      let chartImg = null;
+      let chartPngUrl = null;
       let chartW = 0;
       let chartH = 0;
       if (pivotChartRef.current) {
         const svgEl = pivotChartRef.current.querySelector("svg");
         if (svgEl) {
           const xml = new XMLSerializer().serializeToString(svgEl);
-          const url =
-            "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(xml)));
-          chartImg = await new Promise((resolve) => {
-            const img = new Image();
-            img.onload = () => resolve(img);
-            img.onerror = () => resolve(null);
-            img.src = url;
+          const svgUrl = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(xml)));
+
+          const img = await new Promise((resolve) => {
+            const im = new Image();
+            im.onload = () => resolve(im);
+            im.onerror = () => resolve(null);
+            im.src = svgUrl;
           });
-          if (chartImg) {
-            chartW = chartImg.width || 1200;
-            chartH = chartImg.height || 600;
+
+          if (img) {
+            chartW = img.width || 1200;
+            chartH = img.height || 600;
+            const canvas = document.createElement("canvas");
+            canvas.width = chartW;
+            canvas.height = chartH;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(img, 0, 0);
+            chartPngUrl = canvas.toDataURL("image/png");
           }
         }
       }
 
-      // 2) Landscape for wide tables
       let doc = new jsPDF({ orientation: "l" });
       const margins = { left: 14, right: 14, top: 16, bottom: 12 };
 
-      // Measure & fit columns for pivot table
       const fit = measureFitColumns(doc, pivotHeaders, pivotRows, {
         left: margins.left,
         right: margins.right,
@@ -731,20 +1020,19 @@ export default function App() {
         sampleRows: 80,
       });
 
-      // 3) Place the chart (optional)
       let cursorY = margins.top;
-      if (chartImg) {
+      if (chartPngUrl) {
         const pageW = doc.internal.pageSize.getWidth() - margins.left - margins.right;
         const aspect = chartW / chartH;
         let drawW = pageW;
         let drawH = drawW / aspect;
-        const maxChartH = 90; // room for the table
+        const maxChartH = 90;
         if (drawH > maxChartH) {
           drawH = maxChartH;
           drawW = drawH * aspect;
         }
         const x = margins.left + (pageW - drawW) / 2;
-        doc.addImage(chartImg, "PNG", x, cursorY, drawW, drawH);
+        doc.addImage(chartPngUrl, "PNG", x, cursorY, drawW, drawH);
         cursorY += drawH + 6;
       } else {
         doc.setFontSize(14);
@@ -752,26 +1040,20 @@ export default function App() {
         cursorY += 8;
       }
 
-      // 4) Add the pivot table (all columns, fitted)
       autoTable(doc, {
         startY: cursorY,
-        margin: {
-          left: margins.left,
-          right: margins.right,
-          top: margins.top,
-          bottom: margins.bottom,
-        },
+        margin: { left: margins.left, right: margins.right, top: margins.top, bottom: margins.bottom },
         head: [pivotHeaders],
         body: pivotRows.map((r) => pivotHeaders.map((h) => (r[h] == null ? "" : r[h]))),
         styles: {
           fontSize: fit.fontSize,
           cellPadding: 1.1,
           overflow: "ellipsize",
-          lineColor: [230, 230, 230],
+          lineColor: [209, 250, 229],
           lineWidth: 0.1,
         },
         headStyles: {
-          fillColor: [249, 115, 22], // orange to match pivot header
+          fillColor: [5, 150, 105],
           textColor: 255,
           halign: "left",
           valign: "middle",
@@ -785,11 +1067,7 @@ export default function App() {
         didDrawPage: (data) => {
           const pageStr = `Page ${doc.internal.getNumberOfPages()}`;
           doc.setFontSize(8);
-          doc.text(
-            pageStr,
-            data.settings.margin.left,
-            doc.internal.pageSize.getHeight() - 5
-          );
+          doc.text(pageStr, data.settings.margin.left, doc.internal.pageSize.getHeight() - 5);
         },
       });
 
@@ -811,15 +1089,14 @@ export default function App() {
     setPivotColKey("");
     setPivotValKey("");
     setPivotAgg("sum");
+    setPieMode("rows");
+    setPieTopN("10");
   };
 
   /* -------- Options -------- */
   const headerOptions = headers.map((h) => ({ value: h, label: h }));
   const folderOptions = [{ value: "", label: "Folder (required)…" }].concat(
-    folders.map((f) => ({
-      value: String(f.id),
-      label: f.name,
-    }))
+    folders.map((f) => ({ value: String(f.id), label: f.name }))
   );
 
   const saveTotalsColumn = async (col) => {
@@ -840,24 +1117,24 @@ export default function App() {
   /* -------- Login Screen -------- */
   if (!token || !user) {
     return (
-      <div className="w-full min-h-0 flex items-center justify-center bg-gradient-to-br from-blue-100 to-indigo-200 py-16">
-        <form onSubmit={handleLogin} className="bg-white shadow-lg rounded-xl p-8 w-96 border">
-          <h2 className="text-2xl font-bold mb-6 text-center text-gray-700">🔐 Universal Analytics</h2>
+      <div className="w-full min-h-0 flex items-center justify-center bg-gradient-to-br from-emerald-50 to-white py-16">
+        <form className="bg-white/95 backdrop-blur shadow-xl rounded-2xl p-8 w-96 border border-emerald-100" onSubmit={handleLogin}>
+          <h2 className="text-2xl font-bold mb-6 text-center text-gray-900">🔐 Universal Analytics</h2>
           <input
             type="email"
             placeholder="Email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            className="w-full border p-3 mb-3 rounded focus:ring focus:ring-blue-200"
+            className="w-full border border-emerald-200 p-3 mb-3 rounded-md focus:outline-none focus:ring focus:ring-emerald-100"
           />
           <input
             type="password"
             placeholder="Password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="w-full border p-3 mb-6 rounded focus:ring focus:ring-blue-200"
+            className="w-full border border-emerald-200 p-3 mb-6 rounded-md focus:outline-none focus:ring focus:ring-emerald-100"
           />
-          <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg font-semibold h-11">
+          <button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-2 rounded-lg font-semibold h-11 shadow">
             Login
           </button>
         </form>
@@ -867,13 +1144,13 @@ export default function App() {
 
   /* -------- Dashboard Body -------- */
   const DashboardBody = () => (
-    <div className="w-full bg-gray-50">
-      {/* Controls */}
-      <div className="flex flex-wrap gap-3 p-4 bg-white shadow-sm border-b items-center">
+    <div className="w-full bg-gradient-to-b from-white to-emerald-50/40">
+      {/* Global Controls Bar */}
+      <div className="flex flex-wrap gap-3 p-4 bg-white/90 backdrop-blur shadow-sm border-b border-emerald-100 items-center">
         {/* Upload (admin) */}
         {user.role === "admin" && (
           <>
-            <label className="flex items-center gap-3 border rounded p-2 bg-gray-50 h-10">
+            <label className="flex items-center gap-3 border border-emerald-200 rounded-lg p-2 bg-white h-10">
               <input
                 type="file"
                 onChange={(e) => {
@@ -881,7 +1158,7 @@ export default function App() {
                   setFile(f || null);
                   setSelectedFileName(f?.name || "");
                 }}
-                className="border p-1 rounded"
+                className="border border-emerald-200 p-1 rounded-md"
               />
               <span className="text-sm text-gray-700">
                 {selectedFileName || activeFilename || "No file selected"}
@@ -895,7 +1172,7 @@ export default function App() {
               onChange={(e) => setSelectedFolderId(e.target.value)}
               placeholder="Folder (required)…"
               className="ml-1"
-              buttonClassName="border p-2 rounded min-w-[14rem] bg-white h-10"
+              buttonClassName="border border-emerald-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
             />
 
             <button
@@ -903,9 +1180,9 @@ export default function App() {
               disabled={!file || !selectedFolderId}
               className={`${
                 !file || !selectedFolderId
-                  ? "bg-gray-300 cursor-not-allowed"
-                  : "bg-blue-600 hover:bg-blue-700"
-              } text-white px-4 rounded-lg h-10`}
+                  ? "bg-gradient-to-r from-gray-200 to-gray-300 cursor-not-allowed text-gray-600"
+                  : "bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-600 hover:to-emerald-600 text-white shadow"
+              } px-4 rounded-lg h-10`}
               title={!file ? "Choose a file" : !selectedFolderId ? "Select a folder" : "Upload & Load"}
             >
               Upload & Load
@@ -913,26 +1190,26 @@ export default function App() {
           </>
         )}
 
-        <button onClick={() => loadData()} className="bg-green-600 hover:bg-green-700 text-white px-3 rounded-lg h-10">
+        <button onClick={() => loadData()} className="bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-600 hover:to-emerald-600 text-white px-3 rounded-lg h-10 shadow">
           Refresh
         </button>
 
         {/* Export buttons + Toggles */}
         <div className="flex gap-3 ml-0 md:ml-6 items-center">
-          <button onClick={exportCSV} className="bg-gray-600 hover:bg-gray-700 text-white px-3 rounded-lg h-10">
+          <button onClick={exportCSV} className="bg-gradient-to-r from-gray-800 to-gray-700 hover:from-gray-800 hover:to-gray-800 text-white px-3 rounded-lg h-10 shadow">
             Download CSV
           </button>
-          <button onClick={exportXLSX} className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 rounded-lg h-10">
+          <button onClick={exportXLSX} className="bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-600 hover:to-emerald-600 text-white px-3 rounded-lg h-10 shadow">
             Download XLSX
           </button>
-          <button onClick={exportPDF} className="bg-red-600 hover:bg-red-700 text-white px-3 rounded-lg h-10">
+          <button onClick={exportPDF} className="bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-600 hover:to-rose-600 text-white px-3 rounded-lg h-10 shadow">
             Download PDF
           </button>
 
           {/* Pivot toggle */}
           <button
             onClick={() => setPivotOn((p) => !p)}
-            className="px-3 rounded-lg font-semibold bg-orange-500 text-white h-10"
+            className="px-3 rounded-lg font-semibold bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-500 hover:to-emerald-500 text-white h-10 shadow"
             title="Toggle Pivot mode"
           >
             {pivotOn ? "Pivot: ON" : "Pivot: OFF"}
@@ -941,50 +1218,31 @@ export default function App() {
           {/* Two-Condition toggle */}
           <button
             onClick={() => setTwoOn((t) => !t)}
-            className="px-3 rounded-lg font-semibold bg-green-600 text-white h-10"
+            className="px-3 rounded-lg font-semibold bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-600 hover:to-emerald-600 text-white h-10 shadow"
             title="Toggle Two-Condition summary"
           >
             {twoOn ? "2-Cond: ON" : "2-Cond: OFF"}
           </button>
         </div>
-
-        {/* Totals column (admin, persisted per sheet) */}
-        {user.role === "admin" && (
-          <div className="ml-auto flex items-center gap-2">
-            <span className="text-sm text-gray-600">Totals:</span>
-            <SearchableSelect
-              options={
-                headers.length
-                  ? [{ value: "", label: "Totals column…" }, ...headerOptions]
-                  : [{ value: "", label: "Totals column…" }]
-              }
-              value={totalsCol}
-              onChange={(e) => saveTotalsColumn(e.target.value)}
-              placeholder="Totals column…"
-              panelWidth={260}
-              buttonClassName="border p-2 rounded min-w-[12rem] bg-white h-10"
-            />
-          </div>
-        )}
       </div>
 
       {/* Pivot Controls */}
       {pivotOn && (
-        <div className="p-4 bg-orange-50 border-y border-orange-200">
+        <div className="p-4 bg-emerald-50 border-y border-emerald-200/70">
           <div className="flex flex-wrap items-end gap-3">
             <SearchableSelect
               options={[{ value: "", label: "Row key…" }, ...headers.map((h) => ({ value: h, label: h }))]}
               value={pivotRowKey}
               onChange={(e) => setPivotRowKey(e.target.value)}
               placeholder="Row key…"
-              buttonClassName="border p-2 rounded min-w-[14rem] bg-white h-10"
+              buttonClassName="border border-emerald-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
             />
             <SearchableSelect
               options={[{ value: "", label: "Dynamic header…" }, ...headers.map((h) => ({ value: h, label: h }))]}
               value={pivotColKey}
               onChange={(e) => setPivotColKey(e.target.value)}
               placeholder="Dynamic header…"
-              buttonClassName="border p-2 rounded min-w-[14rem] bg-white h-10"
+              buttonClassName="border border-emerald-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
             />
             <SearchableSelect
               options={[
@@ -995,7 +1253,7 @@ export default function App() {
               onChange={(e) => setPivotValKey(e.target.value)}
               placeholder={pivotAgg === "count" ? "— (count)" : "Value…"}
               disabled={pivotAgg === "count"}
-              buttonClassName="border p-2 rounded min-w-[14rem] bg-white h-10"
+              buttonClassName="border border-emerald-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
             />
             <SearchableSelect
               options={[
@@ -1006,8 +1264,9 @@ export default function App() {
               onChange={(e) => setPivotAgg(e.target.value)}
               placeholder="Aggregation…"
               panelWidth={180}
-              buttonClassName="border p-2 rounded min-w-[10rem] bg-white h-10"
+              buttonClassName="border border-emerald-200 p-2 rounded-lg min-w-[10rem] bg-white h-10"
             />
+
             <div className="flex gap-2 ml-auto">
               <button
                 onClick={() => {
@@ -1021,19 +1280,22 @@ export default function App() {
                     console.error("Pivot export failed:", e);
                   }
                 }}
-                className={`px-3 rounded h-10 ${
-                  pivotRows.length ? "bg-orange-500 text-white" : "bg-gray-300 cursor-not-allowed text-gray-700"
+                className={`px-3 rounded-lg h-10 shadow ${
+                  pivotRows.length
+                    ? "bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-500 hover:to-emerald-500 text-white"
+                    : "bg-gradient-to-r from-gray-200 to-gray-300 cursor-not-allowed text-gray-600"
                 }`}
                 title={pivotRows.length ? "Export Pivot (XLSX)" : "Nothing to export yet"}
               >
                 Export Pivot
               </button>
 
-              {/* Export Pivot PDF */}
               <button
                 onClick={exportPivotPDF}
-                className={`px-3 rounded h-10 ${
-                  pivotRows.length ? "bg-red-600 text-white" : "bg-gray-300 cursor-not-allowed text-gray-700"
+                className={`px-3 rounded-lg h-10 shadow ${
+                  pivotRows.length
+                    ? "bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-600 hover:to-rose-600 text-white"
+                    : "bg-gradient-to-r from-gray-200 to-gray-300 cursor-not-allowed text-gray-600"
                 }`}
                 title={pivotRows.length ? "Export Pivot (PDF)" : "Nothing to export yet"}
                 disabled={!pivotRows.length}
@@ -1041,7 +1303,11 @@ export default function App() {
                 Export Pivot PDF
               </button>
 
-              <button onClick={resetPivot} className="px-3 bg-white border border-orange-300 rounded h-10" title="Clear pivot selections">
+              <button
+                onClick={resetPivot}
+                className="px-3 bg-gradient-to-r from-white to-gray-50 border border-emerald-200 rounded-lg h-10 hover:from-gray-50 hover:to-gray-100"
+                title="Clear pivot selections"
+              >
                 Reset
               </button>
             </div>
@@ -1049,41 +1315,116 @@ export default function App() {
         </div>
       )}
 
-      {/* Pivot Chart + Table */}
+      {/* Pivot Chart + Pie + Table */}
       {pivotOn && (
-        <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200">
-          <div className="p-3 font-semibold">📌 Pivot</div>
+        <div className="m-4 bg-white rounded-2xl shadow-xl border border-emerald-100">
+          <div className="p-3 font-semibold text-gray-900">📌 Pivot</div>
+
           {pivotRowKey && pivotColKey && (pivotAgg === "count" || pivotValKey) && pivotRows.length > 0 && pivotSeriesKeys.length > 0 ? (
-            <div className="px-3 pb-3" ref={pivotChartRef}>
-              <ResponsiveContainer width="100%" height={320}>
-                <BarChart data={pivotRows}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey={pivotRowKey} />
-                  <YAxis />
-                  <Tooltip />
-                  <Legend />
-                  <defs>
-                    <linearGradient id="pivotOrange" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#f97316" stopOpacity={0.9} />
-                      <stop offset="95%" stopColor="#fdba74" stopOpacity={0.25} />
-                    </linearGradient>
-                  </defs>
-                  {pivotSeriesKeys.map((k) => (
-                    <Bar key={k} dataKey={k} stackId="pivot" fill="url(#pivotOrange)" />
-                  ))}
-                </BarChart>
-              </ResponsiveContainer>
+            <div className="p-0" ref={pivotChartRef}>
+              <div className="flex flex-col lg:flex-row gap-0">
+                {/* Bar chart (left) - wider */}
+                <div className="lg:w-3/4 w-full">
+                  <ResponsiveContainer width="100%" height={320}>
+                    <BarChart data={pivotRows} margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey={pivotRowKey} />
+                      <YAxis />
+                      <Tooltip />
+                      <Legend />
+                      <defs>
+                        <linearGradient id="pivotEmerald" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#10B981" stopOpacity={0.95} />
+                          <stop offset="95%" stopColor="#A7F3D0" stopOpacity={0.25} />
+                        </linearGradient>
+                      </defs>
+                      {pivotSeriesKeys.map((k) => (
+                        <Bar key={k} dataKey={k} stackId="pivot" fill="url(#pivotEmerald)" />
+                      ))}
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+
+                {/* Pie chart (right) - controls (checkboxes) on the left */}
+                <div className="lg:w-1/4 w-full relative">
+                  {/* Controls overlay (left) — exclusive checkboxes */}
+                  <div className="absolute top-0 left-0 z-10 flex items-center gap-2">
+                    <div className="flex items-center gap-2 bg-white/90 border border-emerald-200 rounded-md px-2 py-1">
+                      <label className="flex items-center gap-1 text-xs text-gray-800">
+                        <input
+                          type="checkbox"
+                          className="w-3 h-3 accent-emerald-600"
+                          checked={pieMode === "rows"}
+                          onChange={() => setPieMode("rows")}
+                        />
+                        Rows
+                      </label>
+                      <label className="flex items-center gap-1 text-xs text-gray-800">
+                        <input
+                          type="checkbox"
+                          className="w-3 h-3 accent-emerald-600"
+                          checked={pieMode === "cols"}
+                          onChange={() => setPieMode("cols")}
+                        />
+                        Columns
+                      </label>
+                    </div>
+
+                    <div className="flex items-center gap-2 bg-white/90 border border-emerald-200 rounded-md px-2 py-1">
+                      {["5", "10", "15", "20"].map((n) => (
+                        <label key={n} className="flex items-center gap-1 text-xs text-gray-800">
+                          <input
+                            type="checkbox"
+                            className="w-3 h-3 accent-emerald-600"
+                            checked={pieTopN === n}
+                            onChange={() => setPieTopN(n)}
+                          />
+                          Top {n}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="w-full h-[320px]">
+                    {pieData.length ? (
+                      <ResponsiveContainer width="100%" height={320}>
+                        <PieChart margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
+                          <Tooltip formatter={(v, n) => [Number(v).toLocaleString(), n]} />
+                          <Pie
+                            data={pieData}
+                            dataKey="value"
+                            nameKey="name"
+                            cx="50%"
+                            cy="47%"
+                            innerRadius="52%"
+                            outerRadius="95%"
+                            paddingAngle={1}
+                            isAnimationActive={false}
+                          >
+                            {pieData.map((entry, idx) => (
+                              <Cell key={`cell-${idx}`} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
+                            ))}
+                          </Pie>
+                        </PieChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="text-xs text-gray-500">No pie data for current Pivot.</div>
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
           ) : (
             <div className="text-xs text-gray-500 px-3 pb-3">Select Row / Dynamic / Value to render.</div>
           )}
+
           {pivotRows.length ? (
             <div className="overflow-auto px-3 pb-3">
               <table className="table-auto border-collapse w-full text-sm">
-                <thead className="bg-orange-500 text-white">
+                <thead className="bg-gradient-to-r from-emerald-100 to-white text-gray-800">
                   <tr>
                     {pivotHeaders.map((h) => (
-                      <th key={h} className="p-2 border text-left whitespace-nowrap">
+                      <th key={h} className="p-2 border border-emerald-200 border-dashed text-left whitespace-nowrap">
                         {h}
                       </th>
                     ))}
@@ -1091,9 +1432,9 @@ export default function App() {
                 </thead>
                 <tbody>
                   {pivotRows.map((row, i) => (
-                    <tr key={i} className="odd:bg-gray-50 even:bg-white">
+                    <tr key={i} className="odd:bg-white even:bg-emerald-50/40 hover:bg-emerald-50 transition-colors">
                       {pivotHeaders.map((h) => (
-                        <td key={h} className="p-2 border whitespace-nowrap">
+                        <td key={h} className="p-2 border border-emerald-200 border-dashed whitespace-nowrap">
                           {Number.isFinite(row[h]) ? row[h].toLocaleString() : row[h]}
                         </td>
                       ))}
@@ -1106,12 +1447,16 @@ export default function App() {
         </div>
       )}
 
-      {/* Two-Condition Controls & Chart — only when ON */}
+      {/* Two-Condition Controls & Chart */}
       {twoOn && (
-        <div className="p-4 bg-green-50 border-t border-green-200">
+        <div className="p-4 bg-emerald-50/60 border-t border-emerald-200">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-lg font-bold text-green-800">📊 Two-Condition Summary</h2>
-            <button onClick={resetSummary} className="px-3 bg-white border border-green-300 rounded h-10 text-sm" title="Clear selections">
+            <h2 className="text-lg font-bold text-gray-900">📊 Two-Condition Summary</h2>
+            <button
+              onClick={resetSummary}
+              className="px-3 bg-gradient-to-r from-white to-gray-50 border border-emerald-200 rounded-lg h-10 hover:from-gray-50 hover:to-gray-100"
+              title="Clear selections"
+            >
               Reset
             </button>
           </div>
@@ -1122,7 +1467,7 @@ export default function App() {
               value={condCol1}
               onChange={(e) => setCondCol1(e.target.value)}
               placeholder="Condition 1…"
-              buttonClassName="border p-2 rounded min-w-[14rem] bg-white h-10"
+              buttonClassName="border border-emerald-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
               panelWidth={280}
             />
             <SearchableSelect
@@ -1130,7 +1475,7 @@ export default function App() {
               value={condCol2}
               onChange={(e) => setCondCol2(e.target.value)}
               placeholder="Condition 2…"
-              buttonClassName="border p-2 rounded min-w-[14rem] bg-white h-10"
+              buttonClassName="border border-emerald-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
               panelWidth={280}
             />
             <SearchableSelect
@@ -1138,7 +1483,7 @@ export default function App() {
               value={valueCol}
               onChange={(e) => setValueCol(e.target.value)}
               placeholder="Value column…"
-              buttonClassName="border p-2 rounded min-w-[14rem] bg-white h-10"
+              buttonClassName="border border-emerald-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
               panelWidth={280}
             />
           </div>
@@ -1149,13 +1494,13 @@ export default function App() {
                 <BarChart data={summaryData}>
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey={condCol2} />
-                  <YAxis tickFormatter={fmt2} />
-                  <Tooltip formatter={(val) => fmt2(val)} />
+                  <YAxis />
+                  <Tooltip />
                   <Legend />
                   <defs>
                     <linearGradient id="twoCondGreen" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#16a34a" stopOpacity={0.9} />
-                      <stop offset="95%" stopColor="#86efac" stopOpacity={0.25} />
+                      <stop offset="5%" stopColor="#10B981" stopOpacity={0.95} />
+                      <stop offset="95%" stopColor="#A7F3D0" stopOpacity={0.25} />
                     </linearGradient>
                   </defs>
                   <Bar dataKey="total" fill="url(#twoCondGreen)" />
@@ -1163,35 +1508,37 @@ export default function App() {
               </ResponsiveContainer>
 
               <table className="table-auto border-collapse w-full text-sm mt-6">
-                <thead className="bg-green-600 text-white">
+                <thead className="bg-gradient-to-r from-emerald-100 to-white text-gray-800">
                   <tr>
-                    <th className="p-2 border">{condCol1}</th>
-                    <th className="p-2 border">{condCol2}</th>
-                    <th className="p-2 border">Total {valueCol}</th>
+                    <th className="p-2 border border-emerald-200 border-dashed">{condCol1}</th>
+                    <th className="p-2 border border-emerald-200 border-dashed">{condCol2}</th>
+                    <th className="p-2 border border-emerald-200 border-dashed">Total {valueCol}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {summaryData.map((row, i) => (
-                    <tr key={i} className="odd:bg-gray-50 even:bg-white">
-                      <td className="p-2 border">{row[condCol1]}</td>
-                      <td className="p-2 border">{row[condCol2]}</td>
-                      <td className="p-2 border font-semibold">${row.total.toLocaleString()}</td>
+                    <tr key={i} className="odd:bg-white even:bg-emerald-50/40 hover:bg-emerald-50 transition-colors">
+                      <td className="p-2 border border-emerald-200 border-dashed">{row[condCol1]}</td>
+                      <td className="p-2 border border-emerald-200 border-dashed">{row[condCol2]}</td>
+                      <td className="p-2 border border-emerald-200 border-dashed font-semibold">
+                        ${Number(row.total ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           ) : (
-            <p className="text-gray-600 mt-3">ℹ️ Select two conditions and a value column to see results.</p>
+            <p className="text-gray-700 mt-3">ℹ️ Select two conditions and a value column to see results.</p>
           )}
         </div>
       )}
 
       {/* Data Table */}
-      <div className="m-4 bg-white rounded-xl shadow-lg border border-gray-200">
+      <div className="m-4 bg-white rounded-2xl shadow-2xl border border-emerald-100 ring-1 ring-emerald-100">
         {sortedData?.length > 0 ? (
           <>
-            <div className="p-3 text-sm text-gray-600">
+            <div className="p-3 text-sm text-gray-600 border-b border-emerald-100 bg-gradient-to-r from-white to-emerald-50/60">
               {activeFilename ? (
                 <>
                   Loaded: <b>{activeFilename}</b>
@@ -1200,43 +1547,100 @@ export default function App() {
                 "No sheet loaded"
               )}
             </div>
-            <table className="table-auto border-collapse w-full text-sm">
-              <thead className="sticky top-0 bg-green-700 text-white shadow-sm">
-                <tr>
-                  {headers.map((h) => (
-                    <th
-                      key={h}
-                      className="border border-gray-200 px-4 py-2 text-left whitespace-nowrap cursor-pointer"
-                      onClick={() => requestSort(h)}
-                    >
-                      {h}
-                      {sortConfig?.key === h ? (sortConfig.direction === "asc" ? " ▲" : " ▼") : " ⬍"}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {sortedData.map((row, i) => (
-                  <tr key={i} className="odd:bg-gray-50 even:bg-white hover:bg-blue-50">
+
+            <div className="overflow-auto">
+              <table className="table-auto border-collapse w-full text-sm">
+                <thead className="sticky top-0 bg-gradient-to-r from-emerald-200 to-emerald-100 text-gray-900 shadow-sm z-0">
+                  <tr>
                     {headers.map((h) => (
-                      <td key={h} className="border border-gray-200 px-4 py-2 whitespace-nowrap">
-                        {row[h] || ""}
-                      </td>
+                      <th
+                        key={h}
+                        ref={(el) => {
+                          if (!filterAnchorRefs.current) filterAnchorRefs.current = {};
+                          filterAnchorRefs.current[h] = el;
+                        }}
+                        className="relative border border-emerald-200 border-dashed px-4 py-2 text-left whitespace-nowrap cursor-pointer group"
+                        onClick={(e) => {
+                          if (openFilterCol === h) return;
+                          const isFilterBtn = e.target.closest && e.target.closest(".filter-btn");
+                          if (!isFilterBtn) requestSort(h);
+                        }}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="truncate">
+                            {h}
+                            {sortConfig?.key === h ? (sortConfig.direction === "asc" ? " ▲" : " ▼") : " ⬍"}
+                          </span>
+
+                          <button
+                            type="button"
+                            ref={(el) => {
+                              if (!filterBtnRefs.current) filterBtnRefs.current = {};
+                              filterBtnRefs.current[h] = el;
+                            }}
+                            className={`filter-btn ml-auto text-[11px] h-7 px-2 rounded-md bg-white/80 backdrop-blur border ${
+                              columnFilters[h] && columnFilters[h] instanceof Set && columnFilters[h].size > 0
+                                ? "border-emerald-400 ring-1 ring-emerald-300"
+                                : "border-emerald-200"
+                            } text-gray-800 hover:bg-emerald-50 focus:outline-none focus:ring focus:ring-emerald-100`}
+                            title="Filter"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setOpenFilterCol((prev) => (prev === h ? null : h));
+                            }}
+                          >
+                            ▾ Filter
+                          </button>
+
+                          {openFilterCol === h && (
+                            <ColumnFilterMenu
+                              anchorMapRef={filterBtnRefs}
+                              columnKey={h}
+                              column={h}
+                              allValues={uniqueValuesByColumn[h] || []}
+                              appliedSelected={
+                                columnFilters[h] && columnFilters[h] instanceof Set ? columnFilters[h] : null
+                              }
+                              onApply={(col, set) => {
+                                setColumnFilters((prev) => {
+                                  const next = { ...prev };
+                                  if (set === null) delete next[col];
+                                  else next[col] = new Set(set);
+                                  return next;
+                                });
+                              }}
+                              onClear={(col) => {
+                                setColumnFilters((prev) => {
+                                  const next = { ...prev };
+                                  delete next[col];
+                                  return next;
+                                });
+                              }}
+                              onClose={() => setOpenFilterCol(null)}
+                            />
+                          )}
+                        </div>
+                      </th>
                     ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {sortedData.map((row, i) => (
+                    <tr key={i} className="odd:bg-white even:bg-emerald-50/40 hover:bg-emerald-50 transition-colors">
+                      {headers.map((h) => (
+                        <td key={h} className="border border-emerald-200 border-dashed px-4 py-2 whitespace-nowrap">
+                          {row[h] ?? ""}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
 
-            {totalsCol ? (
-              <div className="p-3 text-sm bg-gray-50 border-t">
-                Σ Total of <b>{totalsCol}</b>:{" "}
-                <span className="font-semibold">{Number.isFinite(totalsSum) ? `$${fmt2(totalsSum)}` : "—"}</span>
-              </div>
-            ) : null}
           </>
         ) : (
-          <div className="text-gray-500 text-center py-10">
+          <div className="text-gray-600 text-center py-10">
             📂 Use <b>Select Sheet</b> to pick a file you have access to, or upload (admin).
           </div>
         )}
@@ -1244,21 +1648,20 @@ export default function App() {
     </div>
   );
 
-  /* -------- Router + Header (always rendered, including /users) -------- */
+  /* -------- Router + Header -------- */
   return (
     <Router>
-      {/* Global Header (darker green) */}
-      <div className="bg-green-700 text-white px-6 py-4 flex justify-between items-center shadow">
+      <div className="bg-gradient-to-r from-gray-900 via-emerald-800 to-emerald-600 text-white px-6 py-4 flex justify-between items-center shadow-lg">
         <h1 className="text-xl font-bold">📊 Dashboard</h1>
         <div className="flex items-center gap-3">
           <button
             onClick={openSelect}
-            className="bg-gray-900 hover:bg-black px-3 py-1 rounded-lg h-10"
+            className="bg-white text-gray-900 border border-emerald-200 hover:bg-emerald-50 px-3 py-1 rounded-lg h-10 shadow"
             title="Choose a sheet you have access to"
           >
             Select Sheet
           </button>
-          <span className="italic">{user.email}</span>
+          <span className="italic opacity-90">{user.email}</span>
           <button
             onClick={() => {
               localStorage.removeItem("token");
@@ -1279,21 +1682,23 @@ export default function App() {
               setPivotColKey("");
               setPivotValKey("");
               setPivotAgg("sum");
+              setColumnFilters({});
+              setOpenFilterCol(null);
+              setPieMode("rows");
+              setPieTopN("10");
             }}
-            className="bg-red-500 hover:bg-red-600 px-3 py-1 rounded-lg h-10"
+            className="bg-rose-600 hover:bg-rose-700 px-3 py-1 rounded-lg h-10 text-white shadow"
           >
             Logout
           </button>
         </div>
       </div>
 
-      {/* Top header line menu (light green) */}
-      <nav className="bg-green-200 text-gray-900 p-3 flex gap-4">
-        <Link to="/">Dashboard</Link>
-        {user?.role === "admin" && <Link to="/users">Manage Users</Link>}
+      <nav className="bg-gradient-to-r from-white to-emerald-50 text-gray-900 p-3 flex gap-4 border-b border-emerald-100">
+        <Link className="hover:underline" to="/">Dashboard</Link>
+        {user?.role === "admin" && <Link className="hover:underline" to="/users">Manage Users</Link>}
       </nav>
 
-      {/* Routed pages */}
       <Routes>
         <Route path="/" element={<DashboardBody />} />
         {user?.role === "admin" && (
@@ -1301,41 +1706,40 @@ export default function App() {
         )}
       </Routes>
 
-      {/* Select Sheet / Delete Files Modal */}
       <Modal open={selectOpen} onClose={() => setSelectOpen(false)} title={user.role === "admin" ? "Select or Delete a Sheet" : "Select a Sheet"}>
         {myFilesLoading ? (
           <div>Loading…</div>
         ) : myFiles.length ? (
           <div className="overflow-auto">
             <table className="table-auto border-collapse w-full text-sm">
-              <thead className="bg-gray-100">
+              <thead className="bg-gradient-to-r from-emerald-50 to-white">
                 <tr>
-                  <th className="p-2 border text-left">Filename</th>
-                  <th className="p-2 border text-left">Folder</th>
-                  <th className="p-2 border text-left">Uploaded</th>
-                  <th className="p-2 border"></th>
-                  {user.role === "admin" && <th className="p-2 border"></th>}
+                  <th className="p-2 border border-emerald-200 border-dashed text-left">Filename</th>
+                  <th className="p-2 border border-emerald-200 border-dashed text-left">Folder</th>
+                  <th className="p-2 border border-emerald-200 border-dashed text-left">Uploaded</th>
+                  <th className="p-2 border border-emerald-200 border-dashed"></th>
+                  {user.role === "admin" && <th className="p-2 border border-emerald-200 border-dashed"></th>}
                 </tr>
               </thead>
               <tbody>
                 {myFiles.map((f) => (
-                  <tr key={f.id} className="odd:bg-white even:bg-gray-50">
-                    <td className="p-2 border">{f.filename}</td>
-                    <td className="p-2 border">{f.folder_name || "—"}</td>
-                    <td className="p-2 border">{new Date(f.uploaded_at).toLocaleString()}</td>
-                    <td className="p-2 border">
-                      <button onClick={() => loadStored(f.id)} className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded">
+                  <tr key={f.id} className="odd:bg-white even:bg-emerald-50/40">
+                    <td className="p-2 border border-emerald-200 border-dashed">{f.filename}</td>
+                    <td className="p-2 border border-emerald-200 border-dashed">{f.folder_name || "—"}</td>
+                    <td className="p-2 border border-emerald-200 border-dashed">{new Date(f.uploaded_at).toLocaleString()}</td>
+                    <td className="p-2 border border-emerald-200 border-dashed">
+                      <button onClick={() => loadStored(f.id)} className="bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-600 hover:to-emerald-600 text-white px-3 py-1 rounded shadow">
                         Load
                       </button>
                     </td>
                     {user.role === "admin" && (
-                      <td className="p-2 border">
+                      <td className="p-2 border border-emerald-200 border-dashed">
                         <button
                           onClick={async () => {
                             await deleteSheet(f.id);
                             await refreshMyFiles();
                           }}
-                          className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded"
+                          className="bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-600 hover:to-rose-600 text-white px-3 py-1 rounded shadow"
                         >
                           Delete
                         </button>
@@ -1347,32 +1751,31 @@ export default function App() {
             </table>
           </div>
         ) : (
-          <div className="text-gray-500">No files found.</div>
+          <div className="text-gray-600">No files found.</div>
         )}
       </Modal>
 
-      {/* Admin Folder Files Modal */}
       <Modal open={folderFilesOpen} onClose={() => setFolderFilesOpen(false)} title={`Files in: ${folderFilesMeta.name || ""}`} widthClass="max-w-4xl">
         {folderFilesLoading ? (
           <div>Loading…</div>
         ) : folderFiles.length ? (
           <table className="table-auto border-collapse w-full text-sm">
-            <thead className="bg-gray-100">
+            <thead className="bg-gradient-to-r from-emerald-50 to-white">
               <tr>
-                <th className="p-2 border text-left">Filename</th>
-                <th className="p-2 border text-left">Uploaded</th>
-                <th className="p-2 border text-left">Active</th>
-                <th className="p-2 border"></th>
+                <th className="p-2 border border-emerald-200 border-dashed text-left">Filename</th>
+                <th className="p-2 border border-emerald-200 border-dashed text-left">Uploaded</th>
+                <th className="p-2 border border-emerald-200 border-dashed text-left">Active</th>
+                <th className="p-2 border border-emerald-200 border-dashed"></th>
               </tr>
             </thead>
             <tbody>
               {folderFiles.map((f) => (
-                <tr key={f.id} className="odd:bg-white even:bg-gray-50">
-                  <td className="p-2 border">{f.filename}</td>
-                  <td className="p-2 border">{new Date(f.uploaded_at).toLocaleString()}</td>
-                  <td className="p-2 border">{f.active ? "Yes" : "No"}</td>
-                  <td className="p-2 border">
-                    <button onClick={() => deleteSheet(f.id)} className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded">
+                <tr key={f.id} className="odd:bg-white even:bg-emerald-50/40">
+                  <td className="p-2 border border-emerald-200 border-dashed">{f.filename}</td>
+                  <td className="p-2 border border-emerald-200 border-dashed">{new Date(f.uploaded_at).toLocaleString()}</td>
+                  <td className="p-2 border border-emerald-200 border-dashed">{f.active ? "Yes" : "No"}</td>
+                  <td className="p-2 border border-emerald-200 border-dashed">
+                    <button onClick={() => deleteSheet(f.id)} className="bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-600 hover:to-rose-600 text-white px-3 py-1 rounded shadow">
                       Delete
                     </button>
                   </td>
@@ -1381,7 +1784,7 @@ export default function App() {
             </tbody>
           </table>
         ) : (
-          <div className="text-gray-500">No files in this folder.</div>
+          <div className="text-gray-600">No files in this folder.</div>
         )}
       </Modal>
     </Router>
