@@ -1,20 +1,42 @@
-# --- build stage ---
+# syntax=docker/dockerfile:1.7-labs
+
+###########
+# Build   #
+###########
 FROM node:20-alpine AS build
 WORKDIR /app
+
+# Maximize cache hits
 COPY frontend/package.json ./package.json
-#COPY frontend/package-lock.json ./package-lock.json
-RUN npm ci || npm i
+COPY frontend/package-lock.json ./package-lock.json
+
+# Faster installs (BuildKit cache), no audit/fund noise
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --no-audit --no-fund
+
+# Add source and build
 COPY frontend/. .
 ARG VITE_API_URL=http://localhost:4000
 ENV VITE_API_URL=${VITE_API_URL}
-RUN npm run build
+ENV CI=true
+RUN --mount=type=cache,target=/root/.npm \
+    npm run build
 
-# --- runtime stage ---
+############
+# Runtime  #
+############
 FROM node:20-alpine
 WORKDIR /app
-ENV NODE_ENV=production
+ENV NODE_ENV=production \
+    PORT=5173
+
+# Only static assets + tiny server
 COPY --from=build /app/dist ./dist
-RUN npm i vite@^5.4.8 --omit=dev
-EXPOSE 5173
-CMD ["npx","vite","preview","--host","--port","5173"]
+
+# Install 'serve' to host static files
+RUN npm i -g serve@14
+
+EXPOSE ${PORT}
+# -s = single-page app fallback, -l = listen
+CMD ["serve", "-s", "dist", "-l", "5173"]
 

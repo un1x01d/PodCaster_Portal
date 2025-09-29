@@ -3,17 +3,8 @@ import React, { useState, useEffect, useRef, useLayoutEffect } from "react";
 import { BrowserRouter as Router, Routes, Route, Link } from "react-router-dom";
 import axios from "axios";
 import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line,
 } from "recharts";
 import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
@@ -22,6 +13,35 @@ import UserManagement from "./UserManagement";
 import "./index.css";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
+
+/* ---- Date helpers (force YYYY-MM-DD) ---- */
+const ISO_START_RE = /^\d{4}-\d{2}-\d{2}/;
+const ISO_FULL_RE = /^\d{4}-\d{2}-\d{2}T/;
+
+const fmtDateOnly = (v) => {
+  if (v == null) return "";
+  if (typeof v === "string") {
+    const m = v.match(ISO_START_RE);
+    if (m) return m[0];
+  }
+  const dt = new Date(v);
+  if (!Number.isNaN(dt.getTime())) return dt.toISOString().slice(0, 10);
+  return String(v).slice(0, 10);
+};
+
+const DATE_COL_HINTS = ["date", "uploaded", "created", "updated", "timestamp"];
+const looksLikeDateColumn = (h = "") =>
+  DATE_COL_HINTS.some((k) => h.toLowerCase().includes(k));
+
+const renderMaybeDate = (columnName, value) => {
+  if (value == null) return "";
+  if (typeof value === "string" && ISO_FULL_RE.test(value)) return fmtDateOnly(value);
+  if (looksLikeDateColumn(columnName)) {
+    const d = fmtDateOnly(value);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
+  }
+  return value;
+};
 
 /* ---------------- SearchableSelect ---------------- */
 function SearchableSelect({
@@ -117,6 +137,72 @@ function SearchableSelect({
               <div className="text-gray-500 text-sm px-2 py-1">No matches</div>
             )}
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Pretty Export Menu ---------------- */
+function ExportMenu({ onCSV, onXLSX, onPDF }) {
+  const [open, setOpen] = useState(false);
+  const btnRef = useRef(null);
+  const panelRef = useRef(null);
+
+  useEffect(() => {
+    function onDocClick(e) {
+      if (panelRef.current?.contains(e.target) || btnRef.current?.contains(e.target)) return;
+      setOpen(false);
+    }
+    function onEsc(e) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onEsc);
+    };
+  }, []);
+
+  return (
+    <div className="relative inline-block">
+      <button
+        ref={btnRef}
+        onClick={() => setOpen((o) => !o)}
+        className="bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-600 hover:to-emerald-600 text-white px-3 rounded-lg h-10 shadow flex items-center gap-2"
+        title="Export options"
+      >
+        Export
+        <span className="opacity-90">▾</span>
+      </button>
+
+      {open && (
+        <div
+          ref={panelRef}
+          className="absolute z-50 mt-1 right-0 w-48 bg-white border border-emerald-200 rounded-xl shadow-xl overflow-hidden"
+        >
+          <div className="bg-gradient-to-r from-emerald-50 to-white text-xs px-3 py-2 border-b border-emerald-100">
+            Download as…
+          </div>
+          <button
+            className="w-full text-left px-3 py-2 hover:bg-emerald-50 text-gray-900"
+            onClick={() => { setOpen(false); onCSV?.(); }}
+          >
+            CSV (.csv)
+          </button>
+          <button
+            className="w-full text-left px-3 py-2 hover:bg-emerald-50 text-gray-900"
+            onClick={() => { setOpen(false); onXLSX?.(); }}
+          >
+            Excel (.xlsx)
+          </button>
+          <button
+            className="w-full text-left px-3 py-2 hover:bg-emerald-50 text-gray-900 border-t border-emerald-100"
+            onClick={() => { setOpen(false); onPDF?.(); }}
+          >
+            PDF (.pdf)
+          </button>
         </div>
       )}
     </div>
@@ -341,6 +427,30 @@ function ColumnFilterMenu({
   );
 }
 
+/* ---------- Trend Tooltip ---------- */
+function TrendTooltip({ active, payload, label }) {
+  if (!active || !payload || !payload.length) return null;
+  return (
+    <div className="bg-white border border-sky-200 rounded-md px-3 py-2 text-sm shadow">
+      <div className="font-semibold mb-1">{label}</div>
+      {payload.map((p) => (
+        <div key={p.dataKey} className="flex items-center gap-2">
+          <span
+            style={{
+              display: "inline-block",
+              width: 10,
+              height: 10,
+              background: p.color,
+              borderRadius: 2,
+            }}
+          />
+          <span>{p.name}: <b>{Number(p.value ?? 0).toLocaleString()}</b></span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* ---------------- App ---------------- */
 export default function App() {
   const [user, setUser] = useState(null);
@@ -400,6 +510,15 @@ export default function App() {
 
   // Totals (kept in state for PDF, UI removed)
   const [totalsCol, setTotalsCol] = useState("");
+
+  // Trends
+  const [trendsOn, setTrendsOn] = useState(true);
+  const [trendsDateKey, setTrendsDateKey] = useState("");
+  const [trendsValueKey, setTrendsValueKey] = useState("");
+  const [trendGranularity, setTrendGranularity] = useState("");
+  const [yearsBack, setYearsBack] = useState("");
+
+  const [guessedNumericKey, setGuessedNumericKey] = useState("");
 
   const fmt2 = (n) =>
     Number(n ?? 0).toLocaleString(undefined, {
@@ -482,10 +601,17 @@ export default function App() {
         headers: { Authorization: `Bearer ${token}` },
       });
       const rows = res.data || [];
+      const hdrs = rows.length ? Object.keys(rows[0]) : [];
       setData(rows);
-      setHeaders(rows.length ? Object.keys(rows[0]) : []);
+      setHeaders(hdrs);
       setColumnFilters({});
       setOpenFilterCol(null);
+
+      if (rows.length) {
+        const first = rows[0];
+        const guessVal = Object.keys(first).find((k) => typeof first?.[k] === "number") || "";
+        setGuessedNumericKey(guessVal || "");
+      }
     } catch (err) {
       console.error("❌ Load data failed:", err.message);
     }
@@ -677,7 +803,7 @@ export default function App() {
       const { key, direction } = sortConfig;
       rows.sort((a, b) => {
         const aVal = a[key] ?? "";
-        const bVal = b[key] ?? "";
+        const bVal = b[key] ?? ""; // NOTE: keep logic unchanged
         if (aVal < bVal) return direction === "asc" ? -1 : 1;
         if (aVal > bVal) return direction === "asc" ? 1 : -1;
         return 0;
@@ -693,6 +819,7 @@ export default function App() {
     }
     setSortConfig({ key, direction });
   };
+
   /* -------- Two-Condition Summary -------- */
   const summaryData = React.useMemo(() => {
     if (!condCol1 || !condCol2 || !valueCol) return [];
@@ -773,7 +900,6 @@ export default function App() {
   /* -------- Pie Data (based on Pivot) -------- */
   const pieData = React.useMemo(() => {
     if (!pivotRows.length) return [];
-
     const topN = Math.max(1, parseInt(pieTopN || "10", 10));
     if (pieMode === "rows") {
       const arr = pivotRows
@@ -782,7 +908,6 @@ export default function App() {
           value: Number.isFinite(r._Total) ? r._Total : 0,
         }))
         .sort((a, b) => b.value - a.value);
-
       const head = arr.slice(0, topN);
       const tail = arr.slice(topN);
       const other = tail.reduce((s, x) => s + x.value, 0);
@@ -799,7 +924,6 @@ export default function App() {
       const arr = Object.entries(totalsByCol)
         .map(([k, v]) => ({ name: k, value: v }))
         .sort((a, b) => b.value - a.value);
-
       const head = arr.slice(0, topN);
       const tail = arr.slice(topN);
       const other = tail.reduce((s, x) => s + x.value, 0);
@@ -807,12 +931,86 @@ export default function App() {
     }
   }, [pivotRows, pivotSeriesKeys, pieMode, pieTopN, pivotRowKey]);
 
-  // Color palette for pie slices
   const PIE_COLORS = [
     "#059669", "#10B981", "#34D399", "#6EE7B7", "#A7F3D0",
     "#16A34A", "#22C55E", "#4ADE80", "#86EFAC", "#BBF7D0",
     "#F59E0B", "#FCD34D", "#FDE68A", "#93C5FD", "#60A5FA",
   ];
+
+  /* -------- Trends (multi-line, N years back) -------- */
+  const trendsData = React.useMemo(() => {
+    if (!trendsOn || !trendsDateKey) return [];
+
+    const measureKey = trendsValueKey ? "sum" : "count";
+
+    // Aggregate daily
+    const daily = new Map(); // date -> { date, count, sum }
+    for (const r of sortedData) {
+      const raw = r[trendsDateKey];
+      const d = fmtDateOnly(raw); // YYYY-MM-DD
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
+      if (!daily.has(d)) daily.set(d, { date: d, count: 0, sum: 0 });
+      const item = daily.get(d);
+      if (trendsValueKey) {
+        const v = parseFloat(String(r[trendsValueKey] ?? "").replace(/[\$,]/g, ""));
+        if (Number.isFinite(v)) item.sum += v;
+      } else {
+        item.count += 1;
+      }
+    }
+
+    const rows = Array.from(daily.values()).sort((a, b) => (a.date < b.date ? -1 : 1));
+    if (!rows.length) return rows;
+
+    // Month & year totals across data (for lookup)
+    const monthTotals = new Map(); // 'YYYY-MM' -> {count,sum}
+    const yearTotals  = new Map(); // 'YYYY'    -> {count,sum}
+    for (const r of rows) {
+      const ym = r.date.slice(0, 7);
+      const y  = r.date.slice(0, 4);
+      if (!monthTotals.has(ym)) monthTotals.set(ym, { count: 0, sum: 0 });
+      if (!yearTotals.has(y))   yearTotals.set(y,  { count: 0, sum: 0 });
+      monthTotals.get(ym).count += r.count || 0;
+      monthTotals.get(ym).sum   += r.sum   || 0;
+      yearTotals.get(y).count   += r.count || 0;
+      yearTotals.get(y).sum     += r.sum   || 0;
+    }
+
+    const dailyMap = new Map(rows.map((r) => [r.date, r]));
+
+    const maxBack = Math.min(5, Math.max(0, parseInt(yearsBack || "0", 10) || 0));
+    for (const r of rows) {
+      const y = r.date.slice(0, 4);
+      const m = r.date.slice(5, 7);
+      const d = r.date.slice(8, 10);
+      const ym = `${y}-${m}`;
+
+      if (trendGranularity === "daily") {
+        for (let k = 1; k <= maxBack; k++) {
+          const prevY = String(Number(y) - k).padStart(4, "0");
+          const prevDate = `${prevY}-${m}-${d}`;
+          const prev = dailyMap.get(prevDate);
+          r[`prev_${k}y`] = prev ? (trendsValueKey ? prev.sum : prev.count) : 0;
+        }
+      } else if (trendGranularity === "month") {
+        r.currentAgg = (monthTotals.get(ym)?.[measureKey]) || 0;
+        for (let k = 1; k <= maxBack; k++) {
+          const prevYm = `${String(Number(y) - k).padStart(4, "0")}-${m}`;
+          r[`prev_${k}y`] = (monthTotals.get(prevYm)?.[measureKey]) || 0;
+        }
+      } else if (trendGranularity === "year") {
+        r.currentAgg = (yearTotals.get(y)?.[measureKey]) || 0;
+        for (let k = 1; k <= maxBack; k++) {
+          const prevY = String(Number(y) - k).padStart(4, "0");
+          r[`prev_${k}y`] = (yearTotals.get(prevY)?.[measureKey]) || 0;
+        }
+      } else {
+        r.currentAgg = undefined;
+      }
+    }
+
+    return rows;
+  }, [sortedData, trendsOn, trendsDateKey, trendsValueKey, trendGranularity, yearsBack]);
 
   /* -------- Utilities for PDF sizing -------- */
   const measureFitColumns = (doc, cols, rows, opts = {}) => {
@@ -1194,17 +1392,9 @@ export default function App() {
           Refresh
         </button>
 
-        {/* Export buttons + Toggles */}
+        {/* Export dropdown + Toggles */}
         <div className="flex gap-3 ml-0 md:ml-6 items-center">
-          <button onClick={exportCSV} className="bg-gradient-to-r from-gray-800 to-gray-700 hover:from-gray-800 hover:to-gray-800 text-white px-3 rounded-lg h-10 shadow">
-            Download CSV
-          </button>
-          <button onClick={exportXLSX} className="bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-600 hover:to-emerald-600 text-white px-3 rounded-lg h-10 shadow">
-            Download XLSX
-          </button>
-          <button onClick={exportPDF} className="bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-600 hover:to-rose-600 text-white px-3 rounded-lg h-10 shadow">
-            Download PDF
-          </button>
+          <ExportMenu onCSV={exportCSV} onXLSX={exportXLSX} onPDF={exportPDF} />
 
           {/* Pivot toggle */}
           <button
@@ -1222,6 +1412,15 @@ export default function App() {
             title="Toggle Two-Condition summary"
           >
             {twoOn ? "2-Cond: ON" : "2-Cond: OFF"}
+          </button>
+
+          {/* Trends toggle */}
+          <button
+            onClick={() => setTrendsOn((v) => !v)}
+            className="px-3 rounded-lg font-semibold bg-gradient-to-r from-sky-600 to-sky-500 hover:from-sky-600 hover:to-sky-600 text-white h-10 shadow"
+            title="Toggle Trends"
+          >
+            {trendsOn ? "Trends: ON" : "Trends: OFF"}
           </button>
         </div>
       </div>
@@ -1345,9 +1544,8 @@ export default function App() {
                   </ResponsiveContainer>
                 </div>
 
-                {/* Pie chart (right) - controls (checkboxes) on the left */}
+                {/* Pie chart (right) */}
                 <div className="lg:w-1/4 w-full relative">
-                  {/* Controls overlay (left) — exclusive checkboxes */}
                   <div className="absolute top-0 left-0 z-10 flex items-center gap-2">
                     <div className="flex items-center gap-2 bg-white/90 border border-emerald-200 rounded-md px-2 py-1">
                       <label className="flex items-center gap-1 text-xs text-gray-800">
@@ -1385,7 +1583,7 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="w-full h-[320px]">
+                  <div className="w-full h=[320px]">
                     {pieData.length ? (
                       <ResponsiveContainer width="100%" height={320}>
                         <PieChart margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
@@ -1534,15 +1732,143 @@ export default function App() {
         </div>
       )}
 
+      {/* Trends */}
+      {trendsOn && (
+        <div className="m-4 bg-white rounded-2xl shadow-xl border border-sky-100">
+          <div className="p-3 flex flex-col gap-3">
+            <div className="flex items-center justify-between">
+              <div className="font-semibold text-gray-900">📈 Trends</div>
+              <div className="flex gap-1">
+                <button
+                  className={`px-2 h-8 rounded border ${!trendsValueKey ? "bg-sky-600 text-white border-sky-600" : "bg-white border-sky-200"}`}
+                  onClick={() => setTrendsValueKey("")}
+                  title="Count per day"
+                >
+                  Count
+                </button>
+                <button
+                  className={`px-2 h-8 rounded border ${trendsValueKey ? "bg-sky-600 text-white border-sky-600" : "bg-white border-sky-200"}`}
+                  onClick={() => {
+                    const key = trendsValueKey || totalsCol || guessedNumericKey || "";
+                    if (!key) { alert("No numeric column detected for sum."); return; }
+                    setTrendsValueKey(key);
+                  }}
+                  title={`Sum per day${trendsValueKey ? ` (${trendsValueKey})` : totalsCol ? ` (${totalsCol})` : guessedNumericKey ? ` (${guessedNumericKey})` : ""}`}
+                >
+                  Sum
+                </button>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-3 items-end">
+              <SearchableSelect
+                options={[{ value: "", label: "Date column…" }, ...headers.map((h) => ({ value: h, label: h }))]}
+                value={trendsDateKey}
+                onChange={(e) => setTrendsDateKey(e.target.value)}
+                placeholder="Date column…"
+                buttonClassName="border border-sky-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
+              />
+              <SearchableSelect
+                options={[{ value: "", label: "(Count events)" }, ...headers.map((h) => ({ value: h, label: h }))]}
+                value={trendsValueKey}
+                onChange={(e) => setTrendsValueKey(e.target.value)}
+                placeholder="Value column (optional)…"
+                buttonClassName="border border-sky-200 p-2 rounded-lg min-w-[16rem] bg-white h-10"
+              />
+              <SearchableSelect
+                options={[
+                  { value: "", label: "Granularity…" },
+                  { value: "daily", label: "Daily (same day across years)" },
+                  { value: "month", label: "Month Total (same month across years)" },
+                  { value: "year", label: "Year Total (per year)" },
+                ]}
+                value={trendGranularity}
+                onChange={(e) => setTrendGranularity(e.target.value)}
+                placeholder="Granularity…"
+                buttonClassName="border border-sky-200 p-2 rounded-lg min-w-[18rem] bg-white h-10"
+              />
+              <SearchableSelect
+                options={[
+                  { value: "", label: "Years back…" },
+                  { value: "1", label: "1 year back" },
+                  { value: "2", label: "2 years back" },
+                  { value: "3", label: "3 years back" },
+                  { value: "4", label: "4 years back" },
+                  { value: "5", label: "5 years back" },
+                ]}
+                value={yearsBack}
+                onChange={(e) => setYearsBack(e.target.value)}
+                placeholder="Years back…"
+                buttonClassName="border border-sky-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
+              />
+            </div>
+          </div>
+
+          <div className="px-3 pb-3">
+            {trendsDateKey && trendGranularity && yearsBack && trendsData.length ? (
+              <ResponsiveContainer width="100%" height={320}>
+                {(() => {
+                  const measureKeyLocal = trendsValueKey ? "sum" : "count";
+                  const maxBack = Math.min(5, Math.max(1, parseInt(yearsBack, 10)));
+                  const COLORS = ["#2563EB", "#059669", "#F59E0B", "#DC2626", "#7C3AED", "#0EA5E9"];
+                  const lines = [];
+                  const currentKey = trendGranularity === "daily" ? measureKeyLocal : "currentAgg";
+
+                  lines.push(
+                    <Line
+                      key="current"
+                      type="monotone"
+                      dataKey={currentKey}
+                      name={`Current ${trendGranularity}`}
+                      dot={false}
+                      stroke={COLORS[0]}
+                      strokeWidth={3}
+                    />
+                  );
+
+                  for (let k = 1; k <= maxBack; k++) {
+                    lines.push(
+                      <Line
+                        key={`prev_${k}y`}
+                        type="monotone"
+                        dataKey={`prev_${k}y`}
+                        name={`${k}y back`}
+                        dot={false}
+                        stroke={COLORS[k] || COLORS[COLORS.length - 1]}
+                        strokeWidth={3}
+                        strokeDasharray={k % 2 === 0 ? "6 4" : "4 4"}
+                      />
+                    );
+                  }
+
+                  return (
+                    <LineChart data={trendsData} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="date" />
+                      <YAxis />
+                      <Tooltip content={<TrendTooltip />} />
+                      <Legend />
+                      {lines}
+                    </LineChart>
+                  );
+                })()}
+              </ResponsiveContainer>
+            ) : (
+              <div className="text-sm text-gray-600">
+                Pick a <b>Date</b>, choose <b>Count/Sum</b>, then set <b>Granularity</b> and <b>Years back (1–5)</b>.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Data Table */}
       <div className="m-4 bg-white rounded-2xl shadow-2xl border border-emerald-100 ring-1 ring-emerald-100">
         {sortedData?.length > 0 ? (
           <>
             <div className="p-3 text-sm text-gray-600 border-b border-emerald-100 bg-gradient-to-r from-white to-emerald-50/60">
               {activeFilename ? (
-                <>
-                  Loaded: <b>{activeFilename}</b>
-                </>
+                <>Loaded: <b>{activeFilename}</b></>
               ) : (
                 "No sheet loaded"
               )}
@@ -1629,7 +1955,7 @@ export default function App() {
                     <tr key={i} className="odd:bg-white even:bg-emerald-50/40 hover:bg-emerald-50 transition-colors">
                       {headers.map((h) => (
                         <td key={h} className="border border-emerald-200 border-dashed px-4 py-2 whitespace-nowrap">
-                          {row[h] ?? ""}
+                          {renderMaybeDate(h, row[h])}
                         </td>
                       ))}
                     </tr>
@@ -1686,6 +2012,7 @@ export default function App() {
               setOpenFilterCol(null);
               setPieMode("rows");
               setPieTopN("10");
+              setTrendsOn(true);
             }}
             className="bg-rose-600 hover:bg-rose-700 px-3 py-1 rounded-lg h-10 text-white shadow"
           >
@@ -1726,7 +2053,7 @@ export default function App() {
                   <tr key={f.id} className="odd:bg-white even:bg-emerald-50/40">
                     <td className="p-2 border border-emerald-200 border-dashed">{f.filename}</td>
                     <td className="p-2 border border-emerald-200 border-dashed">{f.folder_name || "—"}</td>
-                    <td className="p-2 border border-emerald-200 border-dashed">{new Date(f.uploaded_at).toLocaleString()}</td>
+                    <td className="p-2 border border-emerald-200 border-dashed">{fmtDateOnly(f.uploaded_at)}</td>
                     <td className="p-2 border border-emerald-200 border-dashed">
                       <button onClick={() => loadStored(f.id)} className="bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-600 hover:to-emerald-600 text-white px-3 py-1 rounded shadow">
                         Load
@@ -1772,7 +2099,7 @@ export default function App() {
               {folderFiles.map((f) => (
                 <tr key={f.id} className="odd:bg-white even:bg-emerald-50/40">
                   <td className="p-2 border border-emerald-200 border-dashed">{f.filename}</td>
-                  <td className="p-2 border border-emerald-200 border-dashed">{new Date(f.uploaded_at).toLocaleString()}</td>
+                  <td className="p-2 border border-emerald-200 border-dashed">{fmtDateOnly(f.uploaded_at)}</td>
                   <td className="p-2 border border-emerald-200 border-dashed">{f.active ? "Yes" : "No"}</td>
                   <td className="p-2 border border-emerald-200 border-dashed">
                     <button onClick={() => deleteSheet(f.id)} className="bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-600 hover:to-rose-600 text-white px-3 py-1 rounded shadow">
