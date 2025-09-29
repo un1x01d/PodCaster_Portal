@@ -512,7 +512,7 @@ export default function App() {
   const [totalsCol, setTotalsCol] = useState("");
 
   // Trends
-  const [trendsOn, setTrendsOn] = useState(true);
+  const [trendsOn, setTrendsOn] = useState(false);
   const [trendsDateKey, setTrendsDateKey] = useState("");
   const [trendsValueKey, setTrendsValueKey] = useState("");
   const [trendGranularity, setTrendGranularity] = useState("");
@@ -525,7 +525,6 @@ export default function App() {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     });
-
   /* -------- Auth -------- */
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -803,7 +802,7 @@ export default function App() {
       const { key, direction } = sortConfig;
       rows.sort((a, b) => {
         const aVal = a[key] ?? "";
-        const bVal = b[key] ?? ""; // NOTE: keep logic unchanged
+        const bVal = b[key] ?? "";
         if (aVal < bVal) return direction === "asc" ? -1 : 1;
         if (aVal > bVal) return direction === "asc" ? 1 : -1;
         return 0;
@@ -1344,7 +1343,7 @@ export default function App() {
   const DashboardBody = () => (
     <div className="w-full bg-gradient-to-b from-white to-emerald-50/40">
       {/* Global Controls Bar */}
-      <div className="flex flex-wrap gap-3 p-4 bg-white/90 backdrop-blur shadow-sm border-b border-emerald-100 items-center">
+      <div className="flex flex-wrap gap-3 p-4 bg-white/90 backdrop-blur shadow-sm border-b border-emerald-100 items-center relative z-30">
         {/* Upload (admin) */}
         {user.role === "admin" && (
           <>
@@ -1734,7 +1733,7 @@ export default function App() {
 
       {/* Trends */}
       {trendsOn && (
-        <div className="m-4 bg-white rounded-2xl shadow-xl border border-sky-100">
+        <div className="m-4 bg-white rounded-2xl shadow-2xl border border-sky-100">
           <div className="p-3 flex flex-col gap-3">
             <div className="flex items-center justify-between">
               <div className="font-semibold text-gray-900">📈 Trends</div>
@@ -1863,7 +1862,7 @@ export default function App() {
       )}
 
       {/* Data Table */}
-      <div className="m-4 bg-white rounded-2xl shadow-2xl border border-emerald-100 ring-1 ring-emerald-100">
+      <div className="m-4 bg-white rounded-2xl shadow-2xl border border-emerald-100 ring-1 ring-emerald-100 relative z-0">
         {sortedData?.length > 0 ? (
           <>
             <div className="p-3 text-sm text-gray-600 border-b border-emerald-100 bg-gradient-to-r from-white to-emerald-50/60">
@@ -1874,7 +1873,11 @@ export default function App() {
               )}
             </div>
 
-            <div className="overflow-auto">
+            {/* Limit viewport to ~30 rows; keep header sticky; scroll the rest */}
+            <div
+              className="overflow-auto"
+              style={{ maxHeight: "960px" }}
+            >
               <table className="table-auto border-collapse w-full text-sm">
                 <thead className="sticky top-0 bg-gradient-to-r from-emerald-200 to-emerald-100 text-gray-900 shadow-sm z-0">
                   <tr>
@@ -1950,7 +1953,7 @@ export default function App() {
                     ))}
                   </tr>
                 </thead>
-                <tbody>
+                <tbody className="[&>tr]:h-8">
                   {sortedData.map((row, i) => (
                     <tr key={i} className="odd:bg-white even:bg-emerald-50/40 hover:bg-emerald-50 transition-colors">
                       {headers.map((h) => (
@@ -2012,7 +2015,7 @@ export default function App() {
               setOpenFilterCol(null);
               setPieMode("rows");
               setPieTopN("10");
-              setTrendsOn(true);
+              setTrendsOn(false);
             }}
             className="bg-rose-600 hover:bg-rose-700 px-3 py-1 rounded-lg h-10 text-white shadow"
           >
