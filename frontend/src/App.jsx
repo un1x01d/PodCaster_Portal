@@ -451,6 +451,39 @@ function TrendTooltip({ active, payload, label }) {
   );
 }
 
+/* ---------------- Context Menu for Freeze ---------------- */
+function FreezeMenu({ open, x, y, onFreezeRows, onFreezeCols, onUnfreezeRows, onUnfreezeCols, onClose, targetInfo }) {
+  if (!open) return null;
+  return (
+    <div
+      className="fixed z-[10000] bg-white border border-emerald-200 rounded-xl shadow-2xl overflow-hidden"
+      style={{ left: Math.min(x, window.innerWidth - 220), top: Math.min(y, window.innerHeight - 160), width: 220 }}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <div className="px-3 py-2 text-xs bg-gradient-to-r from-emerald-50 to-white border-b border-emerald-100">
+        Freeze options
+      </div>
+      <button className="w-full text-left px-3 py-2 hover:bg-emerald-50 text-gray-900"
+        onClick={() => { onFreezeRows?.(targetInfo?.rowIndex ?? 0); onClose?.(); }}>
+        Freeze rows up to this row
+      </button>
+      <button className="w-full text-left px-3 py-2 hover:bg-emerald-50 text-gray-900"
+        onClick={() => { onFreezeCols?.(targetInfo?.colIndex ?? 0); onClose?.(); }}>
+        Freeze columns up to this column
+      </button>
+      <div className="border-t border-emerald-100" />
+      <button className="w-full text-left px-3 py-2 hover:bg-emerald-50 text-gray-900"
+        onClick={() => { onUnfreezeRows?.(); onClose?.(); }}>
+        Unfreeze rows
+      </button>
+      <button className="w-full text-left px-3 py-2 hover:bg-emerald-50 text-gray-900"
+        onClick={() => { onUnfreezeCols?.(); onClose?.(); }}>
+        Unfreeze columns
+      </button>
+    </div>
+  );
+}
+
 /* ---------------- App ---------------- */
 export default function App() {
   const [user, setUser] = useState(null);
@@ -525,6 +558,95 @@ export default function App() {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     });
+
+  /* -------- NEW: Freeze state + measurement refs -------- */
+  const [frozenRows, setFrozenRows] = useState(0);     // number of data rows frozen from top
+  const [frozenCols, setFrozenCols] = useState(0);     // number of columns frozen from left
+  const [colLeft, setColLeft] = useState([]);          // cumulative left offsets per column index
+  const [rowTop, setRowTop] = useState([]);            // cumulative top offsets per row index (data rows)
+  const headerRef = useRef(null);
+  const tableWrapperRef = useRef(null);
+  const thRefs = useRef([]);                           // header cell refs by col index
+  const trRefs = useRef([]);                           // row refs by row index (data rows)
+
+  // Context (right-click) menu state
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuXY, setMenuXY] = useState({ x: 0, y: 0 });
+  const [menuTarget, setMenuTarget] = useState(null);  // { rowIndex, colIndex, type: 'th'|'td' }
+
+  const openFreezeMenu = (e, info) => {
+    e.preventDefault();
+    setMenuTarget(info);
+    setMenuXY({ x: e.clientX, y: e.clientY });
+    setMenuOpen(true);
+  };
+  useEffect(() => {
+    const onDocClick = () => setMenuOpen(false);
+    const onEsc = (e) => e.key === "Escape" && setMenuOpen(false);
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onEsc);
+    };
+  }, []);
+
+  // Measure column widths & row heights to compute sticky offsets
+  const recomputeOffsets = () => {
+    // Columns (header TH widths)
+    const cols = (thRefs.current || []).slice(0, headers.length);
+    const lefts = [];
+    let acc = 0;
+    for (let i = 0; i < cols.length; i++) {
+      lefts[i] = acc;
+      const w = cols[i]?.offsetWidth || 0;
+      acc += w;
+    }
+    setColLeft(lefts);
+
+    // Rows (header height + each TR height)
+    const headerH = headerRef.current?.offsetHeight || 0;
+    const trs = trRefs.current || [];
+    const tops = [];
+    let y = headerH; // first data row sticks below the header
+    for (let r = 0; r < trs.length; r++) {
+      tops[r] = y;
+      y += trs[r]?.offsetHeight || 0;
+    }
+    setRowTop(tops);
+  };
+
+  useLayoutEffect(() => {
+    // recompute when data / headers render
+    const id = requestAnimationFrame(recomputeOffsets);
+    return () => cancelAnimationFrame(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [headers, data, sortConfig, columnFilters, pivotOn, twoOn, trendsOn]);
+
+  useEffect(() => {
+    const onResize = () => recomputeOffsets();
+    const onScroll = () => recomputeOffsets();
+    window.addEventListener("resize", onResize);
+    const wrapper = tableWrapperRef.current;
+    wrapper?.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("resize", onResize);
+      wrapper?.removeEventListener("scroll", onScroll);
+    };
+  }, []);
+
+  const freezeRowsUpTo = (rowIndex) => {
+    // rowIndex refers to data row index (0-based in tbody)
+    const n = Math.max(0, Math.min(rowIndex + 1, (sortedData || []).length));
+    setFrozenRows(n);
+  };
+  const freezeColsUpTo = (colIndex) => {
+    const n = Math.max(0, Math.min(colIndex + 1, headers.length));
+    setFrozenCols(n);
+  };
+  const unfreezeRows = () => setFrozenRows(0);
+  const unfreezeCols = () => setFrozenCols(0);
+
   /* -------- Auth -------- */
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -1873,27 +1995,43 @@ export default function App() {
               )}
             </div>
 
-            {/* Limit viewport to ~30 rows; keep header sticky; scroll the rest */}
+            {/* Limit viewport; keep header sticky; scroll the rest */}
             <div
-              className="overflow-auto"
+              ref={tableWrapperRef}
+              className="overflow-auto relative"
               style={{ maxHeight: "960px" }}
             >
-              <table className="table-auto border-collapse w-full text-sm">
-                <thead className="sticky top-0 bg-gradient-to-r from-emerald-200 to-emerald-100 text-gray-900 shadow-sm z-0">
+              <table
+                className="table-auto w-full text-sm"
+                style={{ borderCollapse: "separate", borderSpacing: 0 }}
+                onContextMenu={(e)=>e.preventDefault()}
+              >
+                <thead
+                  ref={headerRef}
+                  className="sticky top-0 bg-gradient-to-r from-emerald-200 to-emerald-100 text-gray-900 shadow-sm z-10"
+                >
                   <tr>
-                    {headers.map((h) => (
+                    {headers.map((h, colIdx) => (
                       <th
                         key={h}
-                        ref={(el) => {
-                          if (!filterAnchorRefs.current) filterAnchorRefs.current = {};
-                          filterAnchorRefs.current[h] = el;
-                        }}
+                        ref={(el) => (thRefs.current[colIdx] = el)}
                         className="relative border border-emerald-200 border-dashed px-4 py-2 text-left whitespace-nowrap cursor-pointer group"
                         onClick={(e) => {
                           if (openFilterCol === h) return;
                           const isFilterBtn = e.target.closest && e.target.closest(".filter-btn");
                           if (!isFilterBtn) requestSort(h);
                         }}
+                        onContextMenu={(e) =>
+                          openFreezeMenu(e, { type: "th", rowIndex: -1, colIndex: colIdx })
+                        }
+                        style={{
+                          position: frozenCols > colIdx ? "sticky" : undefined,
+                          left: frozenCols > colIdx ? (colLeft[colIdx] || 0) : undefined,
+                          zIndex: frozenCols > colIdx ? 7 : undefined,
+                          background: frozenCols > colIdx ? "linear-gradient(to right,#ECFDF5,#D1FAE5)" : undefined,
+                          backgroundClip: frozenCols > colIdx ? "padding-box" : undefined,
+                        }}
+                        title="Right-click for freeze options"
                       >
                         <div className="flex items-center gap-2">
                           <span className="truncate">
@@ -1954,19 +2092,69 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody className="[&>tr]:h-8">
-                  {sortedData.map((row, i) => (
-                    <tr key={i} className="odd:bg-white even:bg-emerald-50/40 hover:bg-emerald-50 transition-colors">
-                      {headers.map((h) => (
-                        <td key={h} className="border border-emerald-200 border-dashed px-4 py-2 whitespace-nowrap">
-                          {renderMaybeDate(h, row[h])}
-                        </td>
-                      ))}
+                  {sortedData.map((row, rowIdx) => (
+                    <tr
+                      key={rowIdx}
+                      ref={(el) => (trRefs.current[rowIdx] = el)}
+                      className="odd:bg-white even:bg-emerald-50/40 hover:bg-emerald-50 transition-colors"
+                    >
+                      {headers.map((h, colIdx) => {
+                        const isFrozenCol = frozenCols > colIdx;
+                        const isFrozenRow = frozenRows > rowIdx;
+                        const topVal = isFrozenRow ? rowTop[rowIdx] || 0 : undefined;
+                        const leftVal = isFrozenCol ? colLeft[colIdx] || 0 : undefined;
+                        const z =
+                          isFrozenRow && isFrozenCol
+                            ? 9
+                            : isFrozenRow
+                            ? 8
+                            : isFrozenCol
+                            ? 7
+                            : undefined;
+
+                        return (
+                          <td
+                            key={h}
+                            className="border border-emerald-200 border-dashed px-4 py-2 whitespace-nowrap"
+                            onContextMenu={(e) =>
+                              openFreezeMenu(e, { type: "td", rowIndex: rowIdx, colIndex: colIdx })
+                            }
+                            style={{
+                              position: isFrozenRow || isFrozenCol ? "sticky" : undefined,
+                              top: topVal,
+                              left: leftVal,
+                              zIndex: z,
+                              background:
+                                isFrozenRow || isFrozenCol
+                                  ? "linear-gradient(to right,#FFFFFF,#F0FDF4)"
+                                  : undefined,
+                              backgroundClip:
+                                isFrozenRow || isFrozenCol ? "padding-box" : undefined,
+                            }}
+                            title="Right-click for freeze options"
+                          >
+                            {renderMaybeDate(h, row[h])}
+                          </td>
+                        );
+                      })}
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
 
+            {/* Freeze context menu */}
+            <FreezeMenu
+              open={menuOpen}
+              x={menuXY.x}
+              y={menuXY.y}
+              targetInfo={menuTarget}
+              onFreezeRows={freezeRowsUpTo}
+              onFreezeCols={freezeColsUpTo}
+              onUnfreezeRows={unfreezeRows}
+              onUnfreezeCols={unfreezeCols}
+              onClose={() => setMenuOpen(false)}
+            />
           </>
         ) : (
           <div className="text-gray-600 text-center py-10">
@@ -2016,6 +2204,9 @@ export default function App() {
               setPieMode("rows");
               setPieTopN("10");
               setTrendsOn(false);
+              // reset freeze on logout
+              setFrozenRows(0);
+              setFrozenCols(0);
             }}
             className="bg-rose-600 hover:bg-rose-700 px-3 py-1 rounded-lg h-10 text-white shadow"
           >
