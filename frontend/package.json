@@ -10,7 +10,11 @@
     "start": "npm run preview"
   },
   "dependencies": {
+    "@handsontable/react": "^16.1.1",
+    "ag-grid-community": "^34.2.0",
+    "ag-grid-react": "^34.2.0",
     "axios": "^1.7.7",
+    "handsontable": "^16.1.1",
     "jspdf": "^2.5.1",
     "jspdf-autotable": "^3.8.3",
     "react": "^18.3.1",
