@@ -43,43 +43,6 @@ const renderMaybeDate = (columnName, value) => {
   return value;
 };
 
-/* ================== Freeze UI (minimal) ================== */
-const ROW_HEIGHT = 32; // matches tailwind h-8 on rows
-
-function FreezeMenu({ show, x, y, type, onAction }) {
-  if (!show) return null;
-  const items =
-    type === "col"
-      ? [
-          { key: "freezeColsUpTo", label: "Freeze columns up to here" },
-          { key: "unfreezeCols", label: "Unfreeze columns" },
-        ]
-      : [
-          { key: "freezeRowsUpTo", label: "Freeze rows up to here" },
-          { key: "unfreezeRows", label: "Unfreeze rows" },
-        ];
-  return (
-    <div
-      className="fixed z-[99999] bg-white border border-emerald-200 rounded-xl shadow-2xl overflow-hidden"
-      style={{ top: y, left: x, minWidth: 220 }}
-      role="menu"
-    >
-      <div className="bg-gradient-to-r from-emerald-50 to-white text-xs px-3 py-2 border-b border-emerald-100">
-        Freeze options
-      </div>
-      {items.map((it) => (
-        <button
-          key={it.key}
-          className="w-full text-left px-3 py-2 hover:bg-emerald-50 text-gray-900 text-sm"
-          onClick={() => onAction?.(it.key)}
-        >
-          {it.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 /* ---------------- SearchableSelect ---------------- */
 function SearchableSelect({
   options = [],
@@ -206,6 +169,7 @@ function ExportMenu({ onCSV, onXLSX, onPDF }) {
     <div className="relative inline-block">
       <button
         ref={btnRef}
+        type="button"
         onClick={() => setOpen((o) => !o)}
         className="bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-600 hover:to-emerald-600 text-white px-3 rounded-lg h-10 shadow flex items-center gap-2"
         title="Export options"
@@ -250,7 +214,7 @@ function ExportMenu({ onCSV, onXLSX, onPDF }) {
 function Modal({ open, onClose, title, children, widthClass = "max-w-3xl" }) {
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
       <div
         className={`relative bg-white rounded-2xl shadow-2xl w-[95vw] ${widthClass} max-h-[85vh] overflow-auto border border-gray-100`}
@@ -519,6 +483,7 @@ export default function App() {
   const [selectOpen, setSelectOpen] = useState(false);
   const [myFiles, setMyFiles] = useState([]);
   const [myFilesLoading, setMyFilesLoading] = useState(false);
+  const [selectError, setSelectError] = useState(""); // <-- added
 
   // Admin Folder Files modal
   const [folderFilesOpen, setFolderFilesOpen] = useState(false);
@@ -557,91 +522,11 @@ export default function App() {
 
   const [guessedNumericKey, setGuessedNumericKey] = useState("");
 
-  // ===== Freezing =====
-  const [frozenColCount, setFrozenColCount] = useState(0);
-  const [freezeRowsCount, setFreezeRowsCount] = useState(0);
-  const [headerHeight, setHeaderHeight] = useState(0);
-  const [colLeftOffsets, setColLeftOffsets] = useState([]);
-  const theadRef = useRef(null);
-  const headerCellRefs = useRef([]);
-  const [ctxMenu, setCtxMenu] = useState({
-    show: false,
-    x: 0,
-    y: 0,
-    type: null, // 'col' | 'row'
-    colIdx: null,
-    rowIdx: null,
-  });
-
-  const closeCtxMenu = () => setCtxMenu((s) => ({ ...s, show: false }));
-
-  const openHeaderMenu = (e, colIdx) => {
-    e.preventDefault();
-    setCtxMenu({ show: true, x: e.clientX, y: e.clientY, type: "col", colIdx, rowIdx: null });
-  };
-  const openRowMenu = (e, rowIdx) => {
-    e.preventDefault();
-    setCtxMenu({ show: true, x: e.clientX, y: e.clientY, type: "row", rowIdx, colIdx: null });
-  };
-  const handleFreezeAction = (action) => {
-    if (action === "freezeColsUpTo" && ctxMenu.type === "col" && ctxMenu.colIdx != null) {
-      setFrozenColCount(ctxMenu.colIdx + 1);
-    }
-    if (action === "unfreezeCols") setFrozenColCount(0);
-    if (action === "freezeRowsUpTo" && ctxMenu.type === "row" && ctxMenu.rowIdx != null) {
-      // +1 because header isn't counted; this freezes first N rows
-      setFreezeRowsCount(ctxMenu.rowIdx + 1);
-    }
-    if (action === "unfreezeRows") setFreezeRowsCount(0);
-    closeCtxMenu();
-  };
-
-  useEffect(() => {
-    const onDoc = (e) => {
-      if (ctxMenu.show) {
-        const target = e.target;
-        // close if clicking outside menu
-        if (!target.closest?.("[role='menu']")) closeCtxMenu();
-      }
-    };
-    const onEsc = (e) => { if (e.key === "Escape") closeCtxMenu(); };
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("scroll", onDoc, true);
-    document.addEventListener("keydown", onEsc);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("scroll", onDoc, true);
-      document.removeEventListener("keydown", onEsc);
-    };
-  }, [ctxMenu.show]);
-
-  const measureHeader = () => {
-    const ths = headerCellRefs.current || [];
-    const offs = [];
-    let left = 0;
-    for (let i = 0; i < ths.length; i++) {
-      offs[i] = left;
-      left += ths[i]?.offsetWidth || 0;
-    }
-    setColLeftOffsets(offs);
-    setHeaderHeight(theadRef.current?.offsetHeight || 0);
-  };
-
-  useLayoutEffect(() => {
-    measureHeader();
-    // Recalculate on resize
-    const onResize = () => measureHeader();
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [headers, frozenColCount]);
-
   const fmt2 = (n) =>
     Number(n ?? 0).toLocaleString(undefined, {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     });
-
   /* -------- Auth -------- */
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -728,11 +613,6 @@ export default function App() {
         const guessVal = Object.keys(first).find((k) => typeof first?.[k] === "number") || "";
         setGuessedNumericKey(guessVal || "");
       }
-
-      // reset freezes when dataset changes
-      setFrozenColCount(0);
-      setFreezeRowsCount(0);
-      setTimeout(measureHeader, 0);
     } catch (err) {
       console.error("❌ Load data failed:", err.message);
     }
@@ -787,15 +667,20 @@ export default function App() {
 
   /* -------- My Files modal -------- */
   const openSelect = async () => {
-    setSelectOpen(true);
+    setSelectOpen(true);           // open immediately for feedback
     setMyFilesLoading(true);
+    setSelectError("");
     try {
       const r = await axios.get(`${API}/my-files`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      setMyFiles(r.data || []);
+      setMyFiles(Array.isArray(r.data) ? r.data : []);
     } catch (e) {
       console.error("my-files failed", e);
+      const msg = e?.response?.status
+        ? `Failed to load files (HTTP ${e.response.status}).`
+        : "Failed to load files. Check your API URL, CORS, and token.";
+      setSelectError(msg);
       setMyFiles([]);
     } finally {
       setMyFilesLoading(false);
@@ -997,20 +882,6 @@ export default function App() {
       })
       .sort((a, b) => String(a[pivotRowKey]).localeCompare(String(b[pivotRowKey])));
 
-    // add grand totals row
-    if (outRows.length) {
-      const totalRow = {};
-      totalRow[pivotRowKey] = "Grand Total";
-      let grand = 0;
-      dynHeaders.forEach((h) => {
-        const sum = outRows.reduce((s, r) => s + (Number(r[h]) || 0), 0);
-        totalRow[h] = sum;
-        grand += sum;
-      });
-      totalRow._Total = grand;
-      outRows.push(totalRow);
-    }
-
     const headers2 = [pivotRowKey, ...dynHeaders, "_Total"];
     return { pivotHeaders: headers2, pivotRows: outRows };
   }, [pivotRowKey, pivotColKey, pivotValKey, pivotAgg, sortedData]);
@@ -1035,11 +906,9 @@ export default function App() {
   /* -------- Pie Data (based on Pivot) -------- */
   const pieData = React.useMemo(() => {
     if (!pivotRows.length) return [];
-    // ignore the last "Grand Total" row for pie inputs
-    const bodyRows = pivotRows.slice(0, -1);
     const topN = Math.max(1, parseInt(pieTopN || "10", 10));
     if (pieMode === "rows") {
-      const arr = bodyRows
+      const arr = pivotRows
         .map((r) => ({
           name: String(r[pivotRowKey]),
           value: Number.isFinite(r._Total) ? r._Total : 0,
@@ -1052,7 +921,7 @@ export default function App() {
     } else {
       const totalsByCol = {};
       pivotSeriesKeys.forEach((k) => (totalsByCol[k] = 0));
-      bodyRows.forEach((row) => {
+      pivotRows.forEach((row) => {
         pivotSeriesKeys.forEach((k) => {
           const v = Number(row[k]) || 0;
           totalsByCol[k] += v;
@@ -1662,7 +1531,7 @@ export default function App() {
                 {/* Bar chart (left) - wider */}
                 <div className="lg:w-3/4 w-full">
                   <ResponsiveContainer width="100%" height={320}>
-                    <BarChart data={pivotRows.slice(0, -1)} margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
+                    <BarChart data={pivotRows} margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis dataKey={pivotRowKey} />
                       <YAxis />
@@ -1683,6 +1552,43 @@ export default function App() {
 
                 {/* Pie chart (right) */}
                 <div className="lg:w-1/4 w-full relative">
+                  <div className="absolute top-0 left-0 z-10 flex items-center gap-2">
+                    <div className="flex items-center gap-2 bg-white/90 border border-emerald-200 rounded-md px-2 py-1">
+                      <label className="flex items-center gap-1 text-xs text-gray-800">
+                        <input
+                          type="checkbox"
+                          className="w-3 h-3 accent-emerald-600"
+                          checked={pieMode === "rows"}
+                          onChange={() => setPieMode("rows")}
+                        />
+                        Rows
+                      </label>
+                      <label className="flex items-center gap-1 text-xs text-gray-800">
+                        <input
+                          type="checkbox"
+                          className="w-3 h-3 accent-emerald-600"
+                          checked={pieMode === "cols"}
+                          onChange={() => setPieMode("cols")}
+                        />
+                        Columns
+                      </label>
+                    </div>
+
+                    <div className="flex items-center gap-2 bg-white/90 border border-emerald-200 rounded-md px-2 py-1">
+                      {["5", "10", "15", "20"].map((n) => (
+                        <label key={n} className="flex items-center gap-1 text-xs text-gray-800">
+                          <input
+                            type="checkbox"
+                            className="w-3 h-3 accent-emerald-600"
+                            checked={pieTopN === n}
+                            onChange={() => setPieTopN(n)}
+                          />
+                          Top {n}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
                   <div className="w-full h=[320px]">
                     {pieData.length ? (
                       <ResponsiveContainer width="100%" height={320}>
@@ -1730,9 +1636,9 @@ export default function App() {
                 </thead>
                 <tbody>
                   {pivotRows.map((row, i) => (
-                    <tr key={i} className={`hover:bg-emerald-50 transition-colors ${i % 2 ? "bg-emerald-50/40" : "bg-white"}`}>
+                    <tr key={i} className="odd:bg-white even:bg-emerald-50/40 hover:bg-emerald-50 transition-colors">
                       {pivotHeaders.map((h) => (
-                        <td key={h} className={`p-2 border border-emerald-200 border-dashed whitespace-nowrap ${row[pivotRowKey]==="Grand Total" ? "font-semibold" : ""}`}>
+                        <td key={h} className="p-2 border border-emerald-200 border-dashed whitespace-nowrap">
                           {Number.isFinite(row[h]) ? row[h].toLocaleString() : row[h]}
                         </td>
                       ))}
@@ -1962,7 +1868,7 @@ export default function App() {
         </div>
       )}
 
-      {/* ================= Data Table with Freeze ================= */}
+      {/* Data Table */}
       <div className="m-4 bg-white rounded-2xl shadow-2xl border border-emerald-100 ring-1 ring-emerald-100 relative z-0">
         {sortedData?.length > 0 ? (
           <>
@@ -1974,47 +1880,27 @@ export default function App() {
               )}
             </div>
 
-            {/* Scroll container is the sticky scrollport */}
+            {/* Limit viewport to ~30 rows; keep header sticky; scroll the rest */}
             <div
               className="overflow-auto"
-              style={{ maxHeight: "960px", position: "relative" }}
+              style={{ maxHeight: "960px" }}
             >
-              {/* IMPORTANT: border-separate for sticky columns */}
-              <table className="table-auto border-separate border-spacing-0 w-full text-sm">
-                <thead
-                  ref={theadRef}
-                  className="bg-gradient-to-r from-emerald-200 to-emerald-100 text-gray-900 shadow-sm z-10"
-                >
+              <table className="table-auto border-collapse w-full text-sm">
+                <thead className="sticky top-0 bg-gradient-to-r from-emerald-200 to-emerald-100 text-gray-900 shadow-sm z-0">
                   <tr>
-                    {headers.map((h, colIdx) => (
+                    {headers.map((h) => (
                       <th
                         key={h}
                         ref={(el) => {
-                          headerCellRefs.current[colIdx] = el;
                           if (!filterAnchorRefs.current) filterAnchorRefs.current = {};
                           filterAnchorRefs.current[h] = el;
                         }}
-                        className="relative border border-emerald-200 border-dashed px-4 py-2 text-left whitespace-nowrap cursor-pointer group bg-emerald-100"
+                        className="relative border border-emerald-200 border-dashed px-4 py-2 text-left whitespace-nowrap cursor-pointer group"
                         onClick={(e) => {
                           if (openFilterCol === h) return;
                           const isFilterBtn = e.target.closest && e.target.closest(".filter-btn");
                           if (!isFilterBtn) requestSort(h);
                         }}
-                        onContextMenu={(e) => openHeaderMenu(e, colIdx)}
-                        style={{
-                          position: "sticky",
-                          top: 0,
-                          zIndex: 40,
-                          ...(colIdx < frozenColCount
-                            ? {
-                                left: (colLeftOffsets[colIdx] || 0) + "px",
-                                zIndex: 50,
-                                boxShadow: "1px 0 0 0 rgba(16,185,129,0.25) inset",
-                                background: "linear-gradient(to right, #d1fae5, #f0fdf4)",
-                              }
-                            : null),
-                        }}
-                        title="Right-click for freeze options"
                       >
                         <div className="flex items-center gap-2">
                           <span className="truncate">
@@ -2074,62 +1960,20 @@ export default function App() {
                     ))}
                   </tr>
                 </thead>
-
                 <tbody className="[&>tr]:h-8">
-                  {sortedData.map((row, i) => {
-                    const isFrozenRow = i < freezeRowsCount;
-                    const topOffset = headerHeight + i * ROW_HEIGHT;
-                    return (
-                      <tr
-                        key={i}
-                        className={`odd:bg-white even:bg-emerald-50/40 hover:bg-emerald-50 transition-colors ${isFrozenRow ? "z-20" : ""}`}
-                        onContextMenu={(e) => openRowMenu(e, i)}
-                        style={
-                          isFrozenRow
-                            ? {
-                                position: "sticky",
-                                top: topOffset + "px",
-                                background: "white",
-                                zIndex: 20,
-                              }
-                            : undefined
-                        }
-                        title="Right-click for freeze options"
-                      >
-                        {headers.map((h, colIdx) => (
-                          <td
-                            key={h}
-                            className="border border-emerald-200 border-dashed px-4 py-2 whitespace-nowrap bg-white"
-                            style={
-                              colIdx < frozenColCount
-                                ? {
-                                    position: "sticky",
-                                    left: (colLeftOffsets[colIdx] || 0) + "px",
-                                    zIndex: 30,
-                                    background: "white",
-                                    boxShadow: "1px 0 0 0 rgba(16,185,129,0.25) inset",
-                                  }
-                                : undefined
-                            }
-                          >
-                            {renderMaybeDate(h, row[h])}
-                          </td>
-                        ))}
-                      </tr>
-                    );
-                  })}
+                  {sortedData.map((row, i) => (
+                    <tr key={i} className="odd:bg-white even:bg-emerald-50/40 hover:bg-emerald-50 transition-colors">
+                      {headers.map((h) => (
+                        <td key={h} className="border border-emerald-200 border-dashed px-4 py-2 whitespace-nowrap">
+                          {renderMaybeDate(h, row[h])}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
 
-            {/* Right-click context menu */}
-            <FreezeMenu
-              show={ctxMenu.show}
-              x={ctxMenu.x}
-              y={ctxMenu.y}
-              type={ctxMenu.type}
-              onAction={handleFreezeAction}
-            />
           </>
         ) : (
           <div className="text-gray-600 text-center py-10">
@@ -2147,6 +1991,7 @@ export default function App() {
         <h1 className="text-xl font-bold">📊 Dashboard</h1>
         <div className="flex items-center gap-3">
           <button
+            type="button"
             onClick={openSelect}
             className="bg-white text-gray-900 border border-emerald-200 hover:bg-emerald-50 px-3 py-1 rounded-lg h-10 shadow"
             title="Choose a sheet you have access to"
@@ -2179,8 +2024,6 @@ export default function App() {
               setPieMode("rows");
               setPieTopN("10");
               setTrendsOn(false);
-              setFrozenColCount(0);
-              setFreezeRowsCount(0);
             }}
             className="bg-rose-600 hover:bg-rose-700 px-3 py-1 rounded-lg h-10 text-white shadow"
           >
@@ -2200,6 +2043,98 @@ export default function App() {
           <Route path="/users" element={<div className="pt-0"><UserManagement token={token} sheetId={sheetId} /></div>} />
         )}
       </Routes>
+
+      <Modal open={selectOpen} onClose={() => setSelectOpen(false)} title={user.role === "admin" ? "Select or Delete a Sheet" : "Select a Sheet"}>
+        {selectError ? (
+          <div className="mb-3 rounded-md border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2 text-sm">
+            {selectError}
+          </div>
+        ) : null}
+
+        {myFilesLoading ? (
+          <div>Loading…</div>
+        ) : myFiles.length ? (
+          <div className="overflow-auto">
+            <table className="table-auto border-collapse w-full text-sm">
+              <thead className="bg-gradient-to-r from-emerald-50 to-white">
+                <tr>
+                  <th className="p-2 border border-emerald-200 border-dashed text-left">Filename</th>
+                  <th className="p-2 border border-emerald-200 border-dashed text-left">Folder</th>
+                  <th className="p-2 border border-emerald-200 border-dashed text-left">Uploaded</th>
+                  <th className="p-2 border border-emerald-200 border-dashed"></th>
+                  {user.role === "admin" && <th className="p-2 border border-emerald-200 border-dashed"></th>}
+                </tr>
+              </thead>
+              <tbody>
+                {myFiles.map((f) => (
+                  <tr key={f.id} className="odd:bg-white even:bg-emerald-50/40">
+                    <td className="p-2 border border-emerald-200 border-dashed">{f.filename}</td>
+                    <td className="p-2 border border-emerald-200 border-dashed">{f.folder_name || "—"}</td>
+                    <td className="p-2 border border-emerald-200 border-dashed">{fmtDateOnly(f.uploaded_at)}</td>
+                    <td className="p-2 border border-emerald-200 border-dashed">
+                      <button onClick={() => loadStored(f.id)} className="bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-600 hover:to-emerald-600 text-white px-3 py-1 rounded shadow">
+                        Load
+                      </button>
+                    </td>
+                    {user.role === "admin" && (
+                      <td className="p-2 border border-emerald-200 border-dashed">
+                        <button
+                          onClick={async () => {
+                            await deleteSheet(f.id);
+                            await refreshMyFiles();
+                          }}
+                          className="bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-600 hover:to-rose-600 text-white px-3 py-1 rounded shadow"
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="text-gray-600">
+            {selectError
+              ? "Could not retrieve your files."
+              : "No files found. If you expect files, check your permissions."}
+          </div>
+        )}
+      </Modal>
+
+      <Modal open={folderFilesOpen} onClose={() => setFolderFilesOpen(false)} title={`Files in: ${folderFilesMeta.name || ""}`} widthClass="max-w-4xl">
+        {folderFilesLoading ? (
+          <div>Loading…</div>
+        ) : folderFiles.length ? (
+          <table className="table-auto border-collapse w-full text-sm">
+            <thead className="bg-gradient-to-r from-emerald-50 to-white">
+              <tr>
+                <th className="p-2 border border-emerald-200 border-dashed text-left">Filename</th>
+                <th className="p-2 border border-emerald-200 border-dashed text-left">Uploaded</th>
+                <th className="p-2 border border-emerald-200 border-dashed text-left">Active</th>
+                <th className="p-2 border border-emerald-200 border-dashed"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {folderFiles.map((f) => (
+                <tr key={f.id} className="odd:bg-white even:bg-emerald-50/40">
+                  <td className="p-2 border border-emerald-200 border-dashed">{f.filename}</td>
+                  <td className="p-2 border border-emerald-200 border-dashed">{fmtDateOnly(f.uploaded_at)}</td>
+                  <td className="p-2 border border-emerald-200 border-dashed">{f.active ? "Yes" : "No"}</td>
+                  <td className="p-2 border border-emerald-200 border-dashed">
+                    <button onClick={() => deleteSheet(f.id)} className="bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-600 hover:to-rose-600 text-white px-3 py-1 rounded shadow">
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <div className="text-gray-600">No files in this folder.</div>
+        )}
+      </Modal>
     </Router>
   );
 }
