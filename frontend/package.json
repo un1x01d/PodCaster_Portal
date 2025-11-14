@@ -10,7 +10,11 @@
     "start": "npm run preview"
   },
   "dependencies": {
+    "@handsontable/react": "^16.1.1",
+    "ag-grid-community": "^34.2.0",
+    "ag-grid-react": "^34.2.0",
     "axios": "^1.7.7",
+    "handsontable": "^16.1.1",
     "jspdf": "^2.5.1",
     "jspdf-autotable": "^3.8.3",
     "react": "^18.3.1",
@@ -21,14 +25,15 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",
-    "autoprefixer": "^10.4.20",
-    "postcss": "^8.4.47",
-    "tailwindcss": "^3.4.13",
+    "autoprefixer": "^10.4.21",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.17",
     "vite": "^5.4.8"
   },
-  "engines": { "node": ">=18.18" },
+  "engines": {
+    "node": ">=18.18"
+  },
   "overrides": {
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   }
 }
-

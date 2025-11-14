@@ -1,0 +1,35 @@
+import type { AgCoreBeanCollection } from '../interfaces/agCoreBeanCollection';
+import type { BaseEvents } from '../interfaces/baseEvents';
+import type { BaseProperties } from '../interfaces/baseProperties';
+import type { DragListenerParams, IDragService } from '../interfaces/iDrag';
+import type { IPropertiesService } from '../interfaces/iProperties';
+import { AgBeanStub } from './agBeanStub';
+export declare class BaseDragService<TBeanCollection extends AgCoreBeanCollection<TProperties, TGlobalEvents, TCommon, TPropertiesService>, TProperties extends BaseProperties, TGlobalEvents extends BaseEvents, TCommon, TPropertiesService extends IPropertiesService<TProperties, TCommon>> extends AgBeanStub<TBeanCollection, TProperties, TGlobalEvents, TCommon, TPropertiesService> implements IDragService {
+    beanName: "dragSvc";
+    private currentDragParams;
+    dragging: boolean;
+    startTarget: EventTarget | null;
+    private mouseStartEvent;
+    private touchLastTime;
+    private touchStart;
+    private dragEndFunctions;
+    private readonly dragSources;
+    destroy(): void;
+    private removeListener;
+    removeDragSource(params: DragListenerParams): void;
+    addDragSource(params: DragListenerParams): void;
+    private onTouchStart;
+    private onMouseDown;
+    private addTemporaryEvents;
+    private isEventNearStartEvent;
+    private getFirstActiveTouch;
+    private onCommonMove;
+    private onTouchMove;
+    private onMouseMove;
+    protected shouldPreventMouseEvent(mouseEvent: MouseEvent): boolean;
+    onTouchUp(touchEvent: TouchEvent, el: Element): void;
+    onMouseUp(mouseEvent: MouseEvent, el: Element): void;
+    onUpCommon(eventOrTouch: MouseEvent | Touch, el: Element): void;
+    cancelDrag(el: Element): void;
+    private resetDragProperties;
+}
