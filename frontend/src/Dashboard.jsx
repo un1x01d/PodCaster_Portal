@@ -3,6 +3,7 @@ import axios from "axios";
 import {
   BarChart,
   Bar,
+import ColumnFilterMenu from "./components/ColumnFilterMenu";
   XAxis,
   YAxis,
   Tooltip,
