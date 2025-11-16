@@ -434,6 +434,24 @@ app.post("/views", auth, async (req, res) => {
   res.json(r[0]);
 });
 
+app.post("/views/:id/duplicate", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const { id } = req.params;
+  const { name } = req.body || {};
+  if (!name) return res.status(400).json({ error: "name_required" });
+
+  const [original] = await query("SELECT sheet_id, config FROM views WHERE id = $1", [id]);
+  if (!original) return res.status(404).json({ error: "not_found" });
+
+  const [newView] = await query(
+    `INSERT INTO views (name, sheet_id, config, created_by)
+     VALUES ($1, $2, $3, $4)
+     RETURNING id, name, sheet_id, created_at`,
+    [name, original.sheet_id, original.config, req.user.id]
+  );
+  res.json(newView);
+});
+
 app.get("/views/:sheetId", auth, async (req, res) => {
   const { sheetId } = req.params;
   if (req.user.role === "admin") {

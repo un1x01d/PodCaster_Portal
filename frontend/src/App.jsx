@@ -1503,6 +1503,47 @@ export default function App() {
           </button>
         )}
 
+        {user.role === "admin" && selectedViewId && (
+          <div className="flex gap-2">
+            <button
+              onClick={async () => {
+                const name = prompt("Enter a new name for the duplicated view:");
+                if (name) {
+                  await axios.post(
+                    `${API}/views/${selectedViewId}/duplicate`,
+                    { name },
+                    { headers: { Authorization: `Bearer ${token}` } }
+                  );
+                  const res = await axios.get(`${API}/views/${sheetId}`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                  });
+                  setViews(res.data || []);
+                }
+              }}
+              className="bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-600 hover:to-blue-600 text-white px-3 rounded-lg h-10 shadow"
+            >
+              Duplicate View
+            </button>
+            <button
+              onClick={async () => {
+                if (confirm("Are you sure you want to delete this view?")) {
+                  await axios.delete(`${API}/views/${selectedViewId}`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                  });
+                  setSelectedViewId("");
+                  const res = await axios.get(`${API}/views/${sheetId}`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                  });
+                  setViews(res.data || []);
+                }
+              }}
+              className="bg-gradient-to-r from-red-600 to-red-500 hover:from-red-600 hover:to-red-600 text-white px-3 rounded-lg h-10 shadow"
+            >
+              Delete View
+            </button>
+          </div>
+        )}
+
         {/* Export dropdown + Toggles */}
         <div className="flex gap-3 ml-0 md:ml-6 items-center">
           <ExportMenu onCSV={exportCSV} onXLSX={exportXLSX} onPDF={exportPDF} />
