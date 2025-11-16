@@ -472,7 +472,9 @@ app.get("/views/:sheetId", auth, async (req, res) => {
        JOIN users u ON u.id = v.created_by
       WHERE v.sheet_id = $1
         AND (
-          EXISTS (
+          (SELECT COUNT(*) FROM view_user_permissions WHERE view_id = v.id) = 0
+          AND (SELECT COUNT(*) FROM view_group_permissions WHERE view_id = v.id) = 0
+          OR EXISTS (
             SELECT 1 FROM view_user_permissions WHERE view_id = v.id AND user_id = $2
           ) OR EXISTS (
             SELECT 1 FROM view_group_permissions vgp
