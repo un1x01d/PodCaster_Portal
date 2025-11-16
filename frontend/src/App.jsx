@@ -485,6 +485,11 @@ export default function App() {
   const [myFilesLoading, setMyFilesLoading] = useState(false);
   const [selectError, setSelectError] = useState(""); // <-- added
 
+  // Views
+  const [views, setViews] = useState([]);
+  const [selectedViewId, setSelectedViewId] = useState("");
+  const isViewLocked = user?.role !== "admin" && selectedViewId;
+
   // Admin Folder Files modal
   const [folderFilesOpen, setFolderFilesOpen] = useState(false);
   const [folderFilesLoading, setFolderFilesLoading] = useState(false);
@@ -593,6 +598,21 @@ export default function App() {
   useEffect(() => {
     if (token && user) fetchMeta();
   }, [token, user]);
+
+  useEffect(() => {
+    const fetchViews = async () => {
+      if (!sheetId) return;
+      try {
+        const res = await axios.get(`${API}/views/${sheetId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        setViews(res.data || []);
+      } catch (e) {
+        console.error("views fetch failed", e);
+      }
+    };
+    if (token && user) fetchViews();
+  }, [sheetId, token, user]);
 
   /* -------- Data Load -------- */
   const loadData = async (sid = sheetId) => {
@@ -1398,6 +1418,81 @@ export default function App() {
           Refresh
         </button>
 
+        <SearchableSelect
+          options={[{ value: "", label: "Select a view…" }].concat(
+            views.map((v) => ({ value: v.id, label: v.name }))
+          )}
+          value={selectedViewId}
+          onChange={(e) => {
+            const viewId = e.target.value;
+            setSelectedViewId(viewId);
+            if (viewId) {
+              const view = views.find((v) => v.id === viewId);
+              if (view) {
+                setColumnFilters(view.config.columnFilters || {});
+                setSortConfig(view.config.sortConfig || null);
+                setPivotOn(view.config.pivotOn || false);
+                setPivotRowKey(view.config.pivotRowKey || "");
+                setPivotColKey(view.config.pivotColKey || "");
+                setPivotValKey(view.config.pivotValKey || "");
+                setPivotAgg(view.config.pivotAgg || "sum");
+                setTwoOn(view.config.twoOn || false);
+                setCondCol1(view.config.condCol1 || "");
+                setCondCol2(view.config.condCol2 || "");
+                setValueCol(view.config.valueCol || "");
+                setTrendsOn(view.config.trendsOn || false);
+                setTrendsDateKey(view.config.trendsDateKey || "");
+                setTrendsValueKey(view.config.trendsValueKey || "");
+                setTrendGranularity(view.config.trendGranularity || "");
+                setYearsBack(view.config.yearsBack || "");
+              }
+            }
+          }}
+          placeholder="Select a view…"
+          className="ml-1"
+          buttonClassName="border border-emerald-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
+        />
+
+        {user.role === "admin" && (
+          <button
+            onClick={async () => {
+              const name = prompt("Enter a name for this view:");
+              if (name) {
+                const config = {
+                  columnFilters,
+                  sortConfig,
+                  pivotOn,
+                  pivotRowKey,
+                  pivotColKey,
+                  pivotValKey,
+                  pivotAgg,
+                  twoOn,
+                  condCol1,
+                  condCol2,
+                  valueCol,
+                  trendsOn,
+                  trendsDateKey,
+                  trendsValueKey,
+                  trendGranularity,
+                  yearsBack,
+                };
+                await axios.post(
+                  `${API}/views`,
+                  { name, sheetId, config },
+                  { headers: { Authorization: `Bearer ${token}` } }
+                );
+                const res = await axios.get(`${API}/views/${sheetId}`, {
+                  headers: { Authorization: `Bearer ${token}` },
+                });
+                setViews(res.data || []);
+              }
+            }}
+            className="bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-600 hover:to-emerald-600 text-white px-3 rounded-lg h-10 shadow"
+          >
+            Save View
+          </button>
+        )}
+
         {/* Export dropdown + Toggles */}
         <div className="flex gap-3 ml-0 md:ml-6 items-center">
           <ExportMenu onCSV={exportCSV} onXLSX={exportXLSX} onPDF={exportPDF} />
@@ -1405,6 +1500,7 @@ export default function App() {
           {/* Pivot toggle */}
           <button
             onClick={() => setPivotOn((p) => !p)}
+            disabled={isViewLocked}
             className="px-3 rounded-lg font-semibold bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-500 hover:to-emerald-500 text-white h-10 shadow"
             title="Toggle Pivot mode"
           >
@@ -1414,6 +1510,7 @@ export default function App() {
           {/* Two-Condition toggle */}
           <button
             onClick={() => setTwoOn((t) => !t)}
+            disabled={isViewLocked}
             className="px-3 rounded-lg font-semibold bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-600 hover:to-emerald-600 text-white h-10 shadow"
             title="Toggle Two-Condition summary"
           >
@@ -1423,6 +1520,7 @@ export default function App() {
           {/* Trends toggle */}
           <button
             onClick={() => setTrendsOn((v) => !v)}
+            disabled={isViewLocked}
             className="px-3 rounded-lg font-semibold bg-gradient-to-r from-sky-600 to-sky-500 hover:from-sky-600 hover:to-sky-600 text-white h-10 shadow"
             title="Toggle Trends"
           >
@@ -1440,6 +1538,7 @@ export default function App() {
               value={pivotRowKey}
               onChange={(e) => setPivotRowKey(e.target.value)}
               placeholder="Row key…"
+              disabled={isViewLocked}
               buttonClassName="border border-emerald-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
             />
             <SearchableSelect
@@ -1447,6 +1546,7 @@ export default function App() {
               value={pivotColKey}
               onChange={(e) => setPivotColKey(e.target.value)}
               placeholder="Dynamic header…"
+              disabled={isViewLocked}
               buttonClassName="border border-emerald-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
             />
             <SearchableSelect
@@ -1457,7 +1557,7 @@ export default function App() {
               value={pivotValKey}
               onChange={(e) => setPivotValKey(e.target.value)}
               placeholder={pivotAgg === "count" ? "— (count)" : "Value…"}
-              disabled={pivotAgg === "count"}
+              disabled={pivotAgg === "count" || isViewLocked}
               buttonClassName="border border-emerald-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
             />
             <SearchableSelect
@@ -1469,6 +1569,7 @@ export default function App() {
               onChange={(e) => setPivotAgg(e.target.value)}
               placeholder="Aggregation…"
               panelWidth={180}
+              disabled={isViewLocked}
               buttonClassName="border border-emerald-200 p-2 rounded-lg min-w-[10rem] bg-white h-10"
             />
 
@@ -1671,6 +1772,7 @@ export default function App() {
               value={condCol1}
               onChange={(e) => setCondCol1(e.target.value)}
               placeholder="Condition 1…"
+              disabled={isViewLocked}
               buttonClassName="border border-emerald-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
               panelWidth={280}
             />
@@ -1679,6 +1781,7 @@ export default function App() {
               value={condCol2}
               onChange={(e) => setCondCol2(e.target.value)}
               placeholder="Condition 2…"
+              disabled={isViewLocked}
               buttonClassName="border border-emerald-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
               panelWidth={280}
             />
@@ -1687,6 +1790,7 @@ export default function App() {
               value={valueCol}
               onChange={(e) => setValueCol(e.target.value)}
               placeholder="Value column…"
+              disabled={isViewLocked}
               buttonClassName="border border-emerald-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
               panelWidth={280}
             />
@@ -1772,6 +1876,7 @@ export default function App() {
                 value={trendsDateKey}
                 onChange={(e) => setTrendsDateKey(e.target.value)}
                 placeholder="Date column…"
+                disabled={isViewLocked}
                 buttonClassName="border border-sky-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
               />
               <SearchableSelect
@@ -1779,6 +1884,7 @@ export default function App() {
                 value={trendsValueKey}
                 onChange={(e) => setTrendsValueKey(e.target.value)}
                 placeholder="Value column (optional)…"
+                disabled={isViewLocked}
                 buttonClassName="border border-sky-200 p-2 rounded-lg min-w-[16rem] bg-white h-10"
               />
               <SearchableSelect
@@ -1791,6 +1897,7 @@ export default function App() {
                 value={trendGranularity}
                 onChange={(e) => setTrendGranularity(e.target.value)}
                 placeholder="Granularity…"
+                disabled={isViewLocked}
                 buttonClassName="border border-sky-200 p-2 rounded-lg min-w-[18rem] bg-white h-10"
               />
               <SearchableSelect
@@ -1805,6 +1912,7 @@ export default function App() {
                 value={yearsBack}
                 onChange={(e) => setYearsBack(e.target.value)}
                 placeholder="Years back…"
+                disabled={isViewLocked}
                 buttonClassName="border border-sky-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
               />
             </div>
@@ -1914,6 +2022,7 @@ export default function App() {
                               if (!filterBtnRefs.current) filterBtnRefs.current = {};
                               filterBtnRefs.current[h] = el;
                             }}
+                            disabled={isViewLocked}
                             className={`filter-btn ml-auto text-[11px] h-7 px-2 rounded-md bg-white/80 backdrop-blur border ${
                               columnFilters[h] && columnFilters[h] instanceof Set && columnFilters[h].size > 0
                                 ? "border-emerald-400 ring-1 ring-emerald-300"

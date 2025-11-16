@@ -186,6 +186,18 @@ async function initDb() {
     );
   `);
 
+  // VIEWS (locked)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS views (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      sheet_id TEXT NOT NULL,
+      config JSONB NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      created_by INT NOT NULL
+    );
+  `);
+
   // seed admin
   await pool.query(`
     INSERT INTO users (email,password,role)
@@ -386,6 +398,41 @@ app.patch("/sheets/:id", auth, async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
   const { totals_column } = req.body || {};
   await query("UPDATE sheets SET totals_column = $1 WHERE id = $2", [totals_column || null, req.params.id]);
+  res.json({ success: true });
+});
+
+/* ----------------------------------------------------------------------------
+ * Views
+ * ------------------------------------------------------------------------- */
+app.post("/views", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const { name, sheetId, config } = req.body || {};
+  const r = await query(
+    `INSERT INTO views (name, sheet_id, config, created_by)
+     VALUES ($1,$2,$3,$4)
+     RETURNING id, name, sheet_id, created_at`,
+    [name, sheetId, JSON.stringify(config || {}), req.user.id]
+  );
+  res.json(r[0]);
+});
+
+app.get("/views/:sheetId", auth, async (req, res) => {
+  const { sheetId } = req.params;
+  const rows = await query(
+    `SELECT v.id, v.name, v.sheet_id, v.config, v.created_at, u.email as created_by
+       FROM views v
+       JOIN users u ON u.id = v.created_by
+      WHERE v.sheet_id = $1
+      ORDER BY v.name ASC`,
+    [sheetId]
+  );
+  res.json(rows);
+});
+
+app.delete("/views/:id", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const { id } = req.params;
+  await query("DELETE FROM views WHERE id = $1", [id]);
   res.json({ success: true });
 });
 
