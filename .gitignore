@@ -1,1 +1,3 @@
 *node_modules/*
+frontend/dist/
+frontend/npm_output.log
