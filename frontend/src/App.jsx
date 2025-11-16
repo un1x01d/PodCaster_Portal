@@ -13,8 +13,6 @@ import "./index.css";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
 
-<<<<<<< HEAD
-=======
 /* ---- Date helpers (force YYYY-MM-DD) ---- */
 const ISO_START_RE = /^\d{4}-\d{2}-\d{2}/;
 const ISO_FULL_RE = /^\d{4}-\d{2}-\d{2}T/;
@@ -454,7 +452,6 @@ function TrendTooltip({ active, payload, label }) {
 }
 
 /* ---------------- App ---------------- */
->>>>>>> parent of 71d0bf8d (fix: Prevent horizontal scroll jump when opening filter menu)
 export default function App() {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(localStorage.getItem("token") || "");
@@ -1207,8 +1204,6 @@ export default function App() {
     );
   }
 
-<<<<<<< HEAD
-=======
   /* -------- Dashboard Body -------- */
   const DashboardBody = () => (
     <div className="w-full bg-gradient-to-b from-white to-emerald-50/40">
@@ -1988,7 +1983,6 @@ export default function App() {
   );
 
   /* -------- Router + Header -------- */
->>>>>>> parent of 71d0bf8d (fix: Prevent horizontal scroll jump when opening filter menu)
   return (
     <Router>
       <div className="bg-gradient-to-r from-gray-900 via-emerald-800 to-emerald-600 text-white px-6 py-4 flex justify-between items-center shadow-lg">
