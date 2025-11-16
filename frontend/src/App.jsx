@@ -244,6 +244,7 @@ function ColumnFilterMenu({
   onApply,
   onClear,
   onClose,
+  tableContainerRef,
 }) {
   const panelRef = useRef(null);
   const [q, setQ] = useState("");
@@ -286,12 +287,21 @@ function ColumnFilterMenu({
   };
 
   useLayoutEffect(() => {
+    const scrollContainer = tableContainerRef.current;
+    if (!scrollContainer) return;
+
+    const scrollX = scrollContainer.scrollLeft;
     let ok = placeMenu();
     if (!ok) {
-      const id = requestAnimationFrame(() => placeMenu());
+      const id = requestAnimationFrame(() => {
+        placeMenu();
+        scrollContainer.scrollLeft = scrollX;
+      });
       return () => cancelAnimationFrame(id);
+    } else {
+      scrollContainer.scrollLeft = scrollX;
     }
-  }, [anchorMapRef, columnKey]);
+  }, [anchorMapRef, columnKey, tableContainerRef]);
 
   useEffect(() => {
     const onWin = () => placeMenu();
@@ -526,6 +536,7 @@ export default function App() {
   const [yearsBack, setYearsBack] = useState("");
 
   const [guessedNumericKey, setGuessedNumericKey] = useState("");
+  const tableContainerRef = useRef(null);
 
   const fmt2 = (n) =>
     Number(n ?? 0).toLocaleString(undefined, {
@@ -2041,6 +2052,7 @@ export default function App() {
 
             {/* Limit viewport to ~30 rows; keep header sticky; scroll the rest */}
             <div
+              ref={tableContainerRef}
               className="overflow-auto"
               style={{ maxHeight: "960px" }}
             >
@@ -2113,6 +2125,7 @@ export default function App() {
                                 });
                               }}
                               onClose={() => setOpenFilterCol(null)}
+                                tableContainerRef={tableContainerRef}
                             />
                           )}
                         </div>
