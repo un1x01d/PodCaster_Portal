@@ -1429,7 +1429,13 @@ export default function App() {
             if (viewId) {
               const view = views.find((v) => v.id === viewId);
               if (view) {
-                setColumnFilters(view.config.columnFilters || {});
+                const newColumnFilters = {};
+                if (view.config.columnFilters) {
+                  for (const key in view.config.columnFilters) {
+                    newColumnFilters[key] = new Set(view.config.columnFilters[key]);
+                  }
+                }
+                setColumnFilters(newColumnFilters);
                 setSortConfig(view.config.sortConfig || null);
                 setPivotOn(view.config.pivotOn || false);
                 setPivotRowKey(view.config.pivotRowKey || "");
@@ -1458,8 +1464,12 @@ export default function App() {
             onClick={async () => {
               const name = prompt("Enter a name for this view:");
               if (name) {
+                const serializableColumnFilters = {};
+                for (const key in columnFilters) {
+                  serializableColumnFilters[key] = Array.from(columnFilters[key]);
+                }
                 const config = {
-                  columnFilters,
+                  columnFilters: serializableColumnFilters,
                   sortConfig,
                   pivotOn,
                   pivotRowKey,
