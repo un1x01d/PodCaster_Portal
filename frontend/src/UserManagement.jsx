@@ -58,6 +58,11 @@ export default function UserManagement({ token /* sheetId not required */ }) {
   const [selectedTplUser, setSelectedTplUser] = useState("");
   const [selectedTplGroup, setSelectedTplGroup] = useState("");
 
+  // Views
+  const [views, setViews] = useState([]);
+  const [userViews, setUserViews] = useState(new Set());
+  const [groupViews, setGroupViews] = useState(new Set());
+
   // fetch users
   const fetchUsers = async () => {
     const res = await axios.get(`${API}/users`, {
@@ -209,12 +214,37 @@ export default function UserManagement({ token /* sheetId not required */ }) {
   useEffect(() => {
     fetchUsers();
     fetchGroups();
+    fetchAllViews();
   }, []);
+
+  const fetchAllViews = async () => {
+    const res = await axios.get(`${API}/views`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    setViews(res.data || []);
+  };
+
+  const fetchUserViews = async (userId) => {
+    if (!userId) return;
+    const res = await axios.get(`${API}/views/user-permissions/${userId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    setUserViews(new Set((res.data || []).map((v) => v.id)));
+  };
+
+  const fetchGroupViews = async (groupId) => {
+    if (!groupId) return;
+    const res = await axios.get(`${API}/views/group-permissions/${groupId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    setGroupViews(new Set((res.data || []).map((v) => v.id)));
+  };
 
   // when user changes, reload their 10 sheets and reset user-perms state
   useEffect(() => {
     if (selectedUserId) {
       fetchUserSheets(selectedUserId);
+      fetchUserViews(selectedUserId);
       setSelectedUserSheetId(null);
       setUserSheetHeaders([]);
       setUserAllowedCols(new Set());
@@ -240,6 +270,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
     if (selectedGroupId) {
       fetchGroupMembers(selectedGroupId);
       fetchGroupSheets(selectedGroupId);
+      fetchGroupViews(selectedGroupId);
       setSelectedGroupSheetId(null);
       setGroupAllowedCols(new Set());
       setGroupFilterKey(""); setGroupFilterVal("");
@@ -704,6 +735,39 @@ export default function UserManagement({ token /* sheetId not required */ }) {
             ) : (
               <div className="text-gray-500 mt-2">Select a sheet to configure user permissions.</div>
             )}
+
+            <div className="mt-4">
+              <h5 className="font-semibold mb-2">View Permissions</h5>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-auto border rounded p-2">
+                {views.map((v) => (
+                  <label key={v.id} className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={userViews.has(v.id)}
+                      onChange={async () => {
+                        const newViews = new Set(userViews);
+                        if (newViews.has(v.id)) {
+                          await axios.delete(
+                            `${API}/views/user-permissions/${v.id}/${selectedUserId}`,
+                            { headers: { Authorization: `Bearer ${token}` } }
+                          );
+                          newViews.delete(v.id);
+                        } else {
+                          await axios.post(
+                            `${API}/views/user-permissions`,
+                            { viewId: v.id, userId: selectedUserId },
+                            { headers: { Authorization: `Bearer ${token}` } }
+                          );
+                          newViews.add(v.id);
+                        }
+                        setUserViews(newViews);
+                      }}
+                    />
+                    <span className="text-sm">{v.name}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -885,6 +949,39 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                   >
                     Save
                   </button>
+                </div>
+
+                <div className="mt-4">
+                  <h5 className="font-semibold mb-2">View Permissions</h5>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-auto border rounded p-2">
+                    {views.map((v) => (
+                      <label key={v.id} className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={groupViews.has(v.id)}
+                          onChange={async () => {
+                            const newViews = new Set(groupViews);
+                            if (newViews.has(v.id)) {
+                              await axios.delete(
+                                `${API}/views/group-permissions/${v.id}/${selectedGroupId}`,
+                                { headers: { Authorization: `Bearer ${token}` } }
+                              );
+                              newViews.delete(v.id);
+                            } else {
+                              await axios.post(
+                                `${API}/views/group-permissions`,
+                                { viewId: v.id, groupId: selectedGroupId },
+                                { headers: { Authorization: `Bearer ${token}` } }
+                              );
+                              newViews.add(v.id);
+                            }
+                            setGroupViews(newViews);
+                          }}
+                        />
+                        <span className="text-sm">{v.name}</span>
+                      </label>
+                    ))}
+                  </div>
                 </div>
               </>
             ) : (
