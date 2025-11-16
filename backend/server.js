@@ -198,6 +198,24 @@ async function initDb() {
     );
   `);
 
+  // VIEW permissions
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS view_user_permissions (
+      id SERIAL PRIMARY KEY,
+      view_id INT NOT NULL,
+      user_id INT NOT NULL,
+      UNIQUE (view_id, user_id)
+    );
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS view_group_permissions (
+      id SERIAL PRIMARY KEY,
+      view_id INT NOT NULL,
+      group_id INT NOT NULL,
+      UNIQUE (view_id, group_id)
+    );
+  `);
+
   // seed admin
   await pool.query(`
     INSERT INTO users (email,password,role)
@@ -418,13 +436,34 @@ app.post("/views", auth, async (req, res) => {
 
 app.get("/views/:sheetId", auth, async (req, res) => {
   const { sheetId } = req.params;
+  if (req.user.role === "admin") {
+    const rows = await query(
+      `SELECT v.id, v.name, v.sheet_id, v.config, v.created_at, u.email as created_by
+         FROM views v
+         JOIN users u ON u.id = v.created_by
+        WHERE v.sheet_id = $1
+        ORDER BY v.name ASC`,
+      [sheetId]
+    );
+    return res.json(rows);
+  }
+
   const rows = await query(
     `SELECT v.id, v.name, v.sheet_id, v.config, v.created_at, u.email as created_by
        FROM views v
        JOIN users u ON u.id = v.created_by
       WHERE v.sheet_id = $1
+        AND (
+          EXISTS (
+            SELECT 1 FROM view_user_permissions WHERE view_id = v.id AND user_id = $2
+          ) OR EXISTS (
+            SELECT 1 FROM view_group_permissions vgp
+             WHERE vgp.view_id = v.id
+               AND vgp.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)
+          )
+        )
       ORDER BY v.name ASC`,
-    [sheetId]
+    [sheetId, req.user.id]
   );
   res.json(rows);
 });
@@ -433,6 +472,91 @@ app.delete("/views/:id", auth, async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
   const { id } = req.params;
   await query("DELETE FROM views WHERE id = $1", [id]);
+  res.json({ success: true });
+});
+
+app.get("/views", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const rows = await query(
+    `SELECT v.id, v.name, v.sheet_id, u.email as created_by
+       FROM views v
+       JOIN users u ON u.id = v.created_by
+      ORDER BY v.name ASC`
+  );
+  res.json(rows);
+});
+
+app.get("/views/:viewId/permissions", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const { viewId } = req.params;
+  const users = await query(
+    `SELECT u.id, u.email FROM view_user_permissions vup JOIN users u ON u.id = vup.user_id WHERE vup.view_id = $1`,
+    [viewId]
+  );
+  const groups = await query(
+    `SELECT g.id, g.name FROM view_group_permissions vgp JOIN groups g ON g.id = vgp.group_id WHERE vgp.view_id = $1`,
+    [viewId]
+  );
+  res.json({ users, groups });
+});
+
+app.post("/views/user-permissions", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const { viewId, userId } = req.body || {};
+  await query(
+    `INSERT INTO view_user_permissions (view_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+    [viewId, userId]
+  );
+  res.json({ success: true });
+});
+
+app.delete("/views/user-permissions/:viewId/:userId", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const { viewId, userId } = req.params;
+  await query(`DELETE FROM view_user_permissions WHERE view_id = $1 AND user_id = $2`, [
+    viewId,
+    userId,
+  ]);
+  res.json({ success: true });
+});
+
+app.get("/views/user-permissions/:userId", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const { userId } = req.params;
+  const rows = await query(
+    `SELECT v.id, v.name FROM view_user_permissions vup JOIN views v ON v.id = vup.view_id WHERE vup.user_id = $1`,
+    [userId]
+  );
+  res.json(rows);
+});
+
+app.get("/views/group-permissions/:groupId", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const { groupId } = req.params;
+  const rows = await query(
+    `SELECT v.id, v.name FROM view_group_permissions vgp JOIN views v ON v.id = vgp.view_id WHERE vgp.group_id = $1`,
+    [groupId]
+  );
+  res.json(rows);
+});
+
+app.post("/views/group-permissions", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const { viewId, groupId } = req.body || {};
+  await query(
+    `INSERT INTO view_group_permissions (view_id, group_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+    [viewId, groupId]
+  );
+  res.json({ success: true });
+});
+
+app.delete("/views/group-permissions/:viewId/:groupId", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const { viewId, groupId } = req.params;
+  await query(`DELETE FROM view_group_permissions WHERE view_id = $1 AND group_id = $2`, [
+    viewId,
+    groupId,
+  ]);
   res.json({ success: true });
 });
 
