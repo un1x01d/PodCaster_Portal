@@ -11,8 +11,6 @@ import ColumnFilterMenu from "./components/ColumnFilterMenu";
   ResponsiveContainer,
 } from "recharts";
 
-const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
-
 export default function Dashboard({ token, user }) {
   const [data, setData] = useState([]);
   const [headers, setHeaders] = useState([]);
@@ -20,47 +18,15 @@ export default function Dashboard({ token, user }) {
   const [filters, setFilters] = useState({});
   const [calcColumn, setCalcColumn] = useState("");
 
-  // --- Views ---
-  const [sheetId, setSheetId] = useState(null);
-  const [views, setViews] = useState([]);
-  const [selectedViewId, setSelectedViewId] = useState("");
-
   // --- Two condition inputs ---
   const [cond1Col, setCond1Col] = useState("");
   const [cond2Col, setCond2Col] = useState("");
   const [valueCol, setValueCol] = useState("");
 
-  const fetchActiveSheet = async () => {
-    try {
-      const res = await axios.get(`${API}/sheets/active`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const sid = res.data?.sheetId;
-      setSheetId(sid);
-      if (sid) fetchViews(sid); else setViews([]);
-    } catch (e) {
-      console.error("fetchActiveSheet failed", e);
-    }
-  };
-
-  const fetchViews = async (sid) => {
-    try {
-      const res = await axios.get(`${API}/my-views`, {
-        headers: { Authorization: `Bearer ${token}` },
-        params: { sheetId: sid }
-      });
-      setViews(res.data || []);
-    } catch (e) {
-      console.error("fetchViews failed", e);
-    }
-  };
-
   const loadData = async () => {
-    if (!sheetId) { setData([]); return; }
     try {
-      const res = await axios.get(`${API}/data/${sheetId}`, {
+      const res = await axios.get("http://localhost:4000/data", {
         headers: { Authorization: `Bearer ${token}` },
-        params: { viewId: selectedViewId || undefined }
       });
       setData(res.data);
       if (res.data.length > 0) {
@@ -77,45 +43,31 @@ export default function Dashboard({ token, user }) {
           );
           setCalcColumn(numericCol || "");
         }
-      } else {
-        setHeaders([]);
       }
     } catch (err) {
       console.error("❌ Load data failed:", err.message);
-      setData([]);
-      setHeaders([]);
     }
   };
 
   useEffect(() => {
-    fetchActiveSheet();
-  }, []);
-
-  useEffect(() => {
     loadData();
-  }, [sheetId, selectedViewId]);
+  }, []);
 
   const handleUpload = async () => {
     if (!file) return;
     const formData = new FormData();
     formData.append("file", file);
     try {
-      await axios.post(`${API}/upload`, formData, {
+      await axios.post("http://localhost:4000/upload", formData, {
         headers: {
           "Content-Type": "multipart/form-data",
           Authorization: `Bearer ${token}`,
         },
       });
-      setSelectedViewId(""); // reset to default
-      fetchActiveSheet();
+      loadData();
     } catch {
       alert("❌ Upload failed");
     }
-  };
-
-  const handleRefresh = () => {
-    setSelectedViewId(""); // reset to default
-    fetchActiveSheet();
   };
 
   // --- Filtering ---
@@ -187,27 +139,11 @@ export default function Dashboard({ token, user }) {
           </>
         )}
         <button
-          onClick={handleRefresh}
+          onClick={loadData}
           className="bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded-lg"
         >
           Refresh
         </button>
-
-        {user.role !== "admin" && views.length > 0 && (
-          <div className="ml-6 flex items-center gap-2">
-            <label className="font-semibold">View:</label>
-            <select
-              value={selectedViewId}
-              onChange={(e) => setSelectedViewId(e.target.value)}
-              className="border p-2 rounded text-sm"
-            >
-              <option value="">Default</option>
-              {views.map((v) => (
-                <option key={v.id} value={v.id}>{v.name}</option>
-              ))}
-            </select>
-          </div>
-        )}
 
         {headers.length > 0 && (
           <div className="ml-6 flex items-center gap-2">

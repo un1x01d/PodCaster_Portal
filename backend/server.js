@@ -186,39 +186,6 @@ async function initDb() {
     );
   `);
 
-  // VIEWS (saved column/filter sets)
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS views (
-      id SERIAL PRIMARY KEY,
-      sheet_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      allowed_columns JSONB NOT NULL DEFAULT '[]'::jsonb,
-      row_filters JSONB NOT NULL DEFAULT '{}'::jsonb,
-      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE (sheet_id, name)
-    );
-  `);
-
-  // USER_VIEWS (access)
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS user_views (
-      id SERIAL PRIMARY KEY,
-      user_id INT NOT NULL,
-      view_id INT NOT NULL,
-      UNIQUE(user_id, view_id)
-    );
-  `);
-
-  // GROUP_VIEWS (access)
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS group_views (
-      id SERIAL PRIMARY KEY,
-      group_id INT NOT NULL,
-      view_id INT NOT NULL,
-      UNIQUE(group_id, view_id)
-    );
-  `);
-
   // seed admin
   await pool.query(`
     INSERT INTO users (email,password,role)
@@ -503,60 +470,10 @@ app.get("/data/:sheetId", auth, async (req, res) => {
     const sn = wb.SheetNames[0];
     let rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { defval: "" });
 
-    // NON-ADMINS: apply permissions
     if (req.user.role !== "admin") {
       const userId = req.user.id;
       const sheetId = req.params.sheetId;
-      const viewId = req.query.viewId ? Number(req.query.viewId) : null;
 
-      // If a viewId is passed, use its permissions.
-      // User must have explicit access to the view.
-      if (viewId) {
-        const vRows = await query(
-          `SELECT v.allowed_columns, v.row_filters
-             FROM views v
-            WHERE v.id = $1 AND v.sheet_id = $2
-              AND (
-                EXISTS (
-                  SELECT 1 FROM user_views uv
-                   WHERE uv.view_id = v.id AND uv.user_id = $3
-                ) OR EXISTS (
-                  SELECT 1 FROM group_views gv
-                  JOIN user_groups ug ON ug.group_id = gv.group_id
-                   WHERE gv.view_id = v.id AND ug.user_id = $3
-                )
-              )
-            LIMIT 1`,
-          [viewId, sheetId, userId]
-        );
-        if (vRows.length) {
-          const v = vRows[0];
-          const allowedArr = Array.isArray(v.allowed_columns) ? v.allowed_columns
-            : (v.allowed_columns ? JSON.parse(v.allowed_columns) : []);
-          const allowedSet = new Set(allowedArr.filter(Boolean));
-          const filtersObj = typeof v.row_filters === "object" ? (v.row_filters || {})
-            : JSON.parse(v.row_filters || "{}");
-
-          // Apply row filters
-          if (Object.keys(filtersObj).length > 0) {
-            rows = rows.filter(row =>
-              Object.entries(filtersObj).every(([k, v]) => String(row[k] ?? "") === String(v))
-            );
-          }
-          // Apply column restrictions
-          if (allowedSet.size > 0) {
-            rows = rows.map(r => {
-              const o = {};
-              allowedSet.forEach(c => { if (c in r) o[c] = r[c]; });
-              return o;
-            });
-          }
-          return res.json(rows); // early exit with view applied
-        }
-        // if invalid viewId requested, fall through to default perms
-      }
-
-      // --- Fallback to default user/group permissions if no (or invalid) viewId ---
       // USER overrides GROUP
       const up = await query(
         "SELECT allowed_columns, row_filters FROM permissions WHERE sheet_id=$1 AND user_id=$2 LIMIT 1",
@@ -996,139 +913,6 @@ app.delete("/sheets/:id", auth, async (req, res) => {
   } catch (e) {
     console.error("delete sheet failed:", e);
     res.status(500).json({ error: "delete_sheet_failed" });
-  }
-});
-
-/* ----------------------------------------------------------------------------
- * Views (per-sheet named column/filter states)
- * ------------------------------------------------------------------------- */
-
-// Create a view (admin)
-app.post("/views", auth, async (req, res) => {
-  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-  const { sheetId, name, allowed_columns, row_filters } = req.body || {};
-  if (!sheetId || !name) return res.status(400).json({ error: "sheetId_and_name_required" });
-  try {
-    const r = await query(
-      `INSERT INTO views (sheet_id, name, allowed_columns, row_filters)
-       VALUES ($1, $2, $3, $4)
-       RETURNING *`,
-      [sheetId, name, JSON.stringify(allowed_columns || []), JSON.stringify(row_filters || {})]
-    );
-    res.json(r[0]);
-  } catch (e) {
-    if (e.code === "23505") return res.status(409).json({ error: "view_name_exists" });
-    console.error("view create failed:", e);
-    res.status(500).json({ error: "view_create_failed" });
-  }
-});
-
-// List views for a sheet (admin)
-app.get("/views", auth, async (req, res) => {
-  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-  const { sheetId } = req.query;
-  if (!sheetId) return res.status(400).json({ error: "sheetId_required" });
-  try {
-    const rows = await query(
-      `SELECT v.*,
-              (SELECT json_agg(uv.user_id) FROM user_views uv WHERE uv.view_id = v.id) AS users,
-              (SELECT json_agg(gv.group_id) FROM group_views gv WHERE gv.view_id = v.id) AS groups
-         FROM views v
-        WHERE v.sheet_id = $1
-        ORDER BY v.name ASC`,
-      [sheetId]
-    );
-    res.json(rows);
-  } catch (e) {
-    console.error("views list failed:", e);
-    res.status(500).json({ error: "views_list_failed" });
-  }
-});
-
-// Delete a view (admin)
-app.delete("/views/:id", auth, async (req, res) => {
-  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-  const vid = Number(req.params.id);
-  await query(`DELETE FROM user_views WHERE view_id = $1`, [vid]);
-  await query(`DELETE FROM group_views WHERE view_id = $1`, [vid]);
-  await query(`DELETE FROM views WHERE id = $1`, [vid]);
-  res.json({ success: true });
-});
-
-// Grant user access to a view
-app.post("/user-views", auth, async (req, res) => {
-  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-  const { userId, viewId } = req.body || {};
-  if (!userId || !viewId) return res.status(400).json({ error: "userId_and_viewId_required" });
-  await query(
-    `INSERT INTO user_views (user_id, view_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-    [userId, viewId]
-  );
-  res.json({ success: true });
-});
-
-// Revoke user access to a view
-app.delete("/user-views", auth, async (req, res) => {
-  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-  const { userId, viewId } = req.body || {};
-  if (!userId || !viewId) return res.status(400).json({ error: "userId_and_viewId_required" });
-  await query(`DELETE FROM user_views WHERE user_id = $1 AND view_id = $2`, [userId, viewId]);
-  res.json({ success: true });
-});
-
-// Grant group access to a view
-app.post("/group-views", auth, async (req, res) => {
-  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-  const { groupId, viewId } = req.body || {};
-  if (!groupId || !viewId) return res.status(400).json({ error: "groupId_and_viewId_required" });
-  await query(
-    `INSERT INTO group_views (group_id, view_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-    [groupId, viewId]
-  );
-  res.json({ success: true });
-});
-
-// Revoke group access to a view
-app.delete("/group-views", auth, async (req, res) => {
-  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-  const { groupId, viewId } = req.body || {};
-  if (!groupId || !viewId) return res.status(400).json({ error: "groupId_and_viewId_required" });
-  await query(`DELETE FROM group_views WHERE group_id = $1 AND view_id = $2`, [groupId, viewId]);
-  res.json({ success: true });
-});
-
-// Get views available to current user for a sheet
-app.get("/my-views", auth, async (req, res) => {
-  const { sheetId } = req.query;
-  if (!sheetId) return res.status(400).json({ error: "sheetId_required" });
-  try {
-    const rows = await query(
-      `SELECT v.id, v.name, v.allowed_columns, v.row_filters
-         FROM views v
-        WHERE v.sheet_id = $1
-          AND (
-            EXISTS (
-              SELECT 1 FROM user_views uv
-               WHERE uv.view_id = v.id
-                 AND uv.user_id = $2
-            ) OR
-            EXISTS (
-              SELECT 1 FROM group_views gv
-               WHERE gv.view_id = v.id
-                 AND gv.group_id IN (
-                   SELECT ug.group_id
-                     FROM user_groups ug
-                    WHERE ug.user_id = $2
-                 )
-            )
-          )
-     ORDER BY v.name ASC`,
-      [sheetId, req.user.id]
-    );
-    res.json(rows);
-  } catch (e) {
-    console.error("my-views failed:", e);
-    res.status(500).json({ error: "my_views_failed" });
   }
 });
 
