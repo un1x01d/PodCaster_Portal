@@ -1,14 +1,15 @@
 // App.jsx
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useLayoutEffect } from "react";
 import { BrowserRouter as Router, Routes, Route, Link } from "react-router-dom";
 import axios from "axios";
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line,
+} from "recharts";
 import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import UserManagement from "./UserManagement";
-import Dashboard from "./Dashboard";
-import Modal from "./components/Modal";
-import { fmtDateOnly } from "./utils";
 import "./index.css";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
@@ -243,6 +244,7 @@ function ColumnFilterMenu({
   onApply,
   onClear,
   onClose,
+  tableContainerRef,
 }) {
   const panelRef = useRef(null);
   const [q, setQ] = useState("");
@@ -285,12 +287,21 @@ function ColumnFilterMenu({
   };
 
   useLayoutEffect(() => {
+    const scrollContainer = tableContainerRef.current;
+    if (!scrollContainer) return;
+
+    const scrollX = scrollContainer.scrollLeft;
     let ok = placeMenu();
     if (!ok) {
-      const id = requestAnimationFrame(() => placeMenu());
+      const id = requestAnimationFrame(() => {
+        placeMenu();
+        scrollContainer.scrollLeft = scrollX;
+      });
       return () => cancelAnimationFrame(id);
+    } else {
+      scrollContainer.scrollLeft = scrollX;
     }
-  }, [anchorMapRef, columnKey]);
+  }, [anchorMapRef, columnKey, tableContainerRef]);
 
   useEffect(() => {
     const onWin = () => placeMenu();
@@ -484,6 +495,11 @@ export default function App() {
   const [myFilesLoading, setMyFilesLoading] = useState(false);
   const [selectError, setSelectError] = useState(""); // <-- added
 
+  // Views
+  const [views, setViews] = useState([]);
+  const [selectedViewId, setSelectedViewId] = useState("");
+  const isViewLocked = user?.role !== "admin" && selectedViewId;
+
   // Admin Folder Files modal
   const [folderFilesOpen, setFolderFilesOpen] = useState(false);
   const [folderFilesLoading, setFolderFilesLoading] = useState(false);
@@ -520,7 +536,13 @@ export default function App() {
   const [yearsBack, setYearsBack] = useState("");
 
   const [guessedNumericKey, setGuessedNumericKey] = useState("");
+  const tableContainerRef = useRef(null);
 
+  const fmt2 = (n) =>
+    Number(n ?? 0).toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
   /* -------- Auth -------- */
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -587,6 +609,21 @@ export default function App() {
   useEffect(() => {
     if (token && user) fetchMeta();
   }, [token, user]);
+
+  useEffect(() => {
+    const fetchViews = async () => {
+      if (!sheetId) return;
+      try {
+        const res = await axios.get(`${API}/views/${sheetId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        setViews(res.data || []);
+      } catch (e) {
+        console.error("views fetch failed", e);
+      }
+    };
+    if (token && user) fetchViews();
+  }, [sheetId, token, user]);
 
   /* -------- Data Load -------- */
   const loadData = async (sid = sheetId) => {
@@ -661,7 +698,7 @@ export default function App() {
 
   /* -------- My Files modal -------- */
   const openSelect = async () => {
-    setSelectOpen(true);
+    setSelectOpen(true);           // open immediately for feedback
     setMyFilesLoading(true);
     setSelectError("");
     try {
@@ -1012,6 +1049,53 @@ export default function App() {
     return rows;
   }, [sortedData, trendsOn, trendsDateKey, trendsValueKey, trendGranularity, yearsBack]);
 
+  /* -------- Utilities for PDF sizing -------- */
+  const measureFitColumns = (doc, cols, rows, opts = {}) => {
+    const left = opts.left ?? 14;
+    const right = opts.right ?? 14;
+    const sampleRows = opts.sampleRows ?? 50;
+    let fontSize = opts.fontSize ?? 10;
+    const minFont = opts.minFont ?? 6;
+
+    const innerWidth = () => doc.internal.pageSize.getWidth() - left - right;
+
+    const measure = () => {
+      doc.setFontSize(fontSize);
+      const pad = doc.getTextWidth("  ");
+      const maxStrings = cols.map((h) => (h ? String(h) : ""));
+      const lim = Math.min(rows.length, sampleRows);
+      for (let i = 0; i < lim; i++) {
+        const r = rows[i];
+        cols.forEach((h, idx) => {
+          const s = r?.[h] == null ? "" : String(r[h]);
+          if (s.length > (maxStrings[idx]?.length || 0)) maxStrings[idx] = s;
+        });
+      }
+      let widths = maxStrings.map((s) => doc.getTextWidth(String(s || "")) + pad);
+      const total = widths.reduce((a, b) => a + b, 0);
+      return { widths, total, inner: innerWidth() };
+    };
+
+    let { widths, total, inner } = measure();
+
+    while (total > inner && fontSize > minFont) {
+      fontSize -= 1;
+      ({ widths, total, inner } = measure());
+    }
+
+    if (total > inner) {
+      const scale = inner / total;
+      widths = widths.map((w) => w * scale);
+    }
+
+    const columnStyles = {};
+    widths.forEach((w, i) => {
+      columnStyles[i] = { cellWidth: Math.max(10, w) };
+    });
+
+    return { fontSize, columnStyles };
+  };
+
   /* -------- Exports -------- */
   const exportCSV = () => {
     try {
@@ -1047,14 +1131,80 @@ export default function App() {
 
   const exportPDF = () => {
     try {
-      const doc = new jsPDF({ orientation: "landscape" });
-      autoTable(doc, {
-        head: [headers],
-        body: sortedData.map((row) => headers.map((h) => row[h])),
+      const cols = headers || [];
+      const rows = sortedData || [];
+      if (!cols.length) {
+        alert("No data to export");
+        return;
+      }
+      let doc = new jsPDF({ orientation: "p" });
+      const margins = { left: 14, right: 14, top: 34, bottom: 12 };
+
+      let fit = measureFitColumns(doc, cols, rows, {
+        left: margins.left,
+        right: margins.right,
+        fontSize: 10,
+        minFont: 6,
       });
+      const inner = doc.internal.pageSize.getWidth() - margins.left - margins.right;
+      let totalGuess = 0;
+      Object.values(fit.columnStyles).forEach((s) => (totalGuess += s.cellWidth || 0));
+      if (totalGuess > inner) {
+        doc = new jsPDF({ orientation: "l" });
+        fit = measureFitColumns(doc, cols, rows, {
+          left: margins.left,
+          right: margins.right,
+          fontSize: 10,
+          minFont: 6,
+        });
+      }
+
+      const title = activeFilename ? `Report — ${activeFilename}` : "Report";
+      const runAt = new Date().toLocaleString();
+
+      doc.setFontSize(14);
+      doc.text(title, margins.left, 16);
+      doc.setFontSize(10);
+      doc.text(`Generated: ${runAt}`, margins.left, 22);
+      if (totalsCol && Number.isFinite(totalsSum)) {
+        doc.text(`Σ ${totalsCol}: ${Number(totalsSum).toLocaleString()}`, margins.left, 28);
+      }
+
+      autoTable(doc, {
+        startY: margins.top,
+        margin: { left: margins.left, right: margins.right, top: margins.top, bottom: margins.bottom },
+        head: [cols],
+        body: rows.map((r) => cols.map((h) => (r[h] == null ? "" : r[h]))),
+        styles: {
+          fontSize: fit.fontSize,
+          cellPadding: 1.2,
+          overflow: "ellipsize",
+          lineColor: [209, 250, 229],
+          lineWidth: 0.1,
+        },
+        headStyles: {
+          fillColor: [16, 185, 129],
+          textColor: 255,
+          halign: "left",
+          valign: "middle",
+          fontStyle: "bold",
+        },
+        bodyStyles: { halign: "left", valign: "middle" },
+        columnStyles: fit.columnStyles,
+        didParseCell: (data) => {
+          if (data.section === "head") data.cell.styles.overflow = "ellipsize";
+        },
+        didDrawPage: (data) => {
+          const pageStr = `Page ${doc.internal.getNumberOfPages()}`;
+          doc.setFontSize(8);
+          doc.text(pageStr, data.settings.margin.left, doc.internal.pageSize.getHeight() - 5);
+        },
+      });
+
       doc.save("report.pdf");
     } catch (err) {
       console.error("PDF Export failed:", err);
+      alert("❌ PDF Export failed, check console");
     }
   };
 
@@ -1097,7 +1247,13 @@ export default function App() {
       let doc = new jsPDF({ orientation: "l" });
       const margins = { left: 14, right: 14, top: 16, bottom: 12 };
 
-      const fit = { fontSize: 9, columnStyles: {} };
+      const fit = measureFitColumns(doc, pivotHeaders, pivotRows, {
+        left: margins.left,
+        right: margins.right,
+        fontSize: 9,
+        minFont: 6,
+        sampleRows: 80,
+      });
 
       let cursorY = margins.top;
       if (chartPngUrl) {
@@ -1172,9 +1328,26 @@ export default function App() {
     setPieTopN("10");
   };
 
+  /* -------- Options -------- */
+  const headerOptions = headers.map((h) => ({ value: h, label: h }));
   const folderOptions = [{ value: "", label: "Folder (required)…" }].concat(
     folders.map((f) => ({ value: String(f.id), label: f.name }))
   );
+
+  const saveTotalsColumn = async (col) => {
+    if (!sheetId) return;
+    try {
+      await axios.patch(
+        `${API}/sheets/${sheetId}`,
+        { totals_column: col || null },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      setTotalsCol(col || "");
+    } catch (e) {
+      console.error("save totals_column failed", e);
+      alert("❌ Could not save totals column");
+    }
+  };
 
   /* -------- Login Screen -------- */
   if (!token || !user) {
@@ -1879,6 +2052,7 @@ export default function App() {
 
             {/* Limit viewport to ~30 rows; keep header sticky; scroll the rest */}
             <div
+              ref={tableContainerRef}
               className="overflow-auto"
               style={{ maxHeight: "960px" }}
             >
@@ -1951,6 +2125,7 @@ export default function App() {
                                 });
                               }}
                               onClose={() => setOpenFilterCol(null)}
+                                tableContainerRef={tableContainerRef}
                             />
                           )}
                         </div>
@@ -2036,78 +2211,7 @@ export default function App() {
       </nav>
 
       <Routes>
-        <Route path="/" element={<Dashboard
-          user={user}
-          data={data}
-          headers={headers}
-          sortConfig={sortConfig}
-          columnFilters={columnFilters}
-          openFilterCol={openFilterCol}
-          setOpenFilterCol={setOpenFilterCol}
-          filterAnchorRefs={filterAnchorRefs}
-          filterBtnRefs={filterBtnRefs}
-          uniqueValuesByColumn={uniqueValuesByColumn}
-          setColumnFilters={setColumnFilters}
-          requestSort={requestSort}
-          sortedData={sortedData}
-          activeFilename={activeFilename}
-          handleUpload={handleUpload}
-          setFile={setFile}
-          setSelectedFileName={setSelectedFileName}
-          selectedFileName={selectedFileName}
-          folderOptions={folderOptions}
-          selectedFolderId={selectedFolderId}
-          setSelectedFolderId={setSelectedFolderId}
-          loadData={loadData}
-          exportCSV={exportCSV}
-          exportXLSX={exportXLSX}
-          exportPDF={exportPDF}
-          pivotOn={pivotOn}
-          setPivotOn={setPivotOn}
-          twoOn={twoOn}
-          setTwoOn={setTwoOn}
-          trendsOn={trendsOn}
-          setTrendsOn={setTrendsOn}
-          pivotRowKey={pivotRowKey}
-          setPivotRowKey={setPivotRowKey}
-          pivotColKey={pivotColKey}
-          setPivotColKey={setPivotColKey}
-          pivotValKey={pivotValKey}
-          setPivotValKey={setPivotValKey}
-          pivotAgg={pivotAgg}
-          setPivotAgg={setPivotAgg}
-          pivotRows={pivotRows}
-          pivotHeaders={pivotHeaders}
-          exportPivotPDF={exportPivotPDF}
-          resetPivot={resetPivot}
-          pivotChartRef={pivotChartRef}
-          pivotSeriesKeys={pivotSeriesKeys}
-          pieMode={pieMode}
-          setPieMode={setPieMode}
-          pieTopN={pieTopN}
-          setPieTopN={setPieTopN}
-          pieData={pieData}
-          PIE_COLORS={PIE_COLORS}
-          condCol1={condCol1}
-          setCondCol1={setCondCol1}
-          condCol2={condCol2}
-          setCondCol2={setCondCol2}
-          valueCol={valueCol}
-          setValueCol={setValueCol}
-          summaryData={summaryData}
-          resetSummary={resetSummary}
-          trendsDateKey={trendsDateKey}
-          setTrendsDateKey={setTrendsDateKey}
-          trendsValueKey={trendsValueKey}
-          setTrendsValueKey={setTrendsValueKey}
-          trendGranularity={trendGranularity}
-          setTrendGranularity={setTrendGranularity}
-          yearsBack={yearsBack}
-          setYearsBack={setYearsBack}
-          trendsData={trendsData}
-          totalsCol={totalsCol}
-          guessedNumericKey={guessedNumericKey}
-        />} />
+        <Route path="/" element={<DashboardBody />} />
         {user?.role === "admin" && (
           <Route path="/users" element={<div className="pt-0"><UserManagement token={token} sheetId={sheetId} /></div>} />
         )}
