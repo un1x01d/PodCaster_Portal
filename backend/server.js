@@ -495,13 +495,15 @@ app.get("/views/:sheetId", auth, async (req, res) => {
   res.json(rows);
 });
 
-app.get("/views/locked", auth, async (req, res) => {
+app.get("/views/locked/:sheetId", auth, async (req, res) => {
+  const { sheetId } = req.params;
   const rows = await query(
     `SELECT v.id, v.name, v.sheet_id, u.email as created_by
        FROM views v
        JOIN users u ON u.id = v.created_by
-      WHERE v.locked = TRUE
-      ORDER BY v.name ASC`
+      WHERE v.locked = TRUE AND v.sheet_id = $1
+      ORDER BY v.name ASC`,
+    [sheetId]
   );
   res.json(rows);
 });

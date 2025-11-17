@@ -29,7 +29,7 @@ export default function Dashboard({ token, user }) {
   const loadData = async () => {
     if (!activeSheet?.sheetId) return;
     try {
-      const res = await axios.get(`http://localhost:4000/data/${activeSheet.sheetId}`, {
+      const res = await axios.get("http://localhost:4000/data", {
         headers: { Authorization: `Bearer ${token}` },
       });
       setData(res.data);
@@ -62,6 +62,7 @@ export default function Dashboard({ token, user }) {
   useEffect(() => {
     loadData();
     fetchAllViews();
+    loadLockedViews();
   }, [activeSheet]);
 
   const fetchActiveSheet = async () => {
@@ -80,8 +81,9 @@ export default function Dashboard({ token, user }) {
   };
 
   const loadLockedViews = async () => {
+    if (!activeSheet?.sheetId) return;
     try {
-      const res = await axios.get("http://localhost:4000/views/locked", {
+      const res = await axios.get(`http://localhost:4000/views/locked/${activeSheet.sheetId}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       setLockedViews(res.data);
@@ -101,7 +103,7 @@ export default function Dashboard({ token, user }) {
           Authorization: `Bearer ${token}`,
         },
       });
-      loadData();
+      fetchActiveSheet();
     } catch {
       alert("❌ Upload failed");
     }

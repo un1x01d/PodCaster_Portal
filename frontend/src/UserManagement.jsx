@@ -59,6 +59,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
   const [selectedTplGroup, setSelectedTplGroup] = useState("");
 
   // Views
+  const [views, setViews] = useState([]);
   const [userViews, setUserViews] = useState(new Set());
   const [groupViews, setGroupViews] = useState(new Set());
 
@@ -213,7 +214,15 @@ export default function UserManagement({ token /* sheetId not required */ }) {
   useEffect(() => {
     fetchUsers();
     fetchGroups();
+    fetchAllViews();
   }, []);
+
+  const fetchAllViews = async () => {
+    const res = await axios.get(`${API}/views`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    setViews(res.data || []);
+  };
 
   const fetchUserViews = async (userId) => {
     if (!userId) return;
@@ -729,7 +738,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
 
             <div className="mt-4">
               <h5 className="font-semibold mb-2">View Permissions</h5>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-auto border rounded p-2">
+              <div className="grid grid-cols-2 md-grid-cols-3 gap-2 max-h-48 overflow-auto border rounded p-2">
                 {views.map((v) => (
                   <label key={v.id} className="flex items-center gap-2">
                     <input
