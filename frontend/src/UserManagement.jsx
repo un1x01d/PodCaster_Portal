@@ -738,7 +738,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
 
             <div className="mt-4">
               <h5 className="font-semibold mb-2">View Permissions</h5>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-auto border rounded p-2">
+              <div className="grid grid-cols-2 md-grid-cols-3 gap-2 max-h-48 overflow-auto border rounded p-2">
                 {views.map((v) => (
                   <label key={v.id} className="flex items-center gap-2">
                     <input
@@ -992,6 +992,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
           <div className="text-gray-500">Select a group to edit permissions.</div>
         )}
       </div>
+
     </div>
   );
 }

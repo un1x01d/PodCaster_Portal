@@ -16,6 +16,10 @@ export default function Dashboard({ token, user }) {
   const [file, setFile] = useState(null);
   const [filters, setFilters] = useState({});
   const [calcColumn, setCalcColumn] = useState("");
+  const [lockedViews, setLockedViews] = useState([]);
+  const [views, setViews] = useState([]);
+  const [newViewName, setNewViewName] = useState("");
+  const [activeSheet, setActiveSheet] = useState(null);
 
   // --- Two condition inputs ---
   const [cond1Col, setCond1Col] = useState("");
@@ -23,6 +27,7 @@ export default function Dashboard({ token, user }) {
   const [valueCol, setValueCol] = useState("");
 
   const loadData = async () => {
+    if (!activeSheet?.sheetId) return;
     try {
       const res = await axios.get("http://localhost:4000/data", {
         headers: { Authorization: `Bearer ${token}` },
@@ -49,8 +54,43 @@ export default function Dashboard({ token, user }) {
   };
 
   useEffect(() => {
-    loadData();
+    fetchActiveSheet();
+    fetchAllViews();
+    loadLockedViews();
   }, []);
+
+  useEffect(() => {
+    loadData();
+    fetchAllViews();
+    loadLockedViews();
+  }, [activeSheet]);
+
+  const fetchActiveSheet = async () => {
+    const res = await axios.get("http://localhost:4000/sheets/active", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    setActiveSheet(res.data);
+  };
+
+  const fetchAllViews = async () => {
+    if (!activeSheet?.sheetId) return;
+    const res = await axios.get(`http://localhost:4000/views/${activeSheet.sheetId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    setViews(res.data);
+  };
+
+  const loadLockedViews = async () => {
+    if (!activeSheet?.sheetId) return;
+    try {
+      const res = await axios.get(`http://localhost:4000/views/locked/${activeSheet.sheetId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setLockedViews(res.data);
+    } catch (err) {
+      console.error("❌ Load locked views failed:", err.message);
+    }
+  };
 
   const handleUpload = async () => {
     if (!file) return;
@@ -63,7 +103,7 @@ export default function Dashboard({ token, user }) {
           Authorization: `Bearer ${token}`,
         },
       });
-      loadData();
+      fetchActiveSheet();
     } catch {
       alert("❌ Upload failed");
     }
@@ -215,6 +255,83 @@ export default function Dashboard({ token, user }) {
         )}
       </div>
 
+      {/* View Management */}
+      <div className="p-4 bg-white border-b">
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <h3 className="font-bold text-lg mb-2">Locked Views</h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              {lockedViews.map((view) => (
+                <div key={view.id} className="bg-gray-100 p-4 rounded-lg shadow">
+                  <h4 className="font-semibold">{view.name}</h4>
+                  <p className="text-sm text-gray-600">Sheet ID: {view.sheet_id}</p>
+                  <p className="text-sm text-gray-600">Created by: {view.created_by}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div>
+            <h3 className="font-bold text-lg mb-2">Manage Views</h3>
+            <div className="flex gap-2 mb-3">
+              <input
+                className="border rounded p-2 flex-1"
+                placeholder="New view name"
+                value={newViewName}
+                onChange={(e) => setNewViewName(e.target.value)}
+              />
+              <button
+                className="bg-blue-600 hover:bg-blue-700 text-white rounded px-3"
+                onClick={async () => {
+                  if (!newViewName.trim() || !activeSheet) return;
+                  await axios.post(
+                    "http://localhost:4000/views",
+                    {
+                      name: newViewName.trim(),
+                      sheetId: activeSheet.sheetId,
+                      config: {},
+                      locked: false,
+                    },
+                    { headers: { Authorization: `Bearer ${token}` } }
+                  );
+                  setNewViewName("");
+                  fetchAllViews();
+                }}
+              >
+                Create
+              </button>
+            </div>
+            <div className="max-h-64 overflow-auto border rounded">
+              {views.map((v) => (
+                <div key={v.id} className="px-3 py-2 border-b">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="font-medium">{v.name}</div>
+                      <div className="text-xs text-gray-500">id: {v.id}</div>
+                    </div>
+                    <button
+                      className={`${
+                        v.locked ? "bg-red-500" : "bg-green-500"
+                      } text-white px-2 py-1 rounded`}
+                      onClick={async () => {
+                        await axios.patch(
+                          `http://localhost:4000/views/${v.id}`,
+                          { locked: !v.locked },
+                          { headers: { Authorization: `Bearer ${token}` } }
+                        );
+                        fetchAllViews();
+                        loadLockedViews();
+                      }}
+                    >
+                      {v.locked ? "Unlock" : "Lock"}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Table with dropdown filters */}
       <div className="flex-1 overflow-auto m-4 bg-white rounded-xl shadow-lg border">
         {filteredData.length > 0 ? (
@@ -261,4 +378,3 @@ export default function Dashboard({ token, user }) {
     </div>
   );
 }
-

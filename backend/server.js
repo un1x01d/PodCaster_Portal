@@ -197,6 +197,7 @@ async function initDb() {
       created_by INT NOT NULL
     );
   `);
+  await pool.query(`ALTER TABLE views ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE;`);
 
   // VIEW permissions
   await pool.query(`
@@ -424,12 +425,12 @@ app.patch("/sheets/:id", auth, async (req, res) => {
  * ------------------------------------------------------------------------- */
 app.post("/views", auth, async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-  const { name, sheetId, config } = req.body || {};
+  const { name, sheetId, config, locked } = req.body || {};
   const r = await query(
-    `INSERT INTO views (name, sheet_id, config, created_by)
-     VALUES ($1,$2,$3,$4)
-     RETURNING id, name, sheet_id, created_at`,
-    [name, sheetId, JSON.stringify(config || {}), req.user.id]
+    `INSERT INTO views (name, sheet_id, config, created_by, locked)
+     VALUES ($1,$2,$3,$4, $5)
+     RETURNING id, name, sheet_id, created_at, locked`,
+    [name, sheetId, JSON.stringify(config || {}), req.user.id, locked || false]
   );
   res.json(r[0]);
 });
@@ -452,11 +453,19 @@ app.post("/views/:id/duplicate", auth, async (req, res) => {
   res.json(newView);
 });
 
+app.patch("/views/:id", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const { id } = req.params;
+  const { locked } = req.body || {};
+  await query("UPDATE views SET locked = $1 WHERE id = $2", [locked, id]);
+  res.json({ success: true });
+});
+
 app.get("/views/:sheetId", auth, async (req, res) => {
   const { sheetId } = req.params;
   if (req.user.role === "admin") {
     const rows = await query(
-      `SELECT v.id, v.name, v.sheet_id, v.config, v.created_at, u.email as created_by
+      `SELECT v.id, v.name, v.sheet_id, v.config, v.created_at, v.locked, u.email as created_by
          FROM views v
          JOIN users u ON u.id = v.created_by
         WHERE v.sheet_id = $1
@@ -467,7 +476,7 @@ app.get("/views/:sheetId", auth, async (req, res) => {
   }
 
   const rows = await query(
-    `SELECT v.id, v.name, v.sheet_id, v.config, v.created_at, u.email as created_by
+    `SELECT v.id, v.name, v.sheet_id, v.config, v.created_at, v.locked, u.email as created_by
        FROM views v
        JOIN users u ON u.id = v.created_by
       WHERE v.sheet_id = $1
@@ -482,6 +491,19 @@ app.get("/views/:sheetId", auth, async (req, res) => {
         )
       ORDER BY v.name ASC`,
     [sheetId, req.user.id]
+  );
+  res.json(rows);
+});
+
+app.get("/views/locked/:sheetId", auth, async (req, res) => {
+  const { sheetId } = req.params;
+  const rows = await query(
+    `SELECT v.id, v.name, v.sheet_id, u.email as created_by
+       FROM views v
+       JOIN users u ON u.id = v.created_by
+      WHERE v.locked = TRUE AND v.sheet_id = $1
+      ORDER BY v.name ASC`,
+    [sheetId]
   );
   res.json(rows);
 });
