@@ -58,6 +58,10 @@ export default function UserManagement({ token /* sheetId not required */ }) {
   const [selectedTplUser, setSelectedTplUser] = useState("");
   const [selectedTplGroup, setSelectedTplGroup] = useState("");
 
+  // Views (for selected group sheet)
+  const [views, setViews] = useState([]);
+  const [newViewName, setNewViewName] = useState("");
+
   // fetch users
   const fetchUsers = async () => {
     const res = await axios.get(`${API}/users`, {
@@ -522,6 +526,66 @@ export default function UserManagement({ token /* sheetId not required */ }) {
     return m;
   }, [users]);
 
+  // --- Views ---
+  const fetchViews = async (sid) => {
+    if (!sid) { setViews([]); return; }
+    try {
+      const res = await axios.get(`${API}/views`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { sheetId: sid }
+      });
+      setViews(res.data || []);
+    } catch (e) {
+      console.error("fetchViews failed", e);
+      setViews([]);
+    }
+  };
+
+  const createView = async () => {
+    if (!newViewName.trim() || !selectedGroupSheetId) return;
+    const allowed_columns = Array.from(groupAllowedCols);
+    const row_filters = groupFilterKey ? { [groupFilterKey]: groupFilterVal } : {};
+    try {
+      await axios.post(`${API}/views`, {
+        sheetId: selectedGroupSheetId,
+        name: newViewName.trim(),
+        allowed_columns,
+        row_filters
+      }, { headers: { Authorization: `Bearer ${token}` }});
+      setNewViewName("");
+      fetchViews(selectedGroupSheetId);
+    } catch (e) {
+      alert("Failed to create view (name might exist)");
+    }
+  };
+
+  const deleteView = async (vid) => {
+    if (!confirm("Delete this view and its permissions?")) return;
+    await axios.delete(`${API}/views/${vid}`, { headers: { Authorization: `Bearer ${token}` }});
+    fetchViews(selectedGroupSheetId);
+  };
+
+  const toggleViewPermission = async (viewId, type, id, has) => {
+    const url = type === "user" ? `${API}/user-views` : `${API}/group-views`;
+    const body = type === "user" ? { userId: id, viewId } : { groupId: id, viewId };
+    if (has) {
+      await axios.delete(url, { data: body, headers: { Authorization: `Bearer ${token}` }});
+    } else {
+      await axios.post(url, body, { headers: { Authorization: `Bearer ${token}` }});
+    }
+    fetchViews(selectedGroupSheetId);
+  };
+
+  // when selected sheet for the group changes, also load its views
+  useEffect(() => {
+    if (selectedGroupSheetId) {
+      fetchViews(selectedGroupSheetId);
+    } else {
+      setViews([]);
+    }
+  }, [selectedGroupSheetId]);
+
+
   return (
     <div className="p-4 grid grid-cols-1 lg:grid-cols-3 gap-6">
       {/* USERS PANEL */}
@@ -885,6 +949,69 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                   >
                     Save
                   </button>
+                </div>
+
+                {/* --- Views --- */}
+                <div className="mt-6 border-t pt-4">
+                  <h4 className="font-bold text-lg mb-3">Views</h4>
+                  <div className="flex gap-2 mb-3">
+                    <input
+                      className="border rounded p-2 flex-1"
+                      placeholder="New view name"
+                      value={newViewName}
+                      onChange={e => setNewViewName(e.target.value)}
+                    />
+                    <button
+                      className="bg-indigo-600 hover:bg-indigo-700 text-white rounded px-3"
+                      onClick={createView}
+                      title="Create a new view from the currently selected columns/filters above"
+                    >
+                      Create
+                    </button>
+                  </div>
+
+                  {views.map(v => (
+                    <div key={v.id} className="border-b py-2">
+                      <div className="flex justify-between items-center">
+                        <span className="font-semibold">{v.name}</span>
+                        <button className="text-red-600" onClick={() => deleteView(v.id)}>Delete</button>
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        {v.allowed_columns?.length || "all"} cols, {Object.keys(v.row_filters || {}).length} filters
+                      </div>
+                      <div className="mt-2">
+                        <h5 className="font-semibold text-sm mb-1">Permissions</h5>
+                        <div className="grid grid-cols-2 gap-2 text-sm">
+                          <div>
+                            <h6 className="font-medium">Users</h6>
+                            {users.map(u => (
+                              <label key={u.id} className="flex items-center">
+                                <input
+                                  type="checkbox"
+                                  checked={v.users?.includes(u.id)}
+                                  onChange={() => toggleViewPermission(v.id, "user", u.id, v.users?.includes(u.id))}
+                                />
+                                <span className="ml-2">{u.email}</span>
+                              </label>
+                            ))}
+                          </div>
+                          <div>
+                            <h6 className="font-medium">Groups</h6>
+                            {groups.map(g => (
+                              <label key={g.id} className="flex items-center">
+                                <input
+                                  type="checkbox"
+                                  checked={v.groups?.includes(g.id)}
+                                  onChange={() => toggleViewPermission(v.id, "group", g.id, v.groups?.includes(g.id))}
+                                />
+                                <span className="ml-2">{g.name}</span>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </>
             ) : (
