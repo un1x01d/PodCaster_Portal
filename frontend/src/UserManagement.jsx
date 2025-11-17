@@ -59,11 +59,8 @@ export default function UserManagement({ token /* sheetId not required */ }) {
   const [selectedTplGroup, setSelectedTplGroup] = useState("");
 
   // Views
-  const [views, setViews] = useState([]);
   const [userViews, setUserViews] = useState(new Set());
   const [groupViews, setGroupViews] = useState(new Set());
-  const [newViewName, setNewViewName] = useState("");
-  const [activeSheet, setActiveSheet] = useState(null);
 
   // fetch users
   const fetchUsers = async () => {
@@ -216,23 +213,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
   useEffect(() => {
     fetchUsers();
     fetchGroups();
-    fetchAllViews();
-    fetchActiveSheet();
   }, []);
-
-  const fetchActiveSheet = async () => {
-    const res = await axios.get(`${API}/sheets/active`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    setActiveSheet(res.data);
-  };
-
-  const fetchAllViews = async () => {
-    const res = await axios.get(`${API}/views`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    setViews(res.data || []);
-  };
 
   const fetchUserViews = async (userId) => {
     if (!userId) return;
@@ -1003,70 +984,6 @@ export default function UserManagement({ token /* sheetId not required */ }) {
         )}
       </div>
 
-      {/* VIEWS PANEL */}
-      <div className="bg-white border rounded-xl shadow p-4">
-        <h3 className="font-bold text-lg mb-3">Views</h3>
-
-        <div className="flex gap-2 mb-3">
-          <input
-            className="border rounded p-2 flex-1"
-            placeholder="New view name"
-            value={newViewName}
-            onChange={(e) => setNewViewName(e.target.value)}
-          />
-          <button
-            className="bg-blue-600 hover:bg-blue-700 text-white rounded px-3"
-            onClick={async () => {
-              if (!newViewName.trim() || !activeSheet) return;
-              await axios.post(
-                `${API}/views`,
-                {
-                  name: newViewName.trim(),
-                  sheetId: activeSheet.sheetId,
-                  config: {},
-                  locked: false,
-                },
-                { headers: { Authorization: `Bearer ${token}` } }
-              );
-              setNewViewName("");
-              fetchAllViews();
-            }}
-          >
-            Create
-          </button>
-        </div>
-
-        <div className="max-h-64 overflow-auto border rounded">
-          {views.map((v) => (
-            <div
-              key={v.id}
-              className="px-3 py-2 border-b"
-            >
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="font-medium">{v.name}</div>
-                  <div className="text-xs text-gray-500">id: {v.id}</div>
-                </div>
-                <button
-                  className={`${
-                    v.locked ? "bg-red-500" : "bg-green-500"
-                  } text-white px-2 py-1 rounded`}
-                  onClick={async () => {
-                    await axios.patch(
-                      `${API}/views/${v.id}`,
-                      { locked: !v.locked },
-                      { headers: { Authorization: `Bearer ${token}` } }
-                    );
-                    fetchAllViews();
-                  }}
-                >
-                  {v.locked ? "Unlock" : "Lock"}
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
     </div>
   );
 }
