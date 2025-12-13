@@ -10,6 +10,7 @@ import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import UserManagement from "./UserManagement";
+import ErrorBoundary from "./ErrorBoundary";
 import "./index.css";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
@@ -2057,7 +2058,7 @@ export default function App() {
               style={{ maxHeight: "960px" }}
             >
               <table className="table-auto border-collapse w-full text-sm">
-                <thead className="sticky top-0 bg-gradient-to-r from-emerald-200 to-emerald-100 text-gray-900 shadow-sm z-0">
+                <thead className="sticky top-0 bg-gradient-to-r from-emerald-200 to-emerald-100 text-gray-900 shadow-sm z-10">
                   <tr>
                     {headers.map((h) => (
                       <th
@@ -2211,7 +2212,7 @@ export default function App() {
       </nav>
 
       <Routes>
-        <Route path="/" element={<DashboardBody />} />
+        <Route path="/" element={<ErrorBoundary><DashboardBody /></ErrorBoundary>} />
         {user?.role === "admin" && (
           <Route path="/users" element={<div className="pt-0"><UserManagement token={token} sheetId={sheetId} /></div>} />
         )}

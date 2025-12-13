@@ -219,18 +219,16 @@ export default function Dashboard({ token, user }) {
       <div className="flex-1 overflow-auto m-4 bg-white rounded-xl shadow-lg border">
         {filteredData.length > 0 ? (
           <table className="table-auto border-collapse w-full text-sm">
-            <thead className="sticky top-0 bg-blue-700 text-white z-10">
+            <thead className="sticky top-0 bg-blue-700 text-white">
               <tr>
                 {headers.map((h) => (
                   <th key={h} className="border px-4 py-2">
-                    <div>{h}</div>
                     <select
                       value={filters[h] || ""}
                       onChange={(e) =>
                         setFilters({ ...filters, [h]: e.target.value })
                       }
-                      onClick={(e) => e.stopPropagation()}
-                      className="text-black text-xs border rounded w-full mt-1"
+                      className="text-black text-xs border rounded"
                     >
                       <option value="">All</option>
                       {[...new Set(data.map((row) => row[h]))].map((val, i) => (
@@ -239,6 +237,7 @@ export default function Dashboard({ token, user }) {
                         </option>
                       ))}
                     </select>
+                    <div>{h}</div>
                   </th>
                 ))}
               </tr>
