@@ -19,9 +19,28 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
     // Initialize with welcome message
     useEffect(() => {
         if (messages.length === 0 && headers.length > 0) {
+            // Generate dynamic prompts based on headers
+            const getPrompts = () => {
+                const prompts = [];
+                const h = (name) => headers.find(hdr => hdr.toLowerCase().includes(name));
+                const metric = h('gross profit') || h('revenue') || h('profit') || h('amount') || h('cost') || h('units');
+                const dimension = h('region') || h('department') || h('customer') || h('product') || h('vendor');
+                const date = h('date') || h('year') || h('month');
+
+                if (metric) prompts.push(`"What is the total ${metric}?"`);
+                if (metric && dimension) prompts.push(`"Which ${dimension} is the most profitable?"`); // Uses our new 'profitable' logic
+                if (metric && date) prompts.push(`"Trend of ${metric} (average)"`);
+                if (dimension) prompts.push(`"Filter by ${dimension}..."`);
+                if (metric && date) prompts.push(`"Compare ${metric} 2023 vs 2024"`);
+
+                return prompts.length > 0 ? prompts : ['"Show me all data"', '"Count rows"'];
+            };
+
+            const suggestions = getPrompts();
+
             setMessages([{
                 type: 'bot',
-                text: `Hi! I can help you analyze your data. Try asking:\n• "What's the total ${headers.find(h => isNumericColumn(h)) || 'amount'}?"\n• "Show me rows from last year"\n• "Compare revenue by region"\n• "Trend of sales (average)"`,
+                text: `Hi! I can help you analyze your data. Try asking:\n• ${suggestions.join('\n• ')}`,
                 timestamp: new Date()
             }]);
         }
@@ -161,14 +180,15 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
         else if (q.match(/count|how many/)) aggregation = 'count';
 
         // Detect Operation
-        if (q.match(/^(?:for\s+)?(?:which|what)\s+(?:year|month|day|date|time|period)(?:\?|$)/) && !q.match(/(?:highest|lowest|most|least|best|worst|had|have|was|were)/)) {
+        if (q.match(/^(?:for\s+)?(?:which|what)\s+(?:year|month|day|date|time|period|customer|region|product|project|account|vendor)(?:\?|$)/) && !q.match(/(?:highest|lowest|most|least|best|worst|had|have|was|were)/)) {
             operation = 'QUESTION';
         }
-        else if (q.match(/(?:reset|clear|remove|delete)\s+(?:all\s+)?filters?/)) operation = 'RESET_FILTER';
+        else if (q.match(/(?:reset|clear|remove|delete)\s+(?:all\s+)?(?:filters?|fitlers?|fliters?|filtes?)/)) operation = 'RESET_FILTER';
         else if (q.match(/(?:draw|plot|chart|graph|visualize|trend|see\s+trend)/)) operation = 'CHART';
         else if (q.match(/(?:apply|set|add|use)\s+filt[a-z]*|^filter\s+by/)) operation = 'APPLY_FILTER';
         else if (q.match(/(?:compare|difference|change|vs|versus|better|worse|increase|decrease|growth|drop|rose|fell)/)) operation = 'COMPARE'; // Could be text compare or chart compare
-        else if (q.match(/total|sum|amount of|how much/)) operation = 'SUM';
+        else if (q.match(/(?:compare|difference|change|vs|versus|better|worse|increase|decrease|growth|drop|rose|fell)/)) operation = 'COMPARE'; // Could be text compare or chart compare
+        else if (q.match(/total|\bsum\b|amount of|how much/)) operation = 'SUM';
         // "How many [column]" -> SUM if numeric, else COUNT
         else if (q.match(/how many\s+(\w+)/)) {
             const potentialColumn = q.match(/how many\s+(\w+)/)[1];
@@ -179,7 +199,8 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
         }
         else if (q.match(/average|avg|mean|typical/)) operation = 'AVG';
         else if (q.match(/count|number of|how many.*rows/)) operation = 'COUNT';
-        else if (q.match(/max|highest|maximum|most|largest|top|best/)) operation = 'MAX';
+        else if (q.match(/most common|most frequent|most popular|top|mode|common|busy|busiest/)) operation = 'MODE';
+        else if (q.match(/max|highest|maximum|most|largest|best/)) operation = 'MAX';
         else if (q.match(/min|lowest|minimum|least|worst|bottom/)) operation = 'MIN';
         else if (q.match(/show|find|list|view|only|just|where|contains?|filter/)) operation = 'FILTER';
 
@@ -197,8 +218,9 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
 
         // 2. Dictionary Matches
         const dictionary = {
-            'revenue': ['revenue', 'sales', 'income', 'turnover', 'gross', 'amount', 'total', 'valuable'],
-            'profit': ['profit', 'net income', 'earnings', 'gain', 'margin', 'surplus', 'bottom line', 'profitable'],
+            'revenue': ['revenue', 'sales', 'income', 'turnover', 'valuable'],
+            'profit': ['profit', 'net income', 'earnings', 'gain', 'surplus', 'bottom line', 'profitable'],
+            'margin': ['margin', 'rate', 'yield', 'return', 'percentage'],
             'cost': ['cost', 'expense', 'spending', 'cogs', 'expenditure', 'fee', 'charge', 'overhead', 'expensive', 'costly'],
             'date': ['date', 'time', 'year', 'month', 'day', 'period', 'when'],
             'customer': ['customer', 'client', 'buyer', 'purchaser', 'account', 'company'],
@@ -269,13 +291,48 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
         }
 
         // Context Fallback (if still null)
-        if (!column && context.lastColumn) column = context.lastColumn;
+        // ONLY use context column if we aren't potentially doing a global search/filter
+        // If operation is FILTER (implicit "only...", "find..."), we should look globally first.
+        // But here we don't know the operation fully yet.
+        // Heuristic: If q implies a filter command, don't default to lastColumn yet.
+        // Actually, let's allow it but ensure subsequent logic can override it if a better match is found.
+        if (!column && context.lastColumn) {
+            // If query contains "filter" or "only", maybe skip this?
+            // But "filter by [value]" relies on column being known if value is ambiguous.
+            // Let's keep it but handle overrides in logic.
+            column = context.lastColumn;
+        }
 
         if (dateRange && column && isDateColumn(column)) column = null;
 
 
         // ---------------- Filter Parsing (Implicit & Explicit) ----------------
         let filter = null;
+
+        // 0. Numerical Comparisons (>, <, >=, <=, larger than, etc.)
+        // This must be detected BEFORE standard "equality" filters
+        if (column && !filter) {
+            // Regex for operators
+            // Supports: "> 100", "greater than 100", "larger than 100", "over 100"
+            // "< 50", "less than 50", "under 50", "smaller than 50"
+            const operatorRegex = /(?:greater\s+than|larger\s+than|big(?:ger)?\s+than|more\s+than|less\s+than|small(?:er)?\s+than|lower\s+than|under|over|above|below|>=|<=|>|<)\s+(\d+(?:,\d+)*(?:\.\d+)?)/i;
+            const match = q.match(operatorRegex);
+            if (match) {
+                const operatorStr = match[0].match(/^[^\d]+/)[0].trim().toLowerCase();
+                const numericVal = parseFloat(match[1].replace(/,/g, ''));
+
+                let operator = '';
+                if (['>', 'greater than', 'larger than', 'bigger than', 'more than', 'over', 'above'].includes(operatorStr)) operator = '>';
+                else if (['<', 'less than', 'smaller than', 'lower than', 'under', 'below'].includes(operatorStr)) operator = '<';
+                else if (operatorStr === '>=') operator = '>=';
+                else if (operatorStr === '<=') operator = '<=';
+
+                if (operator) {
+                    filter = { column: column, value: numericVal, operator: operator };
+                    if (operation === 'UNKNOWN' || operation === 'FILTER') operation = 'APPLY_FILTER';
+                }
+            }
+        }
 
         // 1. Explicit Syntax: Column = Value | Column : Value | Column is Value
         if (!filter && column) {
@@ -297,11 +354,14 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
             }
         }
 
-        // 2. Pattern: "from X" or "for X"
+        // 2. Pattern: "from X" or "for X" or "on X"
         if (!filter && !filter) {
-            const match = q.match(/(?:from|for|in|at|by)\s+(.+?)(?:\s+in\s+|\s+for\s+|\s+at\s+|\s+by\s+|\?|$)/);
+            const match = q.match(/(?:from|for|in|at|by|on)\s+(.+?)(?:\s+in\s+|\s+for\s+|\s+at\s+|\s+by\s+|\s+on\s+|\?|$)/);
             if (match) {
-                const val = match[1].trim();
+                let val = match[1].trim();
+                // Strip "only", "just" from the end of the value
+                val = val.replace(/\s+(?:only|just)$/i, '');
+
                 // Exclude date keywords
                 if (!['last year', 'this year', '2020', '2021', '2022', 'compare', 'trend'].some(d => val.includes(d))) {
                     // Search all columns for this value
@@ -321,7 +381,8 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
             // If query is just a word or phrase, try to find it as a value in ANY column
             let cleanQuery = q.replace(/[?.,!]/g, '').trim();
             // Remove common start verbs
-            cleanQuery = cleanQuery.replace(/^(?:match|search|find|get|filter|by|only|just|show|me)\s+/, '').trim();
+            // Remove common start verbs (allow combinations like "only show me")
+            cleanQuery = cleanQuery.replace(/^(?:match|search|find|get|filter|by|only|just|show|me|\s)+/i, '').trim();
 
             if (cleanQuery.length > 1) {
                 // Find longest value match? Or just any match.
@@ -361,7 +422,25 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
             }
         }
 
+        // 5. Implicit "Sum" inference (e.g. "what is the gross profit?", "revenue")
+        // If we found a column, it is numeric/currency, and we have NO filter value (just naming the column)
+        // Then the user likely wants the total of that column.
+        if ((operation === 'FILTER' || operation === 'APPLY_FILTER' || operation === 'UNKNOWN') && column && !filter) {
+            const isNumeric = isNumericColumn(column);
+            const isDate = isDateColumn(column);
+            const isRate = /%|percent|margin|rate|ratio/i.test(column);
+
+            // Only sum if it's numeric and NOT a date (e.g. don't sum Year)
+            // Also if query looks like a question or just a label
+            if (isNumeric && !isDate) {
+                // For Rates/Percentages, Average is usually what is desired, not Sum
+                if (isRate) operation = 'AVG';
+                else operation = 'SUM';
+            }
+        }
+
         // Chart override: If Compare intent + segmentBy, it becomes a CHART operation usually
+
         if ((operation === 'COMPARE' || q.includes('trend')) && segmentBy) {
             operation = 'CHART';
         }
@@ -372,10 +451,14 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
     // Execute query
     const executeQuery = (parsed) => {
         try {
-            const isCurrencyColumn = (colName) => /revenue|profit|sales|amount|price|cost|income|expense/i.test(colName);
+            const isCurrencyColumn = (colName) => /revenue|profit|sales|amount|price|cost|income|expense/i.test(colName) && !/%|percent|margin|rate|ratio/i.test(colName);
+            const isPercentColumn = (colName) => /%|percent|margin|rate|ratio/i.test(colName);
+
             const formatNumber = (num, colName) => {
                 const formatted = num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-                return isCurrencyColumn(colName) ? `$${formatted}` : formatted;
+                if (isCurrencyColumn(colName)) return `$${formatted}`;
+                if (isPercentColumn(colName)) return `${formatted}%`;
+                return formatted;
             };
 
             let result = [...data];
@@ -441,6 +524,11 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
                         return rowDate >= parsed.dateRange.start && rowDate <= parsed.dateRange.end;
                     });
                 }
+            }
+
+            // Apply one-off filters (e.g. "Total Revenue for West") found in query
+            if (parsed.filter && parsed.operation !== 'FILTER' && parsed.operation !== 'APPLY_FILTER') {
+                result = result.filter(row => String(row[parsed.filter.column]).toLowerCase().includes(parsed.filter.value.toLowerCase()));
             }
 
             // Execute operation
@@ -518,12 +606,74 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
                     ).join('\n')}`;
 
                 case 'QUESTION':
+                    if (parsed.column) {
+                        // Check if there is an active filter for this column
+                        // e.g. "which customer?" -> check if filtered by Customer
+                        const activeVal = (context.activeFilters && context.activeFilters[parsed.column]) ? context.activeFilters[parsed.column] : null;
+
+                        // Also check parsed.filter from current query if it was applied
+                        if (parsed.filter && parsed.filter.column === parsed.column) {
+                            return `The current query is filtered by ${parsed.column}: "${formatValue(parsed.filter.value)}".`;
+                        }
+
+                        if (activeVal) {
+                            return `This data is filtered by ${parsed.column}: "${activeVal.map(v => formatValue(v)).join(', ')}".`;
+                        }
+
+                        // If no filter, maybe they want to know the breakdown?
+                        // "Which customer?" on unfiltered data -> "There are X customers..."
+                        const uniqueVals = [...new Set(result.map(r => r[parsed.column]))];
+                        if (uniqueVals.length < 10) {
+                            return `There are ${uniqueVals.length} ${parsed.column}s: ${uniqueVals.map(v => formatValue(v)).join(', ')}`;
+                        }
+                        return `There are ${uniqueVals.length} different ${parsed.column}s in the current view.`;
+                    }
+
                     if (context.lastDateRange) {
                         const { start, end } = context.lastDateRange;
                         return `The previous query was for data from ${start.toLocaleDateString()} to ${end.toLocaleDateString()}.`;
                     } else {
                         return `The previous query used all available data (no date filter applied).`;
                     }
+                case 'MODE':
+                    if (!parsed.column) return 'Please specify which column to find the most common value for.';
+                    if (!result.length) return "No data available.";
+
+                    const counts = {};
+                    const isDate = isDateColumn(parsed.column);
+
+                    result.forEach(row => {
+                        let val = row[parsed.column];
+                        if (isDate) {
+                            // Extract Year-Month for "busy month" queries
+                            const d = new Date(val);
+                            if (!isNaN(d)) {
+                                val = d.toLocaleString('default', { month: 'long', year: 'numeric' });
+                            } else {
+                                val = String(val);
+                            }
+                        } else {
+                            val = String(val);
+                        }
+
+                        // Skip empty values
+                        if (val && val !== 'undefined' && val !== 'null' && val.trim() !== '') {
+                            counts[val] = (counts[val] || 0) + 1;
+                        }
+                    });
+
+                    let maxCount = 0;
+                    let modeVal = null;
+                    Object.entries(counts).forEach(([val, count]) => {
+                        if (count > maxCount) {
+                            maxCount = count;
+                            modeVal = val;
+                        }
+                    });
+
+                    if (!modeVal) return `Could not calculate most common value for "${parsed.column}".`;
+
+                    return `Most common ${parsed.column}: "${formatValue(modeVal)}" (${maxCount} occurrences).`;
 
                 default:
                     return "I'm not sure how to help with that. Try asking about totals, averages, counts, or filtering data.";
@@ -563,6 +713,25 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
                     return;
                 }
 
+                // Check if user provided a number (e.g. "1", "2")
+                const index = parseInt(userInput, 10);
+                if (!isNaN(index) && index >= 1 && index <= matchingValues.length) {
+                    const selectedValue = matchingValues[index - 1];
+                    const filters = { ...context.activeFilters };
+                    filters[column] = [selectedValue];
+                    onApplyFilter(filters);
+                    setContext(prev => ({ ...prev, activeFilters: filters, pendingFilter: null }));
+
+                    const botMessage = {
+                        type: 'bot',
+                        text: `✅ Applied filter to table!\n\n${column}: "${formatValue(selectedValue)}"\nShowing ${data.filter(row => String(row[column]) === selectedValue).length} rows`,
+                        timestamp: new Date()
+                    };
+                    setMessages(prev => [...prev, botMessage]);
+                    setInput('');
+                    return;
+                }
+
                 // Check if user provided an exact value from the list
                 const exactMatch = matchingValues.find(v => v.toLowerCase() === userInput || formatValue(v).toLowerCase() === userInput);
                 if (exactMatch) {
@@ -581,6 +750,25 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
                     return;
                 }
 
+                // Check for unique partial match (fuzzy)
+                const fuzzyMatches = matchingValues.filter(v => v.toLowerCase().includes(userInput));
+                if (fuzzyMatches.length === 1) {
+                    const match = fuzzyMatches[0];
+                    const filters = { ...context.activeFilters };
+                    filters[column] = [match];
+                    onApplyFilter(filters);
+                    setContext(prev => ({ ...prev, activeFilters: filters, pendingFilter: null }));
+
+                    const botMessage = {
+                        type: 'bot',
+                        text: `✅ Applied filter to table!\n\n${column}: "${formatValue(match)}"\nShowing ${data.filter(row => String(row[column]) === match).length} rows`,
+                        timestamp: new Date()
+                    };
+                    setMessages(prev => [...prev, botMessage]);
+                    setInput('');
+                    return;
+                }
+
                 // If no match, clear pending filter and continue with normal parsing
                 setContext(prev => ({ ...prev, pendingFilter: null }));
             }
@@ -589,10 +777,8 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
             const parsed = parseQuery(input);
 
             // Contextual Follow-up: "Which customer?" -> Return value from lastResultRow
-            if (context.lastResultRow && parsed.column && (!parsed.operation || parsed.operation === 'FILTER' || parsed.operation === 'UNKNOWN')) {
-                // If it looks like a simple column inquiry
-                // Check if the query is asking about this column
-                // Or if parsed.column matches the query (it should)
+            // Only trigger if operation is NOT a filter command (to avoid "only p-002" showing "Submittal Status: Pending")
+            if (context.lastResultRow && parsed.column && (!parsed.operation || parsed.operation === 'UNKNOWN' || parsed.operation === 'QUESTION') && parsed.operation !== 'FILTER') {
                 const val = context.lastResultRow[parsed.column];
                 const botMessage = {
                     type: 'bot',
@@ -616,11 +802,11 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
             if (parsed.column) setContext(prev => ({ ...prev, lastColumn: parsed.column }));
             if (parsed.operation && parsed.operation !== 'UNKNOWN') setContext(prev => ({ ...prev, lastOperation: parsed.operation }));
 
-            // For RESET_FILTER operations, clear all filters
+            // For RESET_FILTER operations, clear all filters AND context
             if (parsed.operation === 'RESET_FILTER' && onApplyFilter) {
                 onApplyFilter({});
-                setContext(prev => ({ ...prev, activeFilters: {} }));
-                setMessages(prev => [...prev, { type: 'bot', text: '✅ All filters cleared!\n\nShowing all data.', timestamp: new Date() }]);
+                setContext(prev => ({ ...prev, activeFilters: {}, lastColumn: null, lastResultRow: null, lastOperation: null }));
+                setMessages(prev => [...prev, { type: 'bot', text: '✅ All filters cleared & context reset!\n\nShowing all data.', timestamp: new Date() }]);
                 setInput('');
                 return;
             }
@@ -634,11 +820,62 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
                     return;
                 }
 
-                const matchingValues = [...new Set(
-                    ((allData && allData.length > 0) ? allData : data)
-                        .filter(row => String(row[parsed.filter.column]).toLowerCase().includes(parsed.filter.value.toLowerCase()))
-                        .map(row => String(row[parsed.filter.column]))
-                )];
+                let matchingValues = [];
+
+                // Handle Numerical Comparison (Range Filter)
+                if (parsed.filter.operator) {
+                    const op = parsed.filter.operator;
+                    const val = parsed.filter.value;
+
+                    matchingValues = [...new Set(
+                        ((allData && allData.length > 0) ? allData : data)
+                            .filter(row => {
+                                const rowVal = Number(String(row[parsed.filter.column]).replace(/[$,%]/g, ''));
+                                if (isNaN(rowVal)) return false;
+                                if (op === '>') return rowVal > val;
+                                if (op === '<') return rowVal < val;
+                                if (op === '>=') return rowVal >= val;
+                                if (op === '<=') return rowVal <= val;
+                                return false;
+                            })
+                            .map(row => String(row[parsed.filter.column]))
+                    )];
+
+                    if (matchingValues.length > 0) {
+                        // For ranges, we generally assume "Apply All" rather than asking to pick one, 
+                        // because the user asked for a condition, not a specific value match.
+                        const filters = { ...context.activeFilters };
+                        filters[parsed.filter.column] = matchingValues;
+                        onApplyFilter(filters);
+                        setContext(prev => ({ ...prev, activeFilters: filters, pendingFilter: null }));
+
+                        const botMessage = {
+                            type: 'bot',
+                            text: `✅ Applied range filter: ${parsed.filter.column} ${op} ${val}\n\nFound ${matchingValues.length} distinct values matching criteria.\nShowing ${matchingValues.length} rows.`,
+                            timestamp: new Date()
+                        };
+                        setMessages(prev => [...prev, botMessage]);
+                        setInput('');
+                        return;
+                    }
+                    // No matches found, fall through to error message below
+                }
+                else {
+                    // Standard String Matching
+                    matchingValues = [...new Set(
+                        ((allData && allData.length > 0) ? allData : data)
+                            .filter(row => String(row[parsed.filter.column]).toLowerCase().includes(parsed.filter.value.toLowerCase()))
+                            .map(row => String(row[parsed.filter.column]))
+                    )];
+
+                    // Refinement: If explicit exact match exists, prefer it to avoid ambiguity (e.g. "West" vs "Midwest")
+                    if (matchingValues.length > 1) {
+                        const exact = matchingValues.find(v => v.toLowerCase() === parsed.filter.value.toLowerCase());
+                        if (exact) {
+                            matchingValues = [exact];
+                        }
+                    }
+                }
 
                 if (matchingValues.length === 0) {
                     setMessages(prev => [...prev, { type: 'bot', text: `❌ No values found matching "${parsed.filter.value}" in column "${parsed.filter.column}"`, timestamp: new Date() }]);
@@ -677,6 +914,27 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
                         return vals.includes(cell);
                     });
                 });
+
+                if (finalSet.length === 0) {
+                    // AUTO-RESET LOGIC:
+                    // If combined filters yield 0 rows, BUT the new filter alone yields matches (which we know it does, since matchingValues > 0),
+                    // then we should clear old filters and apply ONLY this new one.
+                    onApplyFilter({ [parsed.filter.column]: matchingValues });
+                    setContext(prev => ({
+                        ...prev,
+                        activeFilters: { [parsed.filter.column]: matchingValues },
+                        pendingFilter: null
+                    }));
+
+                    const botMessage = {
+                        type: 'bot',
+                        text: `🔄 No rows found with combined filters. Resetting view.\n\nFiltering only by ${parsed.filter.column}: "${formatValue(matchingValues[0])}"\nShowing ${matchingValues.length === 1 ? 'matching rows' : matchingValues.length + ' values'}`,
+                        timestamp: new Date()
+                    };
+                    setMessages(prev => [...prev, botMessage]);
+                    setInput('');
+                    return;
+                }
 
                 let finalFilters = {};
                 let message = '';
