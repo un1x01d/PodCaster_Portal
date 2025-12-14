@@ -10,6 +10,7 @@ import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import UserManagement from "./UserManagement";
+import SpreadsheetChatbot from "./SpreadsheetChatbot";
 import ErrorBoundary from "./ErrorBoundary";
 import "./index.css";
 
@@ -2401,7 +2402,31 @@ export default function App() {
       </nav>
 
       <Routes>
-        <Route path="/" element={<ErrorBoundary><DashboardBody /></ErrorBoundary>} />
+        <Route path="/" element={
+          <ErrorBoundary>
+            <DashboardBody />
+            {/* Chatbot */}
+            {sheetId && (
+              <SpreadsheetChatbot
+                data={filteredData || []}
+                allData={data || []}
+                headers={headers || []}
+                onApplyFilter={(filters) => {
+                  // Convert simple object { col: [val] } -> { col: Set(val) }
+                  const newFilters = {};
+                  Object.entries(filters).forEach(([key, val]) => {
+                    if (Array.isArray(val)) {
+                      newFilters[key] = new Set(val.map(String));
+                    } else {
+                      newFilters[key] = val; // Assuming already Set or null
+                    }
+                  });
+                  setColumnFilters(newFilters);
+                }}
+              />
+            )}
+          </ErrorBoundary>
+        } />
         {user?.role === "admin" && (
           <Route path="/users" element={<div className="pt-0"><UserManagement token={token} sheetId={sheetId} /></div>} />
         )}
