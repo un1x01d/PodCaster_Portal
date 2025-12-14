@@ -2000,7 +2000,7 @@ export default function App() {
         )}
 
         {/* Two-Condition Controls & Chart */}
-        {twoOn && (user.role === "admin" || selectedViewId) && hasRequiredColumns([condCol1, condCol2, valueCol].filter(Boolean)) && (
+        {twoOn && hasRequiredColumns([condCol1, condCol2, valueCol].filter(Boolean)) && (
           <div className="p-4 bg-slate-50/60 border-t border-slate-200">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-lg font-bold text-gray-900">📊 Two-Condition Summary</h2>
@@ -2090,138 +2090,143 @@ export default function App() {
         )}
 
         {/* Trends */}
-        {trendsOn && (user.role === "admin" || selectedViewId) && hasRequiredColumns([trendsDateKey, trendsValueKey].filter(Boolean)) && (
-          <div className="m-4 bg-white rounded-2xl shadow-2xl border border-sky-100">
-            <div className="p-3 flex flex-col gap-3">
-              <div className="flex items-center justify-between">
-                <div className="font-semibold text-gray-900">📈 Trends</div>
-                <div className="flex gap-1">
-                  <button
-                    className={`px-2 h-8 rounded border ${!trendsValueKey ? "bg-sky-600 text-white border-sky-600" : "bg-white border-sky-200"}`}
-                    onClick={() => setTrendsValueKey("")}
-                    title="Count per day"
-                  >
-                    Count
-                  </button>
-                  <button
-                    className={`px-2 h-8 rounded border ${trendsValueKey ? "bg-sky-600 text-white border-sky-600" : "bg-white border-sky-200"}`}
-                    onClick={() => {
-                      const key = trendsValueKey || totalsCol || guessedNumericKey || "";
-                      if (!key) { alert("No numeric column detected for sum."); return; }
-                      setTrendsValueKey(key);
-                    }}
-                    title={`Sum per day${trendsValueKey ? ` (${trendsValueKey})` : totalsCol ? ` (${totalsCol})` : guessedNumericKey ? ` (${guessedNumericKey})` : ""}`}
-                  >
-                    Sum
-                  </button>
+        {/* Trends */}
+        {trendsOn && (
+          hasRequiredColumns([trendsDateKey, trendsValueKey].filter(Boolean)) ? (
+            <div className="m-4 bg-white rounded-2xl shadow-2xl border border-sky-100">
+              <div className="p-3 flex flex-col gap-3">
+                <div className="flex items-center justify-between">
+                  <div className="font-semibold text-gray-900">📈 Trends</div>
+                  <div className="flex gap-1">
+                    <button
+                      className={`px-2 h-8 rounded border ${!trendsValueKey ? "bg-sky-600 text-white border-sky-600" : "bg-white border-sky-200"}`}
+                      onClick={() => setTrendsValueKey("")}
+                      title="Count per day"
+                    >
+                      Count
+                    </button>
+                    <button
+                      className={`px-2 h-8 rounded border ${trendsValueKey ? "bg-sky-600 text-white border-sky-600" : "bg-white border-sky-200"}`}
+                      onClick={() => {
+                        const key = trendsValueKey || totalsCol || guessedNumericKey || "";
+                        if (!key) { alert("No numeric column detected for sum."); return; }
+                        setTrendsValueKey(key);
+                      }}
+                      title={`Sum per day${trendsValueKey ? ` (${trendsValueKey})` : totalsCol ? ` (${totalsCol})` : guessedNumericKey ? ` (${guessedNumericKey})` : ""}`}
+                    >
+                      Sum
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap gap-3 items-end">
+                  <SearchableSelect
+                    options={[{ value: "", label: "Date column…" }, ...displayHeaders.map((h) => ({ value: h, label: h }))]}
+                    value={trendsDateKey}
+                    onChange={(e) => setTrendsDateKey(e.target.value)}
+                    placeholder="Date column…"
+                    buttonClassName="border border-sky-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
+                  />
+                  <SearchableSelect
+                    options={[{ value: "", label: "(Count events)" }, ...displayHeaders.map((h) => ({ value: h, label: h }))]}
+                    value={trendsValueKey}
+                    onChange={(e) => setTrendsValueKey(e.target.value)}
+                    placeholder="Value column (optional)…"
+                    buttonClassName="border border-sky-200 p-2 rounded-lg min-w-[16rem] bg-white h-10"
+                  />
+                  <SearchableSelect
+                    options={[
+                      { value: "", label: "Granularity…" },
+                      { value: "daily", label: "Daily (same day across years)" },
+                      { value: "month", label: "Month Total (same month across years)" },
+                      { value: "year", label: "Year Total (per year)" },
+                    ]}
+                    value={trendGranularity}
+                    onChange={(e) => setTrendGranularity(e.target.value)}
+                    placeholder="Granularity…"
+                    buttonClassName="border border-sky-200 p-2 rounded-lg min-w-[18rem] bg-white h-10"
+                  />
+                  <SearchableSelect
+                    options={[
+                      { value: "", label: "Years back…" },
+                      { value: "1", label: "1 year back" },
+                      { value: "2", label: "2 years back" },
+                      { value: "3", label: "3 years back" },
+                      { value: "4", label: "4 years back" },
+                      { value: "5", label: "5 years back" },
+                    ]}
+                    value={yearsBack}
+                    onChange={(e) => setYearsBack(e.target.value)}
+                    placeholder="Years back…"
+                    buttonClassName="border border-sky-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
+                  />
                 </div>
               </div>
 
-              <div className="flex flex-wrap gap-3 items-end">
-                <SearchableSelect
-                  options={[{ value: "", label: "Date column…" }, ...displayHeaders.map((h) => ({ value: h, label: h }))]}
-                  value={trendsDateKey}
-                  onChange={(e) => setTrendsDateKey(e.target.value)}
-                  placeholder="Date column…"
+              <div className="px-3 pb-3">
+                {trendsDateKey && trendGranularity && yearsBack && trendsData.length ? (
+                  <ResponsiveContainer width="100%" height={320}>
+                    {(() => {
+                      const measureKeyLocal = trendsValueKey ? "sum" : "count";
+                      const maxBack = Math.min(5, Math.max(1, parseInt(yearsBack, 10)));
+                      const COLORS = ["#2563EB", "#059669", "#F59E0B", "#DC2626", "#7C3AED", "#0EA5E9"];
+                      const lines = [];
+                      const currentKey = trendGranularity === "daily" ? measureKeyLocal : "currentAgg";
 
-                  buttonClassName="border border-sky-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
-                />
-                <SearchableSelect
-                  options={[{ value: "", label: "(Count events)" }, ...displayHeaders.map((h) => ({ value: h, label: h }))]}
-                  value={trendsValueKey}
-                  onChange={(e) => setTrendsValueKey(e.target.value)}
-                  placeholder="Value column (optional)…"
-
-                  buttonClassName="border border-sky-200 p-2 rounded-lg min-w-[16rem] bg-white h-10"
-                />
-                <SearchableSelect
-                  options={[
-                    { value: "", label: "Granularity…" },
-                    { value: "daily", label: "Daily (same day across years)" },
-                    { value: "month", label: "Month Total (same month across years)" },
-                    { value: "year", label: "Year Total (per year)" },
-                  ]}
-                  value={trendGranularity}
-                  onChange={(e) => setTrendGranularity(e.target.value)}
-                  placeholder="Granularity…"
-
-                  buttonClassName="border border-sky-200 p-2 rounded-lg min-w-[18rem] bg-white h-10"
-                />
-                <SearchableSelect
-                  options={[
-                    { value: "", label: "Years back…" },
-                    { value: "1", label: "1 year back" },
-                    { value: "2", label: "2 years back" },
-                    { value: "3", label: "3 years back" },
-                    { value: "4", label: "4 years back" },
-                    { value: "5", label: "5 years back" },
-                  ]}
-                  value={yearsBack}
-                  onChange={(e) => setYearsBack(e.target.value)}
-                  placeholder="Years back…"
-
-                  buttonClassName="border border-sky-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
-                />
-              </div>
-            </div>
-
-            <div className="px-3 pb-3">
-              {trendsDateKey && trendGranularity && yearsBack && trendsData.length ? (
-                <ResponsiveContainer width="100%" height={320}>
-                  {(() => {
-                    const measureKeyLocal = trendsValueKey ? "sum" : "count";
-                    const maxBack = Math.min(5, Math.max(1, parseInt(yearsBack, 10)));
-                    const COLORS = ["#2563EB", "#059669", "#F59E0B", "#DC2626", "#7C3AED", "#0EA5E9"];
-                    const lines = [];
-                    const currentKey = trendGranularity === "daily" ? measureKeyLocal : "currentAgg";
-
-                    lines.push(
-                      <Line
-                        key="current"
-                        type="monotone"
-                        dataKey={currentKey}
-                        name={`Current ${trendGranularity}`}
-                        dot={false}
-                        stroke={COLORS[0]}
-                        strokeWidth={3}
-                      />
-                    );
-
-                    for (let k = 1; k <= maxBack; k++) {
                       lines.push(
                         <Line
-                          key={`prev_${k}y`}
+                          key="current"
                           type="monotone"
-                          dataKey={`prev_${k}y`}
-                          name={`${k}y back`}
+                          dataKey={currentKey}
+                          name={`Current ${trendGranularity}`}
                           dot={false}
-                          stroke={COLORS[k] || COLORS[COLORS.length - 1]}
+                          stroke={COLORS[0]}
                           strokeWidth={3}
-                          strokeDasharray={k % 2 === 0 ? "6 4" : "4 4"}
                         />
                       );
-                    }
 
-                    return (
-                      <LineChart data={trendsData} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="date" />
-                        <YAxis tickFormatter={(v) => Number(v).toFixed(2)} />
-                        <Tooltip content={<TrendTooltip />} />
-                        <Legend />
-                        {lines}
-                      </LineChart>
-                    );
-                  })()}
-                </ResponsiveContainer>
-              ) : (
-                <div className="text-sm text-gray-600">
-                  Pick a <b>Date</b>, choose <b>Count/Sum</b>, then set <b>Granularity</b> and <b>Years back (1–5)</b>.
-                </div>
-              )}
+                      for (let k = 1; k <= maxBack; k++) {
+                        lines.push(
+                          <Line
+                            key={`prev_${k}y`}
+                            type="monotone"
+                            dataKey={`prev_${k}y`}
+                            name={`${k}y back`}
+                            dot={false}
+                            stroke={COLORS[k] || COLORS[COLORS.length - 1]}
+                            strokeWidth={3}
+                            strokeDasharray={k % 2 === 0 ? "6 4" : "4 4"}
+                          />
+                        );
+                      }
+
+                      return (
+                        <LineChart data={trendsData} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis dataKey="date" />
+                          <YAxis tickFormatter={(v) => Number(v).toFixed(2)} />
+                          <Tooltip content={<TrendTooltip />} />
+                          <Legend />
+                          {lines}
+                        </LineChart>
+                      );
+                    })()}
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="text-sm text-gray-600">
+                    Pick a <b>Date</b>, choose <b>Count/Sum</b>, then set <b>Granularity</b> and <b>Years back (1–5)</b>.
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="mx-4 my-2 p-4 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-800 text-sm flex items-center gap-2">
+              <span>ℹ️</span>
+              <span> Please select a <b>Date column</b>, <b>Granularity</b>, and <b>Years back</b> to view the Trends chart.</span>
+            </div>
+          )
         )}
+
 
         {/* Data Table */}
         <div className="m-4 bg-white rounded-2xl shadow-2xl border border-gray-200 focus:ring-slate-100 relative z-0">
@@ -2338,7 +2343,7 @@ export default function App() {
             </div>
           )}
         </div>
-      </div>
+      </div >
     );
   };
 
