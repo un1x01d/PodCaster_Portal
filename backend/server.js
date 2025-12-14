@@ -1174,6 +1174,19 @@ app.delete("/sheets/:id", auth, async (req, res) => {
   }
 });
 
+// Global Error Handler
+app.use((err, req, res, next) => {
+  console.error("Global error:", err);
+  if (res.headersSent) {
+    return next(err);
+  }
+  res.status(500).json({
+    error: "internal_server_error",
+    message: err.message,
+    stack: process.env.NODE_ENV === "development" ? err.stack : undefined
+  });
+});
+
 // Start
 await initDb().catch((e) => console.error("DB init error", e));
 
