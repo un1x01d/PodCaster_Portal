@@ -67,7 +67,7 @@ function sanitizeName(s = "") {
 function timestamp() {
   const d = new Date();
   const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
 function ensureDir(p) {
   fs.mkdirSync(p, { recursive: true });
@@ -133,6 +133,17 @@ async function initDb() {
   `);
   await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS totals_column TEXT;`);
   await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS stored_path TEXT;`);
+
+  // SHEET DATA (JSONB rows)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS sheet_rows (
+      id SERIAL PRIMARY KEY,
+      sheet_id TEXT NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
+      row_index INT NOT NULL,
+      row_data JSONB NOT NULL
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_sheet_rows_sheet_id ON sheet_rows(sheet_id);`);
 
   // clean duplicate actives, then re-enforce unique partial index
   await pool.query(`
@@ -223,7 +234,7 @@ async function initDb() {
     ON CONFLICT (email) DO NOTHING;
   `);
 }
-initDb().catch((e) => console.error("DB init error", e));
+// initDb() called at startup below
 
 /* ----------------------------------------------------------------------------
  * Auth
@@ -325,7 +336,7 @@ app.post("/upload", auth, upload.single("file"), async (req, res) => {
         rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { defval: "" });
       } catch (eStr) {
         const msg = String(eStr?.message || eBuf?.message || "");
-        fs.unlink(tmpPath, () => {});
+        fs.unlink(tmpPath, () => { });
         if (msg.includes("Invalid HTML: could not find <table>")) {
           return res.status(422).json({
             error: "html_without_tables",
@@ -339,18 +350,7 @@ app.post("/upload", auth, upload.single("file"), async (req, res) => {
       }
     }
 
-    // Normalize to XLSX buffer
-    const wbOut = XLSX.utils.book_new();
-    const wsOut = XLSX.utils.json_to_sheet(rows);
-    XLSX.utils.book_append_sheet(wbOut, wsOut, "Sheet1");
-    const xbuf = XLSX.write(wbOut, { bookType: "xlsx", type: "buffer" });
-
-    // 1) Write the app's current file
-    const currentDest = path.join(UPLOADS_DIR, "current.xlsx");
-    if (fs.existsSync(currentDest)) fs.unlinkSync(currentDest);
-    fs.writeFileSync(currentDest, xbuf);
-
-    // 2) If folderId provided, also persist a copy in that folder; track stored_path
+    // 1) Write a backup copy to folders if needed (archive only)
     let assignedFolderId = null;
     let stored_relpath = null;
     if (Number.isInteger(folderId)) {
@@ -369,21 +369,83 @@ app.post("/upload", auth, upload.single("file"), async (req, res) => {
         ensureDir(targetDir);
         const stampedName = `${timestamp()}_${sanitizeName(originalName.replace(/\.[^/.]+$/, ""))}.xlsx`;
         const folderDest = path.join(targetDir, stampedName);
+
+        // Serialize strictly for archival
+        const wbOut = XLSX.utils.book_new();
+        const wsOut = XLSX.utils.json_to_sheet(rows);
+        XLSX.utils.book_append_sheet(wbOut, wsOut, "Sheet1");
+        const xbuf = XLSX.write(wbOut, { bookType: "xlsx", type: "buffer" });
         fs.writeFileSync(folderDest, xbuf);
+
         stored_relpath = path.relative(UPLOADS_DIR, folderDest);
       }
     }
 
-    fs.unlink(tmpPath, () => {});
+    fs.unlink(tmpPath, () => { });
 
     const headers = Object.keys(rows[0] || {});
     const sheetId = Date.now().toString();
 
+    // Check for existing files with same name in the same folder
+    let versionedFilename = originalName;
+    if (assignedFolderId) {
+      const ext = path.extname(originalName);
+      const baseName = path.basename(originalName, ext);
+
+      // Get all files in the same folder with similar names
+      const existingFiles = await query(
+        `SELECT filename FROM sheets WHERE folder_id = $1 AND filename LIKE $2`,
+        [assignedFolderId, `${baseName}%`]
+      );
+
+      if (existingFiles.length > 0) {
+        // Find highest version number
+        let maxVersion = 0;
+        const versionRegex = /\(v(\d+)\)/;
+
+        existingFiles.forEach(file => {
+          if (file.filename === originalName) {
+            maxVersion = Math.max(maxVersion, 1); // Original file exists
+          }
+          const match = file.filename.match(versionRegex);
+          if (match) {
+            const versionNum = parseInt(match[1], 10);
+            maxVersion = Math.max(maxVersion, versionNum);
+          }
+        });
+
+        // If duplicates exist, add version number
+        if (maxVersion > 0) {
+          const nextVersion = maxVersion + 1;
+          versionedFilename = `${baseName} (v${nextVersion})${ext}`;
+        }
+      }
+    }
+
+    // 2) Insert Sheet Record
     await query("UPDATE sheets SET active = FALSE", []);
     await query(
       "INSERT INTO sheets (id, headers, active, filename, folder_id, stored_path) VALUES ($1,$2,$3,$4,$5,$6)",
-      [sheetId, JSON.stringify(headers), true, originalName, assignedFolderId, stored_relpath]
+      [sheetId, JSON.stringify(headers), true, versionedFilename, assignedFolderId, stored_relpath]
     );
+
+    // 3) Batch Insert Rows into DB
+    // We'll chunk the inserts to avoid hitting max parameter limits
+    const CHUNK_SIZE = 1000;
+    for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+      const chunk = rows.slice(i, i + CHUNK_SIZE);
+      const values = [];
+      const placeHolders = [];
+      let pIdx = 1;
+
+      chunk.forEach((r, idx) => {
+        values.push(sheetId, i + idx, JSON.stringify(r));
+        placeHolders.push(`($${pIdx++}, $${pIdx++}, $${pIdx++})`);
+      });
+
+      const sql = `INSERT INTO sheet_rows (sheet_id, row_index, row_data) VALUES ${placeHolders.join(",")}`;
+      await pool.query(sql, values);
+    }
 
     console.log(`[upload] OK sheetId=${sheetId} rows=${rows.length} headers=${headers.length} folder=${assignedFolderId ?? "—"}`);
     res.json({ sheetId, headers, rows: rows.length, active: true, filename: originalName, folderId: assignedFolderId });
@@ -403,6 +465,54 @@ app.get("/sheets/active", auth, async (_req, res) => {
   const s = await query("SELECT id, headers, filename, totals_column FROM sheets WHERE active = TRUE LIMIT 1", []);
   if (!s.length) return res.json(null);
   res.json({ sheetId: s[0].id, headers: s[0].headers, filename: s[0].filename, totals_column: s[0].totals_column || null });
+});
+
+app.get("/sheets/list", auth, async (req, res) => {
+  // Return all active sheets (for admin selection)
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const rows = await query(
+    `SELECT s.id, s.filename, s.uploaded_at, s.folder_id, f.name AS folder_name
+       FROM sheets s
+       LEFT JOIN folders f ON f.id = s.folder_id
+      WHERE s.active = TRUE
+      ORDER BY s.uploaded_at DESC`,
+    []
+  );
+  res.json(rows);
+});
+
+app.get("/sheets/all", auth, async (req, res) => {
+  // Return ALL sheets (active or inactive) for admin selection
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const rows = await query(
+    `SELECT s.id, s.filename, s.uploaded_at, s.folder_id, f.name AS folder_name, s.active
+       FROM sheets s
+       LEFT JOIN folders f ON f.id = s.folder_id
+      ORDER BY s.uploaded_at DESC`,
+    []
+  );
+  res.json(rows);
+});
+
+app.get("/auth/me", auth, async (req, res) => {
+  const rows = await query(
+    "SELECT id, email, role, default_view_id FROM users WHERE id = $1",
+    [req.user.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: "user_not_found" });
+  res.json(rows[0]);
+});
+
+// Set user's default view (admin only)
+app.put("/users/:userId/default-view", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const { userId } = req.params;
+  const { viewId } = req.body;
+  await query(
+    "UPDATE users SET default_view_id = $1 WHERE id = $2",
+    [viewId || null, userId]
+  );
+  res.json({ success: true });
 });
 
 app.get("/sheets/:id", auth, async (req, res) => {
@@ -607,35 +717,7 @@ app.post("/load-sheet", auth, async (req, res) => {
       if (!m.length) return res.status(403).json({ error: "forbidden" });
     }
 
-    // Resolve stored path (backfill if missing)
-    let rel = s.stored_path;
-    if (!rel) {
-      if (!s.folder_id || !s.folder_name) {
-        return res.status(409).json({ error: "no_stored_copy" });
-      }
-      const safeFolderName = sanitizeName(`${s.folder_id}-${s.folder_name}`);
-      const dir = path.join(UPLOADS_DIR, "folders", safeFolderName);
-      if (!fs.existsSync(dir)) return res.status(409).json({ error: "folder_dir_missing" });
-      const files = fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith(".xlsx"));
-      if (!files.length) return res.status(409).json({ error: "no_xlsx_in_folder" });
-      let newest = null;
-      let newestTime = -1;
-      for (const fn of files) {
-        const fp = path.join(dir, fn);
-        const st = fs.statSync(fp);
-        if (st.mtimeMs > newestTime) { newestTime = st.mtimeMs; newest = fn; }
-      }
-      rel = path.relative(UPLOADS_DIR, path.join(dir, newest));
-      await query(`UPDATE sheets SET stored_path=$1 WHERE id=$2`, [rel, sheetId]);
-    }
-
-    const abs = path.join(UPLOADS_DIR, rel);
-    if (!fs.existsSync(abs)) return res.status(409).json({ error: "stored_file_missing" });
-
-    const currentDest = path.join(UPLOADS_DIR, "current.xlsx");
-    if (fs.existsSync(currentDest)) fs.unlinkSync(currentDest);
-    fs.copyFileSync(abs, currentDest);
-
+    // No file copying needed anymore - we use sheet_rows in DB
     await query("UPDATE sheets SET active = FALSE", []);
     await query("UPDATE sheets SET active = TRUE WHERE id = $1", [sheetId]);
 
@@ -651,13 +733,15 @@ app.post("/load-sheet", auth, async (req, res) => {
  * ------------------------------------------------------------------------- */
 app.get("/data/:sheetId", auth, async (req, res) => {
   try {
-    const filePath = path.join(UPLOADS_DIR, "current.xlsx");
-    if (!fs.existsSync(filePath)) return res.json([]);
+    const sheetId = req.params.sheetId;
 
-    const cbuf = fs.readFileSync(filePath);
-    const wb = XLSX.read(cbuf, { type: "buffer", cellDates: true });
-    const sn = wb.SheetNames[0];
-    let rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { defval: "" });
+    // Fetch raw rows from DB (fast!)
+    const dbRows = await query(
+      "SELECT row_data FROM sheet_rows WHERE sheet_id = $1 ORDER BY row_index ASC",
+      [sheetId]
+    );
+    // Unpack JSONB
+    let rows = dbRows.map(r => r.row_data);
 
     if (req.user.role !== "admin") {
       const userId = req.user.id;
@@ -1021,14 +1105,19 @@ app.get("/my-files", auth, async (req, res) => {
       return res.json(rows);
     }
 
+    // For non-admin users, show sheets they have access to via group_permissions
     const rows = await query(
-      `SELECT s.id, s.filename, s.uploaded_at, f.name AS folder_name
+      `SELECT DISTINCT s.id, s.filename, s.uploaded_at, f.name AS folder_name
          FROM sheets s
-         JOIN folders f ON f.id = s.folder_id
-         WHERE f.group_id IN (
-           SELECT ug.group_id
-             FROM user_groups ug
-            WHERE ug.user_id = $1
+         LEFT JOIN folders f ON f.id = s.folder_id
+         WHERE s.id IN (
+           SELECT gp.sheet_id
+             FROM group_permissions gp
+            WHERE gp.group_id IN (
+              SELECT ug.group_id
+                FROM user_groups ug
+               WHERE ug.user_id = $1
+            )
          )
         ORDER BY s.uploaded_at DESC
         LIMIT 50`,
@@ -1080,7 +1169,7 @@ app.delete("/sheets/:id", auth, async (req, res) => {
     if (s.stored_path) {
       const abs = path.join(UPLOADS_DIR, s.stored_path);
       if (abs.startsWith(UPLOADS_DIR) && fs.existsSync(abs)) {
-        try { fs.unlinkSync(abs); } catch {}
+        try { fs.unlinkSync(abs); } catch { }
       }
     }
 
@@ -1088,7 +1177,7 @@ app.delete("/sheets/:id", auth, async (req, res) => {
     if (s.active) {
       const currentDest = path.join(UPLOADS_DIR, "current.xlsx");
       if (fs.existsSync(currentDest)) {
-        try { fs.unlinkSync(currentDest); } catch {}
+        try { fs.unlinkSync(currentDest); } catch { }
       }
     }
 
@@ -1105,10 +1194,11 @@ app.delete("/sheets/:id", auth, async (req, res) => {
   }
 });
 
-/* ----------------------------------------------------------------------------
- * Start
- * ------------------------------------------------------------------------- */
-app.listen(4000, () =>
-  console.log("✅ Backend running on :4000 • SheetJS:", XLSX?.version || "unknown")
+// Start
+await initDb().catch((e) => console.error("DB init error", e));
+
+const PORT = process.env.PORT || 4000;
+app.listen(PORT, () =>
+  console.log(`✅ Backend running on :${PORT} • SheetJS:`, XLSX?.version || "unknown")
 );
 

@@ -22,6 +22,7 @@ function saveTemplates(arr) {
 }
 
 export default function UserManagement({ token /* sheetId not required */ }) {
+  const trunc = (s, n) => (s && s.length > n ? s.slice(0, n) + "..." : s);
   const [users, setUsers] = useState([]);
   const [newUser, setNewUser] = useState({ email: "", password: "", role: "producer" });
 
@@ -31,8 +32,8 @@ export default function UserManagement({ token /* sheetId not required */ }) {
   const [selectedUserSheetId, setSelectedUserSheetId] = useState(null);
   const [userSheetHeaders, setUserSheetHeaders] = useState([]);
   const [userAllowedCols, setUserAllowedCols] = useState(new Set());
-  const [userFilterKey, setUserFilterKey] = useState("");
-  const [userFilterVal, setUserFilterVal] = useState("");
+  const [userRowFilters, setUserRowFilters] = useState([{ key: "", value: "" }]);
+  const [userDefaultViewId, setUserDefaultViewId] = useState("");
 
   // groups
   const [groups, setGroups] = useState([]);
@@ -43,16 +44,59 @@ export default function UserManagement({ token /* sheetId not required */ }) {
 
   // group permissions (per-sheet)
   const [groupAllowedCols, setGroupAllowedCols] = useState(new Set());
-  const [groupFilterKey, setGroupFilterKey] = useState("");
-  const [groupFilterVal, setGroupFilterVal] = useState("");
+  const [groupRowFilters, setGroupRowFilters] = useState([{ key: "", value: "" }]);
 
   // group sheet selection
   const [groupSheets, setGroupSheets] = useState([]);
+  const [allSheets, setAllSheets] = useState([]); // all sheets (active or inactive) for selection
   const [selectedGroupSheetId, setSelectedGroupSheetId] = useState(null);
   const [groupSheetHeaders, setGroupSheetHeaders] = useState([]);
 
   // Templates (now scoped by group)
   const [templates, setTemplates] = useState(loadTemplates());
+  // ...
+
+  // Folders
+  const [folders, setFolders] = useState([]);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [folderGroupId, setFolderGroupId] = useState("");
+
+  const fetchFolders = async () => {
+    try {
+      const res = await axios.get(`${API}/folders`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setFolders(res.data || []);
+    } catch (e) { console.error(e); }
+  };
+
+  const createFolder = async () => {
+    if (!newFolderName.trim()) return;
+    try {
+      await axios.post(`${API}/folders`, { name: newFolderName, groupId: folderGroupId || null }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setNewFolderName("");
+      setFolderGroupId("");
+      fetchFolders();
+    } catch (e) { alert("Create folder failed"); }
+  };
+
+  const deleteFolder = async (fid) => {
+    if (!confirm("Delete folder?")) return;
+    try {
+      await axios.delete(`${API}/folders/${fid}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      fetchFolders();
+    } catch (e) { alert("Delete folder failed"); }
+  };
+
+  useEffect(() => {
+    fetchFolders();
+  }, []);
+
+  // ... rest of state
   const [newTplNameUser, setNewTplNameUser] = useState("");
   const [newTplNameGroup, setNewTplNameGroup] = useState("");
   const [selectedTplUser, setSelectedTplUser] = useState("");
@@ -62,6 +106,17 @@ export default function UserManagement({ token /* sheetId not required */ }) {
   const [views, setViews] = useState([]);
   const [userViews, setUserViews] = useState(new Set());
   const [groupViews, setGroupViews] = useState(new Set());
+
+  const fetchAllSheets = async () => {
+    try {
+      const res = await axios.get(`${API}/sheets/all`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setAllSheets(res.data || []);
+    } catch (e) {
+      console.error("fetchAllSheets failed", e);
+    }
+  };
 
   // fetch users
   const fetchUsers = async () => {
@@ -156,11 +211,10 @@ export default function UserManagement({ token /* sheetId not required */ }) {
     }
   };
 
-  // load user permissions FOR SELECTED SHEET
   const loadUserPermissions = async (uid, sid) => {
     if (!uid || !sid) {
       setUserAllowedCols(new Set());
-      setUserFilterKey(""); setUserFilterVal("");
+      setUserRowFilters([{ key: "", value: "" }]);
       return;
     }
     const res = await axios.get(`${API}/permissions`, {
@@ -170,8 +224,9 @@ export default function UserManagement({ token /* sheetId not required */ }) {
     const allowed = res.data?.allowed_columns || [];
     const filters = res.data?.row_filters || {};
     setUserAllowedCols(new Set(allowed));
-    const [k, v] = Object.entries(filters)[0] || ["", ""];
-    setUserFilterKey(k); setUserFilterVal(v);
+    // Convert object to array of {key, value} pairs
+    const filterArray = Object.entries(filters).map(([key, value]) => ({ key, value }));
+    setUserRowFilters(filterArray.length > 0 ? filterArray : [{ key: "", value: "" }]);
   };
 
   // load user sheet headers
@@ -188,7 +243,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
   const loadGroupPermissions = async (gid, sid) => {
     if (!gid || !sid) {
       setGroupAllowedCols(new Set());
-      setGroupFilterKey(""); setGroupFilterVal("");
+      setGroupRowFilters([{ key: "", value: "" }]);
       return;
     }
     const res = await axios.get(`${API}/group-permissions`, {
@@ -198,8 +253,9 @@ export default function UserManagement({ token /* sheetId not required */ }) {
     const allowed = res.data?.allowed_columns || [];
     const filters = res.data?.row_filters || {};
     setGroupAllowedCols(new Set(allowed));
-    const [k, v] = Object.entries(filters)[0] || ["", ""];
-    setGroupFilterKey(k); setGroupFilterVal(v);
+    // Convert object to array of {key, value} pairs
+    const filterArray = Object.entries(filters).map(([key, value]) => ({ key, value }));
+    setGroupRowFilters(filterArray.length > 0 ? filterArray : [{ key: "", value: "" }]);
   };
 
   const fetchGroupSheetHeaders = async (sid) => {
@@ -215,7 +271,10 @@ export default function UserManagement({ token /* sheetId not required */ }) {
     fetchUsers();
     fetchGroups();
     fetchAllViews();
+    fetchAllSheets(); // load on mount
   }, []);
+
+
 
   const fetchAllViews = async () => {
     const res = await axios.get(`${API}/views`, {
@@ -248,7 +307,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
       setSelectedUserSheetId(null);
       setUserSheetHeaders([]);
       setUserAllowedCols(new Set());
-      setUserFilterKey(""); setUserFilterVal("");
+      setUserRowFilters([{ key: "", value: "" }]);
       setSelectedTplUser("");
     }
   }, [selectedUserId]);
@@ -261,7 +320,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
     } else {
       setUserSheetHeaders([]);
       setUserAllowedCols(new Set());
-      setUserFilterKey(""); setUserFilterVal("");
+      setUserRowFilters([{ key: "", value: "" }]);
     }
   }, [selectedUserSheetId, selectedUserId]);
 
@@ -273,7 +332,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
       fetchGroupViews(selectedGroupId);
       setSelectedGroupSheetId(null);
       setGroupAllowedCols(new Set());
-      setGroupFilterKey(""); setGroupFilterVal("");
+      setGroupRowFilters([{ key: "", value: "" }]);
       setGroupSheetHeaders([]);
       setSelectedTplGroup("");
     }
@@ -284,7 +343,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
     if (!selectedGroupSheetId || !selectedGroupId) {
       setGroupSheetHeaders([]);
       setGroupAllowedCols(new Set());
-      setGroupFilterKey(""); setGroupFilterVal("");
+      setGroupRowFilters([{ key: "", value: "" }]);
       return;
     }
     fetchGroupSheetHeaders(selectedGroupSheetId);
@@ -346,10 +405,14 @@ export default function UserManagement({ token /* sheetId not required */ }) {
       return;
     }
     const allowed_columns = Array.from(userAllowedCols);
-    const row_filters = userFilterKey ? { [userFilterKey]: userFilterVal } : {};
+    // Convert filter array to object, filtering out empty entries
+    const row_filters = {};
+    userRowFilters.forEach(f => {
+      if (f.key && f.value) row_filters[f.key] = f.value;
+    });
     await axios.post(`${API}/permissions`, {
       sheetId: selectedUserSheetId, userId: selectedUserId, allowed_columns, row_filters
-    }, { headers: { Authorization: `Bearer ${token}` }});
+    }, { headers: { Authorization: `Bearer ${token}` } });
     alert("User permissions saved");
   };
 
@@ -386,13 +449,17 @@ export default function UserManagement({ token /* sheetId not required */ }) {
       return;
     }
     const allowed_columns = Array.from(groupAllowedCols);
-    const row_filters = groupFilterKey ? { [groupFilterKey]: groupFilterVal } : {};
+    // Convert filter array to object, filtering out empty entries
+    const row_filters = {};
+    groupRowFilters.forEach(f => {
+      if (f.key && f.value) row_filters[f.key] = f.value;
+    });
     await axios.post(`${API}/group-permissions`, {
       sheetId: selectedGroupSheetId,
       groupId: selectedGroupId,
       allowed_columns,
       row_filters
-    }, { headers: { Authorization: `Bearer ${token}` }});
+    }, { headers: { Authorization: `Bearer ${token}` } });
     alert("Group permissions saved");
   };
 
@@ -460,7 +527,8 @@ export default function UserManagement({ token /* sheetId not required */ }) {
     const tpl = makeTemplate(
       newTplNameUser,
       Array.from(userAllowedCols),
-      userFilterKey ? { [userFilterKey]: userFilterVal } : {},
+      // Convert filter array to object
+      Object.fromEntries(userRowFilters.filter(f => f.key && f.value).map(f => [f.key, f.value])),
       currentUserSheetGroupId
     );
     const next = [tpl, ...templates];
@@ -477,10 +545,9 @@ export default function UserManagement({ token /* sheetId not required */ }) {
     // Intersect template columns with CURRENT sheet headers
     const cols = (tpl.columns || []).filter(c => userSheetHeaders.includes(c));
     setUserAllowedCols(new Set(cols));
-    const [k, v] = Object.entries(tpl.row_filters || {})[0] || ["", ""];
-    const validKey = k && userSheetHeaders.includes(k) ? k : "";
-    setUserFilterKey(validKey);
-    setUserFilterVal(validKey ? v : "");
+    // Convert template filters object to array
+    const filterArray = Object.entries(tpl.row_filters || {}).map(([key, value]) => ({ key, value }));
+    setUserRowFilters(filterArray.length > 0 ? filterArray : [{ key: "", value: "" }]);
   };
 
   const handleDeleteTemplate = (tplId) => {
@@ -498,7 +565,8 @@ export default function UserManagement({ token /* sheetId not required */ }) {
     const tpl = makeTemplate(
       newTplNameGroup,
       Array.from(groupAllowedCols),
-      groupFilterKey ? { [groupFilterKey]: groupFilterVal } : {},
+      // Convert filter array to object
+      Object.fromEntries(groupRowFilters.filter(f => f.key && f.value).map(f => [f.key, f.value])),
       selectedGroupId
     );
     const next = [tpl, ...templates];
@@ -515,10 +583,9 @@ export default function UserManagement({ token /* sheetId not required */ }) {
     // Intersect template columns with CURRENT sheet headers
     const cols = (tpl.columns || []).filter(c => groupSheetHeaders.includes(c));
     setGroupAllowedCols(new Set(cols));
-    const [k, v] = Object.entries(tpl.row_filters || {})[0] || ["", ""];
-    const validKey = k && groupSheetHeaders.includes(k) ? k : "";
-    setGroupFilterKey(validKey);
-    setGroupFilterVal(validKey ? v : "");
+    // Convert template filters object to array
+    const filterArray = Object.entries(tpl.row_filters || {}).map(([key, value]) => ({ key, value }));
+    setGroupRowFilters(filterArray.length > 0 ? filterArray : [{ key: "", value: "" }]);
   };
 
   // Auto re-apply selected template after switching sheets (user scope)
@@ -528,10 +595,9 @@ export default function UserManagement({ token /* sheetId not required */ }) {
     if (!tpl) return;
     const cols = (tpl.columns || []).filter(c => userSheetHeaders.includes(c));
     setUserAllowedCols(new Set(cols));
-    const [k, v] = Object.entries(tpl.row_filters || {})[0] || ["", ""];
-    const validKey = k && userSheetHeaders.includes(k) ? k : "";
-    setUserFilterKey(validKey);
-    setUserFilterVal(validKey ? v : "");
+    // Convert template filters object to array
+    const filterArray = Object.entries(tpl.row_filters || {}).map(([key, value]) => ({ key, value }));
+    setUserRowFilters(filterArray.length > 0 ? filterArray : [{ key: "", value: "" }]);
   }, [selectedUserSheetId, selectedTplUser, userSheetHeaders, templates]);
 
   // Auto re-apply selected template after switching sheets (group scope)
@@ -541,10 +607,9 @@ export default function UserManagement({ token /* sheetId not required */ }) {
     if (!tpl) return;
     const cols = (tpl.columns || []).filter(c => groupSheetHeaders.includes(c));
     setGroupAllowedCols(new Set(cols));
-    const [k, v] = Object.entries(tpl.row_filters || {})[0] || ["", ""];
-    const validKey = k && groupSheetHeaders.includes(k) ? k : "";
-    setGroupFilterKey(validKey);
-    setGroupFilterVal(validKey ? v : "");
+    // Convert template filters object to array
+    const filterArray = Object.entries(tpl.row_filters || {}).map(([key, value]) => ({ key, value }));
+    setGroupRowFilters(filterArray.length > 0 ? filterArray : [{ key: "", value: "" }]);
   }, [selectedGroupSheetId, selectedTplGroup, groupSheetHeaders, templates]);
 
   const userById = useMemo(() => {
@@ -554,7 +619,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
   }, [users]);
 
   return (
-    <div className="p-4 grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <div className="p-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
       {/* USERS PANEL */}
       <div className="bg-white border rounded-xl shadow p-4">
         <h3 className="font-bold text-lg mb-3">Users</h3>
@@ -593,9 +658,8 @@ export default function UserManagement({ token /* sheetId not required */ }) {
           {users.map((u) => (
             <div
               key={u.id}
-              className={`flex items-center justify-between px-3 py-2 border-b cursor-pointer ${
-                selectedUserId === u.id ? "bg-blue-50" : "bg-white"
-              }`}
+              className={`flex items-center justify-between px-3 py-2 border-b cursor-pointer ${selectedUserId === u.id ? "bg-blue-50" : "bg-white"
+                }`}
               onClick={() => setSelectedUserId(u.id)}
             >
               <div>
@@ -607,18 +671,18 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                   className="border rounded p-1 text-sm"
                   value={u.role}
                   onChange={(e) => changeRole(u.id, e.target.value)}
-                  onClick={(e)=>e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
                 >
                   <option value="producer">producer</option>
                   <option value="admin">admin</option>
                 </select>
                 <button
                   className="text-xs bg-amber-500 hover:bg-amber-600 text-white px-2 py-1 rounded"
-                  onClick={(e)=>{e.stopPropagation(); resetPassword(u.id);}}
+                  onClick={(e) => { e.stopPropagation(); resetPassword(u.id); }}
                 >Reset</button>
                 <button
                   className="text-xs bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded"
-                  onClick={(e)=>{e.stopPropagation(); deleteUser(u.id);}}
+                  onClick={(e) => { e.stopPropagation(); deleteUser(u.id); }}
                 >Delete</button>
               </div>
             </div>
@@ -633,17 +697,17 @@ export default function UserManagement({ token /* sheetId not required */ }) {
             </h4>
 
             {/* Sheet selector (latest 10) */}
-            <div className="mb-2">
-              <label className="text-sm font-semibold mr-2">Sheet:</label>
+            <div className="flex items-center mb-2">
+              <label className="text-sm font-semibold mr-2 shrink-0">Sheet:</label>
               <select
-                className="border rounded p-2"
+                className="border rounded p-2 flex-1 min-w-0 truncate"
                 value={selectedUserSheetId || ""}
-                onChange={(e)=>setSelectedUserSheetId(e.target.value || null)}
+                onChange={(e) => setSelectedUserSheetId(e.target.value || null)}
               >
                 <option value="">Select a sheet…</option>
                 {userSheets.map(s => (
                   <option key={s.id} value={s.id}>
-                    {s.filename} — {s.folder_name || "—"} — {new Date(s.uploaded_at).toLocaleString()}
+                    {trunc(s.filename, 50)}
                   </option>
                 ))}
               </select>
@@ -656,7 +720,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                 className="border rounded px-2 py-1"
                 placeholder="Template name"
                 value={newTplNameUser}
-                onChange={(e)=>setNewTplNameUser(e.target.value)}
+                onChange={(e) => setNewTplNameUser(e.target.value)}
               />
               <button
                 className="bg-gray-700 hover:bg-gray-800 text-white rounded px-3 py-1"
@@ -669,7 +733,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
               <select
                 className="border rounded p-2"
                 value={selectedTplUser}
-                onChange={(e)=>handleApplyTemplateToUser(e.target.value)}
+                onChange={(e) => handleApplyTemplateToUser(e.target.value)}
                 disabled={!selectedUserSheetId || !currentUserSheetGroupId}
                 title={selectedUserSheetId ? "Apply a saved template to this sheet" : "Pick a sheet first"}
               >
@@ -681,7 +745,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
               {selectedTplUser && (
                 <button
                   className="text-red-600 border border-red-600 rounded px-2 py-1"
-                  onClick={()=>handleDeleteTemplate(selectedTplUser)}
+                  onClick={() => handleDeleteTemplate(selectedTplUser)}
                 >
                   Delete template
                 </button>
@@ -708,24 +772,70 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                   ))}
                 </div>
 
-                <div className="flex items-center gap-2 mt-3">
-                  <span className="text-sm">Row filter:</span>
-                  <select
-                    className="border rounded p-1"
-                    value={userFilterKey}
-                    onChange={e=>setUserFilterKey(e.target.value)}
-                  >
-                    <option value="">(none)</option>
-                    {userSheetHeaders.map(h => <option key={h} value={h}>{h}</option>)}
-                  </select>
-                  <input
-                    className="border rounded p-1"
-                    placeholder="value"
-                    value={userFilterVal}
-                    onChange={e=>setUserFilterVal(e.target.value)}
-                  />
+                <div className="mt-2 flex gap-2">
                   <button
-                    className="bg-green-600 hover:bg-green-700 text-white rounded px-3 py-1"
+                    className="bg-green-600 hover:bg-green-700 text-white rounded px-4 py-2 flex-1"
+                    onClick={saveUserPermissions}
+                  >
+                    Save Column Permissions
+                  </button>
+                  <button
+                    className="bg-gray-600 hover:bg-gray-700 text-white rounded px-4 py-2 flex-1"
+                    onClick={() => {
+                      setUserAllowedCols(new Set());
+                      setUserRowFilters([{ key: "", value: "" }]);
+                    }}
+                  >
+                    Reset Permissions
+                  </button>
+                </div>
+
+                <div className="mt-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-semibold">Row Filters:</span>
+                    <button
+                      className="bg-blue-600 hover:bg-blue-700 text-white rounded px-2 py-1 text-xs"
+                      onClick={() => setUserRowFilters([...userRowFilters, { key: "", value: "" }])}
+                    >
+                      + Add Filter
+                    </button>
+                  </div>
+                  {userRowFilters.map((filter, idx) => (
+                    <div key={idx} className="flex items-center gap-2 mb-2">
+                      <select
+                        className="border rounded p-1 flex-1"
+                        value={filter.key}
+                        onChange={e => {
+                          const newFilters = [...userRowFilters];
+                          newFilters[idx].key = e.target.value;
+                          setUserRowFilters(newFilters);
+                        }}
+                      >
+                        <option value="">(select column)</option>
+                        {userSheetHeaders.map(h => <option key={h} value={h}>{h}</option>)}
+                      </select>
+                      <input
+                        className="border rounded p-1 flex-1"
+                        placeholder="value"
+                        value={filter.value}
+                        onChange={e => {
+                          const newFilters = [...userRowFilters];
+                          newFilters[idx].value = e.target.value;
+                          setUserRowFilters(newFilters);
+                        }}
+                      />
+                      {userRowFilters.length > 1 && (
+                        <button
+                          className="bg-red-600 hover:bg-red-700 text-white rounded px-2 py-1 text-xs"
+                          onClick={() => setUserRowFilters(userRowFilters.filter((_, i) => i !== idx))}
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  <button
+                    className="bg-green-600 hover:bg-green-700 text-white rounded px-3 py-1 mt-2"
                     onClick={saveUserPermissions}
                   >
                     Save
@@ -739,7 +849,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
             <div className="mt-4">
               <h5 className="font-semibold mb-2">View Permissions</h5>
               <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-auto border rounded p-2">
-                {views.map((v) => (
+                {views.filter(v => String(v.sheet_id) === String(selectedUserSheetId)).map((v) => (
                   <label key={v.id} className="flex items-center gap-2">
                     <input
                       type="checkbox"
@@ -768,6 +878,36 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                 ))}
               </div>
             </div>
+
+            {/* Default View Selection */}
+            <div className="mt-4">
+              <h5 className="font-semibold mb-2">Default View (Auto-load on Login)</h5>
+              <div className="flex gap-2">
+                <select
+                  className="border rounded p-2 flex-1"
+                  value={userDefaultViewId}
+                  onChange={(e) => setUserDefaultViewId(e.target.value)}
+                >
+                  <option value="">(None)</option>
+                  {views.filter(v => userViews.has(v.id)).map((v) => (
+                    <option key={v.id} value={v.id}>{v.name}</option>
+                  ))}
+                </select>
+                <button
+                  className="bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2"
+                  onClick={async () => {
+                    await axios.put(
+                      `${API}/users/${selectedUserId}/default-view`,
+                      { viewId: userDefaultViewId || null },
+                      { headers: { Authorization: `Bearer ${token}` } }
+                    );
+                    alert("Default view saved");
+                  }}
+                >
+                  Save Default View
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -781,7 +921,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
             className="border rounded p-2 flex-1"
             placeholder="New group name"
             value={newGroupName}
-            onChange={e=>setNewGroupName(e.target.value)}
+            onChange={e => setNewGroupName(e.target.value)}
           />
           <button className="bg-blue-600 hover:bg-blue-700 text-white rounded px-3" onClick={createGroup}>
             Create
@@ -793,7 +933,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
             <div
               key={g.id}
               className={`px-3 py-2 border-b cursor-pointer ${selectedGroupId === g.id ? "bg-blue-50" : "bg-white"}`}
-              onClick={()=>setSelectedGroupId(g.id)}
+              onClick={() => setSelectedGroupId(g.id)}
             >
               <div className="flex items-center justify-between">
                 <div>
@@ -821,7 +961,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
               <select
                 className="border rounded p-2 flex-1"
                 value={groupAddUserId}
-                onChange={e=>setGroupAddUserId(e.target.value)}
+                onChange={e => setGroupAddUserId(e.target.value)}
               >
                 <option value="">Select user…</option>
                 {users
@@ -840,7 +980,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                   <div>{m.email}</div>
                   <button
                     className="text-xs bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded"
-                    onClick={()=>removeUserFromGroup(m.id)}
+                    onClick={() => removeUserFromGroup(m.id)}
                   >Remove</button>
                 </div>
               ))}
@@ -848,6 +988,80 @@ export default function UserManagement({ token /* sheetId not required */ }) {
             </div>
           </div>
         )}
+      </div>
+
+      {/* FOLDERS PANEL */}
+      <div className="bg-white border rounded-xl shadow p-4">
+        <h3 className="font-bold text-lg mb-3">Folders</h3>
+        <div className="flex flex-col gap-2 mb-3">
+          <input
+            className="border rounded p-2"
+            placeholder="New folder name"
+            value={newFolderName}
+            onChange={(e) => setNewFolderName(e.target.value)}
+          />
+          <select
+            className="border rounded p-2"
+            value={folderGroupId}
+            onChange={(e) => setFolderGroupId(e.target.value)}
+          >
+            <option value="">(No Group)</option>
+            {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+          </select>
+          <button className="bg-purple-600 hover:bg-purple-700 text-white rounded p-2" onClick={createFolder}>
+            Create Folder
+          </button>
+        </div>
+
+        <div className="max-h-64 overflow-auto border rounded">
+          {selectedGroupId ? (
+            <>
+              {folders.filter(f => f.group_id === selectedGroupId).map((f) => (
+                <div key={f.id} className="flex items-center justify-between px-3 py-2 border-b">
+                  <div>
+                    <div className="font-medium">{f.name}</div>
+                    {f.group_id && (
+                      <div className="text-xs text-gray-500">
+                        Group: {groups.find(g => g.id === f.group_id)?.name || f.group_id}
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    className="text-red-600 text-sm border border-red-600 px-2 py-1 rounded hover:bg-red-50"
+                    onClick={() => deleteFolder(f.id)}
+                  >
+                    Delete
+                  </button>
+                </div>
+              ))}
+              {!folders.filter(f => f.group_id === selectedGroupId).length && (
+                <div className="p-3 text-sm text-gray-500">No folders assigned to this group.</div>
+              )}
+            </>
+          ) : (
+            <>
+              {folders.map((f) => (
+                <div key={f.id} className="flex items-center justify-between px-3 py-2 border-b">
+                  <div>
+                    <div className="font-medium">{f.name}</div>
+                    {f.group_id && (
+                      <div className="text-xs text-gray-500">
+                        Group: {groups.find(g => g.id === f.group_id)?.name || f.group_id}
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    className="text-red-600 text-sm border border-red-600 px-2 py-1 rounded hover:bg-red-50"
+                    onClick={() => deleteFolder(f.id)}
+                  >
+                    Delete
+                  </button>
+                </div>
+              ))}
+              {!folders.length && <div className="p-3 text-sm text-gray-500">No folders.</div>}
+            </>
+          )}
+        </div>
       </div>
 
       {/* GROUP PERMISSIONS PANEL (PER-SHEET) */}
@@ -859,25 +1073,30 @@ export default function UserManagement({ token /* sheetId not required */ }) {
             <div className="mb-3 flex flex-wrap items-center gap-2">
               <label className="text-sm font-semibold">Sheet:</label>
               <select
-                className="border rounded p-2"
+                className="border rounded p-2 flex-1 min-w-0 truncate"
                 value={selectedGroupSheetId || ""}
-                onChange={(e)=>setSelectedGroupSheetId(e.target.value || null)}
+                onChange={(e) => setSelectedGroupSheetId(e.target.value || null)}
               >
                 <option value="">Select a sheet…</option>
-                {groupSheets.map(s => (
-                  <option key={s.id} value={s.id}>
-                    {s.filename} — {s.folder_name || "—"} — {new Date(s.uploaded_at).toLocaleString()}
-                  </option>
-                ))}
+                {allSheets
+                  .filter(s => {
+                    // Only show sheets in folders assigned to this group
+                    const folder = folders.find(f => f.id === s.folder_id);
+                    return folder && folder.group_id === selectedGroupId;
+                  })
+                  .map(s => (
+                    <option key={s.id} value={s.id}>
+                      {trunc(s.filename, 50)} {s.active ? "(Active)" : ""}
+                    </option>
+                  ))}
               </select>
-              <span className="text-xs text-gray-500">(latest 10)</span>
 
               {/* Template toolbar (shows only this group's templates) */}
               <input
                 className="border rounded px-2 py-1"
                 placeholder="Template name"
                 value={newTplNameGroup}
-                onChange={(e)=>setNewTplNameGroup(e.target.value)}
+                onChange={(e) => setNewTplNameGroup(e.target.value)}
               />
               <button
                 className="bg-gray-700 hover:bg-gray-800 text-white rounded px-3 py-1"
@@ -890,7 +1109,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
               <select
                 className="border rounded p-2"
                 value={selectedTplGroup}
-                onChange={(e)=>handleApplyTemplateToGroup(e.target.value)}
+                onChange={(e) => handleApplyTemplateToGroup(e.target.value)}
                 disabled={!selectedGroupId || !selectedGroupSheetId}
                 title={selectedGroupId ? "Apply a saved template to this group's sheet" : "Pick a group first"}
               >
@@ -902,7 +1121,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
               {selectedTplGroup && (
                 <button
                   className="text-red-600 border border-red-600 rounded px-2 py-1"
-                  onClick={()=>handleDeleteTemplate(selectedTplGroup)}
+                  onClick={() => handleDeleteTemplate(selectedTplGroup)}
                 >
                   Delete template
                 </button>
@@ -927,24 +1146,70 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                   ))}
                 </div>
 
-                <div className="flex items-center gap-2 mt-3">
-                  <span className="text-sm">Row filter:</span>
-                  <select
-                    className="border rounded p-1"
-                    value={groupFilterKey}
-                    onChange={e=>setGroupFilterKey(e.target.value)}
-                  >
-                    <option value="">(none)</option>
-                    {groupSheetHeaders.map(h => <option key={h} value={h}>{h}</option>)}
-                  </select>
-                  <input
-                    className="border rounded p-1"
-                    placeholder="value"
-                    value={groupFilterVal}
-                    onChange={e=>setGroupFilterVal(e.target.value)}
-                  />
+                <div className="mt-2 flex gap-2">
                   <button
-                    className="bg-green-600 hover:bg-green-700 text-white rounded px-3 py-1"
+                    className="bg-green-600 hover:bg-green-700 text-white rounded px-4 py-2 flex-1"
+                    onClick={saveGroupPermissions}
+                  >
+                    Save Column Permissions
+                  </button>
+                  <button
+                    className="bg-gray-600 hover:bg-gray-700 text-white rounded px-4 py-2 flex-1"
+                    onClick={() => {
+                      setGroupAllowedCols(new Set());
+                      setGroupRowFilters([{ key: "", value: "" }]);
+                    }}
+                  >
+                    Reset Permissions
+                  </button>
+                </div>
+
+                <div className="mt-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-semibold">Row Filters:</span>
+                    <button
+                      className="bg-blue-600 hover:bg-blue-700 text-white rounded px-2 py-1 text-xs"
+                      onClick={() => setGroupRowFilters([...groupRowFilters, { key: "", value: "" }])}
+                    >
+                      + Add Filter
+                    </button>
+                  </div>
+                  {groupRowFilters.map((filter, idx) => (
+                    <div key={idx} className="flex items-center gap-2 mb-2">
+                      <select
+                        className="border rounded p-1 flex-1"
+                        value={filter.key}
+                        onChange={e => {
+                          const newFilters = [...groupRowFilters];
+                          newFilters[idx].key = e.target.value;
+                          setGroupRowFilters(newFilters);
+                        }}
+                      >
+                        <option value="">(select column)</option>
+                        {groupSheetHeaders.map(h => <option key={h} value={h}>{h}</option>)}
+                      </select>
+                      <input
+                        className="border rounded p-1 flex-1"
+                        placeholder="value"
+                        value={filter.value}
+                        onChange={e => {
+                          const newFilters = [...groupRowFilters];
+                          newFilters[idx].value = e.target.value;
+                          setGroupRowFilters(newFilters);
+                        }}
+                      />
+                      {groupRowFilters.length > 1 && (
+                        <button
+                          className="bg-red-600 hover:bg-red-700 text-white rounded px-2 py-1 text-xs"
+                          onClick={() => setGroupRowFilters(groupRowFilters.filter((_, i) => i !== idx))}
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  <button
+                    className="bg-green-600 hover:bg-green-700 text-white rounded px-3 py-1 mt-2"
                     onClick={saveGroupPermissions}
                   >
                     Save
@@ -954,7 +1219,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                 <div className="mt-4">
                   <h5 className="font-semibold mb-2">View Permissions</h5>
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-auto border rounded p-2">
-                    {views.map((v) => (
+                    {views.filter(v => String(v.sheet_id) === String(selectedGroupSheetId)).map((v) => (
                       <label key={v.id} className="flex items-center gap-2">
                         <input
                           type="checkbox"

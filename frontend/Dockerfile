@@ -12,13 +12,14 @@ COPY frontend/package-lock.json ./package-lock.json
 
 # Faster installs (BuildKit cache), no audit/fund noise
 RUN --mount=type=cache,target=/root/.npm \
-    npm ci --no-audit --no-fund
+    npm install
 
 # Add source and build
 COPY frontend/. .
 ARG VITE_API_URL=http://localhost:4000
 ENV VITE_API_URL=${VITE_API_URL}
 ENV CI=true
+# Build is optional if we override CMD, but good for caching deps
 RUN --mount=type=cache,target=/root/.npm \
     npm run build
 
