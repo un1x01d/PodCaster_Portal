@@ -1008,7 +1008,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
             <option value="">(No Group)</option>
             {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
           </select>
-          <button className="bg-purple-600 hover:bg-purple-700 text-white rounded p-2" onClick={createFolder}>
+          <button className="bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white rounded p-2" onClick={createFolder}>
             Create Folder
           </button>
         </div>

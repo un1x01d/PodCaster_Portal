@@ -127,14 +127,14 @@ function SearchableSelect({
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Type to search…"
-            className="w-full border border-gray-200 rounded-md px-2 py-1 mb-2 focus:outline-none focus:ring focus:ring-emerald-100"
+            className="w-full border border-gray-200 rounded-md px-2 py-1 mb-2 focus:outline-none focus:ring focus:ring-slate-100"
           />
           <div className="max-h-56 overflow-auto">
             {filtered.length ? (
               filtered.map((o) => (
                 <div
                   key={String(o.value)}
-                  className={`px-2 py-1 rounded-md cursor-pointer hover:bg-emerald-50 ${String(o.value) === String(value) ? "bg-emerald-100" : ""
+                  className={`px-2 py-1 rounded-md cursor-pointer hover:bg-slate-50 ${String(o.value) === String(value) ? "bg-slate-100" : ""
                     }`}
                   title={o.label}
                   onClick={() => {
@@ -183,7 +183,7 @@ function ExportMenu({ onCSV, onXLSX, onPDF }) {
         ref={btnRef}
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-600 hover:to-emerald-600 text-white px-3 rounded-lg h-10 shadow flex items-center gap-2"
+        className="bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white px-3 rounded-lg h-10 shadow flex items-center gap-2"
         title="Export options"
       >
         Export
@@ -193,28 +193,105 @@ function ExportMenu({ onCSV, onXLSX, onPDF }) {
       {open && (
         <div
           ref={panelRef}
-          className="absolute z-50 mt-1 right-0 w-48 bg-white border border-emerald-200 rounded-xl shadow-xl overflow-hidden"
+          className="absolute z-50 mt-1 right-0 w-48 bg-white border border-gray-200 rounded-xl shadow-xl overflow-hidden"
         >
-          <div className="bg-gradient-to-r from-emerald-50 to-white text-xs px-3 py-2 border-b border-emerald-100">
+          <div className="bg-gradient-to-r from-slate-50 to-white text-xs px-3 py-2 border-b border-slate-100">
             Download as…
           </div>
           <button
-            className="w-full text-left px-3 py-2 hover:bg-emerald-50 text-gray-900"
+            className="w-full text-left px-3 py-2 hover:bg-slate-50 text-gray-900"
             onClick={() => { setOpen(false); onCSV?.(); }}
           >
             CSV (.csv)
           </button>
           <button
-            className="w-full text-left px-3 py-2 hover:bg-emerald-50 text-gray-900"
+            className="w-full text-left px-3 py-2 hover:bg-slate-50 text-gray-900"
             onClick={() => { setOpen(false); onXLSX?.(); }}
           >
             Excel (.xlsx)
           </button>
           <button
-            className="w-full text-left px-3 py-2 hover:bg-emerald-50 text-gray-900 border-t border-emerald-100"
+            className="w-full text-left px-3 py-2 hover:bg-slate-50 text-gray-900 border-t border-gray-100"
             onClick={() => { setOpen(false); onPDF?.(); }}
           >
             PDF (.pdf)
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Chart Menu ---------------- */
+function ChartMenu({ pivotOn, setPivotOn, twoOn, setTwoOn, trendsOn, setTrendsOn }) {
+  const [open, setOpen] = React.useState(false);
+  const btnRef = React.useRef(null);
+  const panelRef = React.useRef(null);
+
+  React.useEffect(() => {
+    const onDocClick = (e) => {
+      if (!btnRef.current?.contains(e.target) && !panelRef.current?.contains(e.target)) {
+        setOpen(false);
+      }
+    };
+    const onEsc = (e) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onEsc);
+    };
+  }, []);
+
+  return (
+    <div className="relative inline-block">
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white px-3 rounded-lg h-10 shadow flex items-center gap-2"
+        title="Chart options"
+      >
+        Charts
+        <span className="opacity-90">▾</span>
+      </button>
+
+      {open && (
+        <div
+          ref={panelRef}
+          className="absolute z-50 mt-1 right-0 w-56 bg-white border border-gray-200 rounded-xl shadow-xl overflow-hidden"
+        >
+          <div className="bg-gradient-to-r from-slate-50 to-white text-xs px-3 py-2 border-b border-slate-100">
+            Toggle Charts
+          </div>
+          <button
+            className="w-full text-left px-3 py-2 hover:bg-slate-50 text-gray-900 flex items-center justify-between"
+            onClick={() => { setPivotOn((p) => !p); }}
+          >
+            <span>Pivot</span>
+            <span className={`text-xs font-semibold ${pivotOn ? "text-teal-600" : "text-gray-400"}`}>
+              {pivotOn ? "ON" : "OFF"}
+            </span>
+          </button>
+          <button
+            className="w-full text-left px-3 py-2 hover:bg-slate-50 text-gray-900 flex items-center justify-between"
+            onClick={() => { setTwoOn((p) => !p); }}
+          >
+            <span>Two-Condition</span>
+            <span className={`text-xs font-semibold ${twoOn ? "text-teal-600" : "text-gray-400"}`}>
+              {twoOn ? "ON" : "OFF"}
+            </span>
+          </button>
+          <button
+            className="w-full text-left px-3 py-2 hover:bg-slate-50 text-gray-900 border-t border-gray-100 flex items-center justify-between"
+            onClick={() => { setTrendsOn((p) => !p); }}
+          >
+            <span>Trends</span>
+            <span className={`text-xs font-semibold ${trendsOn ? "text-teal-600" : "text-gray-400"}`}>
+              {trendsOn ? "ON" : "OFF"}
+            </span>
           </button>
         </div>
       )}
@@ -231,7 +308,7 @@ function Modal({ open, onClose, title, children, widthClass = "max-w-3xl" }) {
       <div
         className={`relative bg-white rounded-2xl shadow-2xl w-[95vw] ${widthClass} max-h-[85vh] overflow-auto border border-gray-100`}
       >
-        <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-emerald-50 to-white">
+        <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-slate-50 to-white">
           <div className="font-bold text-gray-900">{title}</div>
           <button
             onClick={onClose}
@@ -388,19 +465,19 @@ function ColumnFilterMenu({
         value={q}
         onChange={(e) => setQ(e.target.value)}
         placeholder="Search values…"
-        className="w-full border border-gray-200 rounded-md px-2 py-1 mb-2 text-gray-900 placeholder-gray-400 focus:outline-none focus:ring focus:ring-emerald-100"
+        className="w-full border border-gray-200 rounded-md px-2 py-1 mb-2 text-gray-900 placeholder-gray-400 focus:outline-none focus:ring focus:ring-slate-100"
       />
 
       <div className="flex gap-2 mb-2">
         <button
-          className="text-[11px] px-2 py-1 rounded-md bg-white border border-gray-200 hover:bg-gray-50 text-gray-800 focus:outline-none focus:ring focus:ring-emerald-100"
+          className="text-[11px] px-2 py-1 rounded-md bg-white border border-gray-200 hover:bg-gray-50 text-gray-800 focus:outline-none focus:ring focus:ring-slate-100"
           onClick={handleSelectAll}
           title="Select all values"
         >
           Select All
         </button>
         <button
-          className="text-[11px] px-2 py-1 rounded-md bg-white border border-gray-200 hover:bg-gray-50 text-gray-800 focus:outline-none focus:ring focus:ring-emerald-100"
+          className="text-[11px] px-2 py-1 rounded-md bg-white border border-gray-200 hover:bg-gray-50 text-gray-800 focus:outline-none focus:ring focus:ring-slate-100"
           onClick={handleClearAll}
           title="Clear all selections"
         >
@@ -417,12 +494,12 @@ function ColumnFilterMenu({
               return (
                 <label
                   key={i}
-                  className="flex items-center gap-2 px-2 py-1 text-sm hover:bg-emerald-50 cursor-pointer text-gray-900"
+                  className="flex items-center gap-2 px-2 py-1 text-sm hover:bg-slate-50 cursor-pointer text-gray-900"
                   title={sv}
                 >
                   <input
                     type="checkbox"
-                    className="cursor-pointer accent-emerald-600"
+                    className="cursor-pointer accent-slate-300"
                     checked={checked}
                     onChange={() => toggleValue(v)}
                   />
@@ -447,7 +524,7 @@ function ColumnFilterMenu({
         </div>
         <div className="flex gap-2">
           <button
-            className="px-3 py-1 text-sm rounded-md bg-white border border-gray-200 hover:bg-gray-50 text-gray-800 focus:outline-none focus:ring focus:ring-emerald-100"
+            className="px-3 py-1 text-sm rounded-md bg-white border border-gray-200 hover:bg-gray-50 text-gray-800 focus:outline-none focus:ring focus:ring-slate-100"
             onClick={() => {
               onClear(column);
               onClose?.();
@@ -456,7 +533,7 @@ function ColumnFilterMenu({
             Clear Filter
           </button>
           <button
-            className="px-3 py-1 text-sm rounded-md bg-emerald-600 text-white hover:bg-emerald-700 shadow focus:outline-none focus:ring focus:ring-emerald-100"
+            className="px-3 py-1 text-sm rounded-md bg-slate-300 text-gray-900 hover:from-teal-500 hover:to-cyan-500 shadow focus:outline-none focus:ring focus:ring-slate-100"
             onClick={handleApply}
           >
             Apply
@@ -1457,24 +1534,24 @@ export default function App() {
   /* -------- Login Screen -------- */
   if (!token || !user) {
     return (
-      <div className="w-full min-h-0 flex items-center justify-center bg-gradient-to-br from-emerald-50 to-white py-16">
-        <form className="bg-white/95 backdrop-blur shadow-xl rounded-2xl p-8 w-96 border border-emerald-100" onSubmit={handleLogin}>
+      <div className="w-full min-h-0 flex items-center justify-center bg-gradient-to-br from-slate-50 to-white py-16">
+        <form className="bg-white/95 backdrop-blur shadow-xl rounded-2xl p-8 w-96 border border-slate-100" onSubmit={handleLogin}>
           <h2 className="text-2xl font-bold mb-6 text-center text-gray-900">🔐 Universal Analytics</h2>
           <input
             type="email"
             placeholder="Email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            className="w-full border border-emerald-200 p-3 mb-3 rounded-md focus:outline-none focus:ring focus:ring-emerald-100"
+            className="w-full border border-slate-200 p-3 mb-3 rounded-md focus:outline-none focus:ring focus:ring-slate-100"
           />
           <input
             type="password"
             placeholder="Password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="w-full border border-emerald-200 p-3 mb-6 rounded-md focus:outline-none focus:ring focus:ring-emerald-100"
+            className="w-full border border-slate-200 p-3 mb-6 rounded-md focus:outline-none focus:ring focus:ring-slate-100"
           />
-          <button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-2 rounded-lg font-semibold h-11 shadow">
+          <button type="submit" className="w-full bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500 text-white py-2 rounded-lg font-semibold h-11 shadow">
             Login
           </button>
         </form>
@@ -1487,13 +1564,13 @@ export default function App() {
     // Non-admin users: show welcome screen until sheet is selected
     if (user.role !== "admin" && !sheetId) {
       return (
-        <div className="w-full min-h-screen flex items-center justify-center bg-gradient-to-br from-emerald-50 to-white">
-          <div className="bg-white/95 backdrop-blur shadow-xl rounded-2xl p-8 w-96 border border-emerald-100 text-center">
+        <div className="w-full min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 to-white">
+          <div className="bg-white/95 backdrop-blur shadow-xl rounded-2xl p-8 w-96 border border-slate-100 text-center">
             <h2 className="text-2xl font-bold mb-4 text-gray-900">📊 Welcome</h2>
             <p className="text-gray-600 mb-6">Please select a sheet to get started</p>
             <button
               onClick={openSelect}
-              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-lg font-semibold shadow"
+              className="w-full bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500 text-white py-3 rounded-lg font-semibold shadow"
             >
               Select Sheet
             </button>
@@ -1504,13 +1581,13 @@ export default function App() {
 
     // Admin or sheet selected: show normal dashboard
     return (
-      <div className="w-full bg-gradient-to-b from-white to-emerald-50/40">
+      <div className="w-full bg-gradient-to-b from-white to-slate-50/40">
         {/* Global Controls Bar */}
-        <div className="flex flex-wrap gap-3 p-4 bg-white/90 backdrop-blur shadow-sm border-b border-emerald-100 items-center relative z-30">
+        <div className="flex flex-wrap gap-3 p-4 bg-white/90 backdrop-blur shadow-sm border-b border-slate-100 items-center relative z-30">
           {/* Upload (admin) */}
           {user.role === "admin" && (
             <>
-              <label className="flex items-center gap-3 border border-emerald-200 rounded-lg p-2 bg-white h-10">
+              <label className="flex items-center gap-3 border border-slate-200 rounded-lg p-2 bg-white h-10">
                 <input
                   type="file"
                   onChange={(e) => {
@@ -1518,7 +1595,7 @@ export default function App() {
                     setFile(f || null);
                     setSelectedFileName(f?.name || "");
                   }}
-                  className="border border-emerald-200 p-1 rounded-md"
+                  className="border border-slate-200 p-1 rounded-md"
                 />
                 <span className="text-sm text-gray-700">
                   {selectedFileName || activeFilename || "No file selected"}
@@ -1532,7 +1609,7 @@ export default function App() {
                 onChange={(e) => setSelectedFolderId(e.target.value)}
                 placeholder="Folder (required)…"
                 className="ml-1"
-                buttonClassName="border border-emerald-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
+                buttonClassName="border border-slate-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
               />
 
               <button
@@ -1540,7 +1617,7 @@ export default function App() {
                 disabled={!file || !selectedFolderId}
                 className={`${!file || !selectedFolderId
                   ? "bg-gradient-to-r from-gray-200 to-gray-300 cursor-not-allowed text-gray-600"
-                  : "bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-600 hover:to-emerald-600 text-white shadow"
+                  : "bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white shadow"
                   } px-4 rounded-lg h-10`}
                 title={!file ? "Choose a file" : !selectedFolderId ? "Select a folder" : "Upload & Load"}
               >
@@ -1551,7 +1628,7 @@ export default function App() {
 
           <button
             onClick={() => loadData(sheetId, user.role !== "admin" && selectedViewId)}
-            className="bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-600 hover:to-emerald-600 text-white px-3 rounded-lg h-10 shadow"
+            className="bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white px-3 rounded-lg h-10 shadow"
           >
             Refresh
           </button>
@@ -1662,7 +1739,7 @@ export default function App() {
               }}
               placeholder="Select a view…"
               className="ml-1"
-              buttonClassName="border border-emerald-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
+              buttonClassName="border border-slate-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
             />
           )}
 
@@ -1675,7 +1752,7 @@ export default function App() {
                   setShowColumnSelector(true);
                 }
               }}
-              className="bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-600 hover:to-emerald-600 text-white px-3 rounded-lg h-10 shadow"
+              className="bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white px-3 rounded-lg h-10 shadow"
             >
               Save View
             </button>
@@ -1698,7 +1775,7 @@ export default function App() {
                     setViews(res.data || []);
                   }
                 }}
-                className="bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-600 hover:to-blue-600 text-white px-3 rounded-lg h-10 shadow"
+                className="bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white px-3 rounded-lg h-10 shadow"
               >
                 Duplicate View
               </button>
@@ -1722,42 +1799,23 @@ export default function App() {
             </div>
           )}
 
-          {/* Export dropdown + Toggles */}
+          {/* Export dropdown + Charts dropdown */}
           <div className="flex gap-3 ml-0 md:ml-6 items-center">
             <ExportMenu onCSV={exportCSV} onXLSX={exportXLSX} onPDF={exportPDF} />
-
-            {/* Pivot toggle */}
-            <button
-              onClick={() => setPivotOn((p) => !p)}
-              className="px-3 rounded-lg font-semibold bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-500 hover:to-emerald-500 text-white h-10 shadow"
-              title="Toggle Pivot mode"
-            >
-              {pivotOn ? "Pivot: ON" : "Pivot: OFF"}
-            </button>
-
-            {/* Two-Condition toggle */}
-            <button
-              onClick={() => setTwoOn((p) => !p)}
-              className="px-3 rounded-lg font-semibold bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-500 hover:to-blue-500 text-white h-10 shadow"
-              title="Toggle Two-Condition Summary"
-            >
-              {twoOn ? "2-Cond: ON" : "2-Cond: OFF"}
-            </button>
-
-            {/* Trends toggle */}
-            <button
-              onClick={() => setTrendsOn((p) => !p)}
-              className="px-3 rounded-lg font-semibold bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-500 hover:to-purple-500 text-white h-10 shadow"
-              title="Toggle Trends Chart"
-            >
-              {trendsOn ? "Trends: ON" : "Trends: OFF"}
-            </button>
+            <ChartMenu
+              pivotOn={pivotOn}
+              setPivotOn={setPivotOn}
+              twoOn={twoOn}
+              setTwoOn={setTwoOn}
+              trendsOn={trendsOn}
+              setTrendsOn={setTrendsOn}
+            />
           </div>
         </div>
 
         {/* Pivot Controls */}
         {pivotOn && (
-          <div className="p-4 bg-emerald-50 border-y border-emerald-200/70">
+          <div className="p-4 bg-slate-50 border-y border-slate-200/70">
             <div className="flex flex-wrap items-end gap-3">
               <SearchableSelect
                 options={[{ value: "", label: "Row key…" }, ...displayHeaders.map((h) => ({ value: h, label: h }))]}
@@ -1765,7 +1823,7 @@ export default function App() {
                 onChange={(e) => setPivotRowKey(e.target.value)}
                 placeholder="Row key…"
 
-                buttonClassName="border border-emerald-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
+                buttonClassName="border border-slate-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
               />
               <SearchableSelect
                 options={[{ value: "", label: "Dynamic header…" }, ...displayHeaders.map((h) => ({ value: h, label: h }))]}
@@ -1773,7 +1831,7 @@ export default function App() {
                 onChange={(e) => setPivotColKey(e.target.value)}
                 placeholder="Dynamic header…"
 
-                buttonClassName="border border-emerald-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
+                buttonClassName="border border-slate-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
               />
               <SearchableSelect
                 options={[
@@ -1784,7 +1842,7 @@ export default function App() {
                 onChange={(e) => setPivotValKey(e.target.value)}
                 placeholder={pivotAgg === "count" ? "— (count)" : "Value…"}
                 disabled={pivotAgg === "count"}
-                buttonClassName="border border-emerald-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
+                buttonClassName="border border-slate-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
               />
               <SearchableSelect
                 options={[
@@ -1796,7 +1854,7 @@ export default function App() {
                 placeholder="Aggregation…"
                 panelWidth={180}
 
-                buttonClassName="border border-emerald-200 p-2 rounded-lg min-w-[10rem] bg-white h-10"
+                buttonClassName="border border-slate-200 p-2 rounded-lg min-w-[10rem] bg-white h-10"
               />
 
               <div className="flex gap-2 ml-auto">
@@ -1813,7 +1871,7 @@ export default function App() {
                     }
                   }}
                   className={`px-3 rounded-lg h-10 shadow ${pivotRows.length
-                    ? "bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-500 hover:to-emerald-500 text-white"
+                    ? "bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white"
                     : "bg-gradient-to-r from-gray-200 to-gray-300 cursor-not-allowed text-gray-600"
                     }`}
                   title={pivotRows.length ? "Export Pivot (XLSX)" : "Nothing to export yet"}
@@ -1835,7 +1893,7 @@ export default function App() {
 
                 <button
                   onClick={resetPivot}
-                  className="px-3 bg-gradient-to-r from-white to-gray-50 border border-emerald-200 rounded-lg h-10 hover:from-gray-50 hover:to-gray-100"
+                  className="px-3 bg-gradient-to-r from-white to-gray-50 border border-slate-200 rounded-lg h-10 hover:from-gray-50 hover:to-gray-100"
                   title="Clear pivot selections"
                 >
                   Reset
@@ -1915,10 +1973,10 @@ export default function App() {
             {pivotRows.length ? (
               <div className="overflow-auto px-3 pb-3">
                 <table className="table-auto border-collapse w-full text-sm">
-                  <thead className="bg-gradient-to-r from-emerald-100 to-white text-gray-800">
+                  <thead className="bg-gradient-to-r from-slate-100 to-white text-gray-800">
                     <tr>
                       {pivotHeaders.map((h) => (
-                        <th key={h} className="p-2 border border-emerald-200 border-dashed text-left whitespace-nowrap">
+                        <th key={h} className="p-2 border border-slate-200 border-dashed text-left whitespace-nowrap">
                           {h}
                         </th>
                       ))}
@@ -1926,9 +1984,9 @@ export default function App() {
                   </thead>
                   <tbody>
                     {pivotRows.map((row, i) => (
-                      <tr key={i} className="odd:bg-white even:bg-emerald-50/40 hover:bg-emerald-50 transition-colors">
+                      <tr key={i} className="odd:bg-white even:bg-slate-50/40 hover:bg-slate-50 transition-colors">
                         {pivotHeaders.map((h) => (
-                          <td key={h} className="p-2 border border-emerald-200 border-dashed whitespace-nowrap">
+                          <td key={h} className="p-2 border border-slate-200 border-dashed whitespace-nowrap">
                             {renderMaybeDate(h, row[h])}
                           </td>
                         ))}
@@ -1943,12 +2001,12 @@ export default function App() {
 
         {/* Two-Condition Controls & Chart */}
         {twoOn && (user.role === "admin" || selectedViewId) && hasRequiredColumns([condCol1, condCol2, valueCol].filter(Boolean)) && (
-          <div className="p-4 bg-emerald-50/60 border-t border-emerald-200">
+          <div className="p-4 bg-slate-50/60 border-t border-slate-200">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-lg font-bold text-gray-900">📊 Two-Condition Summary</h2>
               <button
                 onClick={resetSummary}
-                className="px-3 bg-gradient-to-r from-white to-gray-50 border border-emerald-200 rounded-lg h-10 hover:from-gray-50 hover:to-gray-100"
+                className="px-3 bg-gradient-to-r from-white to-gray-50 border border-slate-200 rounded-lg h-10 hover:from-gray-50 hover:to-gray-100"
                 title="Clear selections"
               >
                 Reset
@@ -1962,7 +2020,7 @@ export default function App() {
                 onChange={(e) => setCondCol1(e.target.value)}
                 placeholder="Condition 1…"
 
-                buttonClassName="border border-emerald-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
+                buttonClassName="border border-slate-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
                 panelWidth={280}
               />
               <SearchableSelect
@@ -1971,7 +2029,7 @@ export default function App() {
                 onChange={(e) => setCondCol2(e.target.value)}
                 placeholder="Condition 2…"
 
-                buttonClassName="border border-emerald-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
+                buttonClassName="border border-slate-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
                 panelWidth={280}
               />
               <SearchableSelect
@@ -1980,7 +2038,7 @@ export default function App() {
                 onChange={(e) => setValueCol(e.target.value)}
                 placeholder="Value column…"
 
-                buttonClassName="border border-emerald-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
+                buttonClassName="border border-slate-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
                 panelWidth={280}
               />
             </div>
@@ -2005,19 +2063,19 @@ export default function App() {
                 </ResponsiveContainer>
 
                 <table className="table-auto border-collapse w-full text-sm mt-6">
-                  <thead className="bg-gradient-to-r from-emerald-100 to-white text-gray-800">
+                  <thead className="bg-gradient-to-r from-slate-100 to-white text-gray-800">
                     <tr>
-                      <th className="p-2 border border-emerald-200 border-dashed">{condCol1}</th>
-                      <th className="p-2 border border-emerald-200 border-dashed">{condCol2}</th>
-                      <th className="p-2 border border-emerald-200 border-dashed">Total {valueCol}</th>
+                      <th className="p-2 border border-slate-200 border-dashed">{condCol1}</th>
+                      <th className="p-2 border border-slate-200 border-dashed">{condCol2}</th>
+                      <th className="p-2 border border-slate-200 border-dashed">Total {valueCol}</th>
                     </tr>
                   </thead>
                   <tbody>
                     {summaryData.map((row, i) => (
-                      <tr key={i} className="odd:bg-white even:bg-emerald-50/40 hover:bg-emerald-50 transition-colors">
-                        <td className="p-2 border border-emerald-200 border-dashed">{row[condCol1]}</td>
-                        <td className="p-2 border border-emerald-200 border-dashed">{row[condCol2]}</td>
-                        <td className="p-2 border border-emerald-200 border-dashed font-semibold">
+                      <tr key={i} className="odd:bg-white even:bg-slate-50/40 hover:bg-slate-50 transition-colors">
+                        <td className="p-2 border border-slate-200 border-dashed">{row[condCol1]}</td>
+                        <td className="p-2 border border-slate-200 border-dashed">{row[condCol2]}</td>
+                        <td className="p-2 border border-slate-200 border-dashed font-semibold">
                           ${Number(row.total ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </td>
                       </tr>
@@ -2166,10 +2224,10 @@ export default function App() {
         )}
 
         {/* Data Table */}
-        <div className="m-4 bg-white rounded-2xl shadow-2xl border border-emerald-100 ring-1 ring-emerald-100 relative z-0">
+        <div className="m-4 bg-white rounded-2xl shadow-2xl border border-gray-200 focus:ring-slate-100 relative z-0">
           {sortedData?.length > 0 ? (
             <>
-              <div className="p-3 text-sm text-gray-600 border-b border-emerald-100 bg-gradient-to-r from-white to-emerald-50/60">
+              <div className="p-3 text-sm text-gray-600 border-b border-slate-100 bg-gradient-to-r from-white to-slate-50/60">
                 {activeFilename ? (
                   <>Loaded: <b>{activeFilename}</b></>
                 ) : (
@@ -2184,7 +2242,7 @@ export default function App() {
                 style={{ maxHeight: "960px" }}
               >
                 <table className="table-auto border-collapse w-full text-sm">
-                  <thead className="sticky top-0 bg-gradient-to-r from-emerald-200 to-emerald-100 text-gray-900 shadow-sm z-10">
+                  <thead className="sticky top-0 bg-gradient-to-r from-cyan-600 to-teal-600 text-white shadow-sm z-10">
                     <tr>
                       {displayHeaders.map((h) => (
                         <th
@@ -2193,7 +2251,7 @@ export default function App() {
                             if (!filterAnchorRefs.current) filterAnchorRefs.current = {};
                             filterAnchorRefs.current[h] = el;
                           }}
-                          className="relative border border-emerald-200 border-dashed px-4 py-2 text-left whitespace-nowrap cursor-pointer group"
+                          className="relative border border-slate-200 border-dashed px-4 py-2 text-left whitespace-nowrap cursor-pointer group"
                           onClick={(e) => {
                             if (openFilterCol === h) return;
                             const isFilterBtn = e.target.closest && e.target.closest(".filter-btn");
@@ -2214,9 +2272,9 @@ export default function App() {
                               }}
 
                               className={`filter-btn ml-auto text-[11px] h-7 px-2 rounded-md bg-white/80 backdrop-blur border ${columnFilters[h] && columnFilters[h] instanceof Set && columnFilters[h].size > 0
-                                ? "border-emerald-400 ring-1 ring-emerald-300"
-                                : "border-emerald-200"
-                                } text-gray-800 hover:bg-emerald-50 focus:outline-none focus:ring focus:ring-emerald-100`}
+                                ? "border-slate-400 ring-1 ring-slate-300"
+                                : "border-slate-200"
+                                } text-gray-800 hover:bg-slate-50 focus:outline-none focus:ring focus:ring-slate-100`}
                               title="Filter"
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -2261,9 +2319,9 @@ export default function App() {
                   </thead>
                   <tbody className="[&>tr]:h-8">
                     {sortedData.map((row, i) => (
-                      <tr key={i} className="odd:bg-white even:bg-emerald-50/40 hover:bg-emerald-50 transition-colors">
+                      <tr key={i} className="odd:bg-white even:bg-slate-50/40 hover:bg-slate-50 transition-colors">
                         {displayHeaders.map((h) => (
-                          <td key={h} className="border border-emerald-200 border-dashed px-4 py-2 whitespace-nowrap">
+                          <td key={h} className="border border-slate-200 border-dashed px-4 py-2 whitespace-nowrap">
                             {renderMaybeDate(h, row[h])}
                           </td>
                         ))}
@@ -2287,13 +2345,13 @@ export default function App() {
   /* -------- Router + Header -------- */
   return (
     <Router>
-      <div className="bg-gradient-to-r from-gray-900 via-emerald-800 to-emerald-600 text-white px-6 py-4 flex justify-between items-center shadow-lg">
+      <div className="bg-gradient-to-r from-teal-700 via-cyan-700 to-teal-600 text-white px-6 py-4 flex justify-between items-center shadow-lg">
         <h1 className="text-xl font-bold">📊 Dashboard</h1>
         <div className="flex items-center gap-3">
           <button
             type="button"
             onClick={openSelect}
-            className="bg-white text-gray-900 border border-emerald-200 hover:bg-emerald-50 px-3 py-1 rounded-lg h-10 shadow"
+            className="bg-white text-gray-900 border border-slate-200 hover:bg-slate-50 px-3 py-1 rounded-lg h-10 shadow"
             title="Choose a sheet you have access to"
           >
             Select Sheet
@@ -2332,7 +2390,7 @@ export default function App() {
         </div>
       </div>
 
-      <nav className="bg-gradient-to-r from-white to-emerald-50 text-gray-900 p-3 flex gap-4 border-b border-emerald-100">
+      <nav className="bg-gradient-to-r from-white to-slate-50 text-gray-900 p-3 flex gap-4 border-b border-slate-100">
         <Link className="hover:underline" to="/">Dashboard</Link>
         {user?.role === "admin" && <Link className="hover:underline" to="/users">Manage Users</Link>}
       </nav>
@@ -2356,28 +2414,28 @@ export default function App() {
         ) : myFiles.length ? (
           <div className="overflow-auto">
             <table className="table-auto border-collapse w-full text-sm">
-              <thead className="bg-gradient-to-r from-emerald-50 to-white">
+              <thead className="bg-gradient-to-r from-slate-50 to-white">
                 <tr>
-                  <th className="p-2 border border-emerald-200 border-dashed text-left">Filename</th>
-                  <th className="p-2 border border-emerald-200 border-dashed text-left">Folder</th>
-                  <th className="p-2 border border-emerald-200 border-dashed text-left">Uploaded</th>
-                  <th className="p-2 border border-emerald-200 border-dashed"></th>
-                  {user.role === "admin" && <th className="p-2 border border-emerald-200 border-dashed"></th>}
+                  <th className="p-2 border border-slate-200 border-dashed text-left">Filename</th>
+                  <th className="p-2 border border-slate-200 border-dashed text-left">Folder</th>
+                  <th className="p-2 border border-slate-200 border-dashed text-left">Uploaded</th>
+                  <th className="p-2 border border-slate-200 border-dashed"></th>
+                  {user.role === "admin" && <th className="p-2 border border-slate-200 border-dashed"></th>}
                 </tr>
               </thead>
               <tbody>
                 {myFiles.map((f) => (
-                  <tr key={f.id} className="odd:bg-white even:bg-emerald-50/40">
-                    <td className="p-2 border border-emerald-200 border-dashed">{f.filename}</td>
-                    <td className="p-2 border border-emerald-200 border-dashed">{f.folder_name || "—"}</td>
-                    <td className="p-2 border border-emerald-200 border-dashed">{new Date(f.uploaded_at).toLocaleString()}</td>
-                    <td className="p-2 border border-emerald-200 border-dashed">
-                      <button onClick={() => loadStored(f.id)} className="bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-600 hover:to-emerald-600 text-white px-3 py-1 rounded shadow">
+                  <tr key={f.id} className="odd:bg-white even:bg-slate-50/40">
+                    <td className="p-2 border border-slate-200 border-dashed">{f.filename}</td>
+                    <td className="p-2 border border-slate-200 border-dashed">{f.folder_name || "—"}</td>
+                    <td className="p-2 border border-slate-200 border-dashed">{new Date(f.uploaded_at).toLocaleString()}</td>
+                    <td className="p-2 border border-slate-200 border-dashed">
+                      <button onClick={() => loadStored(f.id)} className="bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white px-3 py-1 rounded shadow">
                         Load
                       </button>
                     </td>
                     {user.role === "admin" && (
-                      <td className="p-2 border border-emerald-200 border-dashed">
+                      <td className="p-2 border border-slate-200 border-dashed">
                         <button
                           onClick={async () => {
                             await deleteSheet(f.id);
@@ -2408,21 +2466,21 @@ export default function App() {
           <div>Loading…</div>
         ) : folderFiles.length ? (
           <table className="table-auto border-collapse w-full text-sm">
-            <thead className="bg-gradient-to-r from-emerald-50 to-white">
+            <thead className="bg-gradient-to-r from-slate-50 to-white">
               <tr>
-                <th className="p-2 border border-emerald-200 border-dashed text-left">Filename</th>
-                <th className="p-2 border border-emerald-200 border-dashed text-left">Uploaded</th>
-                <th className="p-2 border border-emerald-200 border-dashed text-left">Active</th>
-                <th className="p-2 border border-emerald-200 border-dashed"></th>
+                <th className="p-2 border border-slate-200 border-dashed text-left">Filename</th>
+                <th className="p-2 border border-slate-200 border-dashed text-left">Uploaded</th>
+                <th className="p-2 border border-slate-200 border-dashed text-left">Active</th>
+                <th className="p-2 border border-slate-200 border-dashed"></th>
               </tr>
             </thead>
             <tbody>
               {folderFiles.map((f) => (
-                <tr key={f.id} className="odd:bg-white even:bg-emerald-50/40">
-                  <td className="p-2 border border-emerald-200 border-dashed">{f.filename}</td>
-                  <td className="p-2 border border-emerald-200 border-dashed">{fmtDateOnly(f.uploaded_at)}</td>
-                  <td className="p-2 border border-emerald-200 border-dashed">{f.active ? "Yes" : "No"}</td>
-                  <td className="p-2 border border-emerald-200 border-dashed">
+                <tr key={f.id} className="odd:bg-white even:bg-slate-50/40">
+                  <td className="p-2 border border-slate-200 border-dashed">{f.filename}</td>
+                  <td className="p-2 border border-slate-200 border-dashed">{fmtDateOnly(f.uploaded_at)}</td>
+                  <td className="p-2 border border-slate-200 border-dashed">{f.active ? "Yes" : "No"}</td>
+                  <td className="p-2 border border-slate-200 border-dashed">
                     <button onClick={() => deleteSheet(f.id)} className="bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-600 hover:to-rose-600 text-white px-3 py-1 rounded shadow">
                       Delete
                     </button>
@@ -2515,7 +2573,7 @@ export default function App() {
                   setPendingViewName("");
                   setVisibleColumns([]);
                 }}
-                className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-emerald-500 text-white rounded-lg hover:from-emerald-600 hover:to-emerald-600"
+                className="px-4 py-2 bg-gradient-to-r from-cyan-600 to-teal-600 text-white rounded-lg hover:from-cyan-500 hover:to-teal-500"
               >
                 Save View
               </button>
