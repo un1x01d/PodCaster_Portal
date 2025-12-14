@@ -185,64 +185,87 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
 
         // Find primary column
         let column = null;
-        // Sort headers by length descending to prioritize specific columns
+        const candidates = [];
+
+        // 1. Direct Header Matches
         const sortedHeaders = [...headers].sort((a, b) => b.length - a.length);
-
-        // Collect all potential matches first
-        const potentialColumns = [];
         for (const h of sortedHeaders) {
-            if (q.includes(h.toLowerCase())) { potentialColumns.push(h); }
+            if (q.includes(h.toLowerCase())) {
+                candidates.push({ col: h, type: 'direct' });
+            }
         }
 
-        // Decide best column based on operation
-        if (potentialColumns.length > 0) {
+        // 2. Dictionary Matches
+        const dictionary = {
+            'revenue': ['revenue', 'sales', 'income', 'turnover', 'gross', 'amount', 'total', 'valuable'],
+            'profit': ['profit', 'net income', 'earnings', 'gain', 'margin', 'surplus', 'bottom line', 'profitable'],
+            'cost': ['cost', 'expense', 'spending', 'cogs', 'expenditure', 'fee', 'charge', 'overhead', 'expensive', 'costly'],
+            'date': ['date', 'time', 'year', 'month', 'day', 'period', 'when'],
+            'customer': ['customer', 'client', 'buyer', 'purchaser', 'account', 'company'],
+            'product': ['product', 'item', 'goods', 'service', 'sku', 'commodity'],
+            'region': ['region', 'location', 'area', 'country', 'state', 'zone', 'city', 'territory']
+        };
+
+        for (const [key, synonyms] of Object.entries(dictionary)) {
+            if (synonyms.some(s => q.includes(s))) {
+                const match = headers.find(h => synonyms.some(s => h.toLowerCase().includes(s)));
+                if (match && !candidates.some(c => c.col === match)) {
+                    candidates.push({ col: match, type: 'dictionary', keyword: key });
+                }
+            }
+        }
+
+        // 3. Fallback: Generic numeric for "how much"
+        if (candidates.length === 0 && q.match(/how much|what.*make|money/)) {
+            const types = analyzeColumns();
+            const numericCols = headers.filter(h => types[h] === 'number');
+            if (numericCols.length > 0) candidates.push({ col: numericCols[0], type: 'inference' });
+        }
+
+        // Select Best Candidate
+        if (candidates.length > 0) {
+            // Helper to detect ratio/percentage columns
+            const isRatio = (name) => /%|percent|margin|rate|ratio/i.test(name);
+
+            // Priority 1: If operation implies usage (Math -> Numeric)
             if (['SUM', 'AVG', 'MAX', 'MIN', 'COMPARE', 'CHART'].includes(operation)) {
-                // Prefer numeric columns for math
-                const numericMatch = potentialColumns.find(c => isNumericColumn(c));
-                column = numericMatch || potentialColumns[0];
-            } else {
-                column = potentialColumns[0];
-            }
-        }
 
-        // Fallback checks (Words search)
-        if (!column) {
-            const words = q.split(' ').filter(w => w.length > 3);
-            for (const word of words) {
-                const found = findColumn(word);
-                if (found) {
-                    column = found;
-                    // Verify if strict numeric is needed? Not necessarily, but good to keep in mind
-                    break;
+                // Filter for numeric columns first
+                let numericCandidates = candidates.filter(c => isNumericColumn(c.col));
+
+                // Refinement: If looking for financial metrics (profit, revenue, cost), prefer "Amounts" over "Ratios"
+                // e.g. "Gross Profit" > "Profit Margin %"
+                const financialKeywords = ['profit', 'revenue', 'cost'];
+                const hasFinancialIntent = candidates.some(c => c.keyword && financialKeywords.includes(c.keyword));
+
+                if (hasFinancialIntent && numericCandidates.length > 1) {
+                    const amountCandidates = numericCandidates.filter(c => !isRatio(c.col));
+                    if (amountCandidates.length > 0) {
+                        numericCandidates = amountCandidates;
+                    }
                 }
-            }
-        }
 
-        // Dictionary-based Column Inference
-        if (!column) {
-            const dictionary = {
-                'revenue': ['revenue', 'sales', 'income', 'turnover', 'gross', 'amount', 'total'],
-                'profit': ['profit', 'net income', 'earnings', 'gain', 'margin', 'surplus', 'bottom line'],
-                'cost': ['cost', 'expense', 'spending', 'cogs', 'expenditure', 'fee', 'charge', 'overhead'],
-                'date': ['date', 'time', 'year', 'month', 'day', 'period', 'when'],
-                'customer': ['customer', 'client', 'buyer', 'purchaser', 'account', 'company'],
-                'product': ['product', 'item', 'goods', 'service', 'sku', 'commodity'],
-                'region': ['region', 'location', 'area', 'country', 'state', 'zone', 'city', 'territory']
-            };
-
-            for (const [key, synonyms] of Object.entries(dictionary)) {
-                if (synonyms.some(s => q.includes(s))) {
-                    const match = headers.find(h => synonyms.some(s => h.toLowerCase().includes(s)));
-                    if (match) { column = match; break; }
+                if (numericCandidates.length > 0) {
+                    // Pick the shortest one? Or the one that matches best?
+                    // Usually shortest is the "main" column (Profit vs Gross Profit vs Profit Margin)
+                    // Sort by length ASC to pick "Profit" over "Gross Profit" if both are valid amounts? 
+                    // Or "Gross Profit" (12) vs "Profit" (6).
+                    // But in user case: "Gross Profit" (12) vs "Profit Margin %" (15).
+                    // We filtered Margin %.
+                    // We have "Gross Profit".
+                    // Pick the first remaining.
+                    column = numericCandidates[0].col;
                 }
             }
 
-            // Fallback: Generic numeric for "how much"
-            if (!column && q.match(/how much|what.*make|money/)) {
-                const types = analyzeColumns();
-                const numericCols = headers.filter(h => types[h] === 'number');
-                if (numericCols.length > 0) column = numericCols[0];
+            // Priority 2: Direct match if no numeric requirement or no numeric found
+            if (!column) {
+                const direct = candidates.find(c => c.type === 'direct');
+                if (direct) column = direct.col;
             }
+
+            // Priority 3: First available
+            if (!column) column = candidates[0].col;
         }
 
         // Context Fallback (if still null)
