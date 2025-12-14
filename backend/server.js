@@ -43,10 +43,10 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
  * Paths (ensure before Multer)
  * ------------------------------------------------------------------------- */
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const UPLOADS_DIR = path.join(__dirname, "uploads");
-fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-const TMP_DIR = path.join(UPLOADS_DIR, "tmp");
-fs.mkdirSync(TMP_DIR, { recursive: true });
+// const UPLOADS_DIR = path.join(__dirname, "uploads");
+// fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+// const TMP_DIR = path.join(UPLOADS_DIR, "tmp");
+// fs.mkdirSync(TMP_DIR, { recursive: true });
 
 /* ----------------------------------------------------------------------------
  * Helpers
@@ -297,12 +297,8 @@ app.get("/groups/:id/sheets", auth, async (req, res) => {
 /* ----------------------------------------------------------------------------
  * Multer
  * ------------------------------------------------------------------------- */
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, TMP_DIR),
-  filename: (_req, file, cb) => cb(null, file.originalname),
-});
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 100 * 1024 * 1024 },
 });
 
@@ -315,28 +311,28 @@ app.post("/upload", auth, upload.single("file"), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No file" });
 
     const originalName = req.file.originalname || "uploaded.xlsx";
-    const tmpPath = req.file.path;
+    // const tmpPath = req.file.path; // No temp path with memory storage
     const folderId = req.body?.folderId ? parseInt(req.body.folderId, 10) : null;
 
     console.log(`[upload] name=${originalName} mime=${req.file.mimetype} folderId=${folderId ?? "—"}`);
 
     let rows = [];
     try {
-      const buf = fs.readFileSync(tmpPath);
+      const buf = req.file.buffer; // Access buffer directly
       const wb = XLSX.read(buf, { type: "buffer", cellDates: true });
       const sn = wb.SheetNames[0];
       if (!sn) throw new Error("no_sheets_buffer");
       rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { defval: "" });
     } catch (eBuf) {
+      // Fallback for string/CSV parsing if buffer fails (unlikely for XLSX but possible for CSV)
       try {
-        const str = fs.readFileSync(tmpPath, "utf8");
+        const str = req.file.buffer.toString('utf8');
         const wb = XLSX.read(str, { type: "string", cellDates: true });
         const sn = wb.SheetNames[0];
         if (!sn) throw new Error("no_sheets_string");
         rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { defval: "" });
       } catch (eStr) {
         const msg = String(eStr?.message || eBuf?.message || "");
-        fs.unlink(tmpPath, () => { });
         if (msg.includes("Invalid HTML: could not find <table>")) {
           return res.status(422).json({
             error: "html_without_tables",
@@ -350,38 +346,22 @@ app.post("/upload", auth, upload.single("file"), async (req, res) => {
       }
     }
 
-    // 1) Write a backup copy to folders if needed (archive only)
+    // 1) SKIP writing backup copy to folders (DB only requirement)
     let assignedFolderId = null;
-    let stored_relpath = null;
+    let stored_relpath = null; // No longer storing path
+
     if (Number.isInteger(folderId)) {
+      // Verify folder exists
       const f = await query(
-        `SELECT f.id, f.name, g.name AS group_name
-           FROM folders f
-           LEFT JOIN groups g ON g.id = f.group_id
-          WHERE f.id = $1
-          LIMIT 1`,
+        `SELECT id FROM folders WHERE id = $1 LIMIT 1`,
         [folderId]
       );
       if (f.length) {
         assignedFolderId = f[0].id;
-        const safeFolderName = sanitizeName(`${f[0].id}-${f[0].name}`);
-        const targetDir = path.join(UPLOADS_DIR, "folders", safeFolderName);
-        ensureDir(targetDir);
-        const stampedName = `${timestamp()}_${sanitizeName(originalName.replace(/\.[^/.]+$/, ""))}.xlsx`;
-        const folderDest = path.join(targetDir, stampedName);
-
-        // Serialize strictly for archival
-        const wbOut = XLSX.utils.book_new();
-        const wsOut = XLSX.utils.json_to_sheet(rows);
-        XLSX.utils.book_append_sheet(wbOut, wsOut, "Sheet1");
-        const xbuf = XLSX.write(wbOut, { bookType: "xlsx", type: "buffer" });
-        fs.writeFileSync(folderDest, xbuf);
-
-        stored_relpath = path.relative(UPLOADS_DIR, folderDest);
       }
     }
 
-    fs.unlink(tmpPath, () => { });
+    // fs.unlink(tmpPath, () => { }); // No temp file to cleaning up
 
     const headers = Object.keys(rows[0] || {});
     const sheetId = Date.now().toString();
@@ -426,7 +406,7 @@ app.post("/upload", auth, upload.single("file"), async (req, res) => {
     await query("UPDATE sheets SET active = FALSE", []);
     await query(
       "INSERT INTO sheets (id, headers, active, filename, folder_id, stored_path) VALUES ($1,$2,$3,$4,$5,$6)",
-      [sheetId, JSON.stringify(headers), true, versionedFilename, assignedFolderId, stored_relpath]
+      [sheetId, JSON.stringify(headers), true, versionedFilename, assignedFolderId, null]
     );
 
     // 3) Batch Insert Rows into DB

@@ -648,7 +648,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
             <option value="producer">producer</option>
             <option value="admin">admin</option>
           </select>
-          <button className="bg-blue-600 hover:bg-blue-700 text-white rounded p-2" onClick={addUser}>
+          <button className="bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white rounded p-2" onClick={addUser}>
             Add User
           </button>
         </div>
@@ -658,7 +658,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
           {users.map((u) => (
             <div
               key={u.id}
-              className={`flex items-center justify-between px-3 py-2 border-b cursor-pointer ${selectedUserId === u.id ? "bg-blue-50" : "bg-white"
+              className={`flex items-center justify-between px-3 py-2 border-b cursor-pointer ${selectedUserId === u.id ? "bg-cyan-50" : "bg-white"
                 }`}
               onClick={() => setSelectedUserId(u.id)}
             >
@@ -774,7 +774,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
 
                 <div className="mt-2 flex gap-2">
                   <button
-                    className="bg-green-600 hover:bg-green-700 text-white rounded px-4 py-2 flex-1"
+                    className="bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white rounded px-4 py-2 flex-1"
                     onClick={saveUserPermissions}
                   >
                     Save Column Permissions
@@ -794,7 +794,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-sm font-semibold">Row Filters:</span>
                     <button
-                      className="bg-blue-600 hover:bg-blue-700 text-white rounded px-2 py-1 text-xs"
+                      className="bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white rounded px-2 py-1 text-xs"
                       onClick={() => setUserRowFilters([...userRowFilters, { key: "", value: "" }])}
                     >
                       + Add Filter
@@ -835,7 +835,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                     </div>
                   ))}
                   <button
-                    className="bg-green-600 hover:bg-green-700 text-white rounded px-3 py-1 mt-2"
+                    className="bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white rounded px-3 py-1 mt-2"
                     onClick={saveUserPermissions}
                   >
                     Save
@@ -894,7 +894,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                   ))}
                 </select>
                 <button
-                  className="bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2"
+                  className="bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white rounded px-4 py-2"
                   onClick={async () => {
                     await axios.put(
                       `${API}/users/${selectedUserId}/default-view`,
@@ -923,7 +923,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
             value={newGroupName}
             onChange={e => setNewGroupName(e.target.value)}
           />
-          <button className="bg-blue-600 hover:bg-blue-700 text-white rounded px-3" onClick={createGroup}>
+          <button className="bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white rounded px-3" onClick={createGroup}>
             Create
           </button>
         </div>
@@ -932,7 +932,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
           {groups.map(g => (
             <div
               key={g.id}
-              className={`px-3 py-2 border-b cursor-pointer ${selectedGroupId === g.id ? "bg-blue-50" : "bg-white"}`}
+              className={`px-3 py-2 border-b cursor-pointer ${selectedGroupId === g.id ? "bg-cyan-50" : "bg-white"}`}
               onClick={() => setSelectedGroupId(g.id)}
             >
               <div className="flex items-center justify-between">
@@ -969,7 +969,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                   .map(u => <option key={u.id} value={u.id}>{u.email}</option>)
                 }
               </select>
-              <button className="bg-green-600 hover:bg-green-700 text-white rounded px-3" onClick={addUserToGroup}>
+              <button className="bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white rounded px-3" onClick={addUserToGroup}>
                 Add
               </button>
             </div>
@@ -1148,7 +1148,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
 
                 <div className="mt-2 flex gap-2">
                   <button
-                    className="bg-green-600 hover:bg-green-700 text-white rounded px-4 py-2 flex-1"
+                    className="bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white rounded px-4 py-2 flex-1"
                     onClick={saveGroupPermissions}
                   >
                     Save Column Permissions
@@ -1168,7 +1168,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-sm font-semibold">Row Filters:</span>
                     <button
-                      className="bg-blue-600 hover:bg-blue-700 text-white rounded px-2 py-1 text-xs"
+                      className="bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white rounded px-2 py-1 text-xs"
                       onClick={() => setGroupRowFilters([...groupRowFilters, { key: "", value: "" }])}
                     >
                       + Add Filter
@@ -1209,7 +1209,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                     </div>
                   ))}
                   <button
-                    className="bg-green-600 hover:bg-green-700 text-white rounded px-3 py-1 mt-2"
+                    className="bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white rounded px-3 py-1 mt-2"
                     onClick={saveGroupPermissions}
                   >
                     Save
