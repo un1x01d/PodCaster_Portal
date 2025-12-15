@@ -328,6 +328,11 @@ Try asking:
 
         if (dateRange && column && isDateColumn(column)) column = null;
 
+        // CRITICAL FIX: If we found a Date Range, do NOT search for value filters using the year string
+        // This prevents "2023" from matching "20239" in a cost column.
+        const qWithoutDates = dateRanges.reduce((acc, r) => acc.replace(r.label.toLowerCase(), ''), q.toLowerCase());
+        const isDateOnlyQuery = qWithoutDates.trim().length === 0 || qWithoutDates.match(/^(?:in|on|for|from|to|at|by)\s*$/);
+
 
         // ---------------- Filter Parsing (Implicit & Explicit) ----------------
         let filter = null;
@@ -428,7 +433,8 @@ Try asking:
         }
 
         // 3. Implicit Filter (Value only, very aggressive search)
-        if (!filter && !q.match(/^(?:compare|show|what|how)/)) {
+        // Only run if we don't already have a strong Date Range signal for a "Date Only" query
+        if (!filter && !q.match(/^(?:compare|show|what|how)/) && !isDateOnlyQuery) {
             // If query is just a word or phrase, try to find it as a value in ANY column
             let cleanQuery = q.replace(/[?.,!]/g, '').trim();
             // Remove common start verbs
@@ -460,7 +466,7 @@ Try asking:
         }
 
         // 4. Residual Search (if column known but value separate)
-        if (!filter && column) {
+        if (!filter && column && !isDateOnlyQuery) {
             let residual = q.replace(column.toLowerCase(), '').replace(/show|me|calculate|find|what|is|how|many|total|sum|average|avg|filter|by|the|a|an|only|just/g, '').trim();
             // remove symbols
             residual = residual.replace(/[=:]/g, ' ').trim();
@@ -567,18 +573,27 @@ Try asking:
             }
 
             // Apply date filter
+            let dateFilteredResult = [...result];
             if (parsed.dateRange) {
                 const dateCol = headers.find(h => isDateColumn(h));
                 if (dateCol) {
-                    result = result.filter(row => {
-                        const rowDate = new Date(row[dateCol]);
-                        return rowDate >= parsed.dateRange.start && rowDate <= parsed.dateRange.end;
+                    dateFilteredResult = result.filter(row => {
+                        const cellVal = row[dateCol];
+                        // Handle potential ISO strings or different formats
+                        const rowDate = new Date(cellVal);
+                        return !isNaN(rowDate) && rowDate >= parsed.dateRange.start && rowDate <= parsed.dateRange.end;
                     });
+
+                    // If we have a Date Range, use this result
+                    result = dateFilteredResult;
                 }
             }
 
             // Apply one-off filters (e.g. "Total Revenue for West") found in query
+            // BUT: If the filter value is just a Year/Date string that we ALREADY handled with dateRange, default to NOT applying it?
             if (parsed.filter && parsed.operation !== 'FILTER' && parsed.operation !== 'APPLY_FILTER') {
+                // Double check we aren't re-filtering the date string against random columns
+                // But typically parseQuery prevents this now.
                 result = result.filter(row => String(row[parsed.filter.column]).toLowerCase().includes(parsed.filter.value.toLowerCase()));
             }
 
