@@ -293,6 +293,11 @@ Try asking:
         else if (q.match(/most common|most frequent|most popular|top|mode|common|busy|busiest/)) operation = 'MODE';
         else if (q.match(/max|highest|maximum|most|largest|best/)) operation = 'MAX';
         else if (q.match(/min|lowest|minimum|least|worst|bottom/)) operation = 'MIN';
+        // Follow-up detection: "which [column]", "what [column]", "show [column]", "their [column]"
+        else if (q.match(/^(?:which|what|show|their|the)\s+([a-z\s]+?)(?:\?|$|\s+(?:are|is|was|were))/i)) {
+            // Check if we have recent results stored and the user is asking about a column
+            operation = 'FOLLOW_UP';
+        }
         else if (q.match(/show|find|list|view|only|just|where|contains?|filter/)) operation = 'FILTER';
 
         // Find primary column
@@ -848,6 +853,15 @@ Try asking:
                     const slice = sortedTop.slice(0, n);
                     const topLabelCol = headers.find(h => !isNumericColumn(h) && h !== parsed.column) || headers[0];
 
+                    // Store results in context for follow-up questions
+                    setContext(prev => ({
+                        ...prev,
+                        lastResults: slice,
+                        lastResultColumn: parsed.column,
+                        lastResultLabel: topLabelCol,
+                        lastOperation: isBottom ? 'BOTTOM' : 'TOP'
+                    }));
+
                     return `${isBottom ? 'Bottom' : 'Top'} ${n} ${parsed.column}:\n${slice.map((r, i) => `${i + 1}. ${formatValue(r[topLabelCol], topLabelCol)}: ${formatValue(r[parsed.column], parsed.column)}`).join('\n')}`;
 
                 case 'SORT':
@@ -934,6 +948,36 @@ Try asking:
                     if (!modeVal) return `Could not calculate most common value for "${parsed.column}".`;
 
                     return `Most common ${parsed.column}: "${formatValue(modeVal, parsed.column)}" (${maxCount} occurrences).`;
+
+                case 'FOLLOW_UP':
+                    // Handle follow-up questions about previous results
+                    if (!context.lastResults || context.lastResults.length === 0) {
+                        return "🤔 I don't have any recent results to reference. Try asking a question first like \"Top 5 revenue\".";
+                    }
+
+                    // Find the column the user is asking about
+                    let followUpCol = parsed.column;
+                    if (!followUpCol) {
+                        // Try to extract from query
+                        const colMatch = input.match(/(?:which|what|show|their|the)\s+([a-z\s]+?)(?:\?|$|\s+(?:are|is|was|were))/i);
+                        if (colMatch) {
+                            const potentialCol = colMatch[1].trim();
+                            followUpCol = findColumn(potentialCol);
+                        }
+                    }
+
+                    if (!followUpCol) {
+                        return `🤔 I couldn't understand which column you want from the previous results. Available columns: ${headers.slice(0, 5).join(', ')}...`;
+                    }
+
+                    // Extract the requested column from stored results
+                    const followUpResults = context.lastResults.map((row, i) => {
+                        const labelVal = formatValue(row[context.lastResultLabel], context.lastResultLabel);
+                        const requestedVal = formatValue(row[followUpCol], followUpCol);
+                        return `${i + 1}. ${labelVal}: ${followUpCol} = ${requestedVal}`;
+                    });
+
+                    return `${followUpCol} from the ${context.lastOperation || 'previous'} results:\n${followUpResults.join('\n')}`;
 
                 default:
                     return "I'm not sure how to help with that. Try asking about totals, averages, counts, or filtering data.";

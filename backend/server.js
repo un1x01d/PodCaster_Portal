@@ -83,9 +83,12 @@ async function initDb() {
       id SERIAL PRIMARY KEY,
       email TEXT NOT NULL UNIQUE,
       password TEXT,
-      role TEXT NOT NULL DEFAULT 'producer'
+      role TEXT NOT NULL DEFAULT 'producer',
+      default_view_id INT
     );
   `);
+  // Add column if missing (for existing DBs)
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS default_view_id INT;`);
 
   // GROUPS
   await pool.query(`
@@ -95,6 +98,8 @@ async function initDb() {
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `);
+  // Add column if missing (for existing DBs)
+  await pool.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
 
   // USER_GROUPS (membership)
   await pool.query(`
@@ -257,7 +262,17 @@ app.post("/login", async (req, res) => {
   if (!rows.length) return res.status(401).json({ error: "Invalid credentials" });
   const u = rows[0];
   const token = jwt.sign({ id: u.id, email: u.email, role: u.role }, JWT_SECRET);
-  res.json({ token });
+  res.json({ token, user: { id: u.id, email: u.email, role: u.role } });
+});
+
+// Alias for frontend compatibility
+app.post("/auth/login", async (req, res) => {
+  const { email, password } = req.body || {};
+  const rows = await query("SELECT * FROM users WHERE email=$1 AND password=$2", [email, password]);
+  if (!rows.length) return res.status(401).json({ error: "Invalid credentials" });
+  const u = rows[0];
+  const token = jwt.sign({ id: u.id, email: u.email, role: u.role }, JWT_SECRET);
+  res.json({ token, user: { id: u.id, email: u.email, role: u.role } });
 });
 
 /* ----------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-import React, { useRef, useMemo, forwardRef } from "react";
+import React, { useState, useRef, useMemo, forwardRef } from "react";
 import { FixedSizeList as List } from "react-window";
 import AutoSizer from "react-virtualized-auto-sizer";
 import {
@@ -118,6 +118,52 @@ export default function DashboardBody(props) {
     } = props;
 
     const headerRef = useRef(null);
+
+    // State for rows to show
+    const [rowsToShow, setRowsToShow] = useState(50);
+
+    // State for year range selection in trends
+    const [trendStartYear, setTrendStartYear] = useState('');
+    const [trendEndYear, setTrendEndYear] = useState('');
+
+    // Helper to format numbers with commas and exactly two decimal places
+    const formatNumber = (val) => {
+        if (typeof val === 'number' && !isNaN(val)) {
+            return new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(val);
+        }
+        const num = Number(val);
+        if (!isNaN(num) && val !== '' && val !== null) {
+            return new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(num);
+        }
+        return val;
+    };
+
+    // Compute available years from the selected date column
+    const availableYears = useMemo(() => {
+        if (!trendsDateKey || !sortedData) return [];
+        const yearsSet = new Set();
+        sortedData.forEach(row => {
+            const val = row[trendsDateKey];
+            if (val) {
+                const dt = new Date(val);
+                const y = dt.getFullYear();
+                if (!isNaN(y)) yearsSet.add(y);
+            }
+        });
+        return Array.from(yearsSet).sort((a, b) => a - b);
+    }, [sortedData, trendsDateKey]);
+
+    // Filter trends data based on selected year range
+    const filteredTrendsData = useMemo(() => {
+        if (!trendsData) return [];
+        if (!trendStartYear && !trendEndYear) return trendsData;
+        const start = trendStartYear ? parseInt(trendStartYear, 10) : -Infinity;
+        const end = trendEndYear ? parseInt(trendEndYear, 10) : Infinity;
+        return trendsData.filter(d => {
+            const y = new Date(d.date).getFullYear();
+            return y >= start && y <= end;
+        });
+    }, [trendsData, trendStartYear, trendEndYear]);
 
     // Calculate min col width
     const minColWidth = 180; // Increased for better visibility
@@ -361,8 +407,8 @@ export default function DashboardBody(props) {
                                                 interval={0}
                                                 tick={{ fontSize: 11, fill: '#6b7280' }}
                                             />
-                                            <YAxis />
-                                            <Tooltip contentStyle={{ borderRadius: '8px', zIndex: 100 }} />
+                                            <YAxis tickFormatter={formatNumber} />
+                                            <Tooltip formatter={(value) => formatNumber(value)} contentStyle={{ borderRadius: '8px', zIndex: 100 }} />
                                             <Bar dataKey="value" fill="#8884d8">
                                                 {pieData.map((entry, index) => (
                                                     <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
@@ -396,7 +442,7 @@ export default function DashboardBody(props) {
                                                     {pivotHeaders.map((h, j) => (
                                                         <td key={j} className={`p-3 whitespace-nowrap ${j > 0 ? 'text-right font-mono text-blue-700' : 'font-medium text-gray-800'}`}>
                                                             {typeof row[h] === 'number'
-                                                                ? row[h].toLocaleString(undefined, { maximumFractionDigits: 2 })
+                                                                ? formatNumber(row[h])
                                                                 : (row[h] || '-')}
                                                         </td>
                                                     ))}
@@ -448,15 +494,29 @@ export default function DashboardBody(props) {
                                 <option value="day">Daily</option>
                             </select>
                         </div>
+                        <div>
+                            <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Start Year</label>
+                            <select value={trendStartYear} onChange={e => setTrendStartYear(e.target.value)} className="border border-slate-300 bg-white p-2 rounded-lg text-sm min-w-[120px] h-10">
+                                <option value="">All</option>
+                                {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
+                            </select>
+                        </div>
+                        <div>
+                            <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">End Year</label>
+                            <select value={trendEndYear} onChange={e => setTrendEndYear(e.target.value)} className="border border-slate-300 bg-white p-2 rounded-lg text-sm min-w-[120px] h-10">
+                                <option value="">All</option>
+                                {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
+                            </select>
+                        </div>
                     </div>
                     <div className="h-80 w-full bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
-                        {trendsData && trendsData.length > 0 ? (
+                        {filteredTrendsData && filteredTrendsData.length > 0 ? (
                             <ResponsiveContainer width="100%" height="100%">
-                                <LineChart data={trendsData}>
+                                <LineChart data={filteredTrendsData}>
                                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
                                     <XAxis dataKey="date" tick={{ fontSize: 12, fill: '#6b7280' }} tickLine={false} axisLine={false} dy={10} />
-                                    <YAxis tick={{ fontSize: 12, fill: '#6b7280' }} tickLine={false} axisLine={false} dx={-10} />
-                                    <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
+                                    <YAxis tick={{ fontSize: 12, fill: '#6b7280' }} tickLine={false} axisLine={false} dx={-10} tickFormatter={formatNumber} />
+                                    <Tooltip formatter={(value) => formatNumber(value)} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
                                     <Legend />
                                     <Line type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={3} dot={{ r: 4, strokeWidth: 2, fill: 'white' }} activeDot={{ r: 8, fill: '#3b82f6' }} />
                                 </LineChart>
