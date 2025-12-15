@@ -591,7 +591,11 @@ export default function App() {
                   <td className="p-2">{f.filename}</td>
                   <td className="p-2 flex gap-2">
                     <button
-                      onClick={() => { loadData(f.id); setSelectOpen(false); }}
+                      onClick={() => {
+                        loadData(f.id);
+                        setActiveFilename(f.filename); // Set filename when loading from list
+                        setSelectOpen(false);
+                      }}
                       className="bg-blue-900 text-white px-3 py-1 rounded shadow text-xs"
                     >
                       Load

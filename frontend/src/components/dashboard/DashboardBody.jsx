@@ -348,7 +348,7 @@ export default function DashboardBody(props) {
                     {sortedData?.length > 0 ? (
                         <>
                             <div className="sticky top-0 bg-blue-50 text-blue-900 font-semibold border-b border-blue-200 z-10 px-4 py-2">
-                                {activeFilename ? <>Loaded: <b>{activeFilename}</b></> : "No sheet loaded"}
+                                {activeFilename ? <>Loaded: <b>{activeFilename}</b></> : <>Loaded: <b>Sheet</b></>}
                             </div>
 
                             {/* Virtualized Table Container */}
