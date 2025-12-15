@@ -7,7 +7,7 @@ export default function SearchableSelect({
     placeholder = "Select…",
     className = "",
     disabled = false,
-    buttonClassName = "border p-2 rounded min-w-[10rem] bg-white",
+    buttonClassName = "bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white px-3 rounded-lg h-10 shadow-md flex items-center gap-2 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-indigo-200",
     panelWidth = 260,
 }) {
     const [open, setOpen] = useState(false);
@@ -61,7 +61,7 @@ export default function SearchableSelect({
             {open && !disabled && (
                 <div
                     ref={panelRef}
-                    className="absolute z-50 mt-1 bg-white border border-gray-200 rounded-xl shadow-xl p-2"
+                    className="absolute z-50 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg p-2"
                     style={{ width: panelWidth }}
                 >
                     <input

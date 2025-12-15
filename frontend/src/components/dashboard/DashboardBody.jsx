@@ -272,6 +272,14 @@ export default function DashboardBody(props) {
                 {/* Export dropdown + Charts dropdown */}
                 <div className="flex gap-3 ml-0 md:ml-6 items-center">
                     <ExportMenu onCSV={exportCSV} onXLSX={exportXLSX} onPDF={exportPDF} />
+                    <SearchableSelect
+                        options={[{ value: 50, label: "50 rows" }, { value: 100, label: "100 rows" }, { value: 200, label: "200 rows" }]}
+                        value={rowsToShow}
+                        onChange={(e) => setRowsToShow(Number(e.target.value))}
+                        placeholder="Rows per page"
+                        className="ml-2"
+                        buttonClassName="border border-slate-200 p-2 rounded-lg min-w-[8rem] bg-white h-10"
+                    />
                     <ChartMenu
                         pivotOn={pivotOn}
                         setPivotOn={setPivotOn}
@@ -642,7 +650,7 @@ export default function DashboardBody(props) {
                                         {({ height, width }) => (
                                             <List
                                                 height={height}
-                                                itemCount={sortedData.length}
+                                                itemCount={Math.min(sortedData.length, rowsToShow)}
                                                 itemSize={36}
                                                 width={width}
                                                 outerRef={(el) => {
