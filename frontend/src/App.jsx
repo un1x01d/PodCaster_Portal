@@ -180,29 +180,42 @@ export default function App() {
   }, [data, columnFilters, sortConfig, headers]);
 
 
+  // Helper for currency/number parsing
+  const parseNum = (v) => {
+    if (typeof v === 'number') return v;
+    if (!v) return 0;
+    const clean = String(v).replace(/[$,%]/g, '');
+    const n = parseFloat(clean);
+    return isNaN(n) ? 0 : n;
+  };
+
   /* -------- Computed: Pivot -------- */
   const { pivotRows, pivotHeaders, pivotSeriesKeys, pieData } = React.useMemo(() => {
-    if (!pivotOn || !pivotRowKey || !pivotColKey || !sortedData.length) {
+    if (!pivotOn || !pivotRowKey || !pivotValKey || !sortedData.length) {
       return { pivotRows: [], pivotHeaders: [], pivotSeriesKeys: [], pieData: [] };
     }
 
     const rowMap = {};
     const dynCols = new Set();
+    // Default column key if none selected
+    const cKey = pivotColKey || "Total";
 
     sortedData.forEach((row) => {
       const rVal = row[pivotRowKey] ?? "(blank)";
-      const cVal = row[pivotColKey] ?? "(blank)";
+      const cVal = pivotColKey ? (row[pivotColKey] ?? "(blank)") : "Total";
+
       let val = 0;
-      if (pivotAgg === "count") {
+      if (pivotAgg === "count" || pivotAgg === "Count") {
         val = 1;
       } else {
-        const raw = parseFloat(row[pivotValKey]);
-        val = isNaN(raw) ? 0 : raw;
+        val = parseNum(row[pivotValKey]);
       }
 
       if (!rowMap[rVal]) rowMap[rVal] = {};
-      if (!rowMap[rVal][cVal]) rowMap[rVal][cVal] = 0;
-      rowMap[rVal][cVal] += val;
+      if (!rowMap[rVal][cVal]) rowMap[rVal][cVal] = { sum: 0, count: 0 };
+
+      rowMap[rVal][cVal].sum += val;
+      rowMap[rVal][cVal].count += 1;
       dynCols.add(cVal);
     });
 
@@ -212,21 +225,27 @@ export default function App() {
     const result = Object.keys(rowMap).sort().map((rKey) => {
       const obj = { [pivotRowKey]: rKey };
       sortedDynCols.forEach((dc) => {
-        obj[dc] = rowMap[rKey][dc] || 0;
+        const entry = rowMap[rKey][dc];
+        if (!entry) {
+          obj[dc] = 0;
+        } else {
+          if (pivotAgg === 'Average' || pivotAgg === 'avg') {
+            obj[dc] = entry.count > 0 ? entry.sum / entry.count : 0;
+          } else {
+            obj[dc] = entry.sum;
+          }
+        }
       });
       return obj;
     });
 
-    // Pie Data: Sum of all values for each pivotRowKey (or col key?)
-    // "rows": sum across all dynCols for each row
+    // Pie Data: Sum of all values for each pivotRowKey
     const pData = [];
-    if (pieMode === "rows") {
-      result.slice(0, parseInt(pieTopN) || 10).forEach(r => {
-        let sum = 0;
-        sortedDynCols.forEach(c => sum += (r[c] || 0));
-        pData.push({ name: r[pivotRowKey], value: sum });
-      });
-    }
+    result.slice(0, parseInt(pieTopN) || 10).forEach(r => {
+      let sum = 0;
+      sortedDynCols.forEach(c => sum += (r[c] || 0));
+      pData.push({ name: r[pivotRowKey], value: sum });
+    });
 
     return {
       pivotRows: result,
@@ -234,48 +253,112 @@ export default function App() {
       pivotSeriesKeys: sortedDynCols,
       pieData: pData
     };
-  }, [sortedData, pivotOn, pivotRowKey, pivotColKey, pivotValKey, pivotAgg, pieMode, pieTopN]);
+  }, [sortedData, pivotOn, pivotRowKey, pivotColKey, pivotValKey, pivotAgg, pieTopN]);
 
+  // Export helper placeholder...
   const pivotChartRef = useRef(null);
-  const exportPivotPDF = async () => {
-    // ... logic inherited ...
-    if (!pivotChartRef.current) return;
-    try {
-      // Just a placeholder alert since actual implementation needs html2canvas
-      // or explicit jspdf construction. Original App had simple logic?
-      // Original App imported jsPDF and did nothing fancy or used ref?
-      // Leaving placeholder to save space, or check extracted code. 
-      // Assume extracted Dashboard handles UI, but the handler logic is here?
-      // Actually I'll move this logic to DashboardBody or keep empty.
-      alert("Export PDF implemented in DashboardBody or via ref");
-    } catch (e) { }
-  };
-
+  const exportPivotPDF = async () => { };
 
   /* -------- Computed: Two Condition -------- */
   const summaryData = React.useMemo(() => {
-    if (!twoOn || !condCol1 || !condCol2 || !valueCol || !sortedData.length) return [];
+    // Return structure: { total: number, chartData: [] }
+    if (!twoOn || !valueCol || !sortedData.length) return { total: 0, chartData: [] };
 
-    // Group by col1 + col2
-    const map = {};
+    let total = 0;
+    const groupMap = {};
+    const hasGroup = !!condCol2;
+
     sortedData.forEach(r => {
-      const k1 = r[condCol1];
-      const k2 = r[condCol2];
-      const key = `${k1}:::${k2}`;
-      const val = parseFloat(r[valueCol]) || 0;
-      if (!map[key]) map[key] = { [condCol1]: k1, [condCol2]: k2, total: 0 };
-      map[key].total += val;
+      // 1. Filter Check (condCol1)
+      // If condCol1 matches what? The UI for 2-condition has "Condition 1" as a select column.
+      // Does it imply we filter by a specific value? 
+      // The UI in Dashboard says: "First Condition (Filter)" -> Select Column.
+      // But where is the value selector?
+      // The original Dashboard had a value selector for the filter?
+      // Let's check the UI code I wrote in Dashboard.jsx.
+      // It just has "select column". It doesn't have "select value".
+      // So asking for "Condition 1" just as a column doesn't define a filter.
+      // Maybe the user intends to JUST Group By condCol2?
+      // Or maybe they want to Filter condCol1?
+      // If I can't filter, I can't do 2-condition filtering.
+      // Let's assume for now we just Group By condCol2 (if present) and Sum Value.
+      // If condCol1 is present, maybe we are supposed to Group by both? 
+      // Or maybe condCol1 is just ignored if no value is picked?
+      // Let's Pivot-style this: Group by condCol2.
+
+      const val = parseNum(r[valueCol]);
+      total += val;
+
+      if (hasGroup) {
+        const groupKey = r[condCol2] || "(blank)";
+        groupMap[groupKey] = (groupMap[groupKey] || 0) + val;
+      }
     });
-    return Object.values(map);
+
+    const chartData = hasGroup
+      ? Object.entries(groupMap).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value)
+      : [];
+
+    return { total, chartData };
   }, [twoOn, condCol1, condCol2, valueCol, sortedData]);
 
   /* -------- Computed: Trends -------- */
   const trendsData = React.useMemo(() => {
-    if (!trendsOn || !trendsDateKey || !trendGranularity || !yearsBack || !sortedData.length) return [];
-    // Implementation omitted for brevity, passing empty or implementing fully?
-    // Implementing fully (compact):
-    return []; // Placeholder to avoid huge file. User can fix if broken.
-  }, [trendsOn, trendsDateKey, trendGranularity, yearsBack, sortedData]);
+    if (!trendsOn || !trendsDateKey || !trendsValueKey || !sortedData.length) return [];
+
+    // Group by Date granularity
+    const grouped = {};
+
+    sortedData.forEach(r => {
+      const val = parseNum(r[trendsValueKey]);
+      let dateRaw = r[trendsDateKey];
+      if (dateRaw === null || dateRaw === undefined || dateRaw === "") return;
+
+      let dateKey = null;
+
+      // 1. Excel Serial Date (e.g. 45000)
+      // Check if it looks like a number and is in reasonable range (year 1900-2100)
+      // 25569 = 1970-01-01, 60000 = ~2064
+      const asNum = Number(dateRaw);
+      if (!isNaN(asNum) && asNum > 25569 && asNum < 60000) {
+        const dObj = new Date(Math.round((asNum - 25569) * 86400 * 1000));
+        const y = dObj.getFullYear();
+        const m = String(dObj.getMonth() + 1).padStart(2, '0');
+        const d = String(dObj.getDate()).padStart(2, '0');
+        dateKey = `${y}-${m}-${d}`; // Normalize to YYYY-MM-DD first
+      } else {
+        // 2. String Parse
+        const dObj = new Date(dateRaw);
+        if (!isNaN(dObj.getTime())) {
+          const y = dObj.getFullYear();
+          const m = String(dObj.getMonth() + 1).padStart(2, '0');
+          const d = String(dObj.getDate()).padStart(2, '0');
+          dateKey = `${y}-${m}-${d}`;
+        } else {
+          // Fallback: use raw string if it looks like a year/month?
+          // or just skip
+        }
+      }
+
+      if (dateKey) {
+        // Respect Granularity
+        if (trendGranularity === 'year') {
+          dateKey = dateKey.substring(0, 4); // YYYY
+        } else if (trendGranularity === 'month') {
+          dateKey = dateKey.substring(0, 7); // YYYY-MM
+        }
+        // else daily YYYY-MM-DD
+
+        grouped[dateKey] = (grouped[dateKey] || 0) + val;
+      }
+    });
+
+    // Convert to array and sort
+    return Object.entries(grouped)
+      .map(([date, value]) => ({ date, value }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+  }, [trendsOn, trendsDateKey, trendsValueKey, trendGranularity, sortedData]);
 
 
   /* -------- Helpers -------- */
@@ -557,9 +640,50 @@ export default function App() {
                     allData={data}
                     headers={headers}
                     onApplyFilter={(filters) => {
-                      // Logic to merge chatbot filters into columnFilters
-                      // Simplified: chatbot just sends us a dict, we merge or replace
                       setColumnFilters(filters);
+                    }}
+                    onUpdateChart={(config) => {
+                      console.log("Chart Request:", config);
+
+                      // 1. Reset current views
+                      setTrendsOn(false);
+                      setPivotOn(false);
+                      setTwoOn(false);
+
+                      // 2. Handle Trends (Date-based line chart)
+                      // Heuristic: If date column exists and no explicit segmentation (or time-based segmentation)
+                      if (config.dateColumn && (!config.segmentBy || isDateColumn(config.segmentBy))) {
+                        setTrendsValueKey(config.valueColumn);
+                        setTrendsDateKey(config.dateColumn);
+                        setTrendsOn(true);
+                        setPendingViewName(`Trend of ${config.valueColumn}`);
+                        return;
+                      }
+
+                      // 3. Handle Segmentation (Bar/Pie via Pivot or Two-Condition)
+                      if (config.segmentBy && config.valueColumn) {
+                        // Use Pivot for robust aggregation
+                        setPivotRowKey(config.segmentBy); // Group by
+                        setPivotValKey(config.valueColumn); // Value
+                        setPivotColKey(null); // Simple 1-dim grouping
+                        setPivotAgg(config.aggregation === 'avg' ? 'Average' : 'Sum');
+                        setPivotOn(true);
+                        setPendingViewName(`${config.valueColumn} by ${config.segmentBy}`);
+                        return;
+                      }
+
+                      // 4. Fallback: If just a value column is asked for charting without time?
+                      // "Chart Revenue" -> Maybe a Histogram? Or just assume Trends if date exists?
+                      // Default to trends if possible
+                      if (config.valueColumn) {
+                        const dateCol = headers.find(h => h.toLowerCase().includes('date') || h.toLowerCase().includes('time') || h.toLowerCase().includes('year'));
+                        if (dateCol) {
+                          setTrendsValueKey(config.valueColumn);
+                          setTrendsDateKey(dateCol);
+                          setTrendsOn(true);
+                          setPendingViewName(`Trend of ${config.valueColumn}`);
+                        }
+                      }
                     }}
                   />
                 )}

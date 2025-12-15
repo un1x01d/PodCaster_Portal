@@ -66,13 +66,21 @@ Try asking:
 
         headers.forEach(h => {
             const samples = sourceData.slice(0, 50).map(r => r[h]).filter(v => v != null && v !== '');
+
             const numericCount = samples.filter(v => {
                 const clean = String(v).replace(/[$,%]/g, '');
                 return !isNaN(Number(clean)) && clean.trim() !== '';
             }).length;
+
+            const excelDateCount = samples.filter(v => {
+                const n = Number(v);
+                return !isNaN(n) && n > 35000 && n < 60000;
+            }).length;
+
             const dateCount = samples.filter(v => !isNaN(Date.parse(v))).length;
 
-            if (samples.length > 0 && numericCount > samples.length * 0.8) types[h] = 'number';
+            if (samples.length > 0 && excelDateCount > samples.length * 0.8) types[h] = 'date';
+            else if (samples.length > 0 && numericCount > samples.length * 0.8) types[h] = 'number';
             else if (samples.length > 0 && dateCount > samples.length * 0.8) types[h] = 'date';
             else types[h] = 'text';
         });
@@ -90,17 +98,53 @@ Try asking:
     };
 
     // Helper to format values for display (fixes T00:00:00.000Z issue)
-    const formatValue = (val) => {
-        if (typeof val !== 'string') return String(val ?? '');
+    const formatValue = (val, colName = null) => {
+        if (val === null || val === undefined) return '';
+
+        // Handle Numbers
+        const num = Number(val);
+        if (!isNaN(num) && String(val).trim() !== '') {
+            // Check if it's likely a date serial (large integer)
+            if (num > 35000 && num < 60000 && colName && isDateColumn(colName)) {
+                // It's a date, let it fall through to string handling or format here?
+                // Usually handle lower down if we want to format date.
+            } else {
+                const isCurrency = colName && /revenue|profit|sales|amount|price|cost|income|expense/i.test(colName) && !/%|percent|margin|rate|ratio/i.test(colName);
+                const isPercent = colName && /%|percent|margin|rate|ratio/i.test(colName);
+
+                if (isCurrency) {
+                    return num.toLocaleString(undefined, { style: 'currency', currency: 'USD' });
+                }
+                if (isPercent) {
+                    return num.toLocaleString(undefined, { style: 'percent', minimumFractionDigits: 1 });
+                }
+                // Standard number with commas
+                return num.toLocaleString();
+            }
+        }
+
+        const strVal = String(val);
         // Strip ISO time suffix
-        if (val.includes('T00:00:00.000Z')) {
-            return val.split('T')[0];
+        if (strVal.includes('T00:00:00.000Z')) {
+            return strVal.split('T')[0];
         }
         // Try strict ISO date regex
-        if (/^\d{4}-\d{2}-\d{2}T/.test(val)) {
-            return val.split('T')[0];
+        if (/^\d{4}-\d{2}-\d{2}T/.test(strVal)) {
+            return strVal.split('T')[0];
         }
-        return val;
+        return strVal;
+    };
+
+    // Helper: Excel Serial Date to JS Date
+    // Excel base date: Dec 30, 1899
+    const excelDateToJSDate = (serial) => {
+        // 25569 = Days between 1900-01-01 and 1970-01-01 plus 2 days for leap year bug in Excel?
+        // Actually typically: (serial - 25569) * 86400 * 1000
+        // But let's be more robust:
+        const utc_days = Math.floor(serial - 25569);
+        const utc_value = utc_days * 86400;
+        const date_info = new Date(utc_value * 1000);
+        return date_info;
     };
 
     // Fuzzy match column name
@@ -188,6 +232,17 @@ Try asking:
         const dateRange = dateRanges.length > 0 ? dateRanges[0] : null;
         let segmentBy = null;
 
+        // Detect "by [column]" for Segmentation / Grouping
+        const segmentMatch = q.match(/\bby\s+([a-zA-Z0-9\s]+?)(?:\?$|$| in | for | at | on )/i);
+        if (segmentMatch) {
+            const potentialSeg = segmentMatch[1].trim();
+            // Verify it's a valid column
+            const matchedSeg = headers.find(h => h.toLowerCase() === potentialSeg.toLowerCase() || h.toLowerCase().includes(potentialSeg.toLowerCase()));
+            if (matchedSeg) {
+                segmentBy = matchedSeg;
+            }
+        }
+
         // Detect Aggregation Type
         if (q.match(/average|avg|mean|typical/)) aggregation = 'avg';
         else if (q.match(/count|how many/)) aggregation = 'count';
@@ -197,6 +252,19 @@ Try asking:
             operation = 'QUESTION';
         }
         else if (q.match(/(?:reset|clear|remove|delete)\s+(?:all\s+)?(?:filters?|fitlers?|fliters?|filtes?)/)) operation = 'RESET_FILTER';
+        else if (q.match(/^all\s+(?:of\s+)?(.+)/)) {
+            // Check if "all [column]" -> Treat as Reset Filter for that column
+            const potentialCol = q.match(/^all\s+(?:of\s+)?(.+)/)[1].trim();
+            const matchedCol = headers.find(h => h.toLowerCase() === potentialCol.toLowerCase() || h.toLowerCase().includes(potentialCol.toLowerCase()));
+            if (matchedCol) {
+                operation = 'RESET_FILTER';
+                // We need to set the column later, or set it here if we assume it works
+                // But parseQuery usually finds column at the end. 
+                // Let's rely on column detection? 
+                // Or hint it? column detection looks for direct header matches. 
+                // "customer type" will likely be found.
+            }
+        }
         else if (q.match(/(?:draw|plot|chart|graph|visualize|trend|see\s+trend)/)) operation = 'CHART';
         else if (q.match(/(?:apply|set|add|use)\s+filt[a-z]*|^filter\s+by/)) operation = 'APPLY_FILTER';
         else if (q.match(/(?:compare|difference|change|vs|versus|better|worse|increase|decrease|growth|drop|rose|fell)/)) operation = 'COMPARE';
@@ -241,14 +309,15 @@ Try asking:
 
         // 2. Dictionary Matches
         const dictionary = {
-            'revenue': ['revenue', 'sales', 'income', 'turnover', 'valuable'],
-            'profit': ['profit', 'net income', 'earnings', 'gain', 'surplus', 'bottom line', 'profitable'],
-            'margin': ['margin', 'rate', 'yield', 'return', 'percentage'],
-            'cost': ['cost', 'expense', 'spending', 'cogs', 'expenditure', 'fee', 'charge', 'overhead', 'expensive', 'costly'],
-            'date': ['date', 'time', 'year', 'month', 'day', 'period', 'when'],
-            'customer': ['customer', 'client', 'buyer', 'purchaser', 'account', 'company'],
-            'product': ['product', 'item', 'goods', 'service', 'sku', 'commodity'],
-            'region': ['region', 'location', 'area', 'country', 'state', 'zone', 'city', 'territory']
+            'revenue': ['revenue', 'sales', 'income', 'turnover', 'valuable', 'net revenue', 'revenue total', 'fixed fee', 'retainer', 'billing rate', 'amount', 'total'],
+            'profit': ['profit', 'net income', 'earnings', 'gain', 'surplus', 'bottom line', 'profitable', 'profit total'],
+            'margin': ['margin', 'rate', 'yield', 'return', 'percentage', 'margin pct', 'profit margin', 'discount pct', 'tax rate'],
+            'cost': ['cost', 'expense', 'spending', 'cogs', 'expenditure', 'fee', 'charge', 'overhead', 'expensive', 'costly', 'cost labor', 'cost total', 'cost expense', 'cost overhead', 'expense billed'],
+            'date': ['date', 'time', 'year', 'month', 'day', 'period', 'when', 'end date', 'paid date', 'start date', 'invoice date', 'retainer months'],
+            'customer': ['customer', 'client', 'buyer', 'purchaser', 'account', 'company', 'customer id', 'customer name', 'customer type', 'account owner'],
+            'product': ['product', 'item', 'goods', 'service', 'sku', 'commodity', 'service line', 'service tier', 'work scope', 'scope notes', 'project name', 'project type', 'project id', 'project status', 'delivery model', 'billing model'],
+            'region': ['region', 'location', 'area', 'country', 'state', 'zone', 'city', 'territory', 'account region', 'business unit', 'industry type'],
+            'status': ['status', 'state', 'condition', 'invoice status', 'project status', 'completed', 'pending', 'active']
         };
 
         for (const [key, synonyms] of Object.entries(dictionary)) {
@@ -326,7 +395,7 @@ Try asking:
             column = context.lastColumn;
         }
 
-        if (dateRange && column && isDateColumn(column)) column = null;
+
 
         // CRITICAL FIX: If we found a Date Range, do NOT search for value filters using the year string
         // This prevents "2023" from matching "20239" in a cost column.
@@ -418,8 +487,9 @@ Try asking:
                 // Strip "only", "just" from the end of the value
                 val = val.replace(/\s+(?:only|just)$/i, '');
 
-                // Exclude date keywords
-                if (!['last year', 'this year', '2020', '2021', '2022', 'compare', 'trend'].some(d => val.includes(d))) {
+                // Exclude date keywords and years (e.g. 2023, 2024)
+                const isYear = /\b20\d{2}\b/.test(val);
+                if (!isYear && !['last year', 'this year', 'compare', 'trend'].some(d => val.includes(d))) {
                     // Search all columns for this value
                     for (const h of headers) {
                         // simple check
@@ -502,6 +572,11 @@ Try asking:
             operation = 'CHART';
         }
 
+        // Date Range Override: If we have a date range but no strong operation, treat as Filter
+        if (dateRange && (operation === 'FILTER' || operation === 'UNKNOWN')) {
+            operation = 'APPLY_FILTER';
+        }
+
         return { operation, column, dateRange, dateRanges, filter, segmentBy, aggregation };
     };
 
@@ -575,12 +650,22 @@ Try asking:
             // Apply date filter
             let dateFilteredResult = [...result];
             if (parsed.dateRange) {
-                const dateCol = headers.find(h => isDateColumn(h));
+                // If the user specified a specific date column (e.g. "by End Date"), use it.
+                // Otherwise find the first date column.
+                const dateCol = (parsed.column && isDateColumn(parsed.column)) ? parsed.column : headers.find(h => isDateColumn(h));
                 if (dateCol) {
                     dateFilteredResult = result.filter(row => {
                         const cellVal = row[dateCol];
-                        // Handle potential ISO strings or different formats
-                        const rowDate = new Date(cellVal);
+                        let rowDate;
+
+                        // Check if Excel Serial Date (Number)
+                        if (typeof cellVal === 'number' && cellVal > 35000 && cellVal < 60000) {
+                            rowDate = excelDateToJSDate(cellVal);
+                        } else {
+                            // Handle potential ISO strings or different formats
+                            rowDate = new Date(cellVal);
+                        }
+
                         return !isNaN(rowDate) && rowDate >= parsed.dateRange.start && rowDate <= parsed.dateRange.end;
                     });
 
@@ -750,7 +835,6 @@ Try asking:
                     return `There are ${nullCount} empty/missing values in "${parsed.column}".`;
 
                 case 'TOP':
-                    if (!parsed.column) return 'Please specify which column to rank.';
                     const topMatch = input.match(/(?:top|bottom|first|last)\s+(\d+)/i);
                     const n = topMatch ? parseInt(topMatch[1], 10) : 5;
                     const isBottom = input.match(/bottom|last/i);
@@ -764,7 +848,7 @@ Try asking:
                     const slice = sortedTop.slice(0, n);
                     const topLabelCol = headers.find(h => !isNumericColumn(h) && h !== parsed.column) || headers[0];
 
-                    return `${isBottom ? 'Bottom' : 'Top'} ${n} ${parsed.column}:\n${slice.map((r, i) => `${i + 1}. ${formatValue(r[topLabelCol])}: ${formatNumber(r[parsed.column], parsed.column)}`).join('\n')}`;
+                    return `${isBottom ? 'Bottom' : 'Top'} ${n} ${parsed.column}:\n${slice.map((r, i) => `${i + 1}. ${formatValue(r[topLabelCol], topLabelCol)}: ${formatValue(r[parsed.column], parsed.column)}`).join('\n')}`;
 
                 case 'SORT':
                     if (!parsed.column) return 'Please specify which column to sort by.';
@@ -780,25 +864,26 @@ Try asking:
                         return isDesc ? String(valB).localeCompare(String(valA)) : String(valA).localeCompare(String(valB));
                     });
 
-                    return `Sorted by ${parsed.column} (${isDesc ? 'Descending' : 'Ascending'}):\n${sorted.slice(0, 5).map((r, i) => `${i + 1}. ${formatValue(r[parsed.column])}`).join('\n')}\n(Showing first 5 rows)`;
+                    return `Sorted by ${parsed.column} (${isDesc ? 'Descending' : 'Ascending'}):\n${sorted.slice(0, 5).map((r, i) => `${i + 1}. ${formatValue(r[parsed.column], parsed.column)}`).join('\n')}\n(Showing first 5 rows)`;
 
+                case 'APPLY_FILTER':
                 case 'FILTER':
                     return `Found ${result.length} matching rows.\n\nFirst 5 rows:\n${result.slice(0, 5).map((row, i) =>
-                        `${i + 1}. ${Object.entries(row).slice(0, 3).map(([k, v]) => `${k}: ${formatValue(v)}`).join(', ')}`
+                        `${i + 1}. ${Object.entries(row).slice(0, 3).map(([k, v]) => `${k}: ${formatValue(v, k)}`).join(', ')}`
                     ).join('\n')}`;
 
                 case 'QUESTION':
                     if (parsed.column) {
                         const activeVal = (context.activeFilters && context.activeFilters[parsed.column]) ? context.activeFilters[parsed.column] : null;
                         if (parsed.filter && parsed.filter.column === parsed.column) {
-                            return `The current query is filtered by ${parsed.column}: "${formatValue(parsed.filter.value)}".`;
+                            return `The current query is filtered by ${parsed.column}: "${formatValue(parsed.filter.value, parsed.column)}".`;
                         }
                         if (activeVal) {
-                            return `This data is filtered by ${parsed.column}: "${activeVal.map(v => formatValue(v)).join(', ')}".`;
+                            return `This data is filtered by ${parsed.column}: "${activeVal.map(v => formatValue(v, parsed.column)).join(', ')}".`;
                         }
                         const uniqueVals = [...new Set(result.map(r => r[parsed.column]))];
                         if (uniqueVals.length < 10) {
-                            return `There are ${uniqueVals.length} ${parsed.column}s: ${uniqueVals.map(v => formatValue(v)).join(', ')}`;
+                            return `There are ${uniqueVals.length} ${parsed.column}s: ${uniqueVals.map(v => formatValue(v, parsed.column)).join(', ')}`;
                         }
                         return `There are ${uniqueVals.length} different ${parsed.column}s in the current view.`;
                     }
@@ -846,7 +931,9 @@ Try asking:
 
                     if (!modeVal) return `Could not calculate most common value for "${parsed.column}".`;
 
-                    return `Most common ${parsed.column}: "${formatValue(modeVal)}" (${maxCount} occurrences).`;
+                    if (!modeVal) return `Could not calculate most common value for "${parsed.column}".`;
+
+                    return `Most common ${parsed.column}: "${formatValue(modeVal, parsed.column)}" (${maxCount} occurrences).`;
 
                 default:
                     return "I'm not sure how to help with that. Try asking about totals, averages, counts, or filtering data.";
@@ -1018,11 +1105,23 @@ Try asking:
             if (parsed.operation && parsed.operation !== 'UNKNOWN') setContext(prev => ({ ...prev, lastOperation: parsed.operation }));
             if (parsed.dateRange) setContext(prev => ({ ...prev, lastDateRange: parsed.dateRange }));
 
-            // For RESET_FILTER operations, clear all filters AND context
+            // For RESET_FILTER operations, clear all filters OR specific filter
             if (parsed.operation === 'RESET_FILTER' && onApplyFilter) {
-                onApplyFilter({});
-                setContext(prev => ({ ...prev, activeFilters: {}, lastColumn: null, lastResultRow: null, lastOperation: null }));
-                setMessages(prev => [...prev, { type: 'bot', text: '✅ All filters cleared & context reset!\n\nShowing all data.', timestamp: new Date() }]);
+                if (parsed.column) {
+                    const filters = { ...context.activeFilters };
+                    if (filters[parsed.column]) {
+                        delete filters[parsed.column];
+                        onApplyFilter(filters);
+                        setContext(prev => ({ ...prev, activeFilters: filters }));
+                        setMessages(prev => [...prev, { type: 'bot', text: `✅ Cleared filter for "${parsed.column}".`, timestamp: new Date() }]);
+                    } else {
+                        setMessages(prev => [...prev, { type: 'bot', text: `ℹ️ No active filter found for "${parsed.column}".`, timestamp: new Date() }]);
+                    }
+                } else {
+                    onApplyFilter({});
+                    setContext(prev => ({ ...prev, activeFilters: {}, lastColumn: null, lastResultRow: null, lastOperation: null }));
+                    setMessages(prev => [...prev, { type: 'bot', text: '✅ All filters cleared & context reset!\n\nShowing all data.', timestamp: new Date() }]);
+                }
                 setInput('');
                 return;
             }

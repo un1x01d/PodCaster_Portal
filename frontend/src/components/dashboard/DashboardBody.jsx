@@ -286,54 +286,249 @@ export default function DashboardBody(props) {
             {/* Pivot Controls */}
             {pivotOn && (
                 <div className="p-4 bg-slate-50 border-y border-slate-200/70">
-                    <div className="flex flex-wrap items-end gap-3">
-                        <SearchableSelect
-                            options={[{ value: "", label: "Row key…" }, ...displayHeaders.map((h) => ({ value: h, label: h }))]}
-                            value={pivotRowKey}
-                            onChange={(e) => setPivotRowKey(e.target.value)}
-                            placeholder="Row key…"
-                            buttonClassName="border border-slate-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
-                        />
-                        <SearchableSelect
-                            options={[{ value: "", label: "Dynamic header…" }, ...displayHeaders.map((h) => ({ value: h, label: h }))]}
-                            value={pivotColKey}
-                            onChange={(e) => setPivotColKey(e.target.value)}
-                            placeholder="Dynamic header…"
-                            buttonClassName="border border-slate-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
-                        />
-                        <SearchableSelect
-                            options={[
-                                { value: "", label: pivotAgg === "count" ? "— (count)" : "Value…" },
-                                ...displayHeaders.map((h) => ({ value: h, label: h })),
-                            ]}
-                            value={pivotValKey}
-                            onChange={(e) => setPivotValKey(e.target.value)}
-                            placeholder={pivotAgg === "count" ? "— (count)" : "Value…"}
-                            disabled={pivotAgg === "count"}
-                            buttonClassName="border border-slate-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
-                        />
-                        <SearchableSelect
-                            options={[
-                                { value: "sum", label: "sum" },
-                                { value: "count", label: "count" },
-                            ]}
-                            value={pivotAgg}
-                            onChange={(e) => setPivotAgg(e.target.value)}
-                            placeholder="Aggregation…"
-                            panelWidth={180}
-                            buttonClassName="border border-slate-200 p-2 rounded-lg min-w-[10rem] bg-white h-10"
-                        />
+                    <div className="flex flex-col gap-4">
+                        <div className="flex justify-between items-center border-b border-gray-200 pb-2 mb-2">
+                            <h3 className="font-bold text-lg text-gray-800 flex items-center gap-2">📐 Pivot & Segmentation</h3>
+                            <button onClick={() => setPivotOn(false)} className="text-gray-400 hover:text-gray-600">✕ Close</button>
+                        </div>
+                        <div className="flex flex-wrap items-end gap-3">
+                            <SearchableSelect
+                                options={[{ value: "", label: "Row key…" }, ...displayHeaders.map((h) => ({ value: h, label: h }))]}
+                                value={pivotRowKey}
+                                onChange={(e) => setPivotRowKey(e.target.value)}
+                                placeholder="Row key…"
+                                buttonClassName="border border-slate-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
+                            />
+                            <SearchableSelect
+                                options={[{ value: "", label: "Dynamic header…" }, ...displayHeaders.map((h) => ({ value: h, label: h }))]}
+                                value={pivotColKey}
+                                onChange={(e) => setPivotColKey(e.target.value)}
+                                placeholder="Dynamic header…"
+                                buttonClassName="border border-slate-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
+                            />
+                            <SearchableSelect
+                                options={[
+                                    { value: "", label: pivotAgg === "count" ? "— (count)" : "Value…" },
+                                    ...displayHeaders.map((h) => ({ value: h, label: h })),
+                                ]}
+                                value={pivotValKey}
+                                onChange={(e) => setPivotValKey(e.target.value)}
+                                placeholder={pivotAgg === "count" ? "— (count)" : "Value…"}
+                                disabled={pivotAgg === "count"}
+                                buttonClassName="border border-slate-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
+                            />
+                            <SearchableSelect
+                                options={[
+                                    { value: "sum", label: "sum" },
+                                    { value: "count", label: "count" },
+                                    { value: "avg", label: "average" },
+                                ]}
+                                value={pivotAgg}
+                                onChange={(e) => setPivotAgg(e.target.value)}
+                                placeholder="Aggregation…"
+                                panelWidth={180}
+                                buttonClassName="border border-slate-200 p-2 rounded-lg min-w-[10rem] bg-white h-10"
+                            />
+                            <div className="flex gap-2 ml-auto">
+                                <button onClick={resetPivot} className="px-3 bg-white border border-slate-200 rounded-lg h-10 hover:bg-gray-50">Reset</button>
+                            </div>
+                        </div>
 
-                        <div className="flex gap-2 ml-auto">
-                            <button onClick={resetPivot} className="px-3 bg-white border border-slate-200 rounded-lg h-10 hover:bg-gray-50">Reset</button>
+                        {/* Pivot Chart & Table Area */}
+
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-96 mt-4">
+                            <div className="col-span-2 bg-white border rounded-xl p-4 shadow-sm flex flex-col overflow-hidden">
+                                <h4 className="text-xs font-bold text-gray-500 mb-2 uppercase text-center tracking-wider">Distribution</h4>
+                                {pieData && pieData.length > 0 ? (
+                                    <ResponsiveContainer width="100%" height="100%">
+                                        <BarChart
+                                            data={pieData}
+                                            margin={{ top: 10, right: 30, left: 10, bottom: 60 }} // Increased bottom for labels
+                                        >
+                                            <XAxis
+                                                dataKey="name"
+                                                angle={-45}
+                                                textAnchor="end"
+                                                height={60}
+                                                interval={0}
+                                                tick={{ fontSize: 11, fill: '#6b7280' }}
+                                            />
+                                            <YAxis />
+                                            <Tooltip contentStyle={{ borderRadius: '8px', zIndex: 100 }} />
+                                            <Bar dataKey="value" fill="#8884d8">
+                                                {pieData.map((entry, index) => (
+                                                    <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                                                ))}
+                                            </Bar>
+                                        </BarChart>
+                                    </ResponsiveContainer>
+                                ) : (
+                                    <div className="h-full flex items-center justify-center text-gray-400">Select Row Key and Value to visualize</div>
+                                )}
+                            </div>
+                            <div className="col-span-1 bg-white border rounded-xl overflow-hidden shadow-sm flex flex-col">
+                                <div className="bg-gray-50 font-bold border-b p-3 flex justify-between items-center">
+                                    <span className="uppercase text-xs tracking-wider text-gray-500">Pivot Table</span>
+                                    <span className="text-xs font-normal text-gray-400">{pivotRows?.length || 0} rows</span>
+                                </div>
+                                <div className="overflow-auto flex-1">
+                                    <table className="min-w-full text-xs text-left">
+                                        <thead className="bg-gray-100 font-bold border-b sticky top-0 z-10">
+                                            <tr>
+                                                {pivotHeaders && pivotHeaders.map((h, i) => (
+                                                    <th key={i} className={`p-3 whitespace-nowrap bg-gray-100 text-gray-600 ${i > 0 ? 'text-right' : ''}`}>
+                                                        {h}
+                                                    </th>
+                                                ))}
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {pivotRows && pivotRows.map((row, i) => (
+                                                <tr key={i} className="border-b last:border-0 hover:bg-blue-50 transition-colors">
+                                                    {pivotHeaders.map((h, j) => (
+                                                        <td key={j} className={`p-3 whitespace-nowrap ${j > 0 ? 'text-right font-mono text-blue-700' : 'font-medium text-gray-800'}`}>
+                                                            {typeof row[h] === 'number'
+                                                                ? row[h].toLocaleString(undefined, { maximumFractionDigits: 2 })
+                                                                : (row[h] || '-')}
+                                                        </td>
+                                                    ))}
+                                                </tr>
+                                            ))}
+                                            {(!pivotRows || pivotRows.length === 0) && (
+                                                <tr>
+                                                    <td colSpan={pivotHeaders?.length || 1} className="p-8 text-center text-gray-400 italic">
+                                                        No pivot data. Select Group and Value columns.
+                                                    </td>
+                                                </tr>
+                                            )}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
             )}
 
-            {/* Pivot / Two Condition / Trends Charts - Keeping extraction minimal for now, just same logic */}
-            {/* ... (Charts logic similar to App.jsx, keeping it implicit or user can copy/paste full block) */}
-            {/* For brevity in this specific artifact, I'm focusing on the Table Grid fixes requested by user */}
+            {/* Trends Overlay */}
+            {trendsOn && (
+                <div className="bg-white border-b p-6 shadow-inner animate-in fade-in slide-in-from-top-4 duration-300">
+                    <div className="flex justify-between mb-6 border-b pb-2">
+                        <h3 className="font-bold text-xl text-gray-800 flex items-center gap-2">📈 Trend Analysis</h3>
+                        <button onClick={() => setTrendsOn(false)} className="text-gray-400 hover:text-gray-600 transition-colors">✕ Close</button>
+                    </div>
+                    <div className="flex gap-4 mb-6 flex-wrap items-end">
+                        <div>
+                            <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Date Column</label>
+                            <select value={trendsDateKey || ""} onChange={e => setTrendsDateKey(e.target.value)} className="border border-slate-300 bg-white p-2 rounded-lg text-sm min-w-[200px] h-10">
+                                <option value="">Auto-detect...</option>
+                                {headers.map(h => <option key={h} value={h}>{h}</option>)}
+                            </select>
+                        </div>
+                        <div>
+                            <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Value to Plot</label>
+                            <select value={trendsValueKey || ""} onChange={e => setTrendsValueKey(e.target.value)} className="border border-slate-300 bg-white p-2 rounded-lg text-sm min-w-[200px] h-10">
+                                <option value="">Select...</option>
+                                {headers.map(h => <option key={h} value={h}>{h}</option>)}
+                            </select>
+                        </div>
+                        <div>
+                            <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Granularity</label>
+                            <select value={trendGranularity} onChange={e => setTrendGranularity(e.target.value)} className="border border-slate-300 bg-white p-2 rounded-lg text-sm h-10">
+                                <option value="month">Monthly</option>
+                                <option value="year">Yearly</option>
+                                <option value="day">Daily</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div className="h-80 w-full bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                        {trendsData && trendsData.length > 0 ? (
+                            <ResponsiveContainer width="100%" height="100%">
+                                <LineChart data={trendsData}>
+                                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
+                                    <XAxis dataKey="date" tick={{ fontSize: 12, fill: '#6b7280' }} tickLine={false} axisLine={false} dy={10} />
+                                    <YAxis tick={{ fontSize: 12, fill: '#6b7280' }} tickLine={false} axisLine={false} dx={-10} />
+                                    <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
+                                    <Legend />
+                                    <Line type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={3} dot={{ r: 4, strokeWidth: 2, fill: 'white' }} activeDot={{ r: 8, fill: '#3b82f6' }} />
+                                </LineChart>
+                            </ResponsiveContainer>
+                        ) : (
+                            <div className="h-full flex flex-col items-center justify-center text-gray-400">
+                                <span className="text-4xl mb-2">📉</span>
+                                <span className="text-sm font-medium">Select a valid date and value column to see trends.</span>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* Two Condition Overlay */}
+            {twoOn && (
+                <div className="bg-white border-b p-6 shadow-inner animate-in fade-in slide-in-from-top-4 duration-300">
+                    <div className="flex justify-between mb-6 border-b pb-2">
+                        <h3 className="font-bold text-xl text-gray-800 flex items-center gap-2">🔬 Multi-Condition Breakdown</h3>
+                        <button onClick={() => setTwoOn(false)} className="text-gray-400 hover:text-gray-600 transition-colors">✕ Close</button>
+                    </div>
+                    <div className="flex gap-4 mb-6 items-end flex-wrap">
+                        {/* 
+                           Condition 1 (Filter) filtering is currently handled by the main table filters.
+                           Here we allow specific highlighting? Or maybe just re-purposing for future grouped filtering.
+                        */}
+                        <div>
+                            <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Condition 1 (Filter Context)</label>
+                            <select value={condCol1 || ""} onChange={e => setCondCol1(e.target.value)} className="border border-slate-300 bg-white p-2 rounded-lg text-sm min-w-[200px] h-10">
+                                <option value="">(Any)</option>
+                                {headers.map(h => <option key={h}>{h}</option>)}
+                            </select>
+                        </div>
+                        <div className="pb-3 text-gray-400 font-bold">+</div>
+                        <div>
+                            <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Condition 2 (Group By)</label>
+                            <select value={condCol2 || ""} onChange={e => setCondCol2(e.target.value)} className="border border-slate-300 bg-white p-2 rounded-lg text-sm min-w-[200px] h-10">
+                                <option value="">(None)</option>
+                                {headers.map(h => <option key={h}>{h}</option>)}
+                            </select>
+                        </div>
+                        <div className="pb-3 text-gray-400 font-bold">→</div>
+                        <div>
+                            <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Value to Sum</label>
+                            <select value={valueCol || ""} onChange={e => setValueCol(e.target.value)} className="border border-slate-300 bg-white p-2 rounded-lg text-sm min-w-[200px] h-10">
+                                <option value="">Select...</option>
+                                {headers.map(h => <option key={h}>{h}</option>)}
+                            </select>
+                        </div>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div className="col-span-1 bg-gradient-to-br from-blue-50 to-white p-6 rounded-2xl border border-blue-100 flex flex-col justify-center items-center shadow-sm">
+                            <span className="text-xs text-blue-600 font-bold uppercase tracking-widest mb-2">Total Result</span>
+                            <span className="text-4xl font-extrabold text-blue-900 tracking-tight">
+                                ${summaryData?.total?.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 }) ?? 0}
+                            </span>
+                            <span className="text-xs text-blue-400 mt-2 font-medium">Based on current filters</span>
+                        </div>
+
+                        <div className="col-span-2 h-64 border rounded-xl p-4 bg-white shadow-sm flex flex-col">
+                            <h4 className="text-xs font-bold text-gray-500 mb-2 uppercase tracking-wider">Distribution by Group</h4>
+                            {summaryData?.chartData?.length > 0 ? (
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <BarChart data={summaryData.chartData} layout="vertical" margin={{ top: 5, right: 30, left: 40, bottom: 5 }}>
+                                        <XAxis type="number" hide />
+                                        <YAxis type="category" dataKey="name" width={100} tick={{ fontSize: 11 }} interval={0} />
+                                        <Tooltip cursor={{ fill: '#f8fafc' }} contentStyle={{ borderRadius: '8px' }} />
+                                        <Bar dataKey="value" fill="#8b5cf6" radius={[0, 4, 4, 0]} barSize={20} />
+                                    </BarChart>
+                                </ResponsiveContainer>
+                            ) : (
+                                <div className="h-full flex flex-col items-center justify-center text-gray-400 border-2 border-dashed border-gray-100 rounded-lg">
+                                    <span className="text-2xl mb-2">📊</span>
+                                    <span className="text-sm">Select 'Condition 2' and 'Value' to see breakdown</span>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Tab Bar for Multi-Sheet Navigation */}
             {/* ... (Tab logic) ... */}
