@@ -586,6 +586,25 @@ Try asking:
 
                     // If we have a Date Range, use this result
                     result = dateFilteredResult;
+
+                    // SYNC TO TABLE: If we filtered by date, update the main table view too
+                    if (onApplyFilter) {
+                        const matchingDates = [...new Set(result.map(r => String(r[dateCol])))];
+                        const filters = { ...context.activeFilters };
+                        filters[dateCol] = matchingDates;
+                        // Avoid infinite loop if we already have this filter? App.jsx handles it?
+                        // We just call it. But careful not to reset other filters unnecessarily.
+                        // Actually, let's only call if it's different?
+                        // For simplicity, just call it. The context update below handles local state.
+                        onApplyFilter(filters);
+                        // We also need to update context locally so we know we have these active
+                        // But we can't update context inside executeQuery easily without triggering re-renders?
+                        // executeQuery is called by handleSend.
+                        // We should probably return a "sideEffect" or just do it here.
+                        // However, onApplyFilter might trigger a re-render of Chatbot?
+                        // If Chatbot receives new data, it might clearing things?
+                        // Let's rely on onApplyFilter being stable.
+                    }
                 }
             }
 
@@ -843,6 +862,35 @@ Try asking:
 
 
 
+
+        // Chit-Chat / Small Talk Handler
+        const smallTalk = ['hi', 'hello', 'hey', 'thanks', 'thank you', 'thx', 'nice', 'cool', 'awesome', 'good job', 'ok', 'okay', 'great'];
+        const lowerInput = input.trim().toLowerCase().replace(/[!.?]/g, '');
+        if (smallTalk.includes(lowerInput)) {
+            setMessages(prev => [...prev, { type: 'user', text: input, timestamp: new Date() }]);
+            const replies = {
+                'hi': 'Hello! How can I help you analyze your data?',
+                'hello': 'Hi there! Ready to crunch some numbers?',
+                'hey': 'Hey! What data are we looking at today?',
+                'thanks': 'You\'re welcome!',
+                'thank you': 'Anytime!',
+                'thx': 'No problem!',
+                'nice': 'Glad I could help!',
+                'cool': 'Indeed!',
+                'awesome': 'I try my best! 😎',
+                'good job': 'Thank you!',
+                'great': 'Excellent!',
+                'ok': '👌',
+                'okay': '👍'
+            };
+            const reply = replies[lowerInput] || '👋';
+            setTimeout(() => {
+                setMessages(prev => [...prev, { type: 'bot', text: reply, timestamp: new Date() }]);
+            }, 500);
+            setInput('');
+            return;
+        }
+
         // Add user message
         const userMessage = { type: 'user', text: input, timestamp: new Date() };
         setMessages(prev => [...prev, userMessage]);
@@ -948,16 +996,27 @@ Try asking:
             }
 
             // If no operation detected but we have context, try to reuse previous operation
-            if (parsed.operation === 'UNKNOWN' && context.lastOperation) {
+            // BUT: Don't reuse if input is very short or looks like just a number/word unless it's a specific flow
+            if (parsed.operation === 'UNKNOWN' && context.lastOperation && input.length > 2) {
                 parsed.operation = context.lastOperation;
             }
             if (!parsed.column && context.lastColumn) {
                 parsed.column = context.lastColumn;
             }
 
+            // Reuse Date Context (Sticky Date Filter)
+            if (!parsed.dateRange && context.lastDateRange && ['SUM', 'AVG', 'COUNT', 'MIN', 'MAX', 'chart', 'COMPARE', 'TOP'].includes(parsed.operation)) {
+                // Check if user explicitly asked for "all time" or "total" which might imply removing date filter?
+                // For now, assume sticky unless "all time" is present
+                if (!input.match(/all time|total history|no date/i)) {
+                    parsed.dateRange = context.lastDateRange;
+                }
+            }
+
             // Update context
             if (parsed.column) setContext(prev => ({ ...prev, lastColumn: parsed.column }));
             if (parsed.operation && parsed.operation !== 'UNKNOWN') setContext(prev => ({ ...prev, lastOperation: parsed.operation }));
+            if (parsed.dateRange) setContext(prev => ({ ...prev, lastDateRange: parsed.dateRange }));
 
             // For RESET_FILTER operations, clear all filters AND context
             if (parsed.operation === 'RESET_FILTER' && onApplyFilter) {
