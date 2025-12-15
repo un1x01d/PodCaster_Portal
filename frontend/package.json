@@ -10,16 +10,14 @@
     "start": "npm run preview"
   },
   "dependencies": {
-    "@handsontable/react": "^16.1.1",
-    "ag-grid-community": "^34.2.0",
-    "ag-grid-react": "^34.2.0",
     "axios": "^1.7.7",
-    "handsontable": "^16.1.1",
     "jspdf": "^2.5.1",
     "jspdf-autotable": "^3.8.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.26.1",
+    "react-virtualized-auto-sizer": "^1.0.26",
+    "react-window": "^1.8.10",
     "recharts": "^2.12.7",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },

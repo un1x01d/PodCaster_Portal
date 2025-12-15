@@ -3,7 +3,8 @@
 @tailwind utilities;
 
 /* Ensure full-height layout */
-html, body, #root {
+html,
+body,
+#root {
   height: 100%;
 }
-

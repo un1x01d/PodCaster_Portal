@@ -43,10 +43,10 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
  * Paths (ensure before Multer)
  * ------------------------------------------------------------------------- */
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// const UPLOADS_DIR = path.join(__dirname, "uploads");
-// fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-// const TMP_DIR = path.join(UPLOADS_DIR, "tmp");
-// fs.mkdirSync(TMP_DIR, { recursive: true });
+const UPLOADS_DIR = path.join(__dirname, "uploads");
+fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+const TMP_DIR = path.join(UPLOADS_DIR, "tmp");
+fs.mkdirSync(TMP_DIR, { recursive: true });
 
 /* ----------------------------------------------------------------------------
  * Helpers
@@ -133,6 +133,7 @@ async function initDb() {
   `);
   await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS totals_column TEXT;`);
   await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS stored_path TEXT;`);
+  await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS tab_name TEXT;`);
 
   // SHEET DATA (JSONB rows)
   await pool.query(`
@@ -316,21 +317,15 @@ app.post("/upload", auth, upload.single("file"), async (req, res) => {
 
     console.log(`[upload] name=${originalName} mime=${req.file.mimetype} folderId=${folderId ?? "—"}`);
 
-    let rows = [];
+    // Parse Workbook ONCE
+    let wb;
     try {
-      const buf = req.file.buffer; // Access buffer directly
-      const wb = XLSX.read(buf, { type: "buffer", cellDates: true });
-      const sn = wb.SheetNames[0];
-      if (!sn) throw new Error("no_sheets_buffer");
-      rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { defval: "" });
+      const buf = req.file.buffer;
+      wb = XLSX.read(buf, { type: "buffer", cellDates: true });
     } catch (eBuf) {
-      // Fallback for string/CSV parsing if buffer fails (unlikely for XLSX but possible for CSV)
       try {
         const str = req.file.buffer.toString('utf8');
-        const wb = XLSX.read(str, { type: "string", cellDates: true });
-        const sn = wb.SheetNames[0];
-        if (!sn) throw new Error("no_sheets_string");
-        rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { defval: "" });
+        wb = XLSX.read(str, { type: "string", cellDates: true });
       } catch (eStr) {
         const msg = String(eStr?.message || eBuf?.message || "");
         if (msg.includes("Invalid HTML: could not find <table>")) {
@@ -346,89 +341,116 @@ app.post("/upload", auth, upload.single("file"), async (req, res) => {
       }
     }
 
-    // 1) SKIP writing backup copy to folders (DB only requirement)
-    let assignedFolderId = null;
-    let stored_relpath = null; // No longer storing path
-
-    if (Number.isInteger(folderId)) {
-      // Verify folder exists
-      const f = await query(
-        `SELECT id FROM folders WHERE id = $1 LIMIT 1`,
-        [folderId]
-      );
-      if (f.length) {
-        assignedFolderId = f[0].id;
-      }
+    const sheetNames = wb.SheetNames;
+    if (!sheetNames || sheetNames.length === 0) {
+      return res.status(400).json({ error: "no_sheets" });
     }
 
-    // fs.unlink(tmpPath, () => { }); // No temp file to cleaning up
+    // 4) Insert Sheet Records
+    // First, deactivate all previous sheets so the new ones become the "current" set.
+    // We do this ONCE before the loop.
+    await query("UPDATE sheets SET active = FALSE", []);
 
-    const headers = Object.keys(rows[0] || {});
-    const sheetId = Date.now().toString();
+    // Prepare response data (we'll return the FIRST sheet's info to the frontend)
+    let firstSheetResult = null;
+    const baseExt = path.extname(originalName);
+    const baseNameOriginal = path.basename(originalName, baseExt);
 
-    // Check for existing files with same name in the same folder
-    let versionedFilename = originalName;
-    if (assignedFolderId) {
-      const ext = path.extname(originalName);
-      const baseName = path.basename(originalName, ext);
+    // Loop through ALL sheets
+    for (let i = 0; i < sheetNames.length; i++) {
+      const sn = sheetNames[i];
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { defval: "" });
 
-      // Get all files in the same folder with similar names
-      const existingFiles = await query(
-        `SELECT filename FROM sheets WHERE folder_id = $1 AND filename LIKE $2`,
-        [assignedFolderId, `${baseName}%`]
-      );
+      // If sheet is empty, maybe skip? But user might want it. Let's keep consistent behavior or skip if 0 rows?
+      // Let's keep it, but headers will be empty.
 
-      if (existingFiles.length > 0) {
-        // Find highest version number
-        let maxVersion = 0;
-        const versionRegex = /\(v(\d+)\)/;
+      const headers = Object.keys(rows[0] || {});
+      // Unique ID per sheet: Timestamp + Index + Random suffix
+      const sheetId = `${Date.now()}_${i}_${Math.random().toString(36).substr(2, 5)}`;
 
-        existingFiles.forEach(file => {
-          if (file.filename === originalName) {
-            maxVersion = Math.max(maxVersion, 1); // Original file exists
+      // Determine Filename for this specific sheet
+      // If only 1 sheet, keep original name. If multiple, append (SheetName)
+      let targetFilename = originalName;
+      if (sheetNames.length > 1) {
+        targetFilename = `${baseNameOriginal} (${sn})${baseExt}`;
+      }
+
+      // 1) Folder Resolution
+      let assignedFolderId = null;
+      if (Number.isInteger(folderId)) {
+        const f = await query(`SELECT id FROM folders WHERE id = $1 LIMIT 1`, [folderId]);
+        if (f.length) assignedFolderId = f[0].id;
+      }
+
+      // 2) Check for duplicates/Versioning for THIS target filename
+      let versionedFilename = targetFilename;
+      if (assignedFolderId) {
+        const ext = path.extname(targetFilename);
+        const baseName = path.basename(targetFilename, ext);
+
+        // Get all files in the same folder with similar names
+        const existingFiles = await query(
+          `SELECT filename FROM sheets WHERE folder_id = $1 AND filename LIKE $2`,
+          [assignedFolderId, `${baseName}%`]
+        );
+
+        if (existingFiles.length > 0) {
+          // Find highest version number
+          let maxVersion = 0;
+          const versionRegex = /\(v(\d+)\)/;
+
+          existingFiles.forEach(file => {
+            if (file.filename === targetFilename) {
+              maxVersion = Math.max(maxVersion, 1); // Original file exists
+            }
+            const match = file.filename.match(versionRegex);
+            if (match) {
+              const versionNum = parseInt(match[1], 10);
+              maxVersion = Math.max(maxVersion, versionNum);
+            }
+          });
+
+          // If duplicates exist, add version number
+          if (maxVersion > 0) {
+            const nextVersion = maxVersion + 1;
+            versionedFilename = `${baseName} (v${nextVersion})${ext}`;
           }
-          const match = file.filename.match(versionRegex);
-          if (match) {
-            const versionNum = parseInt(match[1], 10);
-            maxVersion = Math.max(maxVersion, versionNum);
-          }
-        });
-
-        // If duplicates exist, add version number
-        if (maxVersion > 0) {
-          const nextVersion = maxVersion + 1;
-          versionedFilename = `${baseName} (v${nextVersion})${ext}`;
         }
       }
+
+      // 3) Insert Sheet Record
+      // Set ALL new sheets to active=TRUE so they appear in the list.
+      // Save exact sheet name (sn) as tab_name
+      await query(
+        "INSERT INTO sheets (id, headers, active, filename, folder_id, stored_path, tab_name) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+        [sheetId, JSON.stringify(headers), true, versionedFilename, assignedFolderId, null, sn]
+      );
+
+      // 4) Batch Insert Rows
+      const CHUNK_SIZE = 1000;
+      for (let j = 0; j < rows.length; j += CHUNK_SIZE) {
+        const chunk = rows.slice(j, j + CHUNK_SIZE);
+        const values = [];
+        const placeHolders = [];
+        let pIdx = 1;
+
+        chunk.forEach((r, idx) => {
+          values.push(sheetId, j + idx, JSON.stringify(r));
+          placeHolders.push(`($${pIdx++}, $${pIdx++}, $${pIdx++})`);
+        });
+
+        const sql = `INSERT INTO sheet_rows (sheet_id, row_index, row_data) VALUES ${placeHolders.join(",")}`;
+        await pool.query(sql, values);
+      }
+
+      console.log(`[upload] Saved sheet "${sn}" as ID=${sheetId} rows=${rows.length}`);
+
+      if (i === 0) {
+        firstSheetResult = { sheetId, headers, rows: rows.length, active: true, filename: versionedFilename, folderId: assignedFolderId };
+      }
     }
 
-    // 2) Insert Sheet Record
-    await query("UPDATE sheets SET active = FALSE", []);
-    await query(
-      "INSERT INTO sheets (id, headers, active, filename, folder_id, stored_path) VALUES ($1,$2,$3,$4,$5,$6)",
-      [sheetId, JSON.stringify(headers), true, versionedFilename, assignedFolderId, null]
-    );
-
-    // 3) Batch Insert Rows into DB
-    // We'll chunk the inserts to avoid hitting max parameter limits
-    const CHUNK_SIZE = 1000;
-    for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
-      const chunk = rows.slice(i, i + CHUNK_SIZE);
-      const values = [];
-      const placeHolders = [];
-      let pIdx = 1;
-
-      chunk.forEach((r, idx) => {
-        values.push(sheetId, i + idx, JSON.stringify(r));
-        placeHolders.push(`($${pIdx++}, $${pIdx++}, $${pIdx++})`);
-      });
-
-      const sql = `INSERT INTO sheet_rows (sheet_id, row_index, row_data) VALUES ${placeHolders.join(",")}`;
-      await pool.query(sql, values);
-    }
-
-    console.log(`[upload] OK sheetId=${sheetId} rows=${rows.length} headers=${headers.length} folder=${assignedFolderId ?? "—"}`);
-    res.json({ sheetId, headers, rows: rows.length, active: true, filename: originalName, folderId: assignedFolderId });
+    res.json(firstSheetResult);
   } catch (e) {
     console.error("upload failed:", e);
     if (e?.code === "LIMIT_FILE_SIZE") {
@@ -445,6 +467,38 @@ app.get("/sheets/active", auth, async (_req, res) => {
   const s = await query("SELECT id, headers, filename, totals_column FROM sheets WHERE active = TRUE LIMIT 1", []);
   if (!s.length) return res.json(null);
   res.json({ sheetId: s[0].id, headers: s[0].headers, filename: s[0].filename, totals_column: s[0].totals_column || null });
+});
+
+app.get("/my-sheets", auth, async (req, res) => {
+  const userId = req.user.id;
+  if (req.user.role === "admin") {
+    // Admin sees all sheets (active or inactive)
+    const rows = await query(
+      `SELECT s.id, s.filename, s.uploaded_at, s.folder_id, f.name AS folder_name, s.active
+         FROM sheets s
+         LEFT JOIN folders f ON f.id = s.folder_id
+       ORDER BY s.uploaded_at DESC`,
+      []
+    );
+    return res.json(rows);
+  }
+
+  // Non-admin: Sheets in folders belonging to user's groups OR explicit permission
+  const rows = await query(
+    `SELECT DISTINCT s.id, s.filename, s.uploaded_at, s.folder_id, f.name AS folder_name, s.active
+       FROM sheets s
+       LEFT JOIN folders f ON f.id = s.folder_id
+      WHERE (
+             (f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $1))
+             OR
+             (s.id IN (SELECT sheet_id FROM permissions WHERE user_id = $1))
+             OR 
+             (s.id IN (SELECT sheet_id FROM group_permissions WHERE group_id IN (SELECT group_id FROM user_groups WHERE user_id = $1)))
+            )
+      ORDER BY s.uploaded_at DESC`,
+    [userId]
+  );
+  res.json(rows);
 });
 
 app.get("/sheets/list", auth, async (req, res) => {
@@ -711,7 +765,7 @@ app.post("/load-sheet", auth, async (req, res) => {
 /* ----------------------------------------------------------------------------
  * Data (with user + group permissions)
  * ------------------------------------------------------------------------- */
-app.get("/data/:sheetId", auth, async (req, res) => {
+app.get("/sheets/:sheetId/data", auth, async (req, res) => {
   try {
     const sheetId = req.params.sheetId;
 
@@ -1170,7 +1224,8 @@ app.delete("/sheets/:id", auth, async (req, res) => {
     res.json({ success: true });
   } catch (e) {
     console.error("delete sheet failed:", e);
-    res.status(500).json({ error: "delete_sheet_failed" });
+    // Return actual error message for debugging
+    res.status(500).json({ error: "delete_sheet_failed", message: e.message, code: e.code });
   }
 });
 

@@ -131,7 +131,7 @@ export default function Dashboard({ token, user }) {
             <input type="file" onChange={(e) => setFile(e.target.files[0])} className="border p-2 rounded" />
             <button
               onClick={handleUpload}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg"
+              className="bg-blue-600 hover:bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg"
             >
               Upload & Load
             </button>
@@ -139,7 +139,7 @@ export default function Dashboard({ token, user }) {
         )}
         <button
           onClick={loadData}
-          className="bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded-lg"
+          className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg"
         >
           Refresh
         </button>
@@ -162,8 +162,8 @@ export default function Dashboard({ token, user }) {
 
       {/* Totals */}
       {calcColumn && (
-        <div className="p-4 bg-indigo-100 border-b font-bold">
-          {calcColumn}: <span className="text-indigo-800">${total.toLocaleString()}</span>
+        <div className="p-4 bg-blue-50 border-b font-bold">
+          {calcColumn}: <span className="text-blue-900">${total.toLocaleString()}</span>
         </div>
       )}
 
@@ -188,7 +188,7 @@ export default function Dashboard({ token, user }) {
         </select>
 
         <div className="ml-4 font-bold">
-          Result: <span className="text-indigo-700">${twoConditionTotal.toLocaleString()}</span>
+          Result: <span className="text-blue-700">${twoConditionTotal.toLocaleString()}</span>
         </div>
       </div>
 
@@ -204,7 +204,7 @@ export default function Dashboard({ token, user }) {
               <Bar dataKey="total" fill="url(#grad)" />
               <defs>
                 <linearGradient id="grad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#4f46e5" stopOpacity={0.8} />
+                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.8} />
                   <stop offset="95%" stopColor="#3b82f6" stopOpacity={0.8} />
                 </linearGradient>
               </defs>
@@ -219,7 +219,7 @@ export default function Dashboard({ token, user }) {
       <div className="flex-1 overflow-auto m-4 bg-white rounded-xl shadow-lg border">
         {filteredData.length > 0 ? (
           <table className="table-auto border-collapse w-full text-sm">
-            <thead className="sticky top-0 bg-blue-700 text-white">
+            <thead className="sticky top-0 bg-blue-600 hover:bg-blue-700 text-white">
               <tr>
                 {headers.map((h) => (
                   <th key={h} className="border px-4 py-2">

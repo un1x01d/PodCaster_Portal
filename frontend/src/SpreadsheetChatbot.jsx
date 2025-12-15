@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 
-export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allData, onUpdateChart }) {
+export default function SpreadsheetChatbot({ sheetId, activeFilename, myFiles, onSwitchSheet, data, headers, onApplyFilter, allData, onUpdateChart }) {
     const [isOpen, setIsOpen] = useState(false);
     const [isMinimized, setIsMinimized] = useState(false);
     const [messages, setMessages] = useState([]);
@@ -11,6 +11,11 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     };
+
+
+
+
+
 
     useEffect(() => {
         scrollToBottom();
@@ -29,6 +34,8 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
 
                 if (metric) prompts.push(`"What is the total ${metric}?"`);
                 if (metric && dimension) prompts.push(`"Which ${dimension} is the most profitable?"`); // Uses our new 'profitable' logic
+                if (metric) prompts.push(`"Top 5 ${metric}"`);
+                if (dimension) prompts.push(`"How many unique ${dimension}?"`);
                 if (metric && date) prompts.push(`"Trend of ${metric} (average)"`);
                 if (dimension) prompts.push(`"Filter by ${dimension}..."`);
                 if (metric && date) prompts.push(`"Compare ${metric} 2023 vs 2024"`);
@@ -40,11 +47,17 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
 
             setMessages([{
                 type: 'bot',
-                text: `Hi! I can help you analyze your data. Try asking:\n• ${suggestions.join('\n• ')}`,
+                text: `Hi! I can help you analyze your data. Here is how you can prompt me:
+• "Filter by [Column Name] [Value]" (e.g., "Filter by Region West")
+• "Show top 5 [Column Name]"
+• "Compare [Column] [Year] vs [Year]" (e.g., "Compare Revenue 2023 vs 2024")
+
+Try asking:
+• ${suggestions.join('\n• ')}`,
                 timestamp: new Date()
             }]);
         }
-    }, [headers]);
+    }, [headers, messages.length]);
 
     // Analyze column types
     const analyzeColumns = () => {
@@ -186,8 +199,18 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
         else if (q.match(/(?:reset|clear|remove|delete)\s+(?:all\s+)?(?:filters?|fitlers?|fliters?|filtes?)/)) operation = 'RESET_FILTER';
         else if (q.match(/(?:draw|plot|chart|graph|visualize|trend|see\s+trend)/)) operation = 'CHART';
         else if (q.match(/(?:apply|set|add|use)\s+filt[a-z]*|^filter\s+by/)) operation = 'APPLY_FILTER';
-        else if (q.match(/(?:compare|difference|change|vs|versus|better|worse|increase|decrease|growth|drop|rose|fell)/)) operation = 'COMPARE'; // Could be text compare or chart compare
-        else if (q.match(/(?:compare|difference|change|vs|versus|better|worse|increase|decrease|growth|drop|rose|fell)/)) operation = 'COMPARE'; // Could be text compare or chart compare
+        else if (q.match(/(?:compare|difference|change|vs|versus|better|worse|increase|decrease|growth|drop|rose|fell)/)) operation = 'COMPARE';
+
+        // Tab / Sheet Switching
+        else if (q.match(/(?:switch|change|go|move|open|select)\s+(?:to\s+)?(?:tab|sheet|page)\s*(?:to\s+)?(.+)/)) operation = 'SWITCH_SHEET';
+        else if (q.match(/(?:list|show|what)\s+(?:are\s+)?(?:the\s+)?(?:tabs|sheets|pages)/)) operation = 'LIST_SHEETS';
+
+        // Generic Spreadsheet Rules
+        else if (q.match(/how many unique|count unique|distinct/)) operation = 'UNIQUE';
+        else if (q.match(/how many empty|missing|null|blank/)) operation = 'NULL';
+        else if (q.match(/sort by|order by/)) operation = 'SORT';
+        else if (q.match(/top\s+\d+|bottom\s+\d+|first\s+\d+|last\s+\d+/)) operation = 'TOP';
+
         else if (q.match(/total|\bsum\b|amount of|how much/)) operation = 'SUM';
         // "How many [column]" -> SUM if numeric, else COUNT
         else if (q.match(/how many\s+(\w+)/)) {
@@ -309,6 +332,34 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
         // ---------------- Filter Parsing (Implicit & Explicit) ----------------
         let filter = null;
 
+        // 0A. Adjective-Noun Pattern: "Finance Department", "West Region", "Q1 Sales"
+        // This handles cases where Value comes BEFORE Column
+        if (!filter && !q.match(/^(?:compare|show|what|how)/)) {
+            for (const h of headers) {
+                const colName = h.toLowerCase();
+                // Regex: "value <space> column"
+                // e.g. "finance department" -> val="finance", col="department"
+                const regex = new RegExp('(.+?)\\s+' + colName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&') + '(?:\\s+only|\\s+just)*$', 'i');
+                const match = q.match(regex);
+                if (match) {
+                    let potentialVal = match[1].trim();
+                    // Strip common start words if they got captured
+                    potentialVal = potentialVal.replace(/^(?:show|me|find|get|filter|by|the|a|an)\s+/i, '').trim();
+
+                    if (potentialVal.length > 0) {
+                        // Verify value exists in column
+                        const hasMatch = sourceData.some(r => String(r[h]).toLowerCase().includes(potentialVal));
+                        if (hasMatch) {
+                            filter = { column: h, value: potentialVal };
+                            column = h; // Set primary column context
+                            if (operation === 'FILTER' || operation === 'UNKNOWN') operation = 'APPLY_FILTER';
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         // 0. Numerical Comparisons (>, <, >=, <=, larger than, etc.)
         // This must be detected BEFORE standard "equality" filters
         if (column && !filter) {
@@ -410,7 +461,7 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
 
         // 4. Residual Search (if column known but value separate)
         if (!filter && column) {
-            let residual = q.replace(column.toLowerCase(), '').replace(/show|me|calculate|find|what|is|how|many|total|sum|average|avg|filter|by/g, '').trim();
+            let residual = q.replace(column.toLowerCase(), '').replace(/show|me|calculate|find|what|is|how|many|total|sum|average|avg|filter|by|the|a|an|only|just/g, '').trim();
             // remove symbols
             residual = residual.replace(/[=:]/g, ' ').trim();
 
@@ -548,11 +599,66 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
                 case 'COUNT':
                     return `Count: ${result.length} rows`;
 
+                case 'LIST_SHEETS': {
+                    if (!activeFilename || !myFiles) return "I can't list tabs right now.";
+                    const ext = activeFilename.split('.').pop();
+                    const nameWithoutExt = activeFilename.replace(`.${ext}`, '');
+                    const baseMatch = nameWithoutExt.match(/^(.*?)\s*\(/);
+                    const baseName = baseMatch ? baseMatch[1] : nameWithoutExt;
+
+                    const siblings = myFiles.filter(f => f.filename.startsWith(baseName)).sort((a, b) => a.filename.localeCompare(b.filename));
+
+                    if (siblings.length < 2) return `I only see one sheet: ${activeFilename}`;
+
+                    const tabNames = siblings.map(s => {
+                        if (s.tab_name) return s.tab_name;
+                        // Fallback
+                        const sNameNoExt = s.filename.replace(`.${ext}`, '');
+                        const m = sNameNoExt.match(/\s+\((.*?)\)$/);
+                        return m ? m[1] : "Main";
+                    });
+
+                    return `Available Tabs:\n\n${tabNames.map(t => `• ${t}`).join('\n')}\n\nYou can say "Switch to ${tabNames[1] || 'Tab'}" to change views.`;
+                }
+
+                case 'SWITCH_SHEET': {
+                    if (!activeFilename || !myFiles || !onSwitchSheet) return "I can't switch sheets right now.";
+
+                    const match = input.match(/(?:switch|change|go|move|open|select)\s+(?:to\s+)?(?:tab|sheet|page)\s*(?:to\s+)?(.+)/i);
+                    if (!match) return "Which tab should I switch to?";
+
+                    const targetName = match[1].trim().toLowerCase();
+
+                    const ext = activeFilename.split('.').pop();
+                    const nameWithoutExt = activeFilename.replace(`.${ext}`, '');
+                    const baseMatch = nameWithoutExt.match(/^(.*?)\s*\(/);
+                    const baseName = baseMatch ? baseMatch[1] : nameWithoutExt;
+
+                    const siblings = myFiles.filter(f => f.filename.startsWith(baseName));
+
+                    const targetFile = siblings.find(s => {
+                        // Check exact tab name first
+                        if (s.tab_name && s.tab_name.toLowerCase() === targetName) return true;
+
+                        // Fallback check
+                        const sNameNoExt = s.filename.replace(`.${ext}`, '');
+                        const m = sNameNoExt.match(/\s+\((.*?)\)$/);
+                        const tabName = m ? m[1] : "Main";
+                        return tabName.toLowerCase() === targetName || tabName.toLowerCase().includes(targetName);
+                    });
+
+                    if (targetFile) {
+                        onSwitchSheet(targetFile.id);
+                        return `Switched to tab: ${targetFile.filename}`;
+                    }
+
+                    return `I couldn't find a tab named "${match[1]}". Try asking "List tabs" to see available options.`;
+                }
+
                 case 'MAX':
                     if (!parsed.column) return 'Please specify which column to find maximum.';
                     if (!result.length) return "No data available.";
 
-                    // Find row with max value
                     let maxVal = -Infinity;
                     let maxRow = null;
                     result.forEach(row => {
@@ -564,9 +670,8 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
                     });
 
                     if (!maxRow) return `Could not find a maximum value for "${parsed.column}".`;
-                    setContext(prev => ({ ...prev, lastResultRow: maxRow })); // Store for follow-up
+                    setContext(prev => ({ ...prev, lastResultRow: maxRow }));
 
-                    // Find a label column to provide context
                     let maxLabel = '';
                     const labelCol = headers.find(h => h.toLowerCase().includes('month') || h.toLowerCase().includes('date') || h.toLowerCase().includes('name') || !isNumericColumn(h));
                     if (labelCol && labelCol !== parsed.column) {
@@ -590,7 +695,7 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
                     });
 
                     if (!minRow) return `Could not find a minimum value for "${parsed.column}".`;
-                    setContext(prev => ({ ...prev, lastResultRow: minRow })); // Store for follow-up
+                    setContext(prev => ({ ...prev, lastResultRow: minRow }));
 
                     let minLabel = '';
                     const minLabelCol = headers.find(h => h.toLowerCase().includes('month') || h.toLowerCase().includes('date') || h.toLowerCase().includes('name') || !isNumericColumn(h));
@@ -600,6 +705,49 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
 
                     return `Minimum ${parsed.column}: ${formatNumber(minVal, parsed.column)}${minLabel}`;
 
+                case 'UNIQUE':
+                    if (!parsed.column) return 'Please specify which column to count unique values for.';
+                    const uniqueCount = new Set(result.map(r => r[parsed.column])).size;
+                    return `There are ${uniqueCount} unique values in "${parsed.column}".`;
+
+                case 'NULL':
+                    if (!parsed.column) return 'Please specify which column to check for empty values.';
+                    const nullCount = result.filter(r => r[parsed.column] === null || r[parsed.column] === undefined || String(r[parsed.column]).trim() === '').length;
+                    return `There are ${nullCount} empty/missing values in "${parsed.column}".`;
+
+                case 'TOP':
+                    if (!parsed.column) return 'Please specify which column to rank.';
+                    const topMatch = input.match(/(?:top|bottom|first|last)\s+(\d+)/i);
+                    const n = topMatch ? parseInt(topMatch[1], 10) : 5;
+                    const isBottom = input.match(/bottom|last/i);
+
+                    const sortedTop = [...result].sort((a, b) => {
+                        const valA = Number(String(a[parsed.column]).replace(/[$,%]/g, '')) || 0;
+                        const valB = Number(String(b[parsed.column]).replace(/[$,%]/g, '')) || 0;
+                        return isBottom ? valA - valB : valB - valA;
+                    });
+
+                    const slice = sortedTop.slice(0, n);
+                    const topLabelCol = headers.find(h => !isNumericColumn(h) && h !== parsed.column) || headers[0];
+
+                    return `${isBottom ? 'Bottom' : 'Top'} ${n} ${parsed.column}:\n${slice.map((r, i) => `${i + 1}. ${formatValue(r[topLabelCol])}: ${formatNumber(r[parsed.column], parsed.column)}`).join('\n')}`;
+
+                case 'SORT':
+                    if (!parsed.column) return 'Please specify which column to sort by.';
+                    const isDesc = input.match(/desc|descending|high to low/i);
+                    const sorted = [...result].sort((a, b) => {
+                        const valA = a[parsed.column];
+                        const valB = b[parsed.column];
+                        if (isNumericColumn(parsed.column)) {
+                            const numA = Number(String(valA).replace(/[$,%]/g, '')) || 0;
+                            const numB = Number(String(valB).replace(/[$,%]/g, '')) || 0;
+                            return isDesc ? numB - numA : numA - numB;
+                        }
+                        return isDesc ? String(valB).localeCompare(String(valA)) : String(valA).localeCompare(String(valB));
+                    });
+
+                    return `Sorted by ${parsed.column} (${isDesc ? 'Descending' : 'Ascending'}):\n${sorted.slice(0, 5).map((r, i) => `${i + 1}. ${formatValue(r[parsed.column])}`).join('\n')}\n(Showing first 5 rows)`;
+
                 case 'FILTER':
                     return `Found ${result.length} matching rows.\n\nFirst 5 rows:\n${result.slice(0, 5).map((row, i) =>
                         `${i + 1}. ${Object.entries(row).slice(0, 3).map(([k, v]) => `${k}: ${formatValue(v)}`).join(', ')}`
@@ -607,21 +755,13 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
 
                 case 'QUESTION':
                     if (parsed.column) {
-                        // Check if there is an active filter for this column
-                        // e.g. "which customer?" -> check if filtered by Customer
                         const activeVal = (context.activeFilters && context.activeFilters[parsed.column]) ? context.activeFilters[parsed.column] : null;
-
-                        // Also check parsed.filter from current query if it was applied
                         if (parsed.filter && parsed.filter.column === parsed.column) {
                             return `The current query is filtered by ${parsed.column}: "${formatValue(parsed.filter.value)}".`;
                         }
-
                         if (activeVal) {
                             return `This data is filtered by ${parsed.column}: "${activeVal.map(v => formatValue(v)).join(', ')}".`;
                         }
-
-                        // If no filter, maybe they want to know the breakdown?
-                        // "Which customer?" on unfiltered data -> "There are X customers..."
                         const uniqueVals = [...new Set(result.map(r => r[parsed.column]))];
                         if (uniqueVals.length < 10) {
                             return `There are ${uniqueVals.length} ${parsed.column}s: ${uniqueVals.map(v => formatValue(v)).join(', ')}`;
@@ -635,6 +775,7 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
                     } else {
                         return `The previous query used all available data (no date filter applied).`;
                     }
+
                 case 'MODE':
                     if (!parsed.column) return 'Please specify which column to find the most common value for.';
                     if (!result.length) return "No data available.";
@@ -645,7 +786,6 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
                     result.forEach(row => {
                         let val = row[parsed.column];
                         if (isDate) {
-                            // Extract Year-Month for "busy month" queries
                             const d = new Date(val);
                             if (!isNaN(d)) {
                                 val = d.toLocaleString('default', { month: 'long', year: 'numeric' });
@@ -656,7 +796,6 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
                             val = String(val);
                         }
 
-                        // Skip empty values
                         if (val && val !== 'undefined' && val !== 'null' && val.trim() !== '') {
                             counts[val] = (counts[val] || 0) + 1;
                         }
@@ -678,6 +817,7 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
                 default:
                     return "I'm not sure how to help with that. Try asking about totals, averages, counts, or filtering data.";
             }
+
         } catch (error) {
             return `Sorry, I encountered an error: ${error.message}`;
         }
@@ -685,6 +825,8 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
 
     const handleSend = () => {
         if (!input.trim()) return;
+
+
 
         // Add user message
         const userMessage = { type: 'user', text: input, timestamp: new Date() };
@@ -986,23 +1128,24 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
             {!isOpen && (
                 <button
                     onClick={() => setIsOpen(true)}
-                    className="fixed bottom-6 right-6 bg-gradient-to-r from-cyan-600 to-teal-600 text-white rounded-full p-4 shadow-lg hover:shadow-xl transition-all z-40 flex items-center gap-2"
+                    className="fixed bottom-6 right-6 w-14 h-14 bg-blue-600 text-white rounded-full shadow-lg hover:bg-blue-700 hover:shadow-xl transition-all z-40 flex items-center justify-center focus:outline-none"
+                    title="Open Chat"
                 >
-                    <span className="text-2xl">💬</span>
-                    <span className="font-semibold">Ask Me</span>
+                    <span className="text-2xl mt-1">💬</span>
                 </button>
             )}
 
             {/* Chat Panel */}
             {isOpen && (
-                <div className={`fixed bottom-6 right-6 w-96 ${isMinimized ? 'h-auto' : 'h-[600px]'} bg-white rounded-xl shadow-2xl flex flex-col z-40 border border-gray-200`}>
+                <div className={`fixed bottom-6 right-6 w-96 ${isMinimized ? 'h-auto' : 'h-[600px]'} bg-white rounded-xl shadow-2xl flex flex-col z-40 border border-gray-200 font-sans overflow-hidden`}>
                     {/* Header */}
-                    <div className="bg-gradient-to-r from-cyan-600 to-teal-600 text-white p-4 rounded-t-xl flex justify-between items-center">
+                    <div className="bg-blue-900 text-white p-4 rounded-t-xl flex justify-between items-center">
                         <div className="flex items-center gap-2">
                             <span className="text-2xl">📊</span>
                             <span className="font-bold">Data Assistant</span>
                         </div>
                         <div className="flex gap-2">
+
                             <button
                                 onClick={() => setIsMinimized(!isMinimized)}
                                 className="text-white hover:bg-white/20 rounded-full w-8 h-8 flex items-center justify-center text-xl"
@@ -1027,7 +1170,7 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
                                 {messages.map((msg, i) => (
                                     <div key={i} className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}`}>
                                         <div className={`max-w-[80%] rounded-lg p-3 ${msg.type === 'user'
-                                            ? 'bg-gradient-to-r from-teal-600 to-cyan-600 text-white'
+                                            ? 'bg-blue-900 text-white'
                                             : 'bg-gray-100 text-gray-800'
                                             }`}>
                                             <div className="text-sm whitespace-pre-wrap">{msg.text}</div>
@@ -1050,9 +1193,13 @@ export default function SpreadsheetChatbot({ data, headers, onApplyFilter, allDa
                                     />
                                     <button
                                         onClick={handleSend}
-                                        className="bg-gradient-to-r from-teal-600 to-cyan-600 text-white px-4 py-2 rounded-lg hover:from-teal-500 hover:to-cyan-500 transition-colors"
+                                        className="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-lg transition-colors flex items-center justify-center min-w-[44px]"
+                                        title="Send Message"
                                     >
-                                        Send
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                            <line x1="22" y1="2" x2="11" y2="13" />
+                                            <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                                        </svg>
                                     </button>
                                 </div>
                             </div>

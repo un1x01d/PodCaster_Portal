@@ -12,6 +12,21 @@ export default defineConfig({
         rewrite: (p) => p.replace(/^\/api/, "")
       }
     }
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          xlsx: ["xlsx"],
+          jspdf: ["jspdf", "jspdf-autotable"],
+          recharts: ["recharts"],
+          vendor: ["react", "react-dom", "react-router-dom", "axios"]
+        }
+      }
+    }
+  },
+  optimizeDeps: {
+    include: ["react-window", "react-virtualized-auto-sizer"]
   }
 });
 
