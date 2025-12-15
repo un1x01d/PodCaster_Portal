@@ -45,8 +45,8 @@ export default function App() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
-  const [sheetId, setSheetId] = useState(null);
-  const [activeFilename, setActiveFilename] = useState("");
+  const [sheetId, setSheetId] = useState(() => localStorage.getItem("sheetId") || null);
+  const [activeFilename, setActiveFilename] = useState(() => localStorage.getItem("activeFilename") || "");
 
   const [data, setData] = useState([]);
   const [headers, setHeaders] = useState([]);
@@ -106,6 +106,10 @@ export default function App() {
   const [trendsValueKey, setTrendsValueKey] = useState("");
   const [trendGranularity, setTrendGranularity] = useState(""); // "daily", "month", "year"
   const [yearsBack, setYearsBack] = useState(""); // "1".."5"
+
+  // Multi-tab workbook support
+  const [tabs, setTabs] = useState([]);
+  const [activeTab, setActiveTab] = useState("");
 
   const tableContainerRef = useRef(null);
 
@@ -378,16 +382,18 @@ export default function App() {
     }
   };
 
-  const loadData = async (sid = sheetId, preserveFilters = false) => {
+  const loadData = async (sid = sheetId, preserveFilters = false, tabName = null) => {
     if (!sid) return;
     try {
-      const res = await axios.get(`${API}/sheets/${sid}/data`, {
+      // Build URL with optional tab parameter
+      const url = tabName
+        ? `${API}/sheets/${sid}/data?tab=${encodeURIComponent(tabName)}`
+        : `${API}/sheets/${sid}/data`;
+
+      const res = await axios.get(url, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      // checks...
-      // checks...
       const raw = res.data;
-      // Backend returns array directly now
       if (!raw || !Array.isArray(raw)) {
         console.warn("loadData: response is not an array", raw);
         setData([]);
@@ -397,7 +403,10 @@ export default function App() {
       setData(raw);
       const heads = raw.length ? Object.keys(raw[0]) : [];
       setHeaders(heads);
-      setSheetId(sid); // make sure
+      setSheetId(sid);
+
+      // Persist to localStorage
+      localStorage.setItem("sheetId", sid);
 
       if (!preserveFilters) {
         setColumnFilters({});
@@ -407,6 +416,37 @@ export default function App() {
       console.error(e);
       alert("Failed to load data");
     }
+  };
+
+  // Fetch tabs for a sheet
+  const fetchTabs = async (sid) => {
+    if (!sid) {
+      setTabs([]);
+      setActiveTab("");
+      return;
+    }
+    try {
+      const res = await axios.get(`${API}/sheets/${sid}/tabs`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const tabList = res.data?.tabs || [];
+      setTabs(tabList);
+      // Default to first tab
+      if (tabList.length > 0) {
+        setActiveTab(tabList[0]);
+      }
+    } catch (e) {
+      console.error("fetchTabs failed:", e);
+      setTabs([]);
+      setActiveTab("");
+    }
+  };
+
+  // Handle tab change
+  const handleTabChange = (tabName) => {
+    setActiveTab(tabName);
+    localStorage.setItem("activeTab", tabName);
+    loadData(sheetId, true, tabName); // preserve filters when switching tabs
   };
 
   const handleUpload = async () => {
@@ -429,6 +469,13 @@ export default function App() {
       if (res.data.sheetId) {
         setSheetId(res.data.sheetId);
         setActiveFilename(res.data.filename);
+        localStorage.setItem("activeFilename", res.data.filename);
+        // Set tabs from upload response
+        if (res.data.tabs && res.data.tabs.length > 0) {
+          setTabs(res.data.tabs);
+          setActiveTab(res.data.tabs[0]);
+          localStorage.setItem("activeTab", res.data.tabs[0]);
+        }
         loadData(res.data.sheetId);
       }
     } catch (e) {
@@ -500,7 +547,6 @@ export default function App() {
     folders.map((f) => ({ value: String(f.id), label: f.name }))
   );
 
-  // Initial Auth
   useEffect(() => {
     if (token) {
       // fetch meta (folders, etc)
@@ -509,7 +555,17 @@ export default function App() {
         .catch(e => console.error(e));
 
       axios.get(`${API}/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
-        .then(r => setUser(r.data))
+        .then(r => {
+          setUser(r.data);
+          // Restore previously loaded sheet after auth
+          const savedSheetId = localStorage.getItem("sheetId");
+          const savedTab = localStorage.getItem("activeTab");
+          if (savedSheetId) {
+            loadData(savedSheetId, false, savedTab || null);
+            fetchTabs(savedSheetId);
+            if (savedTab) setActiveTab(savedTab);
+          }
+        })
         .catch(() => { setToken(""); setUser(null); });
     }
   }, [token]);
@@ -553,6 +609,9 @@ export default function App() {
           <button
             onClick={() => {
               localStorage.removeItem("token");
+              localStorage.removeItem("sheetId");
+              localStorage.removeItem("activeFilename");
+              localStorage.removeItem("activeTab");
               setToken("");
               setUser(null);
             }} // Clean logout
@@ -662,7 +721,12 @@ export default function App() {
                   filterAnchorRefs={filterAnchorRefs}
                   filterBtnRefs={filterBtnRefs}
 
-                  myFiles={myFiles} loadStored={(id) => loadData(id)}
+                  myFiles={myFiles} loadStored={(id) => { loadData(id); fetchTabs(id); }}
+
+                  tabs={tabs}
+                  activeTab={activeTab}
+                  onTabChange={handleTabChange}
+
                   hasRequiredColumns={hasRequiredColumns}
                 />
 
@@ -726,9 +790,11 @@ export default function App() {
 
           </ErrorBoundary>
         } />
-        {user?.role === "admin" && (
-          <Route path="/users" element={<div className="pt-0"><UserManagement token={token} sheetId={sheetId} /></div>} />
-        )}
+        <Route path="/users" element={
+          user?.role === "admin"
+            ? <div className="pt-0"><UserManagement token={token} sheetId={sheetId} /></div>
+            : <div className="p-8 text-center text-gray-500">Access denied. Admin only.</div>
+        } />
       </Routes>
 
       {/* GLOBAL MODALS */}
@@ -751,7 +817,9 @@ export default function App() {
                     <button
                       onClick={() => {
                         loadData(f.id);
-                        setActiveFilename(f.filename); // Set filename when loading from list
+                        fetchTabs(f.id);
+                        setActiveFilename(f.filename);
+                        localStorage.setItem("activeFilename", f.filename);
                         setSelectOpen(false);
                       }}
                       className="bg-blue-900 text-white px-3 py-1 rounded shadow text-xs"
@@ -788,6 +856,101 @@ export default function App() {
           UserManagement handles its own stuff. The "Folder Files" modal in App was possibly for the Dashboard User to explore folders?
           I will keep logic but if not triggered it's fine.
       */}
+
+      {/* Column Visibility Selector Modal for Saving Views */}
+      {showColumnSelector && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-2xl p-6 max-w-2xl w-full max-h-[80vh] overflow-auto">
+            <h2 className="text-xl font-bold mb-4">Select Visible Columns for View: {pendingViewName}</h2>
+            <p className="text-sm text-gray-600 mb-4">
+              Choose which columns should be visible to users when this view is loaded.
+              If no columns are selected, all columns will be visible.
+            </p>
+
+            <div className="grid grid-cols-2 gap-2 mb-6">
+              {headers.map((h) => (
+                <label key={h} className="flex items-center gap-2 p-2 hover:bg-gray-50 rounded cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={visibleColumns.includes(h)}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setVisibleColumns([...visibleColumns, h]);
+                      } else {
+                        setVisibleColumns(visibleColumns.filter(col => col !== h));
+                      }
+                    }}
+                    className="w-4 h-4"
+                  />
+                  <span className="text-sm">{h}</span>
+                </label>
+              ))}
+            </div>
+
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => {
+                  setShowColumnSelector(false);
+                  setPendingViewName("");
+                  setVisibleColumns([]);
+                }}
+                className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  try {
+                    const serializableColumnFilters = {};
+                    for (const key in columnFilters) {
+                      serializableColumnFilters[key] = Array.from(columnFilters[key]);
+                    }
+                    const config = {
+                      columnFilters: serializableColumnFilters,
+                      sortConfig,
+                      visibleColumns: visibleColumns.length > 0 ? visibleColumns : [],
+                      pivotOn,
+                      pivotRowKey,
+                      pivotColKey,
+                      pivotValKey,
+                      pivotAgg,
+                      twoOn,
+                      condCol1,
+                      condCol2,
+                      valueCol,
+                      trendsOn,
+                      trendsDateKey,
+                      trendsValueKey,
+                      trendGranularity,
+                      yearsBack,
+                    };
+                    await axios.post(
+                      `${API}/views`,
+                      { name: pendingViewName, sheetId, config },
+                      { headers: { Authorization: `Bearer ${token}` } }
+                    );
+                    // Refresh views list
+                    const res = await axios.get(`${API}/views/${sheetId}`, {
+                      headers: { Authorization: `Bearer ${token}` },
+                    });
+                    setViews(res.data || []);
+                    setShowColumnSelector(false);
+                    setPendingViewName("");
+                    setVisibleColumns([]);
+                    alert("View saved successfully!");
+                  } catch (e) {
+                    console.error("Save view failed:", e);
+                    alert("Failed to save view");
+                  }
+                }}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+              >
+                Save View
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </Router>
   );

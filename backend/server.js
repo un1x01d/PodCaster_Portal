@@ -139,6 +139,7 @@ async function initDb() {
   await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS totals_column TEXT;`);
   await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS stored_path TEXT;`);
   await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS tab_name TEXT;`);
+  await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS tabs JSONB DEFAULT '[]'::jsonb;`);
 
   // SHEET DATA (JSONB rows)
   await pool.query(`
@@ -146,10 +147,13 @@ async function initDb() {
       id SERIAL PRIMARY KEY,
       sheet_id TEXT NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
       row_index INT NOT NULL,
-      row_data JSONB NOT NULL
+      row_data JSONB NOT NULL,
+      tab_name TEXT
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_sheet_rows_sheet_id ON sheet_rows(sheet_id);`);
+  await pool.query(`ALTER TABLE sheet_rows ADD COLUMN IF NOT EXISTS tab_name TEXT;`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_sheet_rows_tab ON sheet_rows(sheet_id, tab_name);`);
 
   // clean duplicate actives, then re-enforce unique partial index
   await pool.query(`
@@ -361,111 +365,111 @@ app.post("/upload", auth, upload.single("file"), async (req, res) => {
       return res.status(400).json({ error: "no_sheets" });
     }
 
-    // 4) Insert Sheet Records
-    // First, deactivate all previous sheets so the new ones become the "current" set.
-    // We do this ONCE before the loop.
-    await query("UPDATE sheets SET active = FALSE", []);
+    // 4) Insert ONE Sheet Record with ALL tabs
+    // Use a transaction for atomicity
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
 
-    // Prepare response data (we'll return the FIRST sheet's info to the frontend)
-    let firstSheetResult = null;
-    const baseExt = path.extname(originalName);
-    const baseNameOriginal = path.basename(originalName, baseExt);
+      // Deactivate all previous sheets
+      await client.query("UPDATE sheets SET active = FALSE WHERE active = TRUE");
 
-    // Loop through ALL sheets
-    for (let i = 0; i < sheetNames.length; i++) {
-      const sn = sheetNames[i];
-      const rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { defval: "" });
-
-      // If sheet is empty, maybe skip? But user might want it. Let's keep consistent behavior or skip if 0 rows?
-      // Let's keep it, but headers will be empty.
-
-      const headers = Object.keys(rows[0] || {});
-      // Unique ID per sheet: Timestamp + Index + Random suffix
-      const sheetId = `${Date.now()}_${i}_${Math.random().toString(36).substr(2, 5)}`;
-
-      // Determine Filename for this specific sheet
-      // If only 1 sheet, keep original name. If multiple, append (SheetName)
-      let targetFilename = originalName;
-      if (sheetNames.length > 1) {
-        targetFilename = `${baseNameOriginal} (${sn})${baseExt}`;
-      }
+      // Generate ONE sheet ID for the entire workbook
+      const sheetId = `${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
 
       // 1) Folder Resolution
       let assignedFolderId = null;
       if (Number.isInteger(folderId)) {
-        const f = await query(`SELECT id FROM folders WHERE id = $1 LIMIT 1`, [folderId]);
-        if (f.length) assignedFolderId = f[0].id;
+        const f = await client.query(`SELECT id FROM folders WHERE id = $1 LIMIT 1`, [folderId]);
+        if (f.rows.length) assignedFolderId = f.rows[0].id;
       }
 
-      // 2) Check for duplicates/Versioning for THIS target filename
-      let versionedFilename = targetFilename;
+      // 2) Check for duplicates/Versioning
+      let versionedFilename = originalName;
       if (assignedFolderId) {
-        const ext = path.extname(targetFilename);
-        const baseName = path.basename(targetFilename, ext);
+        const ext = path.extname(originalName);
+        const baseName = path.basename(originalName, ext);
 
-        // Get all files in the same folder with similar names
-        const existingFiles = await query(
+        const existingFiles = await client.query(
           `SELECT filename FROM sheets WHERE folder_id = $1 AND filename LIKE $2`,
           [assignedFolderId, `${baseName}%`]
         );
 
-        if (existingFiles.length > 0) {
-          // Find highest version number
+        if (existingFiles.rows.length > 0) {
           let maxVersion = 0;
           const versionRegex = /\(v(\d+)\)/;
 
-          existingFiles.forEach(file => {
-            if (file.filename === targetFilename) {
-              maxVersion = Math.max(maxVersion, 1); // Original file exists
+          existingFiles.rows.forEach(file => {
+            if (file.filename === originalName) {
+              maxVersion = Math.max(maxVersion, 1);
             }
             const match = file.filename.match(versionRegex);
             if (match) {
-              const versionNum = parseInt(match[1], 10);
-              maxVersion = Math.max(maxVersion, versionNum);
+              maxVersion = Math.max(maxVersion, parseInt(match[1], 10));
             }
           });
 
-          // If duplicates exist, add version number
           if (maxVersion > 0) {
-            const nextVersion = maxVersion + 1;
-            versionedFilename = `${baseName} (v${nextVersion})${ext}`;
+            versionedFilename = `${baseName} (v${maxVersion + 1})${ext}`;
           }
         }
       }
 
-      // 3) Insert Sheet Record
-      // Set ALL new sheets to active=TRUE so they appear in the list.
-      // Save exact sheet name (sn) as tab_name
-      await query(
-        "INSERT INTO sheets (id, headers, active, filename, folder_id, stored_path, tab_name) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-        [sheetId, JSON.stringify(headers), true, versionedFilename, assignedFolderId, null, sn]
+      // Get headers from FIRST tab (used as default)
+      const firstTabRows = XLSX.utils.sheet_to_json(wb.Sheets[sheetNames[0]], { defval: "" });
+      const headers = Object.keys(firstTabRows[0] || {});
+
+      // 3) Insert ONE Sheet Record
+      await client.query(
+        `INSERT INTO sheets (id, headers, active, filename, folder_id, stored_path, tab_name, tabs) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [sheetId, JSON.stringify(headers), true, versionedFilename, assignedFolderId, null, sheetNames[0], JSON.stringify(sheetNames)]
       );
 
-      // 4) Batch Insert Rows
-      const CHUNK_SIZE = 1000;
-      for (let j = 0; j < rows.length; j += CHUNK_SIZE) {
-        const chunk = rows.slice(j, j + CHUNK_SIZE);
-        const values = [];
-        const placeHolders = [];
-        let pIdx = 1;
+      // 4) Insert rows from ALL tabs with tab_name
+      let totalRows = 0;
+      for (const sn of sheetNames) {
+        const rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { defval: "" });
 
-        chunk.forEach((r, idx) => {
-          values.push(sheetId, j + idx, JSON.stringify(r));
-          placeHolders.push(`($${pIdx++}, $${pIdx++}, $${pIdx++})`);
-        });
+        // Batch Insert Rows with tab_name
+        const CHUNK_SIZE = 1000;
+        for (let j = 0; j < rows.length; j += CHUNK_SIZE) {
+          const chunk = rows.slice(j, j + CHUNK_SIZE);
+          const values = [];
+          const placeHolders = [];
+          let pIdx = 1;
 
-        const sql = `INSERT INTO sheet_rows (sheet_id, row_index, row_data) VALUES ${placeHolders.join(",")}`;
-        await pool.query(sql, values);
+          chunk.forEach((r, idx) => {
+            values.push(sheetId, j + idx, JSON.stringify(r), sn);
+            placeHolders.push(`($${pIdx++}, $${pIdx++}, $${pIdx++}, $${pIdx++})`);
+          });
+
+          const sql = `INSERT INTO sheet_rows (sheet_id, row_index, row_data, tab_name) VALUES ${placeHolders.join(",")}`;
+          await client.query(sql, values);
+        }
+
+        totalRows += rows.length;
+        console.log(`[upload] Stored tab "${sn}" with ${rows.length} rows`);
       }
 
-      console.log(`[upload] Saved sheet "${sn}" as ID=${sheetId} rows=${rows.length}`);
+      console.log(`[upload] Saved workbook "${versionedFilename}" as ID=${sheetId} with ${sheetNames.length} tabs, ${totalRows} total rows`);
 
-      if (i === 0) {
-        firstSheetResult = { sheetId, headers, rows: rows.length, active: true, filename: versionedFilename, folderId: assignedFolderId };
-      }
+      await client.query('COMMIT');
+      res.json({
+        sheetId,
+        headers,
+        rows: totalRows,
+        active: true,
+        filename: versionedFilename,
+        folderId: assignedFolderId,
+        tabs: sheetNames
+      });
+    } catch (txErr) {
+      await client.query('ROLLBACK');
+      throw txErr;
+    } finally {
+      client.release();
     }
-
-    res.json(firstSheetResult);
   } catch (e) {
     console.error("upload failed:", e);
     if (e?.code === "LIMIT_FILE_SIZE") {
@@ -576,6 +580,21 @@ app.patch("/sheets/:id", auth, async (req, res) => {
   const { totals_column } = req.body || {};
   await query("UPDATE sheets SET totals_column = $1 WHERE id = $2", [totals_column || null, req.params.id]);
   res.json({ success: true });
+});
+
+// Get list of tabs for a sheet
+app.get("/sheets/:id/tabs", auth, async (req, res) => {
+  try {
+    const s = await query("SELECT tabs, tab_name FROM sheets WHERE id = $1", [req.params.id]);
+    if (!s.length) return res.status(404).json({ error: "not_found" });
+
+    // Return tabs array if available, otherwise single tab_name as array
+    const tabs = s[0].tabs || (s[0].tab_name ? [s[0].tab_name] : []);
+    res.json({ tabs });
+  } catch (e) {
+    console.error("get tabs failed:", e);
+    res.status(500).json({ error: "failed" });
+  }
 });
 
 /* ----------------------------------------------------------------------------
@@ -783,12 +802,33 @@ app.post("/load-sheet", auth, async (req, res) => {
 app.get("/sheets/:sheetId/data", auth, async (req, res) => {
   try {
     const sheetId = req.params.sheetId;
+    const tabName = req.query.tab; // Optional: filter by tab
 
-    // Fetch raw rows from DB (fast!)
-    const dbRows = await query(
-      "SELECT row_data FROM sheet_rows WHERE sheet_id = $1 ORDER BY row_index ASC",
-      [sheetId]
-    );
+    // Fetch raw rows from DB, optionally filtered by tab
+    let dbRows;
+    if (tabName) {
+      dbRows = await query(
+        "SELECT row_data FROM sheet_rows WHERE sheet_id = $1 AND tab_name = $2 ORDER BY row_index ASC",
+        [sheetId, tabName]
+      );
+    } else {
+      // Default: get first tab's data (or all if no tabs)
+      const sheetInfo = await query("SELECT tabs, tab_name FROM sheets WHERE id = $1", [sheetId]);
+      const firstTab = sheetInfo[0]?.tabs?.[0] || sheetInfo[0]?.tab_name;
+
+      if (firstTab) {
+        dbRows = await query(
+          "SELECT row_data FROM sheet_rows WHERE sheet_id = $1 AND tab_name = $2 ORDER BY row_index ASC",
+          [sheetId, firstTab]
+        );
+      } else {
+        // Fallback for old data without tab_name
+        dbRows = await query(
+          "SELECT row_data FROM sheet_rows WHERE sheet_id = $1 ORDER BY row_index ASC",
+          [sheetId]
+        );
+      }
+    }
     // Unpack JSONB
     let rows = dbRows.map(r => r.row_data);
 

@@ -411,6 +411,37 @@ Try asking:
         // ---------------- Filter Parsing (Implicit & Explicit) ----------------
         let filter = null;
 
+        // 0. Compound Query Pattern: "[operation] [metric] for [value] [column]"
+        // E.g., "average total profit for all ci/cd work scopes"
+        // This detects filter + aggregation in one pass
+        if (!filter) {
+            const compoundMatch = q.match(/(?:average|avg|total|sum|mean|count)\s+(?:of\s+)?(.+?)\s+(?:for|of|in|with|where)\s+(?:all\s+)?(.+?)\s+([\w\s]+?)(?:\?|$)/i);
+            if (compoundMatch) {
+                const metricPart = compoundMatch[1].trim();
+                const valuePart = compoundMatch[2].trim();
+                const columnPart = compoundMatch[3].trim();
+
+                // Find the column that matches columnPart (e.g., "work scopes" -> "Work Scope")
+                const filterCol = headers.find(h =>
+                    h.toLowerCase() === columnPart.toLowerCase() ||
+                    h.toLowerCase().includes(columnPart.toLowerCase()) ||
+                    columnPart.toLowerCase().includes(h.toLowerCase()) ||
+                    // Handle pluralization
+                    h.toLowerCase() === columnPart.toLowerCase().replace(/s$/, '') ||
+                    h.toLowerCase() + 's' === columnPart.toLowerCase()
+                );
+
+                if (filterCol) {
+                    // Check if the value exists in that column
+                    const hasMatch = sourceData.some(r => String(r[filterCol]).toLowerCase().includes(valuePart.toLowerCase()));
+                    if (hasMatch) {
+                        filter = { column: filterCol, value: valuePart };
+                        // Don't override operation yet - let it flow naturally
+                    }
+                }
+            }
+        }
+
         // 0A. Adjective-Noun Pattern: "Finance Department", "West Region", "Q1 Sales"
         // This handles cases where Value comes BEFORE Column
         if (!filter && !q.match(/^(?:compare|show|what|how)/)) {
@@ -712,13 +743,19 @@ Try asking:
                     if (!parsed.column) return 'Please specify which column to sum.';
                     if (!isNumericColumn(parsed.column)) return `I can't calculate the sum of "${parsed.column}" because it contains text, not numbers. Did you mean to count?`;
                     const sum = result.reduce((acc, row) => acc + (Number(row[parsed.column]) || 0), 0);
-                    return `Total ${parsed.column}: ${formatNumber(sum, parsed.column)}\n(Based on ${result.length} rows)`;
+                    const sumFilterContext = (parsed.filter && parsed.operation !== 'FILTER' && parsed.operation !== 'APPLY_FILTER')
+                        ? `\nFiltered by ${parsed.filter.column}: "${parsed.filter.value}"`
+                        : '';
+                    return `Total ${parsed.column}: ${formatNumber(sum, parsed.column)}\n(Based on ${result.length} rows)${sumFilterContext}`;
 
                 case 'AVG':
                     if (!parsed.column) return 'Please specify which column to average.';
                     if (!isNumericColumn(parsed.column)) return `I can't calculate the average of "${parsed.column}" because it contains text.`;
                     const avg = result.reduce((acc, row) => acc + (Number(row[parsed.column]) || 0), 0) / result.length;
-                    return `Average ${parsed.column}: ${formatNumber(avg, parsed.column)}\n(Based on ${result.length} rows)`;
+                    const avgFilterContext = (parsed.filter && parsed.operation !== 'FILTER' && parsed.operation !== 'APPLY_FILTER')
+                        ? `\nFiltered by ${parsed.filter.column}: "${parsed.filter.value}"`
+                        : '';
+                    return `Average ${parsed.column}: ${formatNumber(avg, parsed.column)}\n(Based on ${result.length} rows)${avgFilterContext}`;
 
                 case 'COUNT':
                     return `Count: ${result.length} rows`;
@@ -796,7 +833,60 @@ Try asking:
                     if (!maxRow) return `Could not find a maximum value for "${parsed.column}".`;
                     setContext(prev => ({ ...prev, lastResultRow: maxRow }));
 
+                    // Check if user asked "what [column] has the highest [metric]?"
+                    // Or "most profitable [column]?" / "highest [metric] [column]?"
+                    // Extract the requested label column from the query
                     let maxLabel = '';
+                    let requestedLabelCol = null;
+
+                    // Pattern 1: "what/which X has the highest Y"
+                    const maxQueryMatch = input.match(/(?:what|which)\s+(.+?)\s+(?:has|have|had|with|got|gets)\s+(?:the\s+)?(?:highest|max|maximum|most|largest|best)/i);
+                    if (maxQueryMatch) {
+                        const requestedColName = maxQueryMatch[1].trim();
+                        requestedLabelCol = headers.find(h =>
+                            h.toLowerCase() === requestedColName.toLowerCase() ||
+                            h.toLowerCase().includes(requestedColName.toLowerCase()) ||
+                            requestedColName.toLowerCase().includes(h.toLowerCase().replace(/\s+/g, ' '))
+                        );
+                    }
+
+                    // Pattern 2: "most profitable X?" / "highest revenue X?" / "best X?"
+                    let searchTerm = null;
+                    if (!requestedLabelCol) {
+                        const altMaxMatch = input.match(/(?:most|highest|best|largest|maximum)\s+(?:\w+\s+)?(\w[\w\s]*?)(?:\?|$)/i);
+                        if (altMaxMatch) {
+                            searchTerm = altMaxMatch[1].trim();
+                            // Find a column that matches the last part of the query (the noun)
+                            requestedLabelCol = headers.find(h =>
+                                h.toLowerCase() === searchTerm.toLowerCase() ||
+                                h.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                                searchTerm.toLowerCase().includes(h.toLowerCase().replace(/\s+/g, ' '))
+                            );
+                            // Make sure we don't pick the same column we're aggregating on
+                            if (requestedLabelCol === parsed.column) {
+                                requestedLabelCol = null;
+                            }
+                        }
+                    }
+
+                    if (requestedLabelCol && requestedLabelCol !== parsed.column) {
+                        // User specifically asked for this column
+                        return `${requestedLabelCol} with highest ${parsed.column}: ${formatValue(maxRow[requestedLabelCol])}\n(${parsed.column}: ${formatNumber(maxVal, parsed.column)})`;
+                    }
+
+                    // If user asked for a column but we couldn't find it, suggest similar ones
+                    if (searchTerm && !requestedLabelCol) {
+                        const similarCols = headers.filter(h =>
+                            h.toLowerCase().includes(searchTerm.split(' ')[0].toLowerCase()) ||
+                            searchTerm.split(' ').some(word => h.toLowerCase().includes(word.toLowerCase()))
+                        ).filter(h => h !== parsed.column).slice(0, 5);
+
+                        if (similarCols.length > 0) {
+                            return `Maximum ${parsed.column}: ${formatNumber(maxVal, parsed.column)}\n\n🤔 I couldn't find a column matching "${searchTerm}". Did you mean one of these?\n${similarCols.map(c => `• ${c}: ${formatValue(maxRow[c])}`).join('\n')}`;
+                        }
+                    }
+
+                    // Fallback to default label column detection
                     const labelCol = headers.find(h => h.toLowerCase().includes('month') || h.toLowerCase().includes('date') || h.toLowerCase().includes('name') || !isNumericColumn(h));
                     if (labelCol && labelCol !== parsed.column) {
                         maxLabel = `\n(${labelCol}: ${formatValue(maxRow[labelCol])})`;
@@ -821,7 +911,60 @@ Try asking:
                     if (!minRow) return `Could not find a minimum value for "${parsed.column}".`;
                     setContext(prev => ({ ...prev, lastResultRow: minRow }));
 
+                    // Check if user asked "what [column] has the lowest [metric]?"
+                    // Or "least profitable [column]?" / "lowest [metric] [column]?"
+                    // Extract the requested label column from the query
                     let minLabel = '';
+                    let requestedMinLabelCol = null;
+
+                    // Pattern 1: "what/which X has the lowest Y"
+                    const minQueryMatch = input.match(/(?:what|which)\s+(.+?)\s+(?:has|have|had|with|got|gets)\s+(?:the\s+)?(?:lowest|min|minimum|least|smallest|worst)/i);
+                    if (minQueryMatch) {
+                        const requestedMinColName = minQueryMatch[1].trim();
+                        requestedMinLabelCol = headers.find(h =>
+                            h.toLowerCase() === requestedMinColName.toLowerCase() ||
+                            h.toLowerCase().includes(requestedMinColName.toLowerCase()) ||
+                            requestedMinColName.toLowerCase().includes(h.toLowerCase().replace(/\s+/g, ' '))
+                        );
+                    }
+
+                    // Pattern 2: "least profitable X?" / "lowest revenue X?" / "worst X?"
+                    let minSearchTerm = null;
+                    if (!requestedMinLabelCol) {
+                        const altMinMatch = input.match(/(?:least|lowest|worst|smallest|minimum)\s+(?:\w+\s+)?(\w[\w\s]*?)(?:\?|$)/i);
+                        if (altMinMatch) {
+                            minSearchTerm = altMinMatch[1].trim();
+                            // Find a column that matches the last part of the query (the noun)
+                            requestedMinLabelCol = headers.find(h =>
+                                h.toLowerCase() === minSearchTerm.toLowerCase() ||
+                                h.toLowerCase().includes(minSearchTerm.toLowerCase()) ||
+                                minSearchTerm.toLowerCase().includes(h.toLowerCase().replace(/\s+/g, ' '))
+                            );
+                            // Make sure we don't pick the same column we're aggregating on
+                            if (requestedMinLabelCol === parsed.column) {
+                                requestedMinLabelCol = null;
+                            }
+                        }
+                    }
+
+                    if (requestedMinLabelCol && requestedMinLabelCol !== parsed.column) {
+                        // User specifically asked for this column
+                        return `${requestedMinLabelCol} with lowest ${parsed.column}: ${formatValue(minRow[requestedMinLabelCol])}\n(${parsed.column}: ${formatNumber(minVal, parsed.column)})`;
+                    }
+
+                    // If user asked for a column but we couldn't find it, suggest similar ones
+                    if (minSearchTerm && !requestedMinLabelCol) {
+                        const similarMinCols = headers.filter(h =>
+                            h.toLowerCase().includes(minSearchTerm.split(' ')[0].toLowerCase()) ||
+                            minSearchTerm.split(' ').some(word => h.toLowerCase().includes(word.toLowerCase()))
+                        ).filter(h => h !== parsed.column).slice(0, 5);
+
+                        if (similarMinCols.length > 0) {
+                            return `Minimum ${parsed.column}: ${formatNumber(minVal, parsed.column)}\n\n🤔 I couldn't find a column matching "${minSearchTerm}". Did you mean one of these?\n${similarMinCols.map(c => `• ${c}: ${formatValue(minRow[c])}`).join('\n')}`;
+                        }
+                    }
+
+                    // Fallback to default label column detection
                     const minLabelCol = headers.find(h => h.toLowerCase().includes('month') || h.toLowerCase().includes('date') || h.toLowerCase().includes('name') || !isNumericColumn(h));
                     if (minLabelCol && minLabelCol !== parsed.column) {
                         minLabel = `\n(${minLabelCol}: ${formatValue(minRow[minLabelCol])})`;
@@ -1242,19 +1385,37 @@ Try asking:
                     return;
                 }
 
-                // Multiple matches?
+                // Multiple matches? Auto-apply all of them without asking for confirmation
                 if (matchingValues.length > 1) {
-                    setContext(prev => ({
-                        ...prev,
-                        pendingFilter: { column: parsed.filter.column, matchingValues: matchingValues }
-                    }));
+                    // Check if combined with existing filters would yield results
+                    const currentFilters = context.activeFilters || {};
+                    const potentialFilters = { ...currentFilters };
+                    potentialFilters[parsed.filter.column] = matchingValues;
 
-                    const botMessage = {
-                        type: 'bot',
-                        text: `🤔 "${parsed.filter.value}" matches ${matchingValues.length} values in ${parsed.filter.column}:\n\n${matchingValues.slice(0, 10).map((v, i) => `${i + 1}. ${formatValue(v)}`).join('\n')}${matchingValues.length > 10 ? '\n...' : ''}\n\nDid you mean:\n• All of these? (Type "yes" or "all")\n• Just one? (Type the exact value)`,
-                        timestamp: new Date()
-                    };
-                    setMessages(prev => [...prev, botMessage]);
+                    const testSet = ((allData && allData.length > 0) ? allData : data).filter(row => {
+                        return Object.entries(potentialFilters).every(([col, vals]) => {
+                            const cell = String(row[col]);
+                            return vals.includes(cell);
+                        });
+                    });
+
+                    let finalFilters = {};
+                    let message = '';
+
+                    if (testSet.length > 0) {
+                        // Cumulative success
+                        finalFilters = potentialFilters;
+                        message = `✅ Applied filter to table!\n\n${parsed.filter.column}: ${matchingValues.length} values\nShowing ${testSet.length} rows`;
+                    } else {
+                        // Conflict -> Auto Reset
+                        finalFilters = { [parsed.filter.column]: matchingValues };
+                        const count = ((allData && allData.length > 0) ? allData : data).filter(row => matchingValues.includes(String(row[parsed.filter.column]))).length;
+                        message = `🔄 No rows found with combined filters. Resetting view.\n\nFiltering only by ${parsed.filter.column}: ${matchingValues.length} values\nShowing ${count} rows`;
+                    }
+
+                    onApplyFilter(finalFilters);
+                    setContext(prev => ({ ...prev, activeFilters: finalFilters, pendingFilter: null }));
+                    setMessages(prev => [...prev, { type: 'bot', text: message, timestamp: new Date() }]);
                     setInput('');
                     return;
                 }

@@ -12,6 +12,7 @@ import ExportMenu from "./ExportMenu";
 import ChartMenu from "./ChartMenu";
 import ColumnFilterMenu from "./ColumnFilterMenu";
 import TrendTooltip from "./TrendTooltip";
+import SheetTabBar from "./SheetTabBar";
 
 const COLORS = ["#2563EB", "#059669", "#F59E0B", "#DC2626", "#7C3AED", "#0EA5E9"];
 const PIE_COLORS = ["#3B82F6", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899", "#6366F1", "#14B8A6"];
@@ -109,9 +110,14 @@ export default function DashboardBody(props) {
         filterAnchorRefs,
         filterBtnRefs,
 
-        // Multi-sheet tabs logic needs myFiles & loadStored?
+        // Multi-sheet tabs logic
         myFiles,
         loadStored,
+
+        // Tab support
+        tabs,
+        activeTab,
+        onTabChange,
 
         // Helper checks
         hasRequiredColumns
@@ -164,6 +170,8 @@ export default function DashboardBody(props) {
             return y >= start && y <= end;
         });
     }, [trendsData, trendStartYear, trendEndYear]);
+
+    // tabs and activeTab are now passed as props from App.jsx
 
     // Calculate min col width
     const minColWidth = 180; // Increased for better visibility
@@ -744,6 +752,15 @@ export default function DashboardBody(props) {
                                     </AutoSizer>
                                 </div>
                             </div>
+
+                            {/* Excel-style Tab Bar */}
+                            {tabs && tabs.length > 1 && (
+                                <SheetTabBar
+                                    tabs={tabs}
+                                    activeTab={activeTab}
+                                    onTabClick={onTabChange}
+                                />
+                            )}
                         </>
                     ) : (
                         <div className="text-gray-600 text-center py-10">

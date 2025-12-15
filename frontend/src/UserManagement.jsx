@@ -1078,17 +1078,11 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                 onChange={(e) => setSelectedGroupSheetId(e.target.value || null)}
               >
                 <option value="">Select a sheet…</option>
-                {allSheets
-                  .filter(s => {
-                    // Only show sheets in folders assigned to this group
-                    const folder = folders.find(f => f.id === s.folder_id);
-                    return folder && folder.group_id === selectedGroupId;
-                  })
-                  .map(s => (
-                    <option key={s.id} value={s.id}>
-                      {trunc(s.filename, 50)} {s.active ? "(Active)" : ""}
-                    </option>
-                  ))}
+                {allSheets.map(s => (
+                  <option key={s.id} value={s.id}>
+                    {trunc(s.filename, 50)} {s.active ? "(Active)" : ""}
+                  </option>
+                ))}
               </select>
 
               {/* Template toolbar (shows only this group's templates) */}
