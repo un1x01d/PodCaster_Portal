@@ -119,24 +119,6 @@ export default function DashboardBody(props) {
 
     const headerRef = useRef(null);
 
-    // Non-admin users: show welcome screen until sheet is selected
-    if (user.role !== "admin" && !sheetId) {
-        return (
-            <div className="w-full min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 to-white">
-                <div className="bg-white/95 backdrop-blur shadow-xl rounded-2xl p-8 w-96 border border-slate-100 text-center">
-                    <h2 className="text-2xl font-bold mb-4 text-blue-900">📊 Welcome</h2>
-                    <p className="text-gray-600 mb-6">Please select a sheet to get started</p>
-                    <button
-                        onClick={openSelect}
-                        className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-semibold shadow"
-                    >
-                        Select Sheet
-                    </button>
-                </div>
-            </div>
-        );
-    }
-
     // Calculate min col width
     const minColWidth = 180; // Increased for better visibility
 
@@ -173,6 +155,26 @@ export default function DashboardBody(props) {
             {...rest}
         />
     )), []);
+
+    // Non-admin users: show welcome screen until sheet is selected
+    if (user.role !== "admin" && !sheetId) {
+        return (
+            <div className="w-full min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 to-white">
+                <div className="bg-white/95 backdrop-blur shadow-xl rounded-2xl p-8 w-96 border border-slate-100 text-center">
+                    <h2 className="text-2xl font-bold mb-4 text-blue-900">📊 Welcome</h2>
+                    <p className="text-gray-600 mb-6">Please select a sheet to get started</p>
+                    <button
+                        onClick={openSelect}
+                        className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-semibold shadow"
+                    >
+                        Select Sheet
+                    </button>
+                </div>
+            </div>
+        );
+    }
+
+
 
 
 
