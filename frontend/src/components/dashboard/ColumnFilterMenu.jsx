@@ -131,7 +131,7 @@ export default function ColumnFilterMenu({
     return createPortal(
         <div
             ref={panelRef}
-            className="fixed z-[9999] bg-white border border-gray-200 rounded-xl shadow-2xl p-3 w-64"
+            className="fixed z-[9999] bg-white border border-slate-200 rounded-xl shadow-2xl p-3 w-64 ring-1 ring-black/5"
             style={{ top: coords.top, left: coords.left, visibility: measured ? "visible" : "hidden" }}
             role="dialog"
             aria-label={`Filter ${column}`}
@@ -142,19 +142,19 @@ export default function ColumnFilterMenu({
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
                 placeholder="Search values…"
-                className="w-full border border-gray-200 rounded-md px-2 py-1 mb-2 text-gray-900 placeholder-gray-400 focus:outline-none focus:ring focus:ring-slate-100"
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 mb-2 text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all text-sm"
             />
 
             <div className="flex gap-2 mb-2">
                 <button
-                    className="text-[11px] px-2 py-1 rounded-md bg-white border border-gray-200 hover:bg-gray-50 text-gray-800 focus:outline-none focus:ring focus:ring-slate-100"
+                    className="text-[11px] px-2 py-1 rounded-md bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 transition-colors"
                     onClick={handleSelectAll}
                     title="Select all values"
                 >
                     Select All
                 </button>
                 <button
-                    className="text-[11px] px-2 py-1 rounded-md bg-white border border-gray-200 hover:bg-gray-50 text-gray-800 focus:outline-none focus:ring focus:ring-slate-100"
+                    className="text-[11px] px-2 py-1 rounded-md bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 transition-colors"
                     onClick={handleClearAll}
                     title="Clear all selections"
                 >
@@ -162,7 +162,7 @@ export default function ColumnFilterMenu({
                 </button>
             </div>
 
-            <div className="max-h-56 overflow-auto border border-gray-200 rounded-md">
+            <div className="max-h-56 overflow-auto border border-slate-200 rounded-lg">
                 {shown.length ? (
                     <>
                         {shown.slice(0, 100).map((v, i) => {
@@ -201,16 +201,16 @@ export default function ColumnFilterMenu({
                 </div>
                 <div className="flex gap-2">
                     <button
-                        className="px-3 py-1 text-sm rounded-md bg-white border border-gray-200 hover:bg-gray-50 text-gray-800 focus:outline-none focus:ring focus:ring-slate-100"
+                        className="px-3 py-1.5 text-sm rounded-lg bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 transition-all font-medium"
                         onClick={() => {
                             onClear(column);
                             onClose?.();
                         }}
                     >
-                        Clear Filter
+                        Clear
                     </button>
                     <button
-                        className="px-3 py-1 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700 shadow focus:outline-none focus:ring focus:ring-slate-100"
+                        className="px-3 py-1.5 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 shadow-sm transition-all font-semibold"
                         onClick={handleApply}
                     >
                         Apply

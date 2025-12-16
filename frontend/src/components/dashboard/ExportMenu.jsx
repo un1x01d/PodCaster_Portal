@@ -27,11 +27,11 @@ export default function ExportMenu({ onCSV, onXLSX, onPDF }) {
                 ref={btnRef}
                 type="button"
                 onClick={() => setOpen((o) => !o)}
-                className="bg-blue-600 hover:bg-blue-700 text-white px-3 rounded-lg h-10 shadow flex items-center gap-2"
+                className="bg-blue-600 hover:bg-blue-700 text-white px-4 rounded-lg h-9 shadow-sm flex items-center gap-2 transition-all font-semibold text-sm"
                 title="Export options"
             >
-                Export
-                <span className="opacity-90">▾</span>
+                <span>Export</span>
+                <span className="opacity-90 text-xs">▼</span>
             </button>
 
             {open && (
@@ -39,23 +39,23 @@ export default function ExportMenu({ onCSV, onXLSX, onPDF }) {
                     ref={panelRef}
                     className="absolute z-50 mt-1 right-0 w-48 bg-white border border-gray-200 rounded-xl shadow-xl overflow-hidden"
                 >
-                    <div className="bg-blue-50 text-xs px-3 py-2 border-b border-slate-100">
+                    <div className="bg-slate-50 text-xs font-semibold px-4 py-2 border-b border-slate-200 text-slate-500 uppercase tracking-wider">
                         Download as…
                     </div>
                     <button
-                        className="w-full text-left px-3 py-2 hover:bg-blue-50 text-gray-900"
+                        className="w-full text-left px-3 py-2.5 hover:bg-slate-50 text-slate-700 font-medium text-sm transition-colors"
                         onClick={() => { setOpen(false); onCSV?.(); }}
                     >
                         CSV (.csv)
                     </button>
                     <button
-                        className="w-full text-left px-3 py-2 hover:bg-blue-50 text-gray-900"
+                        className="w-full text-left px-3 py-2.5 hover:bg-slate-50 text-slate-700 font-medium text-sm transition-colors"
                         onClick={() => { setOpen(false); onXLSX?.(); }}
                     >
                         Excel (.xlsx)
                     </button>
                     <button
-                        className="w-full text-left px-3 py-2 hover:bg-blue-50 text-gray-900 border-t border-gray-100"
+                        className="w-full text-left px-3 py-2.5 hover:bg-slate-50 text-slate-700 font-medium text-sm border-t border-slate-100 transition-colors"
                         onClick={() => { setOpen(false); onPDF?.(); }}
                     >
                         PDF (.pdf)

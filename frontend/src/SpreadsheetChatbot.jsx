@@ -7,6 +7,7 @@ export default function SpreadsheetChatbot({ sheetId, activeFilename, myFiles, o
     const [input, setInput] = useState('');
     const [context, setContext] = useState({}); // Conversation memory
     const messagesEndRef = useRef(null);
+    const inputRef = useRef(null);
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -51,6 +52,7 @@ export default function SpreadsheetChatbot({ sheetId, activeFilename, myFiles, o
 • "Filter by [Column Name] [Value]" (e.g., "Filter by Region West")
 • "Show top 5 [Column Name]"
 • "Compare [Column] [Year] vs [Year]" (e.g., "Compare Revenue 2023 vs 2024")
+• "Reset filters" or just type "/reset" to clear everything.
 
 Try asking:
 • ${suggestions.join('\n• ')}`,
@@ -242,7 +244,18 @@ Try asking:
                 segmentBy = matchedSeg;
             }
         }
-
+        // Detect implicit "by [column]" from "Which [Dimension] is the most [Metric]?"
+        const implicitSegmentMatch = q.match(/^(?:which|what)\s+([a-z0-9\s]+?)\s+(?:is|are|has|have|was|were)/i);
+        if (implicitSegmentMatch && !segmentBy) {
+            const potentialSeg = implicitSegmentMatch[1].trim();
+            const matchedSeg = headers.find(h => h.toLowerCase() === potentialSeg.toLowerCase() || h.toLowerCase().includes(potentialSeg.toLowerCase()));
+            // Only set segmentBy if it's NOT the primary column (e.g. "Which revenue is highest?" -> revenue is column, not segment)
+            // But parsed.column isn't set yet. We'll validate later? 
+            // Actually, we can check if it matches a header.
+            if (matchedSeg) {
+                segmentBy = matchedSeg;
+            }
+        }
         // Detect Aggregation Type
         if (q.match(/average|avg|mean|typical/)) aggregation = 'avg';
         else if (q.match(/count|how many/)) aggregation = 'count';
@@ -251,7 +264,8 @@ Try asking:
         if (q.match(/^(?:for\s+)?(?:which|what)\s+(?:year|month|day|date|time|period|customer|region|product|project|account|vendor)(?:\?|$)/) && !q.match(/(?:highest|lowest|most|least|best|worst|had|have|was|were)/)) {
             operation = 'QUESTION';
         }
-        else if (q.match(/(?:reset|clear|remove|delete)\s+(?:all\s+)?(?:filters?|fitlers?|fliters?|filtes?)/)) operation = 'RESET_FILTER';
+        else if (q.match(/(?:reset|clear|remove|delete)\s+(?:all\s+)?(?:filters?|fitlers?|fliters?|filtes?)/) || q.startsWith('/reset') || q.startsWith('/clear')) operation = 'RESET_FILTER';
+        else if (q.startsWith('/help') || q.startsWith('/commands')) operation = 'HELP';
         else if (q.match(/^all\s+(?:of\s+)?(.+)/)) {
             // Check if "all [column]" -> Treat as Reset Filter for that column
             const potentialCol = q.match(/^all\s+(?:of\s+)?(.+)/)[1].trim();
@@ -643,7 +657,7 @@ Try asking:
                         aggregation: parsed.aggregation
                     });
 
-                    let msg = `📈 Generating chart`;
+                    let msg = `Generating chart`;
                     if (parsed.column) msg += ` for ${parsed.column}`;
                     if (parsed.segmentBy) msg += `, comparing by ${parsed.segmentBy}`;
                     if (parsed.aggregation === 'avg') msg += ` (Average)`;
@@ -678,9 +692,8 @@ Try asking:
                 const change = val2 - val1;
                 const pctChange = val1 !== 0 ? (change / val1) * 100 : 0;
                 const direction = change >= 0 ? 'increased' : 'decreased';
-                const emoji = change >= 0 ? '📈' : '📉';
 
-                return `Comparison of ${parsed.column}:\n\n• ${r1.label}: ${formatNumber(val1, parsed.column)}\n• ${r2.label}: ${formatNumber(val2, parsed.column)}\n\n${emoji} Did it go up? Yes, it ${direction} by ${formatNumber(Math.abs(change), parsed.column)} (${Math.abs(pctChange).toFixed(1)}%) from ${r1.label} to ${r2.label}.`;
+                return `Comparison of ${parsed.column}:\n\n• ${r1.label}: ${formatNumber(val1, parsed.column)}\n• ${r2.label}: ${formatNumber(val2, parsed.column)}\n\nDid it go up? Yes, it ${direction} by ${formatNumber(Math.abs(change), parsed.column)} (${Math.abs(pctChange).toFixed(1)}%) from ${r1.label} to ${r2.label}.`;
             }
 
             // Apply date filter
@@ -831,6 +844,35 @@ Try asking:
                     });
 
                     if (!maxRow) return `Could not find a maximum value for "${parsed.column}".`;
+
+                    // AGGREGATION HANDLER (If segmentBy is present)
+                    // Logic: Group by segment, Sum/Count the target column, find Max Group
+                    if (parsed.segmentBy) {
+                        const groups = {};
+                        result.forEach(row => {
+                            const key = row[parsed.segmentBy];
+                            if (key) {
+                                const val = Number(String(row[parsed.column]).replace(/[$,%]/g, '')) || 0;
+                                groups[key] = (groups[key] || 0) + val;
+                            }
+                        });
+
+                        let maxGroupVal = -Infinity;
+                        let maxGroupKey = null;
+
+                        Object.entries(groups).forEach(([key, val]) => {
+                            if (val > maxGroupVal) {
+                                maxGroupVal = val;
+                                maxGroupKey = key;
+                            }
+                        });
+
+                        if (maxGroupKey) {
+                            setContext(prev => ({ ...prev, lastResultLabel: parsed.segmentBy, lastResultValue: maxGroupVal }));
+                            return `The ${parsed.segmentBy} with the highest total ${parsed.column} is:\n\n• ${maxGroupKey}: ${formatNumber(maxGroupVal, parsed.column)}`;
+                        }
+                    }
+
                     setContext(prev => ({ ...prev, lastResultRow: maxRow }));
 
                     // Check if user asked "what [column] has the highest [metric]?"
@@ -909,6 +951,34 @@ Try asking:
                     });
 
                     if (!minRow) return `Could not find a minimum value for "${parsed.column}".`;
+
+                    // AGGREGATION HANDLER (If segmentBy is present)
+                    if (parsed.segmentBy) {
+                        const groups = {};
+                        result.forEach(row => {
+                            const key = row[parsed.segmentBy];
+                            if (key) {
+                                const val = Number(String(row[parsed.column]).replace(/[$,%]/g, '')) || 0;
+                                groups[key] = (groups[key] || 0) + val;
+                            }
+                        });
+
+                        let minGroupVal = Infinity;
+                        let minGroupKey = null;
+
+                        Object.entries(groups).forEach(([key, val]) => {
+                            if (val < minGroupVal) {
+                                minGroupVal = val;
+                                minGroupKey = key;
+                            }
+                        });
+
+                        if (minGroupKey) {
+                            setContext(prev => ({ ...prev, lastResultLabel: parsed.segmentBy, lastResultValue: minGroupVal }));
+                            return `The ${parsed.segmentBy} with the lowest total ${parsed.column} is:\n\n• ${minGroupKey}: ${formatNumber(minGroupVal, parsed.column)}`;
+                        }
+                    }
+
                     setContext(prev => ({ ...prev, lastResultRow: minRow }));
 
                     // Check if user asked "what [column] has the lowest [metric]?"
@@ -1052,6 +1122,20 @@ Try asking:
                         return `The previous query used all available data (no date filter applied).`;
                     }
 
+                case 'HELP':
+                    return `Here are some things I can do:
+
+**Commands:**
+• \`/reset\` or "Reset filters" - Clear all active filters
+• \`/help\` - Show this message
+
+**Analysis:**
+• "Show top 5 [Column]"
+• "Filter by [Column] [Value]"
+• "Compare [Column] 2023 vs 2024"
+• "Which [Region/Dept] is the most profitable?"
+• "Trend of [Column]"`;
+
                 case 'MODE':
                     if (!parsed.column) return 'Please specify which column to find the most common value for.';
                     if (!result.length) return "No data available.";
@@ -1132,7 +1216,7 @@ Try asking:
     };
 
     // Focus input on open
-    const inputRef = useRef(null);
+    // Keyboard handling
     useEffect(() => {
         if (isOpen && inputRef.current) {
             inputRef.current.focus();
@@ -1308,14 +1392,14 @@ Try asking:
                         delete filters[parsed.column];
                         onApplyFilter(filters);
                         setContext(prev => ({ ...prev, activeFilters: filters }));
-                        setMessages(prev => [...prev, { type: 'bot', text: `✅ Cleared filter for "${parsed.column}".`, timestamp: new Date() }]);
+                        setMessages(prev => [...prev, { type: 'bot', text: `Cleared filter for "${parsed.column}".`, timestamp: new Date() }]);
                     } else {
-                        setMessages(prev => [...prev, { type: 'bot', text: `ℹ️ No active filter found for "${parsed.column}".`, timestamp: new Date() }]);
+                        setMessages(prev => [...prev, { type: 'bot', text: `No active filter found for "${parsed.column}".`, timestamp: new Date() }]);
                     }
                 } else {
                     onApplyFilter({});
                     setContext(prev => ({ ...prev, activeFilters: {}, lastColumn: null, lastResultRow: null, lastOperation: null }));
-                    setMessages(prev => [...prev, { type: 'bot', text: '✅ All filters cleared & context reset!\n\nShowing all data.', timestamp: new Date() }]);
+                    setMessages(prev => [...prev, { type: 'bot', text: 'All filters cleared & context reset!\n\nShowing all data.', timestamp: new Date() }]);
                 }
                 setInput('');
                 return;
@@ -1324,7 +1408,7 @@ Try asking:
             // For APPLY_FILTER operations
             if ((parsed.operation === 'FILTER' || parsed.operation === 'APPLY_FILTER') && onApplyFilter) {
                 if (!parsed.filter) {
-                    const botMessage = { type: 'bot', text: '🤔 I couldn\'t understand what to filter. Try "Region = West" or "Show me Completed".', timestamp: new Date() };
+                    const botMessage = { type: 'bot', text: 'I couldn\'t understand what to filter. Try "Region = West" or "Show me Completed".', timestamp: new Date() };
                     setMessages(prev => [...prev, botMessage]);
                     setInput('');
                     return;
@@ -1361,7 +1445,7 @@ Try asking:
 
                         const botMessage = {
                             type: 'bot',
-                            text: `✅ Applied range filter: ${parsed.filter.column} ${op} ${val}\n\nFound ${matchingValues.length} distinct values matching criteria.\nShowing ${matchingValues.length} rows.`,
+                            text: `Applied range filter: ${parsed.filter.column} ${op} ${val}\n\nFound ${matchingValues.length} distinct values matching criteria.\nShowing ${matchingValues.length} rows.`,
                             timestamp: new Date()
                         };
                         setMessages(prev => [...prev, botMessage]);
@@ -1388,7 +1472,7 @@ Try asking:
                 }
 
                 if (matchingValues.length === 0) {
-                    setMessages(prev => [...prev, { type: 'bot', text: `❌ No values found matching "${parsed.filter.value}" in column "${parsed.filter.column}"`, timestamp: new Date() }]);
+                    setMessages(prev => [...prev, { type: 'bot', text: `No values found matching "${parsed.filter.value}" in column "${parsed.filter.column}"`, timestamp: new Date() }]);
                     setInput('');
                     return;
                 }
@@ -1413,12 +1497,12 @@ Try asking:
                     if (testSet.length > 0) {
                         // Cumulative success
                         finalFilters = potentialFilters;
-                        message = `✅ Applied filter to table!\n\n${parsed.filter.column}: ${matchingValues.length} values\nShowing ${testSet.length} rows`;
+                        message = `Applied filter to table!\n\n${parsed.filter.column}: ${matchingValues.length} values\nShowing ${testSet.length} rows`;
                     } else {
                         // Conflict -> Auto Reset
                         finalFilters = { [parsed.filter.column]: matchingValues };
                         const count = ((allData && allData.length > 0) ? allData : data).filter(row => matchingValues.includes(String(row[parsed.filter.column]))).length;
-                        message = `🔄 No rows found with combined filters. Resetting view.\n\nFiltering only by ${parsed.filter.column}: ${matchingValues.length} values\nShowing ${count} rows`;
+                        message = `No rows found with combined filters. Resetting view.\n\nFiltering only by ${parsed.filter.column}: ${matchingValues.length} values\nShowing ${count} rows`;
                     }
 
                     onApplyFilter(finalFilters);
@@ -1456,7 +1540,7 @@ Try asking:
 
                     const botMessage = {
                         type: 'bot',
-                        text: `🔄 No rows found with combined filters. Resetting view.\n\nFiltering only by ${parsed.filter.column}: "${formatValue(matchingValues[0])}"\nShowing ${matchingValues.length === 1 ? 'matching rows' : matchingValues.length + ' values'}`,
+                        text: `No rows found with combined filters. Resetting view.\n\nFiltering only by ${parsed.filter.column}: "${formatValue(matchingValues[0])}"\nShowing ${matchingValues.length === 1 ? 'matching rows' : matchingValues.length + ' values'}`,
                         timestamp: new Date()
                     };
                     setMessages(prev => [...prev, botMessage]);
@@ -1470,13 +1554,13 @@ Try asking:
                 if (finalSet.length > 0) {
                     // Cumulative success
                     finalFilters = potentialFilters;
-                    message = `✅ Added filter! ${parsed.filter.column}: "${formatValue(matchingValues[0])}"\n(Combined with previous filters)\nShowing ${finalSet.length} rows`;
+                    message = `Added filter! ${parsed.filter.column}: "${formatValue(matchingValues[0])}"\n(Combined with previous filters)\nShowing ${finalSet.length} rows`;
                 } else {
                     // Conflict -> Auto Reset
                     finalFilters = {};
                     finalFilters[parsed.filter.column] = matchingValues;
                     const count = ((allData && allData.length > 0) ? allData : data).filter(row => matchingValues.includes(String(row[parsed.filter.column]))).length;
-                    message = `🔄 No rows found with combined filters. Resetting view.\n\nFiltering only by ${parsed.filter.column}: "${formatValue(matchingValues[0])}"\nShowing ${count} rows`;
+                    message = `No rows found with combined filters. Resetting view.\n\nFiltering only by ${parsed.filter.column}: "${formatValue(matchingValues[0])}"\nShowing ${count} rows`;
                 }
 
                 onApplyFilter(finalFilters);
@@ -1493,7 +1577,7 @@ Try asking:
 
         } catch (error) {
             console.error('Chatbot error:', error);
-            const botMessage = { type: 'bot', text: `❌ Error: ${error.message}`, timestamp: new Date() };
+            const botMessage = { type: 'bot', text: `Error: ${error.message}`, timestamp: new Date() };
             setMessages(prev => [...prev, botMessage]);
         }
         setInput('');
@@ -1514,37 +1598,45 @@ Try asking:
             {!isOpen && (
                 <button
                     onClick={() => setIsOpen(true)}
-                    className="fixed bottom-6 right-6 w-14 h-14 bg-blue-600 text-white rounded-full shadow-lg hover:bg-blue-700 hover:shadow-xl transition-all z-40 flex items-center justify-center focus:outline-none"
+                    className="fixed bottom-6 right-6 w-10 h-10 bg-slate-900 text-white rounded-full shadow-xl hover:bg-slate-800 hover:shadow-2xl transition-all z-40 flex items-center justify-center focus:outline-none ring-1 ring-white/10"
                     title="Open Chat"
                 >
-                    <span className="text-2xl mt-1">💬</span>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
                 </button>
             )}
 
             {/* Chat Panel */}
             {isOpen && (
-                <div className={`fixed bottom-6 right-6 w-96 ${isMinimized ? 'h-auto' : 'h-[600px]'} bg-white rounded-xl shadow-2xl flex flex-col z-40 border border-gray-200 font-sans overflow-hidden`}>
+                <div className={`fixed bottom-6 right-6 w-96 ${isMinimized ? 'h-auto' : 'h-[320px]'} bg-white rounded-xl shadow-2xl flex flex-col z-40 border border-slate-200 font-sans overflow-hidden ring-1 ring-black/5`}>
                     {/* Header */}
-                    <div className="bg-blue-900 text-white p-4 rounded-t-xl flex justify-between items-center">
+                    <div
+                        className="bg-slate-900 text-white px-3 py-2 border-b border-slate-800 flex justify-between items-center shadow-sm cursor-pointer select-none"
+                        onDoubleClick={() => setIsMinimized(!isMinimized)}
+                    >
                         <div className="flex items-center gap-2">
-                            <span className="text-2xl">📊</span>
-                            <span className="font-bold">Data Assistant</span>
+                            <div className="w-5 h-5 bg-indigo-500 rounded flex items-center justify-center shadow-inner">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-white"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                            </div>
+                            <span className="font-medium text-xs tracking-wide">Data Assistant</span>
                         </div>
-                        <div className="flex gap-2">
-
+                        <div className="flex gap-1.5 items-center">
                             <button
-                                onClick={() => setIsMinimized(!isMinimized)}
-                                className="text-white hover:bg-white/20 rounded-full w-8 h-8 flex items-center justify-center text-xl"
+                                onClick={(e) => { e.stopPropagation(); setIsMinimized(!isMinimized); }}
+                                className="text-slate-400 hover:text-white transition-colors p-0.5"
                                 title={isMinimized ? "Maximize" : "Minimize"}
                             >
-                                {isMinimized ? '□' : '−'}
+                                {isMinimized ? (
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>
+                                ) : (
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                                )}
                             </button>
                             <button
                                 onClick={() => setIsOpen(false)}
-                                className="text-white hover:bg-white/20 rounded-full w-8 h-8 flex items-center justify-center"
+                                className="text-slate-400 hover:text-white transition-colors p-0.5"
                                 title="Close"
                             >
-                                ×
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                             </button>
                         </div>
                     </div>
@@ -1552,14 +1644,14 @@ Try asking:
                     {/* Messages - only show when not minimized */}
                     {!isMinimized && (
                         <>
-                            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                            <div className="flex-1 overflow-y-auto p-2.5 space-y-2.5 bg-slate-50/50">
                                 {messages.map((msg, i) => (
                                     <div key={i} className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}`}>
-                                        <div className={`max-w-[80%] rounded-lg p-3 ${msg.type === 'user'
-                                            ? 'bg-blue-900 text-white'
-                                            : 'bg-gray-100 text-gray-800'
+                                        <div className={`max-w-[90%] rounded-2xl px-3 py-2 text-xs leading-relaxed shadow-sm ${msg.type === 'user'
+                                            ? 'bg-blue-600 text-white rounded-tr-sm'
+                                            : 'bg-white text-slate-600 border border-slate-200 rounded-tl-sm'
                                             }`}>
-                                            <div className="text-sm whitespace-pre-wrap">{msg.text}</div>
+                                            <div className="whitespace-pre-wrap font-medium">{msg.text}</div>
                                         </div>
                                     </div>
                                 ))}
@@ -1567,25 +1659,22 @@ Try asking:
                             </div>
 
                             {/* Input */}
-                            <div className="p-4 border-t border-gray-200">
-                                <div className="flex gap-2">
+                            <div className="p-2 bg-white border-t border-slate-100">
+                                <div className="flex gap-1.5">
                                     <input
                                         ref={inputRef}
-                                        className="flex-1 border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                        placeholder="Ask a question about your data..."
+                                        className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition-all placeholder-slate-400 text-slate-700 font-medium"
+                                        placeholder="Ask a question..."
                                         value={input}
                                         onChange={(e) => setInput(e.target.value)}
                                         onKeyDown={(e) => e.key === "Enter" && handleSend()}
                                     />
                                     <button
                                         onClick={handleSend}
-                                        className="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-lg transition-colors flex items-center justify-center min-w-[44px]"
-                                        title="Send Message"
+                                        className="bg-blue-600 hover:bg-blue-700 text-white w-7 h-[26px] rounded-lg transition-colors flex items-center justify-center shadow-sm self-center"
+                                        title="Send"
                                     >
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                            <line x1="22" y1="2" x2="11" y2="13" />
-                                            <polygon points="22 2 15 22 11 13 2 9 22 2" />
-                                        </svg>
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
                                     </button>
                                 </div>
                             </div>

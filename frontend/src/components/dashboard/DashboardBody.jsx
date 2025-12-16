@@ -200,13 +200,13 @@ export default function DashboardBody(props) {
     // Non-admin users: show welcome screen until sheet is selected
     if (user.role !== "admin" && !sheetId) {
         return (
-            <div className="w-full min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 to-white">
-                <div className="bg-white/95 backdrop-blur shadow-xl rounded-2xl p-8 w-96 border border-slate-100 text-center">
-                    <h2 className="text-2xl font-bold mb-4 text-blue-900">📊 Welcome</h2>
-                    <p className="text-gray-600 mb-6">Please select a sheet to get started</p>
+            <div className="w-full min-h-screen flex items-center justify-center bg-slate-50/50">
+                <div className="bg-white/80 backdrop-blur shadow-2xl rounded-2xl p-8 w-96 border border-slate-200 text-center">
+                    <h2 className="text-2xl font-bold mb-4 bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">📊 Welcome</h2>
+                    <p className="text-slate-500 mb-6 font-medium">Please select a sheet to get started</p>
                     <button
                         onClick={openSelect}
-                        className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-semibold shadow"
+                        className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-lg font-semibold shadow-lg shadow-blue-500/20 transition-all hover:scale-[1.02] text-sm"
                     >
                         Select Sheet
                     </button>
@@ -255,9 +255,9 @@ export default function DashboardBody(props) {
                             onClick={() => handleUpload(file, selectedFolderId)}
                             disabled={!file || !selectedFolderId}
                             className={`${!file || !selectedFolderId
-                                ? "bg-gray-200 cursor-not-allowed text-gray-500"
-                                : "bg-blue-600 hover:bg-blue-700 text-white shadow"
-                                } px-4 rounded-lg h-10`}
+                                ? "bg-slate-100 cursor-not-allowed text-slate-400 border border-slate-200"
+                                : "bg-blue-600 hover:bg-blue-700 text-white shadow-sm hover:shadow"
+                                } px-4 rounded-lg h-9 font-semibold text-sm transition-all flex items-center gap-2`}
                             title={!file ? "Choose a file" : !selectedFolderId ? "Select a folder" : "Upload & Load"}
                         >
                             Upload & Load
@@ -267,7 +267,7 @@ export default function DashboardBody(props) {
 
                 <button
                     onClick={() => loadData(sheetId, user.role !== "admin" && selectedViewId)}
-                    className="bg-blue-600 hover:bg-blue-700 text-white px-3 rounded-lg h-10 shadow"
+                    className="bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 px-4 rounded-lg h-9 shadow-sm font-semibold text-sm transition-all"
                 >
                     Refresh
                 </button>
@@ -316,7 +316,7 @@ export default function DashboardBody(props) {
                                 setShowColumnSelector(true);
                             }
                         }}
-                        className="bg-blue-600 hover:bg-blue-700 text-white px-3 rounded-lg h-10 shadow"
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 rounded-lg h-9 shadow-sm font-semibold text-sm transition-all flex items-center gap-2"
                     >
                         Save View
                     </button>
@@ -608,8 +608,7 @@ export default function DashboardBody(props) {
                                 </ResponsiveContainer>
                             ) : (
                                 <div className="h-full flex flex-col items-center justify-center text-gray-400 border-2 border-dashed border-gray-100 rounded-lg">
-                                    <span className="text-2xl mb-2">📊</span>
-                                    <span className="text-sm">Select 'Condition 2' and 'Value' to see breakdown</span>
+                                    <span className="text-sm font-medium">Select 'Condition 2' and 'Value' to see breakdown</span>
                                 </div>
                             )}
                         </div>
@@ -631,8 +630,8 @@ export default function DashboardBody(props) {
                 <div className="m-4 bg-white rounded-2xl shadow-2xl border border-gray-200 focus:ring-slate-100 relative z-0 flex-1 flex flex-col min-h-[500px] overflow-hidden">
                     {sortedData?.length > 0 ? (
                         <>
-                            <div className="sticky top-0 bg-blue-50 text-blue-900 font-semibold border-b border-blue-200 z-10 px-4 py-2">
-                                {activeFilename ? <>Loaded: <b>{activeFilename}</b></> : <>Loaded: <b>Sheet</b></>}
+                            <div className="sticky top-0 bg-slate-50/90 backdrop-blur text-slate-500 font-semibold border-b border-slate-200 z-10 px-4 py-2 text-xs uppercase tracking-wider flex justify-between items-center">
+                                {activeFilename ? <span>Loaded: <b className="text-slate-800">{activeFilename}</b></span> : <span>Loaded: <b>Sheet</b></span>}
                             </div>
 
                             {/* Virtualized Table Container */}
@@ -640,7 +639,7 @@ export default function DashboardBody(props) {
 
                                 {/* Headers Row (Flexible Height) */}
                                 <div
-                                    className="flex bg-blue-900 text-white shadow-sm z-10 overflow-hidden shrink-0"
+                                    className="flex bg-slate-100 border-y border-slate-200 shadow-sm z-10 overflow-hidden shrink-0 h-10 items-center"
                                     style={{ width: "100%" }}
                                     ref={(el) => {
                                         headerRef.current = el;
@@ -657,14 +656,14 @@ export default function DashboardBody(props) {
                                                 if (!filterAnchorRefs.current) filterAnchorRefs.current = {};
                                                 filterAnchorRefs.current[h] = el;
                                             }}
-                                            className="relative border-r border-blue-200/30 px-4 py-2 text-sm text-left cursor-pointer group flex items-center justify-between"
+                                            className="relative border-r border-slate-200 px-3 py-1 text-xs text-left cursor-pointer group flex items-center justify-between hover:bg-slate-200 transition-colors bg-slate-100 text-slate-700 font-bold uppercase tracking-wide h-full"
                                             onClick={(e) => {
                                                 if (openFilterCol === h) return;
                                                 const isFilterBtn = e.target.closest && e.target.closest(".filter-btn");
                                                 if (!isFilterBtn) requestSort(h);
                                             }}
                                         >
-                                            <span className="flex-1 font-semibold break-words whitespace-normal leading-tight flex flex-wrap items-center gap-1">
+                                            <span className="flex-1 font-semibold whitespace-nowrap leading-tight flex items-center gap-1">
                                                 <span>{h}</span>
                                                 {sortConfig?.key === h && (
                                                     <span className="text-yellow-300 font-bold whitespace-nowrap">
@@ -679,9 +678,9 @@ export default function DashboardBody(props) {
                                                     if (!filterBtnRefs.current) filterBtnRefs.current = {};
                                                     filterBtnRefs.current[h] = el;
                                                 }}
-                                                className={`filter-btn ml-2 text-[10px] h-6 px-1.5 rounded bg-white/20 hover:bg-white/30 text-white backdrop-blur border border-white/30 transition-colors ${columnFilters[h] && columnFilters[h] instanceof Set && columnFilters[h].size > 0
-                                                    ? "ring-2 ring-yellow-300 bg-white/40"
-                                                    : ""
+                                                className={`filter-btn ml-2 text-[10px] h-6 px-1.5 rounded transition-all ${columnFilters[h] && columnFilters[h] instanceof Set && columnFilters[h].size > 0
+                                                    ? "bg-blue-100 text-blue-700 ring-2 ring-blue-200 font-bold"
+                                                    : "bg-slate-200 text-slate-500 hover:bg-slate-300 hover:text-slate-700 group-hover:bg-slate-200"
                                                     }`}
                                                 title="Filter"
                                                 onClick={(e) => {
@@ -743,18 +742,24 @@ export default function DashboardBody(props) {
                                                     return (
                                                         <div
                                                             style={{ ...style, width: "100%" }}
-                                                            className={`flex ${index % 2 === 1 ? "bg-slate-50/50" : "bg-white"} hover:bg-slate-100 transition-colors border-b border-slate-100`}
+                                                            className={`flex ${index % 2 === 1 ? "bg-slate-50" : "bg-white"} hover:bg-blue-50/80 transition-colors border-b border-slate-200 items-center h-8`}
                                                         >
-                                                            {displayHeaders.map((h) => (
-                                                                <div
-                                                                    key={h}
-                                                                    style={{ minWidth: minColWidth, flex: 1 }}
-                                                                    className="px-4 py-2 whitespace-nowrap text-sm text-gray-700 border-r border-slate-100 truncate"
-                                                                    title={typeof row[h] === 'string' ? row[h] : ''}
-                                                                >
-                                                                    {renderMaybeDate(h, row[h])}
-                                                                </div>
-                                                            ))}
+                                                            {displayHeaders.map((h) => {
+                                                                const val = row[h];
+                                                                return (
+                                                                    <div
+                                                                        key={h}
+                                                                        style={{ minWidth: minColWidth, flex: 1 }}
+                                                                        className="border-r border-slate-200 px-3 text-xs text-slate-700 truncate h-full flex items-center whitespace-nowrap"
+                                                                        title={String(val)}
+                                                                    >
+                                                                        {typeof val === 'number'
+                                                                            ? <span className="font-mono text-slate-600">{formatNumber(val)}</span>
+                                                                            : renderMaybeDate(h, val)
+                                                                        }
+                                                                    </div>
+                                                                );
+                                                            })}
                                                         </div>
                                                     );
                                                 }}
@@ -775,7 +780,7 @@ export default function DashboardBody(props) {
                         </>
                     ) : (
                         <div className="text-gray-600 text-center py-10">
-                            📂 Use <b>Select Sheet</b> to pick a file you have access to, or upload (admin).
+                            Use <b>Select Sheet</b> to pick a file you have access to, or upload (admin).
                         </div>
                     )}
                 </div>

@@ -34,6 +34,11 @@ const fmtDateOnly = (v) => {
 const DATE_COL_HINTS = ["date", "uploaded", "created", "updated", "timestamp"];
 const looksLikeDateColumn = (h = "") => DATE_COL_HINTS.some((k) => h.toLowerCase().includes(k));
 
+const trunc = (str, n) => {
+  if (!str) return "";
+  return str.length > n ? str.substr(0, n - 1) + "..." : str;
+};
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(localStorage.getItem("token") || "");
@@ -700,20 +705,27 @@ export default function App() {
    * --------------------------- */
   return (
     <Router>
-      <div className="flex flex-col h-screen overflow-hidden bg-slate-50">
-        <header className="bg-blue-900 text-white px-6 py-4 flex justify-between items-center shadow-lg shrink-0 z-50">
-          <h1 className="text-xl font-bold">📊 Dashboard</h1>
+      <div className="flex flex-col h-screen overflow-hidden bg-slate-50 font-sans text-slate-900">
+        {/* Professional Dark Header */}
+        <header className="bg-slate-900 text-white px-6 py-4 flex justify-between items-center shadow-md shrink-0 z-50">
+          <div className="flex items-center gap-3">
+            <h1 className="text-lg font-bold tracking-tight text-white">PodCaster Portal</h1>
+          </div>
+
           <div className="flex items-center gap-3">
             <button
-              type="button" // Navy Blue theme (Blue-900 is background, button white/blue)
+              type="button"
               onClick={openSelect}
-              className="bg-white text-blue-900 border border-slate-200 hover:bg-blue-50 px-3 py-1 rounded-lg h-10 shadow font-semibold"
+              className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/50 hover:border-slate-600 px-4 py-2 rounded-lg h-9 shadow-sm font-medium text-sm transition-all flex items-center gap-2"
               title="Choose a sheet you have access to"
             >
-              Select Sheet
+              <span>{activeFilename ? trunc(activeFilename, 20) : "Select Sheet"}</span>
+              <span className="opacity-50 text-xs">▼</span>
             </button>
 
-            <span className="italic opacity-90">{user?.email}</span>
+            <span className="text-xs font-semibold text-slate-300 bg-slate-800/50 px-3 py-1.5 rounded-full border border-slate-700/50">
+              {user?.email}
+            </span>
 
             <button
               onClick={() => {
@@ -723,17 +735,30 @@ export default function App() {
                 localStorage.removeItem("activeTab");
                 setToken("");
                 setUser(null);
-              }} // Clean logout
-              className="bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded-lg h-10 text-white shadow"
+              }}
+              className="bg-red-600/10 hover:bg-red-600 text-red-500 hover:text-white border border-red-900/30 hover:border-red-600 px-4 py-2 rounded-lg h-9 shadow-sm text-sm font-medium transition-all"
             >
               Logout
             </button>
           </div>
         </header>
 
-        <nav className="bg-blue-50 text-blue-900 p-3 flex gap-4 border-b border-blue-100 font-medium shrink-0 z-40">
-          <Link className="hover:underline hover:text-blue-700" to="/">Dashboard</Link>
-          {user?.role === "admin" && <Link className="hover:underline hover:text-blue-700" to="/users">Manage Users</Link>}
+        {/* Sub-Navigation Bar */}
+        <nav className="bg-white text-slate-500 px-6 flex gap-6 border-b border-slate-200 font-medium shrink-0 z-40 text-sm shadow-sm h-12 items-center">
+          <Link
+            className="hover:text-blue-600 hover:bg-slate-50 px-3 py-1.5 rounded-md transition-all flex items-center gap-2 group font-semibold"
+            to="/"
+          >
+            Dashboard
+          </Link>
+          {user?.role === "admin" && (
+            <Link
+              className="hover:text-blue-600 hover:bg-slate-50 px-3 py-1.5 rounded-md transition-all flex items-center gap-2 group font-medium"
+              to="/users"
+            >
+              Manage Users
+            </Link>
+          )}
         </nav>
 
         <main className="flex-1 min-h-0 overflow-auto relative">

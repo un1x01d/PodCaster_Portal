@@ -628,67 +628,65 @@ export default function UserManagement({ token /* sheetId not required */ }) {
   return (
     <div className="p-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
       {/* USERS PANEL */}
-      <div className="bg-white border rounded-xl shadow p-4">
-        <h3 className="font-bold text-lg mb-3">Users</h3>
+      <div className="bg-white border text-slate-700 rounded-2xl shadow-sm p-6 border-slate-200">
+        <h3 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2">
+          <span>👥</span> Users
+        </h3>
 
         {/* add user */}
-        <div className="flex flex-col gap-2 mb-4">
+        <div className="flex flex-col gap-3 mb-6 bg-slate-50 p-4 rounded-xl border border-slate-100">
+          <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Add New User</label>
           <input
-            className="border rounded p-2"
-            placeholder="email"
+            className="border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-100 focus:border-blue-400 outline-none transition-all"
+            placeholder="Email address"
             value={newUser.email}
             onChange={e => setNewUser({ ...newUser, email: e.target.value })}
           />
           <input
-            className="border rounded p-2"
-            placeholder="password"
+            className="border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-100 focus:border-blue-400 outline-none transition-all"
+            placeholder="Password"
+            type="password"
             value={newUser.password}
             onChange={e => setNewUser({ ...newUser, password: e.target.value })}
           />
-        </div>
-        <div className="flex items-center gap-2 mb-4">
-          <select
-            className="border rounded p-2"
-            value={newUser.role}
-            onChange={e => setNewUser({ ...newUser, role: e.target.value })}
-          >
-            <option value="producer">producer</option>
-            <option value="admin">admin</option>
-          </select>
-          <button className="bg-blue-600 hover:bg-blue-700 text-white rounded p-2" onClick={addUser}>
-            Add User
-          </button>
+          <div className="flex items-center gap-2">
+            <select
+              className="border border-slate-200 rounded-lg p-2.5 text-sm bg-white flex-1 focus:ring-2 focus:ring-blue-100 focus:border-blue-400 outline-none"
+              value={newUser.role}
+              onChange={e => setNewUser({ ...newUser, role: e.target.value })}
+            >
+              <option value="producer">Producer</option>
+              <option value="admin">Admin</option>
+            </select>
+            <button
+              className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-4 py-2.5 text-sm font-semibold shadow-sm hover:shadow transition-all"
+              onClick={addUser}
+            >
+              Add User
+            </button>
+          </div>
         </div>
 
         {/* list users */}
-        <div className="max-h-64 overflow-auto border rounded">
+        <div className="max-h-96 overflow-auto border border-slate-200 rounded-xl bg-white shadow-inner">
           {users.map((u) => (
             <div
               key={u.id}
-              className={`flex items-center justify-between px-3 py-2 border-b cursor-pointer ${selectedUserId === u.id ? "bg-blue-50" : "bg-white"
+              className={`flex items-center justify-between px-4 py-3 border-b border-slate-100 last:border-0 cursor-pointer transition-colors ${selectedUserId === u.id ? "bg-blue-50 border-l-4 border-l-blue-500 pl-3" : "hover:bg-slate-50"
                 }`}
               onClick={() => setSelectedUserId(u.id)}
             >
               <div>
-                <div className="font-medium">{u.email}</div>
-                <div className="text-xs text-gray-500">id: {u.id}</div>
+                <div className="font-medium text-slate-800">{u.email}</div>
+                <div className="text-xs text-slate-400 font-mono">ID: {u.id} • {u.role}</div>
               </div>
               <div className="flex items-center gap-2">
-                <select
-                  className="border rounded p-1 text-sm"
-                  value={u.role}
-                  onChange={(e) => changeRole(u.id, e.target.value)}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <option value="producer">producer</option>
-                  <option value="admin">admin</option>
-                </select>
                 <button
-                  className="text-xs bg-blue-100 hfocus:ring-blue-100 text-white px-2 py-1 rounded"
+                  className="text-xs font-medium text-slate-500 hover:text-blue-600 bg-slate-100 hover:bg-blue-50 px-2 py-1 rounded transition-colors"
                   onClick={(e) => { e.stopPropagation(); resetPassword(u.id); }}
                 >Reset</button>
                 <button
-                  className="text-xs bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded"
+                  className="text-xs font-medium text-slate-500 hover:text-red-600 bg-slate-100 hover:bg-red-50 px-2 py-1 rounded transition-colors"
                   onClick={(e) => { e.stopPropagation(); deleteUser(u.id); }}
                 >Delete</button>
               </div>
@@ -919,35 +917,40 @@ export default function UserManagement({ token /* sheetId not required */ }) {
       </div>
 
       {/* GROUPS PANEL */}
-      <div className="bg-white border rounded-xl shadow p-4">
-        <h3 className="font-bold text-lg mb-3">Groups</h3>
+      <div className="bg-white border text-slate-700 rounded-2xl shadow-sm p-6 border-slate-200">
+        <h3 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2">
+          <span>🏢</span> Groups
+        </h3>
 
-        <div className="flex gap-2 mb-3">
+        <div className="flex gap-2 mb-4">
           <input
-            className="border rounded p-2 flex-1"
+            className="border border-slate-200 rounded-lg p-2.5 text-sm flex-1 focus:ring-2 focus:ring-blue-100 focus:border-blue-400 outline-none transition-all"
             placeholder="New group name"
             value={newGroupName}
             onChange={e => setNewGroupName(e.target.value)}
           />
-          <button className="bg-blue-600 hover:bg-blue-700 text-white rounded px-3" onClick={createGroup}>
+          <button
+            className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-4 py-2 text-sm font-semibold shadow-sm hover:shadow transition-all"
+            onClick={createGroup}
+          >
             Create
           </button>
         </div>
 
-        <div className="max-h-64 overflow-auto border rounded">
+        <div className="max-h-64 overflow-auto border border-slate-200 rounded-xl bg-white shadow-inner mb-4">
           {groups.map(g => (
             <div
               key={g.id}
-              className={`px-3 py-2 border-b cursor-pointer ${selectedGroupId === g.id ? "bg-blue-50" : "bg-white"}`}
+              className={`px-4 py-3 border-b border-slate-100 last:border-0 cursor-pointer transition-colors ${selectedGroupId === g.id ? "bg-blue-50 border-l-4 border-l-blue-500 pl-3" : "hover:bg-slate-50"}`}
               onClick={() => setSelectedGroupId(g.id)}
             >
               <div className="flex items-center justify-between">
                 <div>
-                  <div className="font-medium">{g.name}</div>
-                  <div className="text-xs text-gray-500">id: {g.id}</div>
+                  <div className="font-medium text-slate-800">{g.name}</div>
+                  <div className="text-xs text-slate-400 font-mono">ID: {g.id}</div>
                 </div>
                 <button
-                  className="text-red-600 hover:text-red-700 text-sm border border-red-600 px-2 py-1 rounded"
+                  className="text-red-500 hover:text-red-600 hover:bg-red-50 text-xs border border-red-200 px-2 py-1 rounded transition-colors"
                   title="Delete group"
                   onClick={(e) => { e.stopPropagation(); deleteGroup(g.id); }}
                 >
@@ -960,12 +963,12 @@ export default function UserManagement({ token /* sheetId not required */ }) {
 
         {/* group members */}
         {selectedGroupId && (
-          <div className="mt-4">
-            <h4 className="font-semibold mb-2">Members</h4>
+          <div className="mt-4 bg-slate-50 p-4 rounded-xl border border-slate-100">
+            <h4 className="font-bold text-sm text-slate-700 mb-2 uppercase tracking-wider">Members</h4>
 
-            <div className="flex gap-2 mb-2">
+            <div className="flex gap-2 mb-3">
               <select
-                className="border rounded p-2 flex-1"
+                className="border border-slate-200 rounded-lg p-2 flex-1 text-sm bg-white"
                 value={groupAddUserId}
                 onChange={e => setGroupAddUserId(e.target.value)}
               >
@@ -975,65 +978,75 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                   .map(u => <option key={u.id} value={u.id}>{u.email}</option>)
                 }
               </select>
-              <button className="bg-blue-600 hover:bg-blue-700 text-white rounded px-3" onClick={addUserToGroup}>
+              <button
+                className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-3 py-2 text-sm font-semibold shadow-sm"
+                onClick={addUserToGroup}
+              >
                 Add
               </button>
             </div>
 
-            <div className="max-h-40 overflow-auto border rounded">
+            <div className="max-h-40 overflow-auto border border-slate-200 rounded-lg bg-white">
               {groupMembers.map(m => (
-                <div key={m.id} className="flex items-center justify-between px-3 py-2 border-b">
-                  <div>{m.email}</div>
+                <div key={m.id} className="flex items-center justify-between px-3 py-2 border-b border-slate-100 last:border-0">
+                  <div className="text-sm text-slate-700">{m.email}</div>
                   <button
-                    className="text-xs bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded"
+                    className="text-xs font-medium text-red-600 hover:bg-red-50 px-2 py-1 rounded"
                     onClick={() => removeUserFromGroup(m.id)}
                   >Remove</button>
                 </div>
               ))}
-              {!groupMembers.length && <div className="text-sm text-gray-500 p-3">No members yet.</div>}
+              {!groupMembers.length && <div className="text-xs text-slate-400 p-3 italic">No members yet.</div>}
             </div>
           </div>
         )}
       </div>
 
       {/* FOLDERS PANEL */}
-      <div className="bg-white border rounded-xl shadow p-4">
-        <h3 className="font-bold text-lg mb-3">Folders</h3>
-        <div className="flex flex-col gap-2 mb-3">
+      <div className="bg-white border text-slate-700 rounded-2xl shadow-sm p-6 border-slate-200">
+        <h3 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2">
+          <span>📁</span> Folders
+        </h3>
+        <div className="flex flex-col gap-3 mb-4 bg-slate-50 p-4 rounded-xl border border-slate-100">
           <input
-            className="border rounded p-2"
+            className="border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-100 focus:border-blue-400 outline-none"
             placeholder="New folder name"
             value={newFolderName}
             onChange={(e) => setNewFolderName(e.target.value)}
           />
-          <select
-            className="border rounded p-2"
-            value={folderGroupId}
-            onChange={(e) => setFolderGroupId(e.target.value)}
-          >
-            <option value="">(No Group)</option>
-            {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
-          </select>
-          <button className="bg-blue-600 hover:bg-blue-700 text-white rounded p-2" onClick={createFolder}>
-            Create Folder
-          </button>
+          <div className="flex gap-2">
+            <select
+              className="border border-slate-200 rounded-lg p-2.5 text-sm flex-1 bg-white focus:ring-2 focus:ring-blue-100 outline-none"
+              value={folderGroupId}
+              onChange={(e) => setFolderGroupId(e.target.value)}
+            >
+              <option value="">(No Group)</option>
+              {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+            </select>
+            <button
+              className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-4 py-2 font-semibold text-sm shadow-sm"
+              onClick={createFolder}
+            >
+              Create
+            </button>
+          </div>
         </div>
 
-        <div className="max-h-64 overflow-auto border rounded">
+        <div className="max-h-64 overflow-auto border border-slate-200 rounded-xl bg-white shadow-inner">
           {selectedGroupId ? (
             <>
               {folders.filter(f => f.group_id === selectedGroupId).map((f) => (
-                <div key={f.id} className="flex items-center justify-between px-3 py-2 border-b">
+                <div key={f.id} className="flex items-center justify-between px-4 py-3 border-b border-slate-100 last:border-0 hover:bg-slate-50 transition-colors">
                   <div>
-                    <div className="font-medium">{f.name}</div>
+                    <div className="font-medium text-slate-800 text-sm">{f.name}</div>
                     {f.group_id && (
-                      <div className="text-xs text-gray-500">
+                      <div className="text-xs text-slate-400">
                         Group: {groups.find(g => g.id === f.group_id)?.name || f.group_id}
                       </div>
                     )}
                   </div>
                   <button
-                    className="text-red-600 text-sm border border-red-600 px-2 py-1 rounded hover:bg-red-50"
+                    className="text-red-500 hover:text-red-600 text-xs border border-red-200 hover:bg-red-50 px-2 py-1 rounded transition-colors"
                     onClick={() => deleteFolder(f.id)}
                   >
                     Delete
@@ -1041,73 +1054,75 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                 </div>
               ))}
               {!folders.filter(f => f.group_id === selectedGroupId).length && (
-                <div className="p-3 text-sm text-gray-500">No folders assigned to this group.</div>
+                <div className="p-4 text-sm text-slate-400 italic text-center">No folders assigned to this group.</div>
               )}
             </>
           ) : (
             <>
               {folders.map((f) => (
-                <div key={f.id} className="flex items-center justify-between px-3 py-2 border-b">
+                <div key={f.id} className="flex items-center justify-between px-4 py-3 border-b border-slate-100 last:border-0 hover:bg-slate-50 transition-colors">
                   <div>
-                    <div className="font-medium">{f.name}</div>
+                    <div className="font-medium text-slate-800 text-sm">{f.name}</div>
                     {f.group_id && (
-                      <div className="text-xs text-gray-500">
+                      <div className="text-xs text-slate-400">
                         Group: {groups.find(g => g.id === f.group_id)?.name || f.group_id}
                       </div>
                     )}
                   </div>
                   <button
-                    className="text-red-600 text-sm border border-red-600 px-2 py-1 rounded hover:bg-red-50"
+                    className="text-red-500 hover:text-red-600 text-xs border border-red-200 hover:bg-red-50 px-2 py-1 rounded transition-colors"
                     onClick={() => deleteFolder(f.id)}
                   >
                     Delete
                   </button>
                 </div>
               ))}
-              {!folders.length && <div className="p-3 text-sm text-gray-500">No folders.</div>}
+              {!folders.length && <div className="p-4 text-sm text-slate-400 italic text-center">No folders.</div>}
             </>
           )}
         </div>
       </div>
 
       {/* GROUP PERMISSIONS PANEL (PER-SHEET) */}
-      <div className="bg-white border rounded-xl shadow p-4">
-        <h3 className="font-bold text-lg mb-3">Group Permissions (per sheet)</h3>
+      <div className="bg-white border text-slate-700 rounded-2xl shadow-sm p-6 border-slate-200">
+        <h3 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2">
+          <span>🔒</span> Group Permissions (per sheet)
+        </h3>
         {selectedGroupId ? (
           <>
             {/* select a sheet that belongs to this group's folder */}
-            <div className="mb-3 flex flex-wrap items-center gap-2">
-              <label className="text-sm font-semibold">Sheet:</label>
+            <div className="mb-4 flex flex-wrap items-center gap-3 bg-slate-50 p-3 rounded-xl border border-slate-100">
+              <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Sheet:</label>
               <select
-                className="border rounded p-2 flex-1 min-w-0 truncate"
+                className="border border-slate-200 rounded-lg p-2 max-w-[200px] truncate text-sm bg-white focus:ring-2 focus:ring-blue-100 outline-none"
                 value={selectedGroupSheetId || ""}
                 onChange={(e) => setSelectedGroupSheetId(e.target.value || null)}
               >
                 <option value="">Select a sheet…</option>
                 {allSheets.map(s => (
                   <option key={s.id} value={s.id}>
-                    {trunc(s.filename, 50)} {s.active ? "(Active)" : ""}
+                    {s.active ? "(Active) " : ""}{trunc(s.filename, 30)}
                   </option>
                 ))}
               </select>
 
               {/* Template toolbar (shows only this group's templates) */}
               <input
-                className="border rounded px-2 py-1"
+                className="border border-slate-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-100 outline-none"
                 placeholder="Template name"
                 value={newTplNameGroup}
                 onChange={(e) => setNewTplNameGroup(e.target.value)}
               />
               <button
-                className="bg-blue-900 hover:bg-blue-800 text-white rounded px-3 py-1"
+                className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-3 py-2 text-sm font-semibold shadow-sm"
                 onClick={handleSaveTemplateFromGroup}
                 disabled={!selectedGroupId}
                 title={selectedGroupId ? "Save current selection as a template (group-scoped)" : "Pick a group first"}
               >
-                Save as Template
+                Save
               </button>
               <select
-                className="border rounded p-2"
+                className="border border-slate-200 rounded-lg p-2 text-sm bg-white focus:ring-2 focus:ring-blue-100 outline-none"
                 value={selectedTplGroup}
                 onChange={(e) => handleApplyTemplateToGroup(e.target.value)}
                 disabled={!selectedGroupId || !selectedGroupSheetId}
@@ -1120,10 +1135,10 @@ export default function UserManagement({ token /* sheetId not required */ }) {
               </select>
               {selectedTplGroup && (
                 <button
-                  className="text-red-600 border border-red-600 rounded px-2 py-1"
+                  className="text-red-500 hover:text-red-600 border border-red-200 hover:bg-red-50 rounded-lg px-3 py-2 text-xs font-semibold"
                   onClick={() => handleDeleteTemplate(selectedTplGroup)}
                 >
-                  Delete template
+                  Delete
                 </button>
               )}
             </div>

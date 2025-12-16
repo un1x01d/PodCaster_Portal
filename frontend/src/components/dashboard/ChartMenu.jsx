@@ -28,48 +28,65 @@ export default function ChartMenu({ pivotOn, setPivotOn, twoOn, setTwoOn, trends
                 ref={btnRef}
                 type="button"
                 onClick={() => setOpen((o) => !o)}
-                className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white px-3 rounded-lg h-10 shadow-md flex items-center gap-2 transition-colors duration-200"
+                className="bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 px-4 rounded-lg h-9 shadow-sm flex items-center gap-2 transition-all font-semibold text-sm"
                 title="Chart options"
             >
-                Charts
-                <span className="opacity-90">▾</span>
+                <span>Charts</span>
+                <span className="opacity-50 text-xs">▼</span>
             </button>
 
             {open && (
                 <div
                     ref={panelRef}
-                    className="absolute z-50 mt-1 right-0 w-56 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden"
+                    className="absolute z-50 mt-2 right-0 w-64 bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden ring-1 ring-black/5"
                 >
-                    <div className="bg-blue-50 text-xs px-3 py-2 border-b border-slate-100">
+                    <div className="bg-slate-50 text-xs font-semibold px-4 py-2 border-b border-slate-200 text-slate-500 uppercase tracking-wider">
                         Toggle Charts
                     </div>
-                    <button
-                        className="w-full text-left px-3 py-2 bg-white hover:bg-gray-50 text-gray-900 flex items-center justify-between rounded-md transition-colors duration-150"
-                        onClick={() => { setPivotOn((p) => !p); }}
-                    >
-                        <span>Pivot</span>
-                        <span className={`text-xs font-semibold ${pivotOn ? "text-blue-600" : "text-gray-400"}`}>
-                            {pivotOn ? "ON" : "OFF"}
-                        </span>
-                    </button>
-                    <button
-                        className="w-full text-left px-3 py-2 bg-white hover:bg-gray-50 text-gray-900 flex items-center justify-between rounded-md transition-colors duration-150"
-                        onClick={() => { setTwoOn((p) => !p); }}
-                    >
-                        <span>Two-Condition</span>
-                        <span className={`text-xs font-semibold ${twoOn ? "text-blue-600" : "text-gray-400"}`}>
-                            {twoOn ? "ON" : "OFF"}
-                        </span>
-                    </button>
-                    <button
-                        className="w-full text-left px-3 py-2 bg-white hover:bg-gray-50 text-gray-900 border-t border-gray-100 flex items-center justify-between"
-                        onClick={() => { setTrendsOn((p) => !p); }}
-                    >
-                        <span>Trends</span>
-                        <span className={`text-xs font-semibold ${trendsOn ? "text-blue-600" : "text-gray-400"}`}>
-                            {trendsOn ? "ON" : "OFF"}
-                        </span>
-                    </button>
+                    <div className="p-1">
+                        <button
+                            className="w-full text-left px-3 py-2.5 bg-white hover:bg-slate-50 text-slate-700 flex items-center justify-between rounded-lg transition-colors"
+                            onClick={() => { setPivotOn((p) => !p); }}
+                        >
+                            <span className="font-medium text-sm">Pivot Table</span>
+                            <span
+                                className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${pivotOn
+                                    ? "bg-blue-50 text-blue-600 border-blue-100"
+                                    : "bg-slate-50 text-slate-400 border-slate-200"
+                                    }`}
+                            >
+                                {pivotOn ? "ON" : "OFF"}
+                            </span>
+                        </button>
+                        <button
+                            className="w-full text-left px-3 py-2.5 bg-white hover:bg-slate-50 text-slate-700 flex items-center justify-between rounded-lg transition-colors"
+                            onClick={() => { setTwoOn((p) => !p); }}
+                        >
+                            <span className="font-medium text-sm">Two-Condition</span>
+                            <span
+                                className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${twoOn
+                                    ? "bg-blue-50 text-blue-600 border-blue-100"
+                                    : "bg-slate-50 text-slate-400 border-slate-200"
+                                    }`}
+                            >
+                                {twoOn ? "ON" : "OFF"}
+                            </span>
+                        </button>
+                        <button
+                            className="w-full text-left px-3 py-2.5 bg-white hover:bg-slate-50 text-slate-700 flex items-center justify-between rounded-lg transition-colors"
+                            onClick={() => { setTrendsOn((p) => !p); }}
+                        >
+                            <span className="font-medium text-sm">Trends</span>
+                            <span
+                                className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${trendsOn
+                                    ? "bg-blue-50 text-blue-600 border-blue-100"
+                                    : "bg-slate-50 text-slate-400 border-slate-200"
+                                    }`}
+                            >
+                                {trendsOn ? "ON" : "OFF"}
+                            </span>
+                        </button>
+                    </div>
                 </div>
             )}
         </div>
