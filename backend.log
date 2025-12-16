@@ -1,0 +1,28 @@
+nohup: ignoring input
+DB init error Error: SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string
+    at /home/zed/git/PodCaster_Portal/backend/node_modules/pg-pool/index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async initDb (file:///home/zed/git/PodCaster_Portal/backend/src/config/db.js:20:5)
+    at async file:///home/zed/git/PodCaster_Portal/backend/server.js:69:1
+node:events:502
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: listen EADDRINUSE: address already in use :::4000
+    at Server.setupListenHandle [as _listen2] (node:net:1908:16)
+    at listenInCluster (node:net:1965:12)
+    at Server.listen (node:net:2067:7)
+    at Function.listen (/home/zed/git/PodCaster_Portal/backend/node_modules/express/lib/application.js:635:24)
+    at file:///home/zed/git/PodCaster_Portal/backend/server.js:71:5
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+Emitted 'error' event on Server instance at:
+    at emitErrorNT (node:net:1944:8)
+    at process.processTicksAndRejections (node:internal/process/task_queues:82:21) {
+  code: 'EADDRINUSE',
+  errno: -98,
+  syscall: 'listen',
+  address: '::',
+  port: 4000
+}
+
+Node.js v20.19.6

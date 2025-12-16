@@ -23,6 +23,7 @@ router.post("/groups", createGroup);
 router.delete("/groups/:id", deleteGroup);
 router.get("/groups/:id/members", getGroupMembers);
 router.post("/groups/:id/members", updateGroupMembers);
+router.get("/groups/:id/users", getGroupMembers); // Alias for frontend compatibility
 router.get("/groups/:id/sheets", getGroupSheets);
 
 // Folders

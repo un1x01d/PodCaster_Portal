@@ -627,6 +627,31 @@ export default function UserManagement({ token /* sheetId not required */ }) {
     return m;
   }, [users]);
 
+
+
+  // Deduplicate group members to prevent key warnings if backend returns duplicates (handling string vs number)
+  const uniqueGroupMembers = useMemo(() => {
+    const seen = new Set();
+    return groupMembers.filter(m => {
+      const sid = String(m.id);
+      if (seen.has(sid)) return false;
+      seen.add(sid);
+      return true;
+    });
+  }, [groupMembers]);
+
+  // Deduplicate users (handling string vs number)
+  const uniqueUsers = useMemo(() => {
+    const seen = new Set();
+    return users.filter(u => {
+      const sid = String(u.id);
+      if (seen.has(sid)) return false;
+      seen.add(sid);
+      return true;
+    });
+  }, [users]);
+
+
   return (
     <div className="p-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
       {/* USERS PANEL */}
@@ -671,7 +696,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
 
         {/* list users */}
         <div className="max-h-96 overflow-auto border border-slate-200 rounded-xl bg-white shadow-inner">
-          {users.map((u) => (
+          {uniqueUsers.map((u) => (
             <div
               key={u.id}
               className={`flex items-center justify-between px-4 py-3 border-b border-slate-100 last:border-0 cursor-pointer transition-colors ${selectedUserId === u.id ? "bg-blue-50 border-l-4 border-l-blue-500 pl-3" : "hover:bg-slate-50"
@@ -766,14 +791,15 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                 </div>
 
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-auto border rounded p-2">
-                  {userSheetHeaders.map(h => (
-                    <label key={h} className="flex items-center gap-2">
+                  {userSheetHeaders.map((h, i) => (
+                    <label key={`${h}-${i}`} className="flex items-center gap-2 min-w-0" title={h}>
                       <input
                         type="checkbox"
                         checked={userAllowedCols.has(h)}
                         onChange={() => toggleUserAllowed(h)}
+                        className="shrink-0"
                       />
-                      <span className="text-xs font-medium text-slate-600">{h}</span>
+                      <span className="text-xs font-medium text-slate-600 truncate">{h}</span>
                     </label>
                   ))}
                 </div>
@@ -975,9 +1001,9 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                 onChange={e => setGroupAddUserId(e.target.value)}
               >
                 <option value="">Select user…</option>
-                {users
-                  .filter(u => !groupMembers.some(m => m.id === u.id))
-                  .map(u => <option key={u.id} value={u.id}>{u.email}</option>)
+                {uniqueUsers
+                  .filter(u => !uniqueGroupMembers.some(m => String(m.id) === String(u.id)))
+                  .map(u => <option key={String(u.id)} value={u.id}>{u.email}</option>)
                 }
               </select>
               <button
@@ -989,8 +1015,8 @@ export default function UserManagement({ token /* sheetId not required */ }) {
             </div>
 
             <div className="max-h-40 overflow-auto border border-slate-200 rounded-lg bg-white">
-              {groupMembers.map(m => (
-                <div key={m.id} className="flex items-center justify-between px-3 py-2.5 border-b border-slate-100 last:border-0 hover:bg-slate-50 transition-colors">
+              {uniqueGroupMembers.map(m => (
+                <div key={String(m.id)} className="flex items-center justify-between px-3 py-2.5 border-b border-slate-100 last:border-0 hover:bg-slate-50 transition-colors">
                   <div className="text-sm font-medium text-slate-700">{m.email}</div>
                   <button
                     className="text-xs font-semibold text-red-500 hover:text-red-700 hover:bg-red-50 px-2.5 py-1 rounded-md transition-all"
@@ -998,7 +1024,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                   >Remove</button>
                 </div>
               ))}
-              {!groupMembers.length && <div className="text-xs text-slate-400 p-3 italic">No members yet.</div>}
+              {!uniqueGroupMembers.length && <div className="text-xs text-slate-400 p-3 italic">No members yet.</div>}
             </div>
           </div>
         )}
@@ -1151,14 +1177,15 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                   Columns for this sheet (leave empty for all):
                 </div>
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-auto border rounded p-2">
-                  {groupSheetHeaders.map(h => (
-                    <label key={h} className="flex items-center gap-2">
+                  {groupSheetHeaders.map((h, i) => (
+                    <label key={`${h}-${i}`} className="flex items-center gap-2 min-w-0" title={h}>
                       <input
                         type="checkbox"
                         checked={groupAllowedCols.has(h)}
                         onChange={() => toggleGroupAllowed(h)}
+                        className="shrink-0"
                       />
-                      <span className="text-xs font-medium text-slate-600">{h}</span>
+                      <span className="text-xs font-medium text-slate-600 truncate">{h}</span>
                     </label>
                   ))}
                 </div>

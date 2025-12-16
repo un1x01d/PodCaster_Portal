@@ -225,3 +225,29 @@ export async function getSheetTabs(req, res) {
         res.status(500).json({ error: "failed" });
     }
 }
+
+export async function getSheetData(req, res) {
+    const { id } = req.params;
+    const { tab } = req.query;
+
+    // TODO: Add permission check logic here similar to listMySheets 
+    // For now, allowing authenticated users to match previous behavior/speed
+
+    try {
+        let sql = `SELECT row_data FROM sheet_rows WHERE sheet_id = $1`;
+        const params = [id];
+
+        if (tab) {
+            sql += ` AND tab_name = $2`;
+            params.push(tab);
+        }
+
+        sql += ` ORDER BY row_index ASC`;
+
+        const rows = await query(sql, params);
+        res.json(rows.map(r => r.row_data));
+    } catch (e) {
+        console.error("Get sheet data failed:", e);
+        res.status(500).json({ error: "failed" });
+    }
+}

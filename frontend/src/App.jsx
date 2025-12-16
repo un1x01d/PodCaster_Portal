@@ -960,6 +960,7 @@ export default function App() {
                         data={sortedData}
                         allData={data}
                         headers={headers}
+                        activeFilters={columnFilters}
                         onApplyFilter={(filters) => {
                           setColumnFilters(filters);
                         }}

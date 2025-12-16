@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 
-export default function SpreadsheetChatbot({ sheetId, activeFilename, myFiles, onSwitchSheet, data, headers, onApplyFilter, allData, onUpdateChart }) {
+export default function SpreadsheetChatbot({ sheetId, activeFilename, myFiles, onSwitchSheet, data, headers, onApplyFilter, allData, onUpdateChart, activeFilters = {} }) {
     const [isOpen, setIsOpen] = useState(false);
     const [isMinimized, setIsMinimized] = useState(false);
     const [messages, setMessages] = useState([]);
@@ -228,6 +228,7 @@ Try asking:
         const sourceData = (allData && allData.length > 0) ? allData : data;
         let operation = 'FILTER'; // Default
         let aggregation = 'none';
+        let column = null; // Hoisted declaration
 
         // Parse date ranges early
         const dateRanges = parseDateRanges(q);
@@ -264,7 +265,10 @@ Try asking:
         if (q.match(/^(?:for\s+)?(?:which|what)\s+(?:year|month|day|date|time|period|customer|region|product|project|account|vendor)(?:\?|$)/) && !q.match(/(?:highest|lowest|most|least|best|worst|had|have|was|were)/)) {
             operation = 'QUESTION';
         }
-        else if (q.match(/(?:reset|clear|remove|delete)\s+(?:all\s+)?(?:filters?|fitlers?|fliters?|filtes?)/) || q.startsWith('/reset') || q.startsWith('/clear')) operation = 'RESET_FILTER';
+        else if (q.match(/^(?:reset|clear|remove|delete)(?:\s+all)?(?:\s+filters?|fitlers?|fliters?|filtes?)?$/) || q.startsWith('/reset') || q.startsWith('/clear') || q === 'reset' || q === 'clear') {
+            operation = 'RESET_FILTER';
+            column = null; // Enforce global reset for these matches
+        }
         else if (q.startsWith('/help') || q.startsWith('/commands')) operation = 'HELP';
         else if (q.match(/^all\s+(?:of\s+)?(.+)/)) {
             // Check if "all [column]" -> Treat as Reset Filter for that column
@@ -305,7 +309,7 @@ Try asking:
         else if (q.match(/average|avg|mean|typical/)) operation = 'AVG';
         else if (q.match(/count|number of|how many.*rows/)) operation = 'COUNT';
         else if (q.match(/most common|most frequent|most popular|top|mode|common|busy|busiest/)) operation = 'MODE';
-        else if (q.match(/max|highest|maximum|most|largest|best/)) operation = 'MAX';
+        else if (q.match(/max|highest|maximum|most|largest|best|biggest|greatest/)) operation = 'MAX';
         else if (q.match(/min|lowest|minimum|least|worst|bottom/)) operation = 'MIN';
         // Follow-up detection: "which [column]", "what [column]", "show [column]", "their [column]"
         else if (q.match(/^(?:which|what|show|their|the)\s+([a-z\s]+?)(?:\?|$|\s+(?:are|is|was|were))/i)) {
@@ -315,114 +319,118 @@ Try asking:
         else if (q.match(/show|find|list|view|only|just|where|contains?|filter/)) operation = 'FILTER';
 
         // Find primary column
-        let column = null;
         const candidates = [];
 
-        // 1. Direct Header Matches
-        const sortedHeaders = [...headers].sort((a, b) => b.length - a.length);
-        for (const h of sortedHeaders) {
-            if (q.includes(h.toLowerCase())) {
-                candidates.push({ col: h, type: 'direct' });
-            }
-        }
+        // Skip candidate search if we already know it's a GLOBAL RESET
+        if (operation !== 'RESET_FILTER') {
 
-        // 2. Dictionary Matches
-        const dictionary = {
-            'revenue': ['revenue', 'sales', 'income', 'turnover', 'valuable', 'net revenue', 'revenue total', 'fixed fee', 'retainer', 'billing rate', 'amount', 'total'],
-            'profit': ['profit', 'net income', 'earnings', 'gain', 'surplus', 'bottom line', 'profitable', 'profit total'],
-            'margin': ['margin', 'rate', 'yield', 'return', 'percentage', 'margin pct', 'profit margin', 'discount pct', 'tax rate'],
-            'cost': ['cost', 'expense', 'spending', 'cogs', 'expenditure', 'fee', 'charge', 'overhead', 'expensive', 'costly', 'cost labor', 'cost total', 'cost expense', 'cost overhead', 'expense billed'],
-            'date': ['date', 'time', 'year', 'month', 'day', 'period', 'when', 'end date', 'paid date', 'start date', 'invoice date', 'retainer months'],
-            'customer': ['customer', 'client', 'buyer', 'purchaser', 'account', 'company', 'customer id', 'customer name', 'customer type', 'account owner'],
-            'product': ['product', 'item', 'goods', 'service', 'sku', 'commodity', 'service line', 'service tier', 'work scope', 'scope notes', 'project name', 'project type', 'project id', 'project status', 'delivery model', 'billing model'],
-            'region': ['region', 'location', 'area', 'country', 'state', 'zone', 'city', 'territory', 'account region', 'business unit', 'industry type'],
-            'status': ['status', 'state', 'condition', 'invoice status', 'project status', 'completed', 'pending', 'active']
-        };
-
-        for (const [key, synonyms] of Object.entries(dictionary)) {
-            if (synonyms.some(s => q.includes(s))) {
-                const match = headers.find(h => synonyms.some(s => h.toLowerCase().includes(s)));
-                if (match && !candidates.some(c => c.col === match)) {
-                    candidates.push({ col: match, type: 'dictionary', keyword: key });
+            // 1. Direct Header Matches
+            const sortedHeaders = [...headers].sort((a, b) => b.length - a.length);
+            for (const h of sortedHeaders) {
+                if (q.includes(h.toLowerCase())) {
+                    candidates.push({ col: h, type: 'direct' });
                 }
             }
-        }
 
-        // 3. Fallback: Generic numeric for "how much"
-        if (candidates.length === 0 && q.match(/how much|what.*make|money/)) {
-            const types = analyzeColumns();
-            const numericCols = headers.filter(h => types[h] === 'number');
-            if (numericCols.length > 0) candidates.push({ col: numericCols[0], type: 'inference' });
-        }
-
-        // Select Best Candidate
-        if (candidates.length > 0) {
-            // Helper to detect ratio/percentage columns
-            const isRatio = (name) => /%|percent|margin|rate|ratio/i.test(name);
-
-            // Scoring Helper: Count how many words from query appear in the header
-            const getScore = (colName) => {
-                const queryWords = q.toLowerCase().split(/\s+/);
-                const headerWords = colName.toLowerCase().split(/[_\s-]+/);
-                let score = 0;
-                // Reward exact word matches
-                headerWords.forEach(hw => {
-                    if (queryWords.includes(hw)) score += 2;
-                    else if (queryWords.some(qw => qw.includes(hw) || hw.includes(qw))) score += 0.5;
-                });
-                return score;
+            // 2. Dictionary Matches
+            const dictionary = {
+                'revenue': ['revenue', 'sales', 'income', 'turnover', 'valuable', 'net revenue', 'revenue total', 'fixed fee', 'retainer', 'billing rate', 'amount', 'total'],
+                'profit': ['profit', 'net income', 'earnings', 'gain', 'surplus', 'bottom line', 'profitable', 'profit total'],
+                'margin': ['margin', 'rate', 'yield', 'return', 'percentage', 'margin pct', 'profit margin', 'discount pct', 'tax rate'],
+                'cost': ['cost', 'expense', 'spending', 'cogs', 'expenditure', 'fee', 'charge', 'overhead', 'expensive', 'costly', 'cost labor', 'cost total', 'cost expense', 'cost overhead', 'expense billed'],
+                'date': ['date', 'time', 'year', 'month', 'day', 'period', 'when', 'end date', 'paid date', 'start date', 'invoice date', 'retainer months'],
+                'customer': ['customer', 'client', 'buyer', 'purchaser', 'account', 'company', 'customer id', 'customer name', 'customer type', 'account owner'],
+                'product': ['product', 'item', 'goods', 'service', 'sku', 'commodity', 'service line', 'service tier', 'work scope', 'scope notes', 'project name', 'project type', 'project id', 'project status', 'delivery model', 'billing model'],
+                'region': ['region', 'location', 'area', 'country', 'state', 'zone', 'city', 'territory', 'account region', 'business unit', 'industry type'],
+                'status': ['status', 'state', 'condition', 'invoice status', 'project status', 'completed', 'pending', 'active']
             };
 
-            // Priority 1: If operation implies usage (Math -> Numeric)
-            if (['SUM', 'AVG', 'MAX', 'MIN', 'COMPARE', 'CHART'].includes(operation)) {
+            for (const [key, synonyms] of Object.entries(dictionary)) {
+                if (synonyms.some(s => q.includes(s))) {
+                    const match = headers.find(h => synonyms.some(s => h.toLowerCase().includes(s)));
+                    if (match && !candidates.some(c => c.col === match)) {
+                        candidates.push({ col: match, type: 'dictionary', keyword: key });
+                    }
+                }
+            }
 
-                // Filter for numeric candidates
-                let numericCandidates = candidates.filter(c => isNumericColumn(c.col));
+            // 3. Fallback: Generic numeric for "how much"
+            if (candidates.length === 0 && q.match(/how much|what.*make|money/)) {
+                const types = analyzeColumns();
+                const numericCols = headers.filter(h => types[h] === 'number');
+                if (numericCols.length > 0) candidates.push({ col: numericCols[0], type: 'inference' });
+            }
 
-                // Refinement: If looking for financial metrics (profit, revenue, cost), prefer "Amounts" over "Ratios"
-                const financialKeywords = ['profit', 'revenue', 'cost'];
-                const hasFinancialIntent = candidates.some(c => c.keyword && financialKeywords.includes(c.keyword));
+            // Select Best Candidate
+            if (candidates.length > 0) {
+                // Helper to detect ratio/percentage columns
+                const isRatio = (name) => /%|percent|margin|rate|ratio/i.test(name);
 
-                if (hasFinancialIntent && numericCandidates.length > 1) {
-                    const amountCandidates = numericCandidates.filter(c => !isRatio(c.col));
-                    if (amountCandidates.length > 0) {
-                        numericCandidates = amountCandidates;
+                // Scoring Helper: Count how many words from query appear in the header
+                const getScore = (colName) => {
+                    const queryWords = q.toLowerCase().split(/\s+/);
+                    const headerWords = colName.toLowerCase().split(/[_\s-]+/);
+                    let score = 0;
+                    // Reward exact word matches
+                    headerWords.forEach(hw => {
+                        if (queryWords.includes(hw)) score += 2;
+                        else if (queryWords.some(qw => qw.includes(hw) || hw.includes(qw))) score += 0.5;
+                    });
+                    return score;
+                };
+
+                // Priority 1: If operation implies usage (Math -> Numeric)
+                if (['SUM', 'AVG', 'MAX', 'MIN', 'COMPARE', 'CHART'].includes(operation)) {
+
+                    // Filter for numeric candidates
+                    let numericCandidates = candidates.filter(c => isNumericColumn(c.col));
+
+                    // Refinement: If looking for financial metrics (profit, revenue, cost), prefer "Amounts" over "Ratios"
+                    const financialKeywords = ['profit', 'revenue', 'cost'];
+                    const hasFinancialIntent = candidates.some(c => c.keyword && financialKeywords.includes(c.keyword));
+
+                    if (hasFinancialIntent && numericCandidates.length > 1) {
+                        const amountCandidates = numericCandidates.filter(c => !isRatio(c.col));
+                        if (amountCandidates.length > 0) {
+                            numericCandidates = amountCandidates;
+                        }
+                    }
+
+                    if (numericCandidates.length > 0) {
+                        // Sort by Score (desc), then by Direct vs Dictionary, then Length
+                        numericCandidates.sort((a, b) => {
+                            const scoreA = getScore(a.col);
+                            const scoreB = getScore(b.col);
+                            if (scoreA !== scoreB) return scoreB - scoreA;
+
+                            // Prefer direct
+                            if (a.type === 'direct' && b.type !== 'direct') return -1;
+                            if (b.type === 'direct' && a.type !== 'direct') return 1;
+
+                            return a.col.length - b.col.length;
+                        });
+
+                        column = numericCandidates[0].col;
                     }
                 }
 
-                if (numericCandidates.length > 0) {
-                    // Sort by Score (desc), then by Direct vs Dictionary, then Length
-                    numericCandidates.sort((a, b) => {
+                // Priority 2: Best overall match (if no numeric requirement or found)
+                if (!column) {
+                    // Sort all candidates by score
+                    candidates.sort((a, b) => {
                         const scoreA = getScore(a.col);
                         const scoreB = getScore(b.col);
                         if (scoreA !== scoreB) return scoreB - scoreA;
 
-                        // Prefer direct
                         if (a.type === 'direct' && b.type !== 'direct') return -1;
                         if (b.type === 'direct' && a.type !== 'direct') return 1;
-
-                        return a.col.length - b.col.length;
+                        return 0;
                     });
-
-                    column = numericCandidates[0].col;
+                    column = candidates[0].col;
                 }
             }
 
-            // Priority 2: Best overall match (if no numeric requirement or found)
-            if (!column) {
-                // Sort all candidates by score
-                candidates.sort((a, b) => {
-                    const scoreA = getScore(a.col);
-                    const scoreB = getScore(b.col);
-                    if (scoreA !== scoreB) return scoreB - scoreA;
-
-                    if (a.type === 'direct' && b.type !== 'direct') return -1;
-                    if (b.type === 'direct' && a.type !== 'direct') return 1;
-                    return 0;
-                });
-                column = candidates[0].col;
-            }
-        }
+        } // End of candidate search check
 
         // Context Fallback (if still null)
         // ONLY use context column if we aren't potentially doing a global search/filter
@@ -430,7 +438,7 @@ Try asking:
         // But here we don't know the operation fully yet.
         // Heuristic: If q implies a filter command, don't default to lastColumn yet.
         // Actually, let's allow it but ensure subsequent logic can override it if a better match is found.
-        if (!column && context.lastColumn) {
+        if (!column && context.lastColumn && operation !== 'RESET_FILTER') {
             // If query contains "filter" or "only", maybe skip this?
             // But "filter by [value]" relies on column being known if value is ambiguous.
             // Let's keep it but handle overrides in logic.
@@ -779,31 +787,160 @@ Try asking:
                     if (onApplyFilter) {
                         if (parsed.column) {
                             // Reset specific column
-                            // We need to know current filters to do this cleanly?
-                            // But onApplyFilter takes a full object.
-                            // We'll trust the parent to merge or we pass a special signal?
-                            // Actually context.activeFilters has current state?
-                            // No, typically onApplyFilter replaces everything or merges?
-                            // Let's assume onApplyFilter({}) clears all.
-                            // If parsed.column, we might need to read from props? context?
-                            // For safety, let's just clear ALL for now as "Reset" usually means that.
-                            onApplyFilter({});
-                            return `Filters cleared for "${parsed.column}".`;
+                            const newFilters = { ...activeFilters };
+                            // Try to match column name in filters (case-insensitive keys?)
+                            // activeFilters keys are usually exact from headers.
+                            const filterKey = Object.keys(newFilters).find(k => k.toLowerCase() === parsed.column.toLowerCase());
+
+                            if (filterKey) {
+                                delete newFilters[filterKey];
+                                onApplyFilter(newFilters);
+                                return `Filter cleared for "${parsed.column}".`;
+                            } else {
+                                return `No active filter found for "${parsed.column}".`;
+                            }
                         } else {
+                            // Reset ALL
                             onApplyFilter({});
                             return "All filters have been reset.";
                         }
                     }
                     return "I can't reset filters because I'm not connected to the table.";
 
+                case 'APPLY_FILTER':
+                    if (parsed.filter) {
+                        if (onApplyFilter) {
+                            // Drill-down: Merge with existing filters
+                            const newFilters = { ...activeFilters };
+                            // Update specific column
+                            // If value is array? We currently support single value partial match lists in App.jsx logic?
+                            // App.jsx: if (allowed instanceof Set) ... else if (Array.isArray)
+
+                            // Here we just set an array of ONE value for now (the search term)
+                            // Wait, the App expects EXACT matches if it's a Set/Array of strings?
+                            // Or partial matches?
+                            // App.jsx logic: "if (!allowed.includes(String(row[col]))) return false;" -> EXACT match of string.
+                            // BUT our NLU finds "value" based on "includes".
+                            // If we say "Filter by West", we want rows where Region includes "West"? or equals "West"?
+                            // If App.jsx does exact match check, we must provide the EXACT full value from data?
+                            // parsed.filter.value is usually the substring or full value found.
+
+                            // Let's Find ALL exact matches in data that match our filter value substring
+                            // to support "West" matching "North West" if desired?
+                            // Or usually chatbot "Filter by West" means "Region = West".
+                            // If we found an exact match in data (implicit logic 3), we use it.
+
+                            // Re-verify the values against data to get precise strings for the filter
+                            const rawVal = parsed.filter.value.toLowerCase();
+                            const col = parsed.filter.column;
+
+                            // Find all unique values in this column that match the search term
+                            // If user said "West", and we have "West" and "North West", do we filter both?
+                            // Usually "Filter by West" implies "Contains West".
+
+                            const matchingValues = [...new Set(sourceData
+                                .map(r => r[col])
+                                .filter(v => String(v).toLowerCase().includes(rawVal))
+                                .map(v => String(v)) // Convert to string for filter
+                            )];
+
+                            if (matchingValues.length > 0) {
+                                newFilters[col] = matchingValues;
+                                onApplyFilter(newFilters);
+                                const count = result.filter(r => matchingValues.includes(String(r[col]))).length; // approximate
+                                return `Filtered by ${parsed.filter.column}: "${parsed.filter.value}".`;
+                            } else {
+                                return `I couldn't find any data matching "${parsed.filter.value}" in ${parsed.filter.column}.`;
+                            }
+                        }
+                    }
+                    return "I couldn't understand the filter. Try 'Filter by [Column] [Value]'.";
+
                 case 'SUM':
                     if (!parsed.column) return 'Please specify which column to sum.';
-                    if (!isNumericColumn(parsed.column)) return `I can't calculate the sum of "${parsed.column}" because it contains text, not numbers. Did you mean to count?`;
-                    const sum = result.reduce((acc, row) => acc + (Number(row[parsed.column]) || 0), 0);
+                    if (!result.length) return "No data available.";
+
+                    const sum = result.reduce((acc, row) => acc + (Number(String(row[parsed.column]).replace(/[$,%]/g, '')) || 0), 0);
+
                     const sumFilterContext = (parsed.filter && parsed.operation !== 'FILTER' && parsed.operation !== 'APPLY_FILTER')
                         ? `\nFiltered by ${parsed.filter.column}: "${parsed.filter.value}"`
                         : '';
+
+                    // Check if there is segmentation
+                    if (parsed.segmentBy) {
+                        const groups = {};
+                        result.forEach(row => {
+                            const key = row[parsed.segmentBy];
+                            if (key) {
+                                const val = Number(String(row[parsed.column]).replace(/[$,%]/g, '')) || 0;
+                                groups[key] = (groups[key] || 0) + val;
+                            }
+                        });
+                        // Format top 5 groups
+                        const sortedGroups = Object.entries(groups).sort((a, b) => b[1] - a[1]).slice(0, 5);
+                        return `Total ${parsed.column} by ${parsed.segmentBy}:\n\n${sortedGroups.map(([k, v]) => `• ${k}: ${formatNumber(v, parsed.column)}`).join('\n')}`;
+                    }
+
                     return `Total ${parsed.column}: ${formatNumber(sum, parsed.column)}\n(Based on ${result.length} rows)${sumFilterContext}`;
+
+                case 'MAX': {
+                    if (!parsed.column) return 'Please specify which column to find the maximum of.';
+                    if (!result.length) return "No data available.";
+
+                    let targetCol = parsed.column;
+                    let targetMetric = null;
+
+                    // Smart Ranking: If max of non-numeric (e.g. "Biggest Customer"), find implied metric
+                    if (!isNumericColumn(targetCol)) {
+                        const numericCols = headers.filter(h => isNumericColumn(h));
+                        // Priority: Revenue, Profit, Sales, Cost, Amount, etc.
+                        const priorities = ['revenue', 'sales', 'profit', 'income', 'cost', 'expense', 'amount', 'total', 'price', 'value'];
+
+                        targetMetric = numericCols.find(h => priorities.some(p => h.toLowerCase().includes(p))) || numericCols[0];
+
+                        if (!targetMetric) return `I can't determine the "biggest" ${targetCol} because I couldn't find a numeric column (like Revenue or Sales) to rank them by.`;
+
+                        // We will return the entity with the max metric
+                    } else {
+                        targetMetric = targetCol; // It is the metric
+                    }
+
+                    if (targetMetric !== targetCol) {
+                        // Group by targetCol, Sum targetMetric
+                        // Find max
+                        const groups = {};
+                        result.forEach(r => {
+                            const key = r[targetCol];
+                            const val = Number(r[targetMetric]) || 0;
+                            groups[key] = (groups[key] || 0) + val;
+                        });
+
+                        let maxKey = null;
+                        let maxVal = -Infinity;
+
+                        Object.entries(groups).forEach(([k, v]) => {
+                            if (v > maxVal) {
+                                maxVal = v;
+                                maxKey = k;
+                            }
+                        });
+
+                        if (maxKey) {
+                            return `The ${parsed.column} with the highest ${targetMetric} is "${maxKey}" (${formatNumber(maxVal, targetMetric)}).`;
+                        } else {
+                            return `I couldn't find any data for ${parsed.column}.`;
+                        }
+                    }
+
+                    // Standard Numeric Max
+                    const maxVal = result.reduce((acc, row) => Math.max(acc, Number(String(row[parsed.column]).replace(/[$,%]/g, '')) || -Infinity), -Infinity);
+                    if (maxVal === -Infinity) return `No numeric data found in "${parsed.column}".`;
+
+                    const maxFilterContext = (parsed.filter && parsed.operation !== 'FILTER' && parsed.operation !== 'APPLY_FILTER')
+                        ? `\nFiltered by ${parsed.filter.column}: "${parsed.filter.value}"`
+                        : '';
+                    return `Maximum ${parsed.column}: ${formatNumber(maxVal, parsed.column)}\n(Based on ${result.length} rows)${maxFilterContext}`;
+                }
 
                 case 'AVG':
                     if (!parsed.column) return 'Please specify which column to average.';
@@ -873,112 +1010,7 @@ Try asking:
                     return `I couldn't find a tab named "${match[1]}". Try asking "List tabs" to see available options.`;
                 }
 
-                case 'MAX':
-                    if (!parsed.column) return 'Please specify which column to find maximum.';
-                    if (!result.length) return "No data available.";
 
-                    let maxVal = -Infinity;
-                    let maxRow = null;
-                    result.forEach(row => {
-                        const val = Number(row[parsed.column]);
-                        if (!isNaN(val) && val > maxVal) {
-                            maxVal = val;
-                            maxRow = row;
-                        }
-                    });
-
-                    if (!maxRow) return `Could not find a maximum value for "${parsed.column}".`;
-
-                    // AGGREGATION HANDLER (If segmentBy is present)
-                    // Logic: Group by segment, Sum/Count the target column, find Max Group
-                    if (parsed.segmentBy) {
-                        const groups = {};
-                        result.forEach(row => {
-                            const key = row[parsed.segmentBy];
-                            if (key) {
-                                const val = Number(String(row[parsed.column]).replace(/[$,%]/g, '')) || 0;
-                                groups[key] = (groups[key] || 0) + val;
-                            }
-                        });
-
-                        let maxGroupVal = -Infinity;
-                        let maxGroupKey = null;
-
-                        Object.entries(groups).forEach(([key, val]) => {
-                            if (val > maxGroupVal) {
-                                maxGroupVal = val;
-                                maxGroupKey = key;
-                            }
-                        });
-
-                        if (maxGroupKey) {
-                            setContext(prev => ({ ...prev, lastResultLabel: parsed.segmentBy, lastResultValue: maxGroupVal }));
-                            return `The ${parsed.segmentBy} with the highest total ${parsed.column} is:\n\n• ${maxGroupKey}: ${formatNumber(maxGroupVal, parsed.column)}`;
-                        }
-                    }
-
-                    setContext(prev => ({ ...prev, lastResultRow: maxRow }));
-
-                    // Check if user asked "what [column] has the highest [metric]?"
-                    // Or "most profitable [column]?" / "highest [metric] [column]?"
-                    // Extract the requested label column from the query
-                    let maxLabel = '';
-                    let requestedLabelCol = null;
-
-                    // Pattern 1: "what/which X has the highest Y"
-                    const maxQueryMatch = input.match(/(?:what|which)\s+(.+?)\s+(?:has|have|had|with|got|gets)\s+(?:the\s+)?(?:highest|max|maximum|most|largest|best)/i);
-                    if (maxQueryMatch) {
-                        const requestedColName = maxQueryMatch[1].trim();
-                        requestedLabelCol = headers.find(h =>
-                            h.toLowerCase() === requestedColName.toLowerCase() ||
-                            h.toLowerCase().includes(requestedColName.toLowerCase()) ||
-                            requestedColName.toLowerCase().includes(h.toLowerCase().replace(/\s+/g, ' '))
-                        );
-                    }
-
-                    // Pattern 2: "most profitable X?" / "highest revenue X?" / "best X?"
-                    let searchTerm = null;
-                    if (!requestedLabelCol) {
-                        const altMaxMatch = input.match(/(?:most|highest|best|largest|maximum)\s+(?:\w+\s+)?(\w[\w\s]*?)(?:\?|$)/i);
-                        if (altMaxMatch) {
-                            searchTerm = altMaxMatch[1].trim();
-                            // Find a column that matches the last part of the query (the noun)
-                            requestedLabelCol = headers.find(h =>
-                                h.toLowerCase() === searchTerm.toLowerCase() ||
-                                h.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                                searchTerm.toLowerCase().includes(h.toLowerCase().replace(/\s+/g, ' '))
-                            );
-                            // Make sure we don't pick the same column we're aggregating on
-                            if (requestedLabelCol === parsed.column) {
-                                requestedLabelCol = null;
-                            }
-                        }
-                    }
-
-                    if (requestedLabelCol && requestedLabelCol !== parsed.column) {
-                        // User specifically asked for this column
-                        return `${requestedLabelCol} with highest ${parsed.column}: ${formatValue(maxRow[requestedLabelCol])}\n(${parsed.column}: ${formatNumber(maxVal, parsed.column)})`;
-                    }
-
-                    // If user asked for a column but we couldn't find it, suggest similar ones
-                    if (searchTerm && !requestedLabelCol) {
-                        const similarCols = headers.filter(h =>
-                            h.toLowerCase().includes(searchTerm.split(' ')[0].toLowerCase()) ||
-                            searchTerm.split(' ').some(word => h.toLowerCase().includes(word.toLowerCase()))
-                        ).filter(h => h !== parsed.column).slice(0, 5);
-
-                        if (similarCols.length > 0) {
-                            return `Maximum ${parsed.column}: ${formatNumber(maxVal, parsed.column)}\n\n🤔 I couldn't find a column matching "${searchTerm}". Did you mean one of these?\n${similarCols.map(c => `• ${c}: ${formatValue(maxRow[c])}`).join('\n')}`;
-                        }
-                    }
-
-                    // Fallback to default label column detection
-                    const labelCol = headers.find(h => h.toLowerCase().includes('month') || h.toLowerCase().includes('date') || h.toLowerCase().includes('name') || !isNumericColumn(h));
-                    if (labelCol && labelCol !== parsed.column) {
-                        maxLabel = `\n(${labelCol}: ${formatValue(maxRow[labelCol])})`;
-                    }
-
-                    return `Maximum ${parsed.column}: ${formatNumber(maxVal, parsed.column)}${maxLabel}`;
 
                 case 'MIN':
                     if (!parsed.column) return 'Please specify which column to find minimum.';
@@ -1137,7 +1169,7 @@ Try asking:
 
                     return `Sorted by ${parsed.column} (${isDesc ? 'Descending' : 'Ascending'}):\n${sorted.slice(0, 5).map((r, i) => `${i + 1}. ${formatValue(r[parsed.column], parsed.column)}`).join('\n')}\n(Showing first 5 rows)`;
 
-                case 'APPLY_FILTER':
+
                 case 'FILTER':
                     return `Found ${result.length} matching rows.\n\nFirst 5 rows:\n${result.slice(0, 5).map((row, i) =>
                         `${i + 1}. ${Object.entries(row).slice(0, 3).map(([k, v]) => `${k}: ${formatValue(v, k)}`).join(', ')}`

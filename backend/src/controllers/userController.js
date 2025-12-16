@@ -91,8 +91,15 @@ export async function deleteGroup(req, res) {
 
 export async function getGroupMembers(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const rows = await query("SELECT user_id FROM user_groups WHERE group_id=$1", [req.params.id]);
-    res.json(rows.map(r => r.user_id));
+    const rows = await query(
+        `SELECT u.id, u.email, u.role 
+         FROM user_groups ug 
+         JOIN users u ON u.id = ug.user_id 
+         WHERE ug.group_id=$1
+         ORDER BY u.email ASC`,
+        [req.params.id]
+    );
+    res.json(rows);
 }
 
 export async function updateGroupMembers(req, res) {

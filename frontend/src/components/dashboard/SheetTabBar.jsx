@@ -24,7 +24,7 @@ export default function SheetTabBar({ tabs, activeTab, onTabClick }) {
                             key={tabName}
                             onClick={() => onTabClick(tabName)}
                             className={`
-                                px-4 py-2 text-sm font-medium rounded-t-lg border border-b-0 transition-all
+                                px-3 py-1 text-xs font-medium rounded-t-lg border border-b-0 transition-all
                                 ${isActive
                                     ? "bg-white text-blue-900 border-slate-300 shadow-sm relative z-10 -mb-px"
                                     : "bg-slate-200/70 text-slate-600 border-transparent hover:bg-slate-200 hover:text-slate-800"

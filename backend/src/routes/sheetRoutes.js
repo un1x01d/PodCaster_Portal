@@ -7,7 +7,8 @@ import {
     listAllSheets,
     getSheetDetails,
     updateSheetDetails,
-    getSheetTabs
+    getSheetTabs,
+    getSheetData
 } from "../controllers/sheetController.js";
 import { auth } from "../middleware/auth.js";
 
@@ -27,6 +28,7 @@ router.get("/sheets/all", listAllSheets); // For admin
 router.get("/sheets/:id", getSheetDetails);
 router.patch("/sheets/:id", updateSheetDetails);
 router.get("/sheets/:id/tabs", getSheetTabs);
+router.get("/sheets/:id/data", getSheetData);
 
 // Legacy/Compatibility alias for /sheets/list logic if needed, but listAllSheets covers it
 router.get("/sheets/list", listAllSheets);
