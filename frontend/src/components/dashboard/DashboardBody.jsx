@@ -99,6 +99,9 @@ export default function DashboardBody(props) {
         trendGranularity, setTrendGranularity,
         yearsBack, setYearsBack,
         trendsData,
+        trendGroupKey, setTrendGroupKey,
+        trendSelectedGroups, setTrendSelectedGroups,
+        trendGroupOptions,
 
         // Actions
         exportCSV,
@@ -234,7 +237,7 @@ export default function DashboardBody(props) {
 
     // Admin or sheet selected: show normal dashboard
     return (
-        <div className="w-full bg-gradient-to-b from-white to-slate-50/40">
+        <div className="w-full h-full flex flex-col bg-slate-50 relative pointer-events-auto">
             {/* Global Controls Bar */}
             <div className="flex flex-wrap gap-3 p-4 bg-white/90 backdrop-blur shadow-sm border-b border-slate-100 items-center relative z-30">
                 {/* Upload (admin) */}
@@ -294,11 +297,25 @@ export default function DashboardBody(props) {
                         onChange={(e) => {
                             const viewId = e.target.value;
                             setSelectedViewId(viewId);
-                            // Logic for loading view config is in App.jsx (prop change triggers effect or handled in App)
-                            // Actually App.jsx handled this inline. We might need to lift that logic or assuming App handles side effects.
-                            // Wait, in usage above, App passed the `onChange` logic directly? No, I copied the state setter.
-                            // The logic to apply view config specific to 'selectedViewId' needs to happen. 
-                            // For now assuming App handles it via useEffect on selectedViewId or we need to pass a handler. Here I'm just setting ID.
+                        }}
+                        onDelete={async (id) => {
+                            if (!confirm("Delete this view?")) return;
+                            try {
+                                await axios.delete(`${API}/views/${id}`, {
+                                    headers: { Authorization: `Bearer ${token}` }
+                                });
+                                // Refresh views
+                                const res = await axios.get(`${API}/views/${sheetId}`, {
+                                    headers: { Authorization: `Bearer ${token}` }
+                                });
+                                setViews(res.data || []);
+                                if (String(selectedViewId) === String(id)) {
+                                    setSelectedViewId("");
+                                }
+                            } catch (e) {
+                                console.error("Delete view failed:", e);
+                                alert("Failed to delete view");
+                            }
                         }}
                         placeholder="Select a view…"
                         className="ml-1"
@@ -510,12 +527,44 @@ export default function DashboardBody(props) {
                             </select>
                         </div>
                         <div>
-                            <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">End Year</label>
-                            <select value={trendEndYear} onChange={e => setTrendEndYear(e.target.value)} className="border border-slate-300 bg-white p-2 rounded-lg text-sm min-w-[120px] h-10">
-                                <option value="">All</option>
-                                {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
+                            <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Compare By (Group)</label>
+                            <select value={trendGroupKey || ""} onChange={e => {
+                                setTrendGroupKey(e.target.value);
+                                setTrendSelectedGroups([]); // Reset selections on group change
+                            }} className="border border-slate-300 bg-white p-2 rounded-lg text-sm min-w-[150px] h-10">
+                                <option value="">(None)</option>
+                                {headers.map(h => <option key={h} value={h}>{h}</option>)}
                             </select>
                         </div>
+                        {trendGroupKey && (
+                            <div>
+                                <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Select Line(s)</label>
+                                <div className="border border-slate-300 bg-white rounded-lg min-w-[150px] h-10 flex items-center px-2 relative group">
+                                    <span className="text-sm truncate w-24">
+                                        {trendSelectedGroups.length ? `${trendSelectedGroups.length} selected` : "Select..."}
+                                    </span>
+                                    <span className="ml-auto opacity-50">▾</span>
+                                    {/* Simple custom dropdown for multi-select */}
+                                    <div className="absolute top-10 left-0 w-64 bg-white border border-gray-200 shadow-xl rounded-lg p-2 max-h-60 overflow-auto z-50 hidden group-hover:block hover:block">
+                                        {trendGroupOptions.map(opt => (
+                                            <label key={opt} className="flex items-center gap-2 p-1 hover:bg-slate-50 rounded cursor-pointer">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={trendSelectedGroups.includes(opt)}
+                                                    onChange={(e) => {
+                                                        const checked = e.target.checked;
+                                                        if (checked) setTrendSelectedGroups(prev => [...prev, opt]);
+                                                        else setTrendSelectedGroups(prev => prev.filter(x => x !== opt));
+                                                    }}
+                                                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                                />
+                                                <span className="text-sm text-gray-700 truncate">{opt}</span>
+                                            </label>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
                     </div>
                     <div className="h-80 w-full bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
                         {filteredTrendsData && filteredTrendsData.length > 0 ? (
@@ -524,9 +573,30 @@ export default function DashboardBody(props) {
                                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
                                     <XAxis dataKey="date" tick={{ fontSize: 12, fill: '#6b7280' }} tickLine={false} axisLine={false} dy={10} />
                                     <YAxis tick={{ fontSize: 12, fill: '#6b7280' }} tickLine={false} axisLine={false} dx={-10} tickFormatter={formatNumber} />
-                                    <Tooltip formatter={(value) => formatNumber(value)} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
+                                    <Tooltip
+                                        formatter={(value) => formatNumber(value)}
+                                        contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                                    />
                                     <Legend />
-                                    <Line type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={3} dot={{ r: 4, strokeWidth: 2, fill: 'white' }} activeDot={{ r: 8, fill: '#3b82f6' }} />
+
+                                    {!trendGroupKey ? (
+                                        // Standard Single Line
+                                        <Line type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={3} dot={{ r: 4, strokeWidth: 2, fill: 'white' }} activeDot={{ r: 8, fill: '#3b82f6' }} />
+                                    ) : (
+                                        // Multi-Line
+                                        trendSelectedGroups.map((grp, i) => (
+                                            <Line
+                                                key={grp}
+                                                type="monotone"
+                                                dataKey={grp}
+                                                stroke={COLORS[i % COLORS.length]}
+                                                strokeWidth={3}
+                                                dot={{ r: 4, strokeWidth: 2, fill: 'white' }}
+                                                activeDot={{ r: 6, fill: COLORS[i % COLORS.length] }}
+                                                name={grp}
+                                            />
+                                        ))
+                                    )}
                                 </LineChart>
                             </ResponsiveContainer>
                         ) : (
@@ -617,7 +687,7 @@ export default function DashboardBody(props) {
                 {/* ... (Tab logic) ... */}
 
                 {/* Data Table */}
-                <div className="m-4 bg-white rounded-2xl shadow-2xl border border-gray-200 focus:ring-slate-100 relative z-0">
+                <div className="m-4 bg-white rounded-2xl shadow-2xl border border-gray-200 focus:ring-slate-100 relative z-0 flex-1 flex flex-col min-h-[500px] overflow-hidden">
                     {sortedData?.length > 0 ? (
                         <>
                             <div className="sticky top-0 bg-blue-50 text-blue-900 font-semibold border-b border-blue-200 z-10 px-4 py-2">
@@ -625,7 +695,7 @@ export default function DashboardBody(props) {
                             </div>
 
                             {/* Virtualized Table Container */}
-                            <div className="flex-1 w-full flex flex-col" style={{ height: "calc(100vh - 260px)", minHeight: "400px" }}>
+                            <div className="flex-1 w-full flex flex-col min-h-0">
 
                                 {/* Headers Row (Flexible Height) */}
                                 <div

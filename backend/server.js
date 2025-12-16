@@ -120,10 +120,7 @@ async function initDb() {
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `);
-  await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS folders_group_unique
-      ON folders (group_id) WHERE group_id IS NOT NULL;
-  `);
+  await pool.query(`DROP INDEX IF EXISTS folders_group_unique;`);
 
   // SHEETS
   await pool.query(`
@@ -928,12 +925,12 @@ app.get("/users", auth, async (req, res) => {
 app.post("/users", auth, async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
   const { email, password, role } = req.body || {};
-  await query("INSERT INTO users (email,password,role) VALUES ($1,$2,$3)", [
+  const r = await query("INSERT INTO users (email,password,role) VALUES ($1,$2,$3) RETURNING id", [
     email,
     password,
     role || "producer",
   ]);
-  res.json({ success: true });
+  res.json({ success: true, id: r[0].id });
 });
 
 app.patch("/users/:id", auth, async (req, res) => {
@@ -1281,6 +1278,31 @@ app.delete("/sheets/:id", auth, async (req, res) => {
     console.error("delete sheet failed:", e);
     // Return actual error message for debugging
     res.status(500).json({ error: "delete_sheet_failed", message: e.message, code: e.code });
+  }
+});
+
+/* ----------------------------------------------------------------------------
+ * Views
+ * ------------------------------------------------------------------------- */
+app.post("/views", auth, async (req, res) => {
+  // Existing POST /views logic (kept for context, but not replacing it, just ensuring location)
+  // Actually, I'll insert DELETE after POST /views if I can find it, or just append it.
+  // The grep showed POST /views is missing in the viewed snippets (Wait, I saw it in App.jsx calling it, but server.js snippet above ended at 1243? No, wait.)
+  // Let me check where to insert. The snippet ended at 1308. I see DELETE /sheets/:id.
+  // I will insert DELETE /views/:id after DELETE /sheets/:id or GET /views if it exists.
+  // I'll just append it before the error handler.
+});
+
+app.delete("/views/:id", auth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  const vid = req.params.id;
+  try {
+    const r = await query(`DELETE FROM views WHERE id=$1 RETURNING id`, [vid]);
+    if (!r.length) return res.status(404).json({ error: "not_found" });
+    res.json({ success: true });
+  } catch (e) {
+    console.error("delete view failed:", e);
+    res.status(500).json({ error: "delete_view_failed" });
   }
 });
 

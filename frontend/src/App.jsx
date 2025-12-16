@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { BrowserRouter as Router, Routes, Route, Link } from "react-router-dom";
 import axios from "axios";
 import * as XLSX from "xlsx";
@@ -11,12 +11,7 @@ import ErrorBoundary from "./ErrorBoundary";
 import DashboardBody from "./components/dashboard/DashboardBody";
 import Modal from "./components/common/Modal";
 // App uses Modal for "Select Sheet" and "Folder View"
-// App uses SearchableSelect for "Folder View" filtering?? No, for Admin Upload (passed to Body), 
-// but does App use it for "Select Sheet"? No, that's a table.
-// "Folder Files" modal just lists files. 
-// So App might NOT need SearchableSelect directly, only passing it or using it if Logic requires. 
-// Wait, "Folder Files" modal in App... let's check. It renders a table. 
-// So App probably doesn't need SearchableSelect directly. 
+
 
 import "./index.css";
 
@@ -101,11 +96,18 @@ export default function App() {
   const [pieMode, setPieMode] = useState("rows"); // "rows" or "cols"
   const [pieTopN, setPieTopN] = useState("10");
 
+  // Trends State
   const [trendsOn, setTrendsOn] = useState(false);
   const [trendsDateKey, setTrendsDateKey] = useState("");
   const [trendsValueKey, setTrendsValueKey] = useState("");
-  const [trendGranularity, setTrendGranularity] = useState(""); // "daily", "month", "year"
-  const [yearsBack, setYearsBack] = useState(""); // "1".."5"
+  const [trendGranularity, setTrendGranularity] = useState("month"); // Changed from ""
+  const [yearsBack, setYearsBack] = useState(5); // Changed from ""
+
+  // NEW: Trend Grouping
+  const [trendGroupKey, setTrendGroupKey] = useState("");
+  const [trendSelectedGroups, setTrendSelectedGroups] = useState([]);
+
+
 
   // Multi-tab workbook support
   const [tabs, setTabs] = useState([]);
@@ -182,6 +184,16 @@ export default function App() {
 
     return { sortedData: processed, uniqueValuesByColumn: uniques };
   }, [data, columnFilters, sortConfig, headers]);
+
+  // Unique values for the group dropdown (Must be defined AFTER sortedData)
+  const trendGroupOptions = useMemo(() => {
+    if (!trendGroupKey || !sortedData) return [];
+    const s = new Set();
+    sortedData.forEach(r => {
+      if (r[trendGroupKey]) s.add(String(r[trendGroupKey]));
+    });
+    return Array.from(s).sort();
+  }, [sortedData, trendGroupKey]);
 
 
   // Helper for currency/number parsing
@@ -489,7 +501,7 @@ export default function App() {
     setMyFilesLoading(true);
     setSelectError("");
     try {
-      const res = await axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await axios.get(`${API}/my-files`, { headers: { Authorization: `Bearer ${token}` } });
       setMyFiles(res.data || []);
     } catch (e) {
       setSelectError("Failed");
@@ -587,217 +599,298 @@ export default function App() {
     setValueCol("");
   };
 
+  // Effect to load view config
+  useEffect(() => {
+    if (!selectedViewId) return;
+    const view = views.find(v => String(v.id) === String(selectedViewId));
+    if (!view || !view.config) return;
+
+    const c = view.config;
+    if (c.columnFilters) {
+      // Deserialize Sets
+      const deserializedInfo = {};
+      Object.entries(c.columnFilters).forEach(([col, val]) => {
+        if (Array.isArray(val)) deserializedInfo[col] = new Set(val);
+      });
+      setColumnFilters(deserializedInfo);
+    } else {
+      setColumnFilters({});
+    }
+
+    if (c.sortConfig) setSortConfig(c.sortConfig);
+    if (c.visibleColumns) setVisibleColumns(c.visibleColumns);
+
+    // Pivot
+    if (c.pivotOn) {
+      setPivotOn(true);
+      setPivotRowKey(c.pivotRowKey || "");
+      setPivotColKey(c.pivotColKey || "");
+      setPivotValKey(c.pivotValKey || "");
+      setPivotAgg(c.pivotAgg || "sum");
+    } else {
+      setPivotOn(false);
+    }
+
+    // Two Condition
+    if (c.twoOn) {
+      setTwoOn(true);
+      setCondCol1(c.condCol1 || "");
+      setCondCol2(c.condCol2 || "");
+      setValueCol(c.valueCol || "");
+    } else {
+      setTwoOn(false);
+    }
+
+    // Trends
+    if (c.trendsOn) {
+      setTrendsOn(true);
+      setTrendsDateKey(c.trendsDateKey || "");
+      setTrendsValueKey(c.trendsValueKey || "");
+      setTrendGranularity(c.trendGranularity || "");
+      setYearsBack(c.yearsBack || "");
+    } else {
+      setTrendsOn(false);
+    }
+
+  }, [selectedViewId, views]);
+
+  // ADDED: Fetch views when sheetId changes
+  useEffect(() => {
+    if (!sheetId || !token) {
+      setViews([]);
+      return;
+    }
+    axios.get(`${API}/views/${sheetId}`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => setViews(r.data || []))
+      .catch(e => {
+        console.error("Fetch views failed", e);
+        setViews([]);
+      });
+  }, [sheetId, token]);
+
   /** ---------------------------
    * RENDER
    * --------------------------- */
   return (
     <Router>
-      <div className="bg-blue-900 text-white px-6 py-4 flex justify-between items-center shadow-lg">
-        <h1 className="text-xl font-bold">📊 Dashboard</h1>
-        <div className="flex items-center gap-3">
-          <button
-            type="button" // Navy Blue theme (Blue-900 is background, button white/blue)
-            onClick={openSelect}
-            className="bg-white text-blue-900 border border-slate-200 hover:bg-blue-50 px-3 py-1 rounded-lg h-10 shadow font-semibold"
-            title="Choose a sheet you have access to"
-          >
-            Select Sheet
-          </button>
+      <div className="flex flex-col h-screen overflow-hidden bg-slate-50">
+        <header className="bg-blue-900 text-white px-6 py-4 flex justify-between items-center shadow-lg shrink-0 z-50">
+          <h1 className="text-xl font-bold">📊 Dashboard</h1>
+          <div className="flex items-center gap-3">
+            <button
+              type="button" // Navy Blue theme (Blue-900 is background, button white/blue)
+              onClick={openSelect}
+              className="bg-white text-blue-900 border border-slate-200 hover:bg-blue-50 px-3 py-1 rounded-lg h-10 shadow font-semibold"
+              title="Choose a sheet you have access to"
+            >
+              Select Sheet
+            </button>
 
-          <span className="italic opacity-90">{user?.email}</span>
+            <span className="italic opacity-90">{user?.email}</span>
 
-          <button
-            onClick={() => {
-              localStorage.removeItem("token");
-              localStorage.removeItem("sheetId");
-              localStorage.removeItem("activeFilename");
-              localStorage.removeItem("activeTab");
-              setToken("");
-              setUser(null);
-            }} // Clean logout
-            className="bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded-lg h-10 text-white shadow"
-          >
-            Logout
-          </button>
-        </div>
-      </div>
+            <button
+              onClick={() => {
+                localStorage.removeItem("token");
+                localStorage.removeItem("sheetId");
+                localStorage.removeItem("activeFilename");
+                localStorage.removeItem("activeTab");
+                setToken("");
+                setUser(null);
+              }} // Clean logout
+              className="bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded-lg h-10 text-white shadow"
+            >
+              Logout
+            </button>
+          </div>
+        </header>
 
-      <nav className="bg-blue-50 text-blue-900 p-3 flex gap-4 border-b border-blue-100 font-medium">
-        <Link className="hover:underline hover:text-blue-700" to="/">Dashboard</Link>
-        {user?.role === "admin" && <Link className="hover:underline hover:text-blue-700" to="/users">Manage Users</Link>}
-      </nav>
+        <nav className="bg-blue-50 text-blue-900 p-3 flex gap-4 border-b border-blue-100 font-medium shrink-0 z-40">
+          <Link className="hover:underline hover:text-blue-700" to="/">Dashboard</Link>
+          {user?.role === "admin" && <Link className="hover:underline hover:text-blue-700" to="/users">Manage Users</Link>}
+        </nav>
 
-      <Routes>
-        <Route path="/" element={
-          <ErrorBoundary>
-            {!user ? (
-              <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-slate-100">
-                <div className="bg-white rounded-2xl shadow-xl p-8 w-96 border border-slate-200">
-                  <h2 className="text-2xl font-bold text-blue-900 mb-6 text-center">📊 Login</h2>
-                  <form onSubmit={handleLogin} className="flex flex-col gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-                      <input
-                        type="email"
-                        value={email}
-                        onChange={(e) => setEmail(e.target.value)}
-                        placeholder="admin@example.com"
-                        className="w-full border border-slate-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-                        required
-                      />
+        <main className="flex-1 min-h-0 overflow-auto relative">
+          <Routes>
+            <Route path="/" element={
+              <ErrorBoundary>
+                {!user ? (
+                  <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-slate-100">
+                    <div className="bg-white rounded-2xl shadow-xl p-8 w-96 border border-slate-200">
+                      <h2 className="text-2xl font-bold text-blue-900 mb-6 text-center">📊 Login</h2>
+                      <form onSubmit={handleLogin} className="flex flex-col gap-4">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                          <input
+                            type="email"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                            placeholder="admin@example.com"
+                            className="w-full border border-slate-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                            required
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                          <input
+                            type="password"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            placeholder="••••••••"
+                            className="w-full border border-slate-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                            required
+                          />
+                        </div>
+                        <button
+                          type="submit"
+                          className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-lg shadow transition-colors mt-2"
+                        >
+                          Sign In
+                        </button>
+                      </form>
                     </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
-                      <input
-                        type="password"
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        placeholder="••••••••"
-                        className="w-full border border-slate-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-                        required
+                  </div>
+                ) : (
+                  <>
+                    <DashboardBody
+                      // Pass ALL props
+                      user={user} token={token} API={API}
+                      sheetId={sheetId} activeFilename={activeFilename}
+                      file={file} setFile={setFile}
+                      selectedFileName={selectedFileName} setSelectedFileName={setSelectedFileName}
+                      folderOptions={folderOptions}
+                      selectedFolderId={selectedFolderId} setSelectedFolderId={setSelectedFolderId}
+                      handleUpload={handleUpload}
+                      loadData={loadData}
+                      selectedViewId={selectedViewId} setSelectedViewId={setSelectedViewId}
+                      views={views} setViews={setViews}
+                      setPendingViewName={setPendingViewName}
+                      setShowColumnSelector={setShowColumnSelector}
+                      openSelect={openSelect}
+
+                      sortedData={sortedData}
+                      headers={headers}
+                      displayHeaders={displayHeaders}
+
+                      openFilterCol={openFilterCol} setOpenFilterCol={setOpenFilterCol}
+                      columnFilters={columnFilters} setColumnFilters={setColumnFilters}
+                      sortConfig={sortConfig} requestSort={requestSort}
+                      uniqueValuesByColumn={uniqueValuesByColumn}
+
+                      pivotOn={pivotOn} setPivotOn={setPivotOn}
+                      pivotRowKey={pivotRowKey} setPivotRowKey={setPivotRowKey}
+                      pivotColKey={pivotColKey} setPivotColKey={setPivotColKey}
+                      pivotValKey={pivotValKey} setPivotValKey={setPivotValKey}
+                      pivotAgg={pivotAgg} setPivotAgg={setPivotAgg}
+                      pivotRows={pivotRows} pivotHeaders={pivotHeaders}
+                      pivotSeriesKeys={pivotSeriesKeys} pieData={pieData}
+                      exportPivotPDF={exportPivotPDF} resetPivot={resetPivot} pivotChartRef={pivotChartRef}
+
+                      twoOn={twoOn} setTwoOn={setTwoOn}
+                      condCol1={condCol1} setCondCol1={setCondCol1}
+                      condCol2={condCol2} setCondCol2={setCondCol2}
+                      valueCol={valueCol} setValueCol={setValueCol}
+                      summaryData={summaryData} resetSummary={resetSummary}
+
+                      trendsOn={trendsOn} setTrendsOn={setTrendsOn}
+                      trendsDateKey={trendsDateKey} setTrendsDateKey={setTrendsDateKey}
+                      trendsValueKey={trendsValueKey} setTrendsValueKey={setTrendsValueKey}
+                      trendGranularity={trendGranularity}
+                      setTrendGranularity={setTrendGranularity}
+                      yearsBack={yearsBack}
+                      setYearsBack={setYearsBack}
+                      trendsData={trendsData}
+                      // NEW Props for Comparison
+                      trendGroupKey={trendGroupKey}
+                      setTrendGroupKey={setTrendGroupKey}
+                      trendSelectedGroups={trendSelectedGroups}
+                      setTrendSelectedGroups={setTrendSelectedGroups}
+                      trendGroupOptions={trendGroupOptions}
+
+                      exportCSV={exportCSV} exportXLSX={exportXLSX} exportPDF={exportPDF}
+
+                      tableContainerRef={tableContainerRef}
+                      filterAnchorRefs={filterAnchorRefs}
+                      filterBtnRefs={filterBtnRefs}
+
+                      myFiles={myFiles} loadStored={(id) => { loadData(id); fetchTabs(id); }}
+
+                      tabs={tabs}
+                      activeTab={activeTab}
+                      onTabChange={handleTabChange}
+
+                      hasRequiredColumns={hasRequiredColumns}
+                    />
+
+                    {/* Chatbot Overlay */}
+                    {sheetId && (
+                      <SpreadsheetChatbot
+                        sheetId={sheetId}
+                        data={sortedData}
+                        allData={data}
+                        headers={headers}
+                        onApplyFilter={(filters) => {
+                          setColumnFilters(filters);
+                        }}
+                        onUpdateChart={(config) => {
+                          console.log("Chart Request:", config);
+
+                          // 1. Reset current views
+                          setTrendsOn(false);
+                          setPivotOn(false);
+                          setTwoOn(false);
+
+                          // 2. Handle Trends (Date-based line chart)
+                          // Heuristic: If date column exists and no explicit segmentation (or time-based segmentation)
+                          if (config.dateColumn && (!config.segmentBy || isDateColumn(config.segmentBy))) {
+                            setTrendsValueKey(config.valueColumn);
+                            setTrendsDateKey(config.dateColumn);
+                            setTrendsOn(true);
+                            setPendingViewName(`Trend of ${config.valueColumn}`);
+                            return;
+                          }
+
+                          // 3. Handle Segmentation (Bar/Pie via Pivot or Two-Condition)
+                          if (config.segmentBy && config.valueColumn) {
+                            // Use Pivot for robust aggregation
+                            setPivotRowKey(config.segmentBy); // Group by
+                            setPivotValKey(config.valueColumn); // Value
+                            setPivotColKey(null); // Simple 1-dim grouping
+                            setPivotAgg(config.aggregation === 'avg' ? 'Average' : 'Sum');
+                            setPivotOn(true);
+                            setPendingViewName(`${config.valueColumn} by ${config.segmentBy}`);
+                            return;
+                          }
+
+                          // 4. Fallback: If just a value column is asked for charting without time?
+                          // "Chart Revenue" -> Maybe a Histogram? Or just assume Trends if date exists?
+                          // Default to trends if possible
+                          if (config.valueColumn) {
+                            const dateCol = headers.find(h => h.toLowerCase().includes('date') || h.toLowerCase().includes('time') || h.toLowerCase().includes('year'));
+                            if (dateCol) {
+                              setTrendsValueKey(config.valueColumn);
+                              setTrendsDateKey(dateCol);
+                              setTrendsOn(true);
+                              setPendingViewName(`Trend of ${config.valueColumn}`);
+                            }
+                          }
+                        }}
                       />
-                    </div>
-                    <button
-                      type="submit"
-                      className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-lg shadow transition-colors mt-2"
-                    >
-                      Sign In
-                    </button>
-                  </form>
-                </div>
-              </div>
-            ) : (
-              <>
-                <DashboardBody
-                  // Pass ALL props
-                  user={user} token={token} API={API}
-                  sheetId={sheetId} activeFilename={activeFilename}
-                  file={file} setFile={setFile}
-                  selectedFileName={selectedFileName} setSelectedFileName={setSelectedFileName}
-                  folderOptions={folderOptions}
-                  selectedFolderId={selectedFolderId} setSelectedFolderId={setSelectedFolderId}
-                  handleUpload={handleUpload}
-                  loadData={loadData}
-                  selectedViewId={selectedViewId} setSelectedViewId={setSelectedViewId}
-                  views={views} setViews={setViews}
-                  setPendingViewName={setPendingViewName}
-                  setShowColumnSelector={setShowColumnSelector}
-                  openSelect={openSelect}
-
-                  sortedData={sortedData}
-                  headers={headers}
-                  displayHeaders={displayHeaders}
-
-                  openFilterCol={openFilterCol} setOpenFilterCol={setOpenFilterCol}
-                  columnFilters={columnFilters} setColumnFilters={setColumnFilters}
-                  sortConfig={sortConfig} requestSort={requestSort}
-                  uniqueValuesByColumn={uniqueValuesByColumn}
-
-                  pivotOn={pivotOn} setPivotOn={setPivotOn}
-                  pivotRowKey={pivotRowKey} setPivotRowKey={setPivotRowKey}
-                  pivotColKey={pivotColKey} setPivotColKey={setPivotColKey}
-                  pivotValKey={pivotValKey} setPivotValKey={setPivotValKey}
-                  pivotAgg={pivotAgg} setPivotAgg={setPivotAgg}
-                  pivotRows={pivotRows} pivotHeaders={pivotHeaders}
-                  pivotSeriesKeys={pivotSeriesKeys} pieData={pieData}
-                  exportPivotPDF={exportPivotPDF} resetPivot={resetPivot} pivotChartRef={pivotChartRef}
-
-                  twoOn={twoOn} setTwoOn={setTwoOn}
-                  condCol1={condCol1} setCondCol1={setCondCol1}
-                  condCol2={condCol2} setCondCol2={setCondCol2}
-                  valueCol={valueCol} setValueCol={setValueCol}
-                  summaryData={summaryData} resetSummary={resetSummary}
-
-                  trendsOn={trendsOn} setTrendsOn={setTrendsOn}
-                  trendsDateKey={trendsDateKey} setTrendsDateKey={setTrendsDateKey}
-                  trendsValueKey={trendsValueKey} setTrendsValueKey={setTrendsValueKey}
-                  trendGranularity={trendGranularity} setTrendGranularity={setTrendGranularity}
-                  yearsBack={yearsBack} setYearsBack={setYearsBack}
-                  trendsData={trendsData}
-
-                  exportCSV={exportCSV} exportXLSX={exportXLSX} exportPDF={exportPDF}
-
-                  tableContainerRef={tableContainerRef}
-                  filterAnchorRefs={filterAnchorRefs}
-                  filterBtnRefs={filterBtnRefs}
-
-                  myFiles={myFiles} loadStored={(id) => { loadData(id); fetchTabs(id); }}
-
-                  tabs={tabs}
-                  activeTab={activeTab}
-                  onTabChange={handleTabChange}
-
-                  hasRequiredColumns={hasRequiredColumns}
-                />
-
-                {/* Chatbot Overlay */}
-                {sheetId && (
-                  <SpreadsheetChatbot
-                    sheetId={sheetId}
-                    data={sortedData}
-                    allData={data}
-                    headers={headers}
-                    onApplyFilter={(filters) => {
-                      setColumnFilters(filters);
-                    }}
-                    onUpdateChart={(config) => {
-                      console.log("Chart Request:", config);
-
-                      // 1. Reset current views
-                      setTrendsOn(false);
-                      setPivotOn(false);
-                      setTwoOn(false);
-
-                      // 2. Handle Trends (Date-based line chart)
-                      // Heuristic: If date column exists and no explicit segmentation (or time-based segmentation)
-                      if (config.dateColumn && (!config.segmentBy || isDateColumn(config.segmentBy))) {
-                        setTrendsValueKey(config.valueColumn);
-                        setTrendsDateKey(config.dateColumn);
-                        setTrendsOn(true);
-                        setPendingViewName(`Trend of ${config.valueColumn}`);
-                        return;
-                      }
-
-                      // 3. Handle Segmentation (Bar/Pie via Pivot or Two-Condition)
-                      if (config.segmentBy && config.valueColumn) {
-                        // Use Pivot for robust aggregation
-                        setPivotRowKey(config.segmentBy); // Group by
-                        setPivotValKey(config.valueColumn); // Value
-                        setPivotColKey(null); // Simple 1-dim grouping
-                        setPivotAgg(config.aggregation === 'avg' ? 'Average' : 'Sum');
-                        setPivotOn(true);
-                        setPendingViewName(`${config.valueColumn} by ${config.segmentBy}`);
-                        return;
-                      }
-
-                      // 4. Fallback: If just a value column is asked for charting without time?
-                      // "Chart Revenue" -> Maybe a Histogram? Or just assume Trends if date exists?
-                      // Default to trends if possible
-                      if (config.valueColumn) {
-                        const dateCol = headers.find(h => h.toLowerCase().includes('date') || h.toLowerCase().includes('time') || h.toLowerCase().includes('year'));
-                        if (dateCol) {
-                          setTrendsValueKey(config.valueColumn);
-                          setTrendsDateKey(dateCol);
-                          setTrendsOn(true);
-                          setPendingViewName(`Trend of ${config.valueColumn}`);
-                        }
-                      }
-                    }}
-                  />
+                    )}
+                  </>
                 )}
-              </>
-            )}
 
-          </ErrorBoundary>
-        } />
-        <Route path="/users" element={
-          user?.role === "admin"
-            ? <div className="pt-0"><UserManagement token={token} sheetId={sheetId} /></div>
-            : <div className="p-8 text-center text-gray-500">Access denied. Admin only.</div>
-        } />
-      </Routes>
+              </ErrorBoundary>
+            } />
+            <Route path="/users" element={
+              user?.role === "admin"
+                ? <div className="pt-0"><UserManagement token={token} sheetId={sheetId} /></div>
+                : <div className="p-8 text-center text-gray-500">Access denied. Admin only.</div>
+            } />
+          </Routes>
 
-      {/* GLOBAL MODALS */}
+          {/* GLOBAL MODALS */}
+        </main>
+      </div>
 
       {/* 1. Sheet Selector */}
       <Modal open={selectOpen} onClose={() => setSelectOpen(false)} title={user?.role === "admin" ? "Select or Delete a Sheet" : "Select a Sheet"}>
@@ -858,100 +951,102 @@ export default function App() {
       */}
 
       {/* Column Visibility Selector Modal for Saving Views */}
-      {showColumnSelector && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-2xl p-6 max-w-2xl w-full max-h-[80vh] overflow-auto">
-            <h2 className="text-xl font-bold mb-4">Select Visible Columns for View: {pendingViewName}</h2>
-            <p className="text-sm text-gray-600 mb-4">
-              Choose which columns should be visible to users when this view is loaded.
-              If no columns are selected, all columns will be visible.
-            </p>
+      {
+        showColumnSelector && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-xl shadow-2xl p-6 max-w-2xl w-full max-h-[80vh] overflow-auto">
+              <h2 className="text-xl font-bold mb-4">Select Visible Columns for View: {pendingViewName}</h2>
+              <p className="text-sm text-gray-600 mb-4">
+                Choose which columns should be visible to users when this view is loaded.
+                If no columns are selected, all columns will be visible.
+              </p>
 
-            <div className="grid grid-cols-2 gap-2 mb-6">
-              {headers.map((h) => (
-                <label key={h} className="flex items-center gap-2 p-2 hover:bg-gray-50 rounded cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={visibleColumns.includes(h)}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setVisibleColumns([...visibleColumns, h]);
-                      } else {
-                        setVisibleColumns(visibleColumns.filter(col => col !== h));
-                      }
-                    }}
-                    className="w-4 h-4"
-                  />
-                  <span className="text-sm">{h}</span>
-                </label>
-              ))}
-            </div>
+              <div className="grid grid-cols-2 gap-2 mb-6">
+                {headers.map((h) => (
+                  <label key={h} className="flex items-center gap-2 p-2 hover:bg-gray-50 rounded cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={visibleColumns.includes(h)}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setVisibleColumns([...visibleColumns, h]);
+                        } else {
+                          setVisibleColumns(visibleColumns.filter(col => col !== h));
+                        }
+                      }}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-sm">{h}</span>
+                  </label>
+                ))}
+              </div>
 
-            <div className="flex gap-3 justify-end">
-              <button
-                onClick={() => {
-                  setShowColumnSelector(false);
-                  setPendingViewName("");
-                  setVisibleColumns([]);
-                }}
-                className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={async () => {
-                  try {
-                    const serializableColumnFilters = {};
-                    for (const key in columnFilters) {
-                      serializableColumnFilters[key] = Array.from(columnFilters[key]);
-                    }
-                    const config = {
-                      columnFilters: serializableColumnFilters,
-                      sortConfig,
-                      visibleColumns: visibleColumns.length > 0 ? visibleColumns : [],
-                      pivotOn,
-                      pivotRowKey,
-                      pivotColKey,
-                      pivotValKey,
-                      pivotAgg,
-                      twoOn,
-                      condCol1,
-                      condCol2,
-                      valueCol,
-                      trendsOn,
-                      trendsDateKey,
-                      trendsValueKey,
-                      trendGranularity,
-                      yearsBack,
-                    };
-                    await axios.post(
-                      `${API}/views`,
-                      { name: pendingViewName, sheetId, config },
-                      { headers: { Authorization: `Bearer ${token}` } }
-                    );
-                    // Refresh views list
-                    const res = await axios.get(`${API}/views/${sheetId}`, {
-                      headers: { Authorization: `Bearer ${token}` },
-                    });
-                    setViews(res.data || []);
+              <div className="flex gap-3 justify-end">
+                <button
+                  onClick={() => {
                     setShowColumnSelector(false);
                     setPendingViewName("");
                     setVisibleColumns([]);
-                    alert("View saved successfully!");
-                  } catch (e) {
-                    console.error("Save view failed:", e);
-                    alert("Failed to save view");
-                  }
-                }}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-              >
-                Save View
-              </button>
+                  }}
+                  className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={async () => {
+                    try {
+                      const serializableColumnFilters = {};
+                      for (const key in columnFilters) {
+                        serializableColumnFilters[key] = Array.from(columnFilters[key]);
+                      }
+                      const config = {
+                        columnFilters: serializableColumnFilters,
+                        sortConfig,
+                        visibleColumns: visibleColumns.length > 0 ? visibleColumns : [],
+                        pivotOn,
+                        pivotRowKey,
+                        pivotColKey,
+                        pivotValKey,
+                        pivotAgg,
+                        twoOn,
+                        condCol1,
+                        condCol2,
+                        valueCol,
+                        trendsOn,
+                        trendsDateKey,
+                        trendsValueKey,
+                        trendGranularity,
+                        yearsBack,
+                      };
+                      await axios.post(
+                        `${API}/views`,
+                        { name: pendingViewName, sheetId, config },
+                        { headers: { Authorization: `Bearer ${token}` } }
+                      );
+                      // Refresh views list
+                      const res = await axios.get(`${API}/views/${sheetId}`, {
+                        headers: { Authorization: `Bearer ${token}` },
+                      });
+                      setViews(res.data || []);
+                      setShowColumnSelector(false);
+                      setPendingViewName("");
+                      setVisibleColumns([]);
+                      alert("View saved successfully!");
+                    } catch (e) {
+                      console.error("Save view failed:", e);
+                      alert("Failed to save view");
+                    }
+                  }}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                >
+                  Save View
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )
+      }
 
-    </Router>
+    </Router >
   );
 }

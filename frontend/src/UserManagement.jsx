@@ -79,7 +79,14 @@ export default function UserManagement({ token /* sheetId not required */ }) {
       setNewFolderName("");
       setFolderGroupId("");
       fetchFolders();
-    } catch (e) { alert("Create folder failed"); }
+    } catch (e) {
+      if (e.response && e.response.status === 409) {
+        alert("A folder with this name already exists.");
+      } else {
+        alert("Create folder failed");
+        console.error(e);
+      }
+    }
   };
 
   const deleteFolder = async (fid) => {
@@ -477,7 +484,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
         setGroupSheets([]);
         setSelectedGroupSheetId(null);
         setGroupAllowedCols(new Set());
-        setGroupFilterKey(""); setGroupFilterVal("");
+        setGroupAllowedCols(new Set());
         setGroupSheetHeaders([]);
         setSelectedTplGroup("");
       }
