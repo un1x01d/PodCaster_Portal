@@ -360,14 +360,26 @@ Try asking:
             // Helper to detect ratio/percentage columns
             const isRatio = (name) => /%|percent|margin|rate|ratio/i.test(name);
 
+            // Scoring Helper: Count how many words from query appear in the header
+            const getScore = (colName) => {
+                const queryWords = q.toLowerCase().split(/\s+/);
+                const headerWords = colName.toLowerCase().split(/[_\s-]+/);
+                let score = 0;
+                // Reward exact word matches
+                headerWords.forEach(hw => {
+                    if (queryWords.includes(hw)) score += 2;
+                    else if (queryWords.some(qw => qw.includes(hw) || hw.includes(qw))) score += 0.5;
+                });
+                return score;
+            };
+
             // Priority 1: If operation implies usage (Math -> Numeric)
             if (['SUM', 'AVG', 'MAX', 'MIN', 'COMPARE', 'CHART'].includes(operation)) {
 
-                // Filter for numeric columns first
+                // Filter for numeric candidates
                 let numericCandidates = candidates.filter(c => isNumericColumn(c.col));
 
                 // Refinement: If looking for financial metrics (profit, revenue, cost), prefer "Amounts" over "Ratios"
-                // e.g. "Gross Profit" > "Profit Margin %"
                 const financialKeywords = ['profit', 'revenue', 'cost'];
                 const hasFinancialIntent = candidates.some(c => c.keyword && financialKeywords.includes(c.keyword));
 
@@ -379,26 +391,37 @@ Try asking:
                 }
 
                 if (numericCandidates.length > 0) {
-                    // Pick the shortest one? Or the one that matches best?
-                    // Usually shortest is the "main" column (Profit vs Gross Profit vs Profit Margin)
-                    // Sort by length ASC to pick "Profit" over "Gross Profit" if both are valid amounts? 
-                    // Or "Gross Profit" (12) vs "Profit" (6).
-                    // But in user case: "Gross Profit" (12) vs "Profit Margin %" (15).
-                    // We filtered Margin %.
-                    // We have "Gross Profit".
-                    // Pick the first remaining.
+                    // Sort by Score (desc), then by Direct vs Dictionary, then Length
+                    numericCandidates.sort((a, b) => {
+                        const scoreA = getScore(a.col);
+                        const scoreB = getScore(b.col);
+                        if (scoreA !== scoreB) return scoreB - scoreA;
+
+                        // Prefer direct
+                        if (a.type === 'direct' && b.type !== 'direct') return -1;
+                        if (b.type === 'direct' && a.type !== 'direct') return 1;
+
+                        return a.col.length - b.col.length;
+                    });
+
                     column = numericCandidates[0].col;
                 }
             }
 
-            // Priority 2: Direct match if no numeric requirement or no numeric found
+            // Priority 2: Best overall match (if no numeric requirement or found)
             if (!column) {
-                const direct = candidates.find(c => c.type === 'direct');
-                if (direct) column = direct.col;
-            }
+                // Sort all candidates by score
+                candidates.sort((a, b) => {
+                    const scoreA = getScore(a.col);
+                    const scoreB = getScore(b.col);
+                    if (scoreA !== scoreB) return scoreB - scoreA;
 
-            // Priority 3: First available
-            if (!column) column = candidates[0].col;
+                    if (a.type === 'direct' && b.type !== 'direct') return -1;
+                    if (b.type === 'direct' && a.type !== 'direct') return 1;
+                    return 0;
+                });
+                column = candidates[0].col;
+            }
         }
 
         // Context Fallback (if still null)

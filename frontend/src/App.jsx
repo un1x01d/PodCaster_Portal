@@ -648,12 +648,17 @@ export default function App() {
           return fmtDateOnly(val);
         }
         if (typeof val === 'number') {
-          const isCurrency = /(price|cost|amount|revenue|sales|total|value|profit|margin|\$)/i.test(col);
+          const isPercent = /(pct|percent|rate|ratio|%)/i.test(col);
+          const isCurrency = !isPercent && /(price|cost|expense|income|budget|fee|amount|revenue|sales|total|value|profit|margin|\$)/i.test(col);
+
           const fmt = new Intl.NumberFormat('en-US', {
-            minimumFractionDigits: isCurrency ? 2 : 0,
+            minimumFractionDigits: (isCurrency || isPercent) ? 2 : 0,
             maximumFractionDigits: 2,
-          });
-          return isCurrency ? `$${fmt.format(val)}` : fmt.format(val);
+          }).format(val);
+
+          if (isCurrency) return `$${fmt}`;
+          if (isPercent) return `${fmt}%`;
+          return fmt;
         }
         if (typeof val === 'object') {
           try { return JSON.stringify(val); } catch (e) { return String(val); }

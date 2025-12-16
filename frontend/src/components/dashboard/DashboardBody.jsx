@@ -150,7 +150,16 @@ export default function DashboardBody(props) {
     // Helper to format numbers with currency detection (Smart Format)
     const formatSmart = (val, key = null) => {
         if (typeof val === 'number' && !isNaN(val)) {
-            const isCurrency = key && /(price|cost|amount|revenue|sales|total|value|profit|margin|\$)/i.test(key);
+            const isPercent = key && /(pct|percent|rate|ratio|%)/i.test(key);
+            const isCurrency = !isPercent && key && /(price|cost|expense|income|budget|fee|amount|revenue|sales|total|value|profit|margin|\$)/i.test(key);
+
+            if (isPercent) {
+                return new Intl.NumberFormat('en-US', {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                }).format(val) + '%';
+            }
+
             const fmt = new Intl.NumberFormat('en-US', {
                 minimumFractionDigits: isCurrency ? 2 : 0,
                 maximumFractionDigits: 2, // Standardize to 2 decimals max

@@ -275,11 +275,13 @@ export default function UserManagement({ token /* sheetId not required */ }) {
   };
 
   useEffect(() => {
-    fetchUsers();
-    fetchGroups();
-    fetchAllViews();
-    fetchAllSheets(); // load on mount
-  }, []);
+    if (token) {
+      fetchUsers();
+      fetchGroups();
+      fetchAllViews();
+      fetchAllSheets(); // load on mount
+    }
+  }, [token]);
 
 
 
@@ -1232,7 +1234,9 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                 </div>
 
                 <div className="mt-4">
-                  <h5 className="font-semibold mb-2 text-sm text-slate-700">View Permissions</h5>
+                  <h5 className="font-semibold mb-2 text-sm text-slate-700">
+                    View Permissions {views.length > 0 && <span className="text-xs font-normal text-slate-500">(Total Loaded: {views.length})</span>}
+                  </h5>
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-auto border rounded p-2">
                     {views.filter(v => String(v.sheet_id) === String(selectedGroupSheetId)).map((v) => (
                       <label key={v.id} className="flex items-center gap-2">
@@ -1261,6 +1265,11 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                         <span className="text-xs font-medium text-slate-600">{v.name}</span>
                       </label>
                     ))}
+                    {views.filter(v => String(v.sheet_id) === String(selectedGroupSheetId)).length === 0 && (
+                      <div className="col-span-2 text-xs text-slate-400 italic p-2">
+                        {views.length === 0 ? "No views loaded." : "No views found for this sheet."}
+                      </div>
+                    )}
                   </div>
                 </div>
               </>

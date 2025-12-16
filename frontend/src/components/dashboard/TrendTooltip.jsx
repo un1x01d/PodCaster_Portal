@@ -12,13 +12,20 @@ export default function TrendTooltip({ active, payload, label }) {
             )}
             <div className="space-y-2">
                 {payload.map((p, i) => {
-                    const isCurrency = p.name && /(price|cost|amount|revenue|sales|total|value|profit|margin|\$)/i.test(p.name);
-                    const val = typeof p.value === 'number'
-                        ? new Intl.NumberFormat('en-US', {
-                            minimumFractionDigits: isCurrency ? 2 : 0,
+                    const isPercent = p.name && /(pct|percent|rate|ratio|%)/i.test(p.name);
+                    const isCurrency = !isPercent && p.name && /(price|cost|expense|income|budget|fee|amount|revenue|sales|total|value|profit|margin|\$)/i.test(p.name);
+
+                    let val = p.value;
+                    if (typeof p.value === 'number') {
+                        const fmt = new Intl.NumberFormat('en-US', {
+                            minimumFractionDigits: (isCurrency || isPercent) ? 2 : 0,
                             maximumFractionDigits: 2
-                        }).format(p.value)
-                        : p.value;
+                        }).format(p.value);
+
+                        if (isCurrency) val = `$${fmt}`;
+                        else if (isPercent) val = `${fmt}%`;
+                        else val = fmt;
+                    }
 
                     return (
                         <div key={i} className="flex justify-between items-center gap-4">
@@ -30,7 +37,7 @@ export default function TrendTooltip({ active, payload, label }) {
                                 <span className="font-medium text-xs text-slate-600">{p.name}</span>
                             </div>
                             <span className="font-mono font-bold text-sm text-slate-900 tracking-tight">
-                                {isCurrency ? `$${val}` : val}
+                                {val}
                             </span>
                         </div>
                     );
