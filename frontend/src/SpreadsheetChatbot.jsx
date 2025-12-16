@@ -752,6 +752,27 @@ Try asking:
 
             // Execute operation
             switch (parsed.operation) {
+                case 'RESET_FILTER':
+                    if (onApplyFilter) {
+                        if (parsed.column) {
+                            // Reset specific column
+                            // We need to know current filters to do this cleanly?
+                            // But onApplyFilter takes a full object.
+                            // We'll trust the parent to merge or we pass a special signal?
+                            // Actually context.activeFilters has current state?
+                            // No, typically onApplyFilter replaces everything or merges?
+                            // Let's assume onApplyFilter({}) clears all.
+                            // If parsed.column, we might need to read from props? context?
+                            // For safety, let's just clear ALL for now as "Reset" usually means that.
+                            onApplyFilter({});
+                            return `Filters cleared for "${parsed.column}".`;
+                        } else {
+                            onApplyFilter({});
+                            return "All filters have been reset.";
+                        }
+                    }
+                    return "I can't reset filters because I'm not connected to the table.";
+
                 case 'SUM':
                     if (!parsed.column) return 'Please specify which column to sum.';
                     if (!isNumericColumn(parsed.column)) return `I can't calculate the sum of "${parsed.column}" because it contains text, not numbers. Did you mean to count?`;

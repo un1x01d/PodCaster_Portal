@@ -16,8 +16,9 @@ import ColumnFilterMenu from "./ColumnFilterMenu";
 import TrendTooltip from "./TrendTooltip";
 import SheetTabBar from "./SheetTabBar";
 
-const COLORS = ["#2563EB", "#059669", "#F59E0B", "#DC2626", "#7C3AED", "#0EA5E9"];
-const PIE_COLORS = ["#3B82F6", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899", "#6366F1", "#14B8A6"];
+// Premium Chart Palette
+const COLORS = ["#6366f1", "#10b981", "#f59e0b", "#f43f5e", "#8b5cf6", "#0ea5e9", "#ec4899", "#84cc16"];
+const PIE_COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#6366f1", "#14b9a6"];
 
 // Helper for date formatting
 const renderMaybeDate = (columnName, value) => {
@@ -146,9 +147,15 @@ export default function DashboardBody(props) {
     }, [folders]);
 
     // Helper to format numbers in charts
-    const formatNumber = (val) => {
+    // Helper to format numbers with currency detection (Smart Format)
+    const formatSmart = (val, key = null) => {
         if (typeof val === 'number' && !isNaN(val)) {
-            return new Intl.NumberFormat('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(val);
+            const isCurrency = key && /(price|cost|amount|revenue|sales|total|value|profit|margin|\$)/i.test(key);
+            const fmt = new Intl.NumberFormat('en-US', {
+                minimumFractionDigits: isCurrency ? 2 : 0,
+                maximumFractionDigits: 2, // Standardize to 2 decimals max
+            });
+            return isCurrency ? `$${fmt.format(val)}` : fmt.format(val);
         }
         return val;
     };
@@ -206,7 +213,7 @@ export default function DashboardBody(props) {
                     <p className="text-slate-500 mb-6 font-medium">Please select a sheet to get started</p>
                     <button
                         onClick={openSelect}
-                        className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-lg font-semibold shadow-lg shadow-blue-500/20 transition-all hover:scale-[1.02] text-sm"
+                        className="w-full bg-blue-600 hover:bg-blue-700 text-white h-8 rounded-lg font-semibold shadow-lg shadow-blue-500/20 transition-all hover:scale-[1.02] text-xs whitespace-nowrap"
                     >
                         Select Sheet
                     </button>
@@ -227,7 +234,7 @@ export default function DashboardBody(props) {
                 {/* Upload (admin) */}
                 {user.role === "admin" && (
                     <>
-                        <label className="flex items-center gap-3 border border-slate-200 rounded-lg p-2 bg-white h-10">
+                        <label className="flex items-center gap-3 border border-slate-200 rounded-lg px-2 bg-white h-8">
                             <input
                                 type="file"
                                 onChange={(e) => {
@@ -248,7 +255,7 @@ export default function DashboardBody(props) {
                             onChange={(e) => setSelectedFolderId(e.target.value)}
                             placeholder="Folder (required)…"
                             className="ml-1"
-                            buttonClassName="border border-slate-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
+                            buttonClassName="border border-slate-200 px-2 rounded-lg min-w-[14rem] bg-white h-8 text-xs"
                         />
 
                         <button
@@ -257,7 +264,7 @@ export default function DashboardBody(props) {
                             className={`${!file || !selectedFolderId
                                 ? "bg-slate-100 cursor-not-allowed text-slate-400 border border-slate-200"
                                 : "bg-blue-600 hover:bg-blue-700 text-white shadow-sm hover:shadow"
-                                } px-4 rounded-lg h-9 font-semibold text-sm transition-all flex items-center gap-2`}
+                                } px-4 rounded-lg h-8 font-semibold text-xs transition-all flex items-center gap-2 whitespace-nowrap`}
                             title={!file ? "Choose a file" : !selectedFolderId ? "Select a folder" : "Upload & Load"}
                         >
                             Upload & Load
@@ -267,7 +274,7 @@ export default function DashboardBody(props) {
 
                 <button
                     onClick={() => loadData(sheetId, user.role !== "admin" && selectedViewId)}
-                    className="bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 px-4 rounded-lg h-9 shadow-sm font-semibold text-sm transition-all"
+                    className="bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 px-4 rounded-lg h-8 shadow-sm font-semibold text-xs transition-all whitespace-nowrap"
                 >
                     Refresh
                 </button>
@@ -303,7 +310,7 @@ export default function DashboardBody(props) {
                         }}
                         placeholder="Select a view…"
                         className="ml-1"
-                        buttonClassName="border border-slate-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
+                        buttonClassName="border border-slate-200 px-2 rounded-lg min-w-[14rem] bg-white h-8 text-xs"
                     />
                 )}
 
@@ -316,7 +323,7 @@ export default function DashboardBody(props) {
                                 setShowColumnSelector(true);
                             }
                         }}
-                        className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 rounded-lg h-9 shadow-sm font-semibold text-sm transition-all flex items-center gap-2"
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 rounded-lg h-8 shadow-sm font-semibold text-xs transition-all flex items-center gap-2 whitespace-nowrap"
                     >
                         Save View
                     </button>
@@ -353,14 +360,14 @@ export default function DashboardBody(props) {
                                 value={pivotRowKey}
                                 onChange={(e) => setPivotRowKey(e.target.value)}
                                 placeholder="Row key…"
-                                buttonClassName="border border-slate-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
+                                buttonClassName="border border-slate-200 px-2 rounded-lg min-w-[14rem] bg-white h-8 text-xs"
                             />
                             <SearchableSelect
                                 options={[{ value: "", label: "Dynamic header…" }, ...displayHeaders.map((h) => ({ value: h, label: h }))]}
                                 value={pivotColKey}
                                 onChange={(e) => setPivotColKey(e.target.value)}
                                 placeholder="Dynamic header…"
-                                buttonClassName="border border-slate-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
+                                buttonClassName="border border-slate-200 px-2 rounded-lg min-w-[14rem] bg-white h-8 text-xs"
                             />
                             <SearchableSelect
                                 options={[
@@ -371,7 +378,7 @@ export default function DashboardBody(props) {
                                 onChange={(e) => setPivotValKey(e.target.value)}
                                 placeholder={pivotAgg === "count" ? "— (count)" : "Value…"}
                                 disabled={pivotAgg === "count"}
-                                buttonClassName="border border-slate-200 p-2 rounded-lg min-w-[14rem] bg-white h-10"
+                                buttonClassName="border border-slate-200 px-2 rounded-lg min-w-[14rem] bg-white h-8 text-xs"
                             />
                             <SearchableSelect
                                 options={[
@@ -383,10 +390,10 @@ export default function DashboardBody(props) {
                                 onChange={(e) => setPivotAgg(e.target.value)}
                                 placeholder="Aggregation…"
                                 panelWidth={180}
-                                buttonClassName="border border-slate-200 p-2 rounded-lg min-w-[10rem] bg-white h-10"
+                                buttonClassName="border border-slate-200 px-2 rounded-lg min-w-[10rem] bg-white h-8 text-xs"
                             />
                             <div className="flex gap-2 ml-auto">
-                                <button onClick={resetPivot} className="px-3 bg-white border border-slate-200 rounded-lg h-10 hover:bg-gray-50">Reset</button>
+                                <button onClick={resetPivot} className="px-3 bg-white border border-slate-200 rounded-lg h-8 hover:bg-gray-50 text-xs font-semibold whitespace-nowrap">Reset</button>
                             </div>
                         </div>
 
@@ -409,8 +416,8 @@ export default function DashboardBody(props) {
                                                 interval={0}
                                                 tick={{ fontSize: 11, fill: '#6b7280' }}
                                             />
-                                            <YAxis tickFormatter={formatNumber} />
-                                            <Tooltip formatter={(value) => formatNumber(value)} contentStyle={{ borderRadius: '8px', zIndex: 100 }} />
+                                            <YAxis tickFormatter={(val) => formatSmart(val, pivotValKey || "Value")} width={80} tick={{ fontSize: 11 }} />
+                                            <Tooltip content={<TrendTooltip />} cursor={{ fill: '#f1f5f9' }} />
                                             <Bar dataKey="value" fill="#8884d8">
                                                 {pieData.map((entry, index) => (
                                                     <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
@@ -432,7 +439,7 @@ export default function DashboardBody(props) {
                                         <thead className="bg-gray-100 font-bold border-b sticky top-0 z-10">
                                             <tr>
                                                 {pivotHeaders && pivotHeaders.map((h, i) => (
-                                                    <th key={i} className={`p-3 whitespace-nowrap bg-gray-100 text-gray-600 ${i > 0 ? 'text-right' : ''}`}>
+                                                    <th key={i} className={`p-3 whitespace-nowrap bg-gray-100 text-gray-600 ${i > 0 ? 'text-right' : ''} text-[11px]`}>
                                                         {h}
                                                     </th>
                                                 ))}
@@ -444,7 +451,7 @@ export default function DashboardBody(props) {
                                                     {pivotHeaders.map((h, j) => (
                                                         <td key={j} className={`p-3 whitespace-nowrap ${j > 0 ? 'text-right font-mono text-blue-700' : 'font-medium text-gray-800'}`}>
                                                             {typeof row[h] === 'number'
-                                                                ? formatNumber(row[h])
+                                                                ? formatSmart(row[h], h)
                                                                 : (row[h] || '-')}
                                                         </td>
                                                     ))}
@@ -513,11 +520,8 @@ export default function DashboardBody(props) {
                                 <LineChart data={trendsData}>
                                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
                                     <XAxis dataKey="date" tick={{ fontSize: 12, fill: '#6b7280' }} tickLine={false} axisLine={false} dy={10} />
-                                    <YAxis tick={{ fontSize: 12, fill: '#6b7280' }} tickLine={false} axisLine={false} dx={-10} tickFormatter={formatNumber} />
-                                    <Tooltip
-                                        formatter={(value) => formatNumber(value)}
-                                        contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                                    />
+                                    <YAxis tick={{ fontSize: 12, fill: '#6b7280' }} tickLine={false} axisLine={false} dx={-10} tickFormatter={(val) => formatSmart(val, trendsValueKey)} width={80} />
+                                    <Tooltip content={<TrendTooltip />} cursor={{ stroke: '#cbd5e1', strokeWidth: 1, strokeDasharray: '4 4' }} />
                                     <Legend />
 
                                     {(!compareYears || compareYears.length === 0) ? (
@@ -590,7 +594,7 @@ export default function DashboardBody(props) {
                         <div className="col-span-1 bg-gradient-to-br from-blue-50 to-white p-6 rounded-2xl border border-blue-100 flex flex-col justify-center items-center shadow-sm">
                             <span className="text-xs text-blue-600 font-bold uppercase tracking-widest mb-2">Total Result</span>
                             <span className="text-4xl font-extrabold text-blue-900 tracking-tight">
-                                ${summaryData?.total?.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 }) ?? 0}
+                                {summaryData?.total != null ? formatSmart(summaryData.total, valueCol) : '$0'}
                             </span>
                             <span className="text-xs text-blue-400 mt-2 font-medium">Based on current filters</span>
                         </div>
@@ -602,7 +606,7 @@ export default function DashboardBody(props) {
                                     <BarChart data={summaryData.chartData} layout="vertical" margin={{ top: 5, right: 30, left: 40, bottom: 5 }}>
                                         <XAxis type="number" hide />
                                         <YAxis type="category" dataKey="name" width={100} tick={{ fontSize: 11 }} interval={0} />
-                                        <Tooltip cursor={{ fill: '#f8fafc' }} contentStyle={{ borderRadius: '8px' }} />
+                                        <Tooltip content={<TrendTooltip />} cursor={{ fill: '#f1f5f9' }} />
                                         <Bar dataKey="value" fill="#8b5cf6" radius={[0, 4, 4, 0]} barSize={20} />
                                     </BarChart>
                                 </ResponsiveContainer>
@@ -656,7 +660,7 @@ export default function DashboardBody(props) {
                                                 if (!filterAnchorRefs.current) filterAnchorRefs.current = {};
                                                 filterAnchorRefs.current[h] = el;
                                             }}
-                                            className="relative border-r border-slate-200 px-3 py-1 text-xs text-left cursor-pointer group flex items-center justify-between hover:bg-slate-200 transition-colors bg-slate-100 text-slate-700 font-bold uppercase tracking-wide h-full"
+                                            className="relative border-r border-slate-200 px-3 py-1 text-[11px] text-left cursor-pointer group flex items-center justify-between hover:bg-slate-200 transition-colors bg-slate-100 text-slate-700 font-bold uppercase tracking-wide h-full"
                                             onClick={(e) => {
                                                 if (openFilterCol === h) return;
                                                 const isFilterBtn = e.target.closest && e.target.closest(".filter-btn");
@@ -754,7 +758,7 @@ export default function DashboardBody(props) {
                                                                         title={String(val)}
                                                                     >
                                                                         {typeof val === 'number'
-                                                                            ? <span className="font-mono text-slate-600">{formatNumber(val)}</span>
+                                                                            ? <span className="font-mono text-slate-600">{formatSmart(val, h)}</span>
                                                                             : renderMaybeDate(h, val)
                                                                         }
                                                                     </div>

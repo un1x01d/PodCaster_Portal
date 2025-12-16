@@ -28,7 +28,7 @@ export default function ChartMenu({ pivotOn, setPivotOn, twoOn, setTwoOn, trends
                 ref={btnRef}
                 type="button"
                 onClick={() => setOpen((o) => !o)}
-                className="bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 px-4 rounded-lg h-9 shadow-sm flex items-center gap-2 transition-all font-semibold text-sm"
+                className="bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 px-4 rounded-lg h-8 shadow-sm flex items-center gap-2 transition-all font-semibold text-xs whitespace-nowrap"
                 title="Chart options"
             >
                 <span>Charts</span>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
-import { BrowserRouter as Router, Routes, Route, Link } from "react-router-dom";
+import { BrowserRouter as Router, Routes, Route, Link, useLocation } from "react-router-dom";
 import axios from "axios";
 import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
@@ -16,6 +16,17 @@ import Modal from "./components/common/Modal";
 import "./index.css";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
+
+// Dynamic Title Component
+const LocationTitle = () => {
+  const location = useLocation();
+  const isAdmin = location.pathname.startsWith("/users");
+  return (
+    <h1 className="text-lg font-bold tracking-tight text-white">
+      {isAdmin ? "Admin Portal" : "User Portal"}
+    </h1>
+  );
+};
 
 /* ---- Date helpers (force YYYY-MM-DD) ---- */
 const ISO_START_RE = /^\d{4}-\d{2}-\d{2}/;
@@ -408,9 +419,51 @@ export default function App() {
     });
 
     // Convert to array and sort
-    return Object.entries(grouped)
+    const finalData = Object.entries(grouped)
       .map(([k, obj]) => obj)
       .sort((a, b) => a.date.localeCompare(b.date));
+
+    // Post-process: Smart Smoothing
+    // "Do not cut lines unless they are zero for 2 instances"
+    // Strategy: 
+    // - Runs of single '0': Interpolate (bridge graph)
+    // - Runs of 2+ '0's: Set to null (cut graph)
+
+    if (finalData.length > 0) {
+      const dataKeys = Object.keys(finalData[0]).filter(k => k !== 'date' && k !== 'value'); // 'value' is total, handle specific keys first
+      if (dataKeys.length === 0) dataKeys.push('value'); // If standard mode
+
+      dataKeys.forEach(key => {
+        let i = 0;
+        while (i < finalData.length) {
+          if (finalData[i][key] === 0) {
+            // Found a zero, check run length
+            let j = i;
+            while (j < finalData.length && finalData[j][key] === 0) {
+              j++;
+            }
+            const runLength = j - i;
+
+            if (runLength === 1) {
+              // Interpolate
+              const prev = i > 0 ? (finalData[i - 1][key] || 0) : 0;
+              const next = j < finalData.length ? (finalData[j][key] || 0) : 0; // finalData[j] is the first non-zero after
+              finalData[i][key] = (prev + next) / 2;
+            } else {
+              // Set to null to break line
+              for (let k = i; k < j; k++) {
+                finalData[k][key] = null;
+              }
+            }
+            i = j;
+          } else {
+            i++;
+          }
+        }
+      });
+    }
+
+    return finalData;
 
   }, [trendsOn, trendsDateKey, trendsValueKey, trendGranularity, compareYears, sortedData]);
 
@@ -585,9 +638,33 @@ export default function App() {
 
   const exportPDF = () => {
     const doc = new jsPDF("l", "pt", "a4");
+
+    // Format data for PDF table
+    const tableBody = sortedData.map(row =>
+      displayHeaders.map(col => {
+        const val = row[col];
+        if (val === null || val === undefined) return "";
+        if (looksLikeDateColumn(col)) {
+          return fmtDateOnly(val);
+        }
+        if (typeof val === 'number') {
+          const isCurrency = /(price|cost|amount|revenue|sales|total|value|profit|margin|\$)/i.test(col);
+          const fmt = new Intl.NumberFormat('en-US', {
+            minimumFractionDigits: isCurrency ? 2 : 0,
+            maximumFractionDigits: 2,
+          });
+          return isCurrency ? `$${fmt.format(val)}` : fmt.format(val);
+        }
+        if (typeof val === 'object') {
+          try { return JSON.stringify(val); } catch (e) { return String(val); }
+        }
+        return String(val);
+      })
+    );
+
     autoTable(doc, {
       head: [displayHeaders],
-      body: sortedData.map(r => displayHeaders.map(h => r[h])),
+      body: tableBody,
       styles: { fontSize: 8 },
     });
     doc.save(`${activeFilename || "export"}.pdf`);
@@ -709,14 +786,15 @@ export default function App() {
         {/* Professional Dark Header */}
         <header className="bg-slate-900 text-white px-6 py-4 flex justify-between items-center shadow-md shrink-0 z-50">
           <div className="flex items-center gap-3">
-            <h1 className="text-lg font-bold tracking-tight text-white">PodCaster Portal</h1>
+            {/* <h1 className="text-lg font-bold tracking-tight text-white">PodCaster Portal</h1> */}
+            <LocationTitle />
           </div>
 
           <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={openSelect}
-              className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/50 hover:border-slate-600 px-4 py-2 rounded-lg h-9 shadow-sm font-medium text-sm transition-all flex items-center gap-2"
+              className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/50 hover:border-slate-600 px-4 h-8 rounded-lg shadow-sm font-semibold text-xs transition-all flex items-center gap-2 whitespace-nowrap"
               title="Choose a sheet you have access to"
             >
               <span>{activeFilename ? trunc(activeFilename, 20) : "Select Sheet"}</span>
@@ -736,7 +814,7 @@ export default function App() {
                 setToken("");
                 setUser(null);
               }}
-              className="bg-red-600/10 hover:bg-red-600 text-red-500 hover:text-white border border-red-900/30 hover:border-red-600 px-4 py-2 rounded-lg h-9 shadow-sm text-sm font-medium transition-all"
+              className="bg-red-600/10 hover:bg-red-600 text-red-500 hover:text-white border border-red-900/30 hover:border-red-600 px-4 h-8 rounded-lg shadow-sm text-xs font-semibold transition-all whitespace-nowrap"
             >
               Logout
             </button>

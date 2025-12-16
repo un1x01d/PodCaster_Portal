@@ -27,7 +27,7 @@ export default function ExportMenu({ onCSV, onXLSX, onPDF }) {
                 ref={btnRef}
                 type="button"
                 onClick={() => setOpen((o) => !o)}
-                className="bg-blue-600 hover:bg-blue-700 text-white px-4 rounded-lg h-9 shadow-sm flex items-center gap-2 transition-all font-semibold text-sm"
+                className="bg-blue-600 hover:bg-blue-700 text-white px-4 rounded-lg h-8 shadow-sm flex items-center gap-2 transition-all font-semibold text-xs whitespace-nowrap"
                 title="Export options"
             >
                 <span>Export</span>

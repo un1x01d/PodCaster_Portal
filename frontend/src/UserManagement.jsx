@@ -628,22 +628,22 @@ export default function UserManagement({ token /* sheetId not required */ }) {
   return (
     <div className="p-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
       {/* USERS PANEL */}
-      <div className="bg-white border text-slate-700 rounded-2xl shadow-sm p-6 border-slate-200">
-        <h3 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2">
-          <span>👥</span> Users
+      <div className="bg-white border text-slate-700 rounded-2xl shadow-sm p-6 border-slate-200 h-full flex flex-col">
+        <h3 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2 border-b pb-2">
+          <span className="text-xl">👥</span> Users
         </h3>
 
         {/* add user */}
         <div className="flex flex-col gap-3 mb-6 bg-slate-50 p-4 rounded-xl border border-slate-100">
           <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Add New User</label>
           <input
-            className="border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-100 focus:border-blue-400 outline-none transition-all"
+            className="border border-slate-200 rounded-lg px-3 h-8 text-xs focus:ring-2 focus:ring-blue-100 focus:border-blue-400 outline-none transition-all"
             placeholder="Email address"
             value={newUser.email}
             onChange={e => setNewUser({ ...newUser, email: e.target.value })}
           />
           <input
-            className="border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-100 focus:border-blue-400 outline-none transition-all"
+            className="border border-slate-200 rounded-lg px-3 h-8 text-xs focus:ring-2 focus:ring-blue-100 focus:border-blue-400 outline-none transition-all"
             placeholder="Password"
             type="password"
             value={newUser.password}
@@ -651,7 +651,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
           />
           <div className="flex items-center gap-2">
             <select
-              className="border border-slate-200 rounded-lg p-2.5 text-sm bg-white flex-1 focus:ring-2 focus:ring-blue-100 focus:border-blue-400 outline-none"
+              className="border border-slate-200 rounded-lg px-3 h-8 text-xs bg-white flex-1 focus:ring-2 focus:ring-blue-100 focus:border-blue-400 outline-none"
               value={newUser.role}
               onChange={e => setNewUser({ ...newUser, role: e.target.value })}
             >
@@ -659,7 +659,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
               <option value="admin">Admin</option>
             </select>
             <button
-              className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-4 py-2.5 text-sm font-semibold shadow-sm hover:shadow transition-all"
+              className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-4 h-8 text-xs font-semibold shadow-sm hover:shadow transition-all whitespace-nowrap"
               onClick={addUser}
             >
               Add User
@@ -677,16 +677,16 @@ export default function UserManagement({ token /* sheetId not required */ }) {
               onClick={() => setSelectedUserId(u.id)}
             >
               <div>
-                <div className="font-medium text-slate-800">{u.email}</div>
-                <div className="text-xs text-slate-400 font-mono">ID: {u.id} • {u.role}</div>
+                <div className="font-semibold text-slate-800 text-sm">{u.email}</div>
+                <div className="text-[10px] uppercase tracking-wider text-slate-400 font-bold mt-0.5">{u.role} • ID: {u.id}</div>
               </div>
               <div className="flex items-center gap-2">
                 <button
-                  className="text-xs font-medium text-slate-500 hover:text-blue-600 bg-slate-100 hover:bg-blue-50 px-2 py-1 rounded transition-colors"
+                  className="text-[10px] font-bold uppercase tracking-wider text-slate-500 hover:text-blue-600 hover:bg-blue-50 px-3 py-1.5 rounded-md transition-all border border-transparent hover:border-blue-100 whitespace-nowrap"
                   onClick={(e) => { e.stopPropagation(); resetPassword(u.id); }}
                 >Reset</button>
                 <button
-                  className="text-xs font-medium text-slate-500 hover:text-red-600 bg-slate-100 hover:bg-red-50 px-2 py-1 rounded transition-colors"
+                  className="text-[10px] font-bold uppercase tracking-wider text-red-500 hover:text-red-700 hover:bg-red-50 px-3 py-1.5 rounded-md transition-all border border-transparent hover:border-red-100 whitespace-nowrap"
                   onClick={(e) => { e.stopPropagation(); deleteUser(u.id); }}
                 >Delete</button>
               </div>
@@ -698,14 +698,14 @@ export default function UserManagement({ token /* sheetId not required */ }) {
         {selectedUserId && (
           <div className="mt-4">
             <h4 className="font-semibold mb-2">
-              User Permissions — <span className="taccent-blue-600">{userById.get(selectedUserId)?.email}</span>
+              User Permissions — <span className="text-blue-600 font-bold">{userById.get(selectedUserId)?.email}</span>
             </h4>
 
             {/* Sheet selector (latest 10) */}
             <div className="flex items-center mb-2">
-              <label className="text-sm font-semibold mr-2 shrink-0">Sheet:</label>
+              <label className="text-xs font-bold uppercase tracking-wider text-slate-400 mr-2 shrink-0">Sheet:</label>
               <select
-                className="border rounded p-2 flex-1 min-w-0 truncate"
+                className="border rounded px-2 h-8 flex-1 min-w-0 truncate text-xs"
                 value={selectedUserSheetId || ""}
                 onChange={(e) => setSelectedUserSheetId(e.target.value || null)}
               >
@@ -722,13 +722,13 @@ export default function UserManagement({ token /* sheetId not required */ }) {
             {/* Template toolbar (shows only templates for this sheet's group) */}
             <div className="flex flex-wrap items-center gap-2 mb-3">
               <input
-                className="border rounded px-2 py-1"
+                className="border border-slate-200 rounded-lg px-3 h-8 text-xs focus:ring-2 focus:ring-blue-100 outline-none"
                 placeholder="Template name"
                 value={newTplNameUser}
                 onChange={(e) => setNewTplNameUser(e.target.value)}
               />
               <button
-                className="bg-blue-900 hover:bg-blue-800 text-white rounded px-3 py-1"
+                className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-3 h-8 text-xs font-semibold shadow-sm whitespace-nowrap"
                 onClick={handleSaveTemplateFromUser}
                 disabled={!selectedUserSheetId || !currentUserSheetGroupId}
                 title={selectedUserSheetId ? "Save current selection as a template (group-scoped)" : "Pick a sheet first"}
@@ -736,7 +736,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                 Save as Template
               </button>
               <select
-                className="border rounded p-2"
+                className="border border-slate-200 rounded-lg px-3 h-8 text-xs bg-white focus:ring-2 focus:ring-blue-100 outline-none"
                 value={selectedTplUser}
                 onChange={(e) => handleApplyTemplateToUser(e.target.value)}
                 disabled={!selectedUserSheetId || !currentUserSheetGroupId}
@@ -748,7 +748,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                 ))}
               </select>
               <button
-                className={`border rounded px-2 py-1 ${selectedTplUser ? "text-red-600 border-red-600 hover:bg-red-50" : "text-gray-300 border-gray-300"}`}
+                className={`border rounded-lg px-3 h-8 text-xs font-semibold transition-colors whitespace-nowrap ${selectedTplUser ? "text-red-500 border-red-200 hover:bg-red-50" : "text-gray-300 border-gray-200"}`}
                 onClick={() => selectedTplUser && handleDeleteTemplate(selectedTplUser)}
                 disabled={!selectedTplUser}
               >
@@ -759,7 +759,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
             {/* Only show column checkboxes & filter once a sheet is chosen */}
             {selectedUserSheetId ? (
               <>
-                <div className="text-xs text-gray-500 mb-2">
+                <div className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-2">
                   Select columns allowed for this user. Leave all unchecked to allow all.
                 </div>
 
@@ -771,20 +771,20 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                         checked={userAllowedCols.has(h)}
                         onChange={() => toggleUserAllowed(h)}
                       />
-                      <span className="text-sm">{h}</span>
+                      <span className="text-xs font-medium text-slate-600">{h}</span>
                     </label>
                   ))}
                 </div>
 
                 <div className="mt-2 flex gap-2">
                   <button
-                    className="bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 flex-1"
+                    className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-4 h-8 font-semibold text-xs flex-1 shadow-sm whitespace-nowrap"
                     onClick={saveUserPermissions}
                   >
                     Save Column Permissions
                   </button>
                   <button
-                    className="bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 flex-1"
+                    className="bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg px-4 h-8 font-semibold text-xs flex-1 shadow-sm transition-colors whitespace-nowrap"
                     onClick={() => {
                       setUserAllowedCols(new Set());
                       setUserRowFilters([{ key: "", value: "" }]);
@@ -796,9 +796,9 @@ export default function UserManagement({ token /* sheetId not required */ }) {
 
                 <div className="mt-3">
                   <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-semibold">Row Filters:</span>
+                    <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Row Filters:</span>
                     <button
-                      className="bg-blue-600 hover:bg-blue-700 text-white rounded px-2 py-1 text-xs"
+                      className="bg-blue-600 hover:bg-blue-700 text-white rounded px-2 h-7 text-xs font-medium"
                       onClick={() => setUserRowFilters([...userRowFilters, { key: "", value: "" }])}
                     >
                       + Add Filter
@@ -807,7 +807,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                   {userRowFilters.map((filter, idx) => (
                     <div key={idx} className="flex items-center gap-2 mb-2">
                       <select
-                        className="border rounded p-1 flex-1"
+                        className="border rounded px-2 h-7 text-xs flex-1"
                         value={filter.key}
                         onChange={e => {
                           const newFilters = [...userRowFilters];
@@ -819,7 +819,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                         {userSheetHeaders.map(h => <option key={h} value={h}>{h}</option>)}
                       </select>
                       <input
-                        className="border rounded p-1 flex-1"
+                        className="border rounded px-2 h-7 text-xs flex-1"
                         placeholder="value"
                         value={filter.value}
                         onChange={e => {
@@ -839,7 +839,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                     </div>
                   ))}
                   <button
-                    className="bg-blue-600 hover:bg-blue-700 text-white rounded px-3 py-1 mt-2"
+                    className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-3 h-8 text-sm font-medium mt-2 shadow-sm"
                     onClick={saveUserPermissions}
                   >
                     Save
@@ -877,7 +877,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                         setUserViews(newViews);
                       }}
                     />
-                    <span className="text-sm">{v.name}</span>
+                    <span className="text-xs font-medium text-slate-600">{v.name}</span>
                   </label>
                 ))}
               </div>
@@ -885,10 +885,10 @@ export default function UserManagement({ token /* sheetId not required */ }) {
 
             {/* Default View Selection */}
             <div className="mt-4">
-              <h5 className="font-semibold mb-2">Default View (Auto-load on Login)</h5>
+              <h5 className="font-semibold mb-2 text-sm text-slate-700">Default View (Auto-load on Login)</h5>
               <div className="flex gap-2">
                 <select
-                  className="border rounded p-2 flex-1"
+                  className="border rounded px-2 h-9 flex-1 text-xs"
                   value={userDefaultViewId}
                   onChange={(e) => setUserDefaultViewId(e.target.value)}
                 >
@@ -898,7 +898,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                   ))}
                 </select>
                 <button
-                  className="bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2"
+                  className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-4 h-9 font-medium text-sm shadow-sm"
                   onClick={async () => {
                     await axios.put(
                       `${API}/users/${selectedUserId}/default-view`,
@@ -917,20 +917,20 @@ export default function UserManagement({ token /* sheetId not required */ }) {
       </div>
 
       {/* GROUPS PANEL */}
-      <div className="bg-white border text-slate-700 rounded-2xl shadow-sm p-6 border-slate-200">
-        <h3 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2">
-          <span>🏢</span> Groups
+      <div className="bg-white border text-slate-700 rounded-2xl shadow-sm p-6 border-slate-200 h-full flex flex-col">
+        <h3 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2 border-b pb-2">
+          <span className="text-xl">🏢</span> Groups
         </h3>
 
         <div className="flex gap-2 mb-4">
           <input
-            className="border border-slate-200 rounded-lg p-2.5 text-sm flex-1 focus:ring-2 focus:ring-blue-100 focus:border-blue-400 outline-none transition-all"
+            className="border border-slate-200 rounded-lg px-3 h-9 text-sm flex-1 focus:ring-2 focus:ring-blue-100 focus:border-blue-400 outline-none transition-all"
             placeholder="New group name"
             value={newGroupName}
             onChange={e => setNewGroupName(e.target.value)}
           />
           <button
-            className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-4 py-2 text-sm font-semibold shadow-sm hover:shadow transition-all"
+            className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-4 h-9 text-sm font-medium shadow-sm hover:shadow transition-all"
             onClick={createGroup}
           >
             Create
@@ -946,11 +946,11 @@ export default function UserManagement({ token /* sheetId not required */ }) {
             >
               <div className="flex items-center justify-between">
                 <div>
-                  <div className="font-medium text-slate-800">{g.name}</div>
-                  <div className="text-xs text-slate-400 font-mono">ID: {g.id}</div>
+                  <div className="font-semibold text-slate-800 text-sm">{g.name}</div>
+                  <div className="text-[10px] uppercase tracking-wider text-slate-400 font-bold mt-0.5">ID: {g.id}</div>
                 </div>
                 <button
-                  className="text-red-500 hover:text-red-600 hover:bg-red-50 text-xs border border-red-200 px-2 py-1 rounded transition-colors"
+                  className="text-xs font-semibold text-red-500 hover:text-red-700 hover:bg-red-50 px-3 py-1.5 rounded-md transition-all border border-transparent hover:border-red-100"
                   title="Delete group"
                   onClick={(e) => { e.stopPropagation(); deleteGroup(g.id); }}
                 >
@@ -968,7 +968,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
 
             <div className="flex gap-2 mb-3">
               <select
-                className="border border-slate-200 rounded-lg p-2 flex-1 text-sm bg-white"
+                className="border border-slate-200 rounded-lg px-2 h-9 flex-1 text-sm bg-white"
                 value={groupAddUserId}
                 onChange={e => setGroupAddUserId(e.target.value)}
               >
@@ -979,7 +979,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                 }
               </select>
               <button
-                className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-3 py-2 text-sm font-semibold shadow-sm"
+                className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-3 h-9 text-sm font-medium shadow-sm"
                 onClick={addUserToGroup}
               >
                 Add
@@ -988,10 +988,10 @@ export default function UserManagement({ token /* sheetId not required */ }) {
 
             <div className="max-h-40 overflow-auto border border-slate-200 rounded-lg bg-white">
               {groupMembers.map(m => (
-                <div key={m.id} className="flex items-center justify-between px-3 py-2 border-b border-slate-100 last:border-0">
-                  <div className="text-sm text-slate-700">{m.email}</div>
+                <div key={m.id} className="flex items-center justify-between px-3 py-2.5 border-b border-slate-100 last:border-0 hover:bg-slate-50 transition-colors">
+                  <div className="text-sm font-medium text-slate-700">{m.email}</div>
                   <button
-                    className="text-xs font-medium text-red-600 hover:bg-red-50 px-2 py-1 rounded"
+                    className="text-xs font-semibold text-red-500 hover:text-red-700 hover:bg-red-50 px-2.5 py-1 rounded-md transition-all"
                     onClick={() => removeUserFromGroup(m.id)}
                   >Remove</button>
                 </div>
@@ -1003,20 +1003,20 @@ export default function UserManagement({ token /* sheetId not required */ }) {
       </div>
 
       {/* FOLDERS PANEL */}
-      <div className="bg-white border text-slate-700 rounded-2xl shadow-sm p-6 border-slate-200">
-        <h3 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2">
-          <span>📁</span> Folders
+      <div className="bg-white border text-slate-700 rounded-2xl shadow-sm p-6 border-slate-200 h-full flex flex-col">
+        <h3 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2 border-b pb-2">
+          <span className="text-xl">📁</span> Folders
         </h3>
         <div className="flex flex-col gap-3 mb-4 bg-slate-50 p-4 rounded-xl border border-slate-100">
           <input
-            className="border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-100 focus:border-blue-400 outline-none"
+            className="border border-slate-200 rounded-lg px-3 h-9 text-sm focus:ring-2 focus:ring-blue-100 focus:border-blue-400 outline-none"
             placeholder="New folder name"
             value={newFolderName}
             onChange={(e) => setNewFolderName(e.target.value)}
           />
           <div className="flex gap-2">
             <select
-              className="border border-slate-200 rounded-lg p-2.5 text-sm flex-1 bg-white focus:ring-2 focus:ring-blue-100 outline-none"
+              className="border border-slate-200 rounded-lg px-3 h-9 text-sm flex-1 bg-white focus:ring-2 focus:ring-blue-100 outline-none"
               value={folderGroupId}
               onChange={(e) => setFolderGroupId(e.target.value)}
             >
@@ -1024,7 +1024,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
               {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
             </select>
             <button
-              className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-4 py-2 font-semibold text-sm shadow-sm"
+              className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-4 h-9 font-medium text-sm shadow-sm"
               onClick={createFolder}
             >
               Create
@@ -1038,15 +1038,15 @@ export default function UserManagement({ token /* sheetId not required */ }) {
               {folders.filter(f => f.group_id === selectedGroupId).map((f) => (
                 <div key={f.id} className="flex items-center justify-between px-4 py-3 border-b border-slate-100 last:border-0 hover:bg-slate-50 transition-colors">
                   <div>
-                    <div className="font-medium text-slate-800 text-sm">{f.name}</div>
+                    <div className="font-semibold text-slate-800 text-sm">{f.name}</div>
                     {f.group_id && (
-                      <div className="text-xs text-slate-400">
+                      <div className="text-[10px] uppercase tracking-wider text-slate-400 font-bold mt-0.5">
                         Group: {groups.find(g => g.id === f.group_id)?.name || f.group_id}
                       </div>
                     )}
                   </div>
                   <button
-                    className="text-red-500 hover:text-red-600 text-xs border border-red-200 hover:bg-red-50 px-2 py-1 rounded transition-colors"
+                    className="text-xs font-semibold text-red-500 hover:text-red-700 hover:bg-red-50 px-3 py-1.5 rounded-md transition-all border border-transparent hover:border-red-100"
                     onClick={() => deleteFolder(f.id)}
                   >
                     Delete
@@ -1062,15 +1062,15 @@ export default function UserManagement({ token /* sheetId not required */ }) {
               {folders.map((f) => (
                 <div key={f.id} className="flex items-center justify-between px-4 py-3 border-b border-slate-100 last:border-0 hover:bg-slate-50 transition-colors">
                   <div>
-                    <div className="font-medium text-slate-800 text-sm">{f.name}</div>
+                    <div className="font-semibold text-slate-800 text-sm">{f.name}</div>
                     {f.group_id && (
-                      <div className="text-xs text-slate-400">
+                      <div className="text-[10px] uppercase tracking-wider text-slate-400 font-bold mt-0.5">
                         Group: {groups.find(g => g.id === f.group_id)?.name || f.group_id}
                       </div>
                     )}
                   </div>
                   <button
-                    className="text-red-500 hover:text-red-600 text-xs border border-red-200 hover:bg-red-50 px-2 py-1 rounded transition-colors"
+                    className="text-xs font-semibold text-red-500 hover:text-red-700 hover:bg-red-50 px-3 py-1.5 rounded-md transition-all border border-transparent hover:border-red-100"
                     onClick={() => deleteFolder(f.id)}
                   >
                     Delete
@@ -1084,9 +1084,9 @@ export default function UserManagement({ token /* sheetId not required */ }) {
       </div>
 
       {/* GROUP PERMISSIONS PANEL (PER-SHEET) */}
-      <div className="bg-white border text-slate-700 rounded-2xl shadow-sm p-6 border-slate-200">
-        <h3 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2">
-          <span>🔒</span> Group Permissions (per sheet)
+      <div className="bg-white border text-slate-700 rounded-2xl shadow-sm p-6 border-slate-200 h-full flex flex-col">
+        <h3 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2 border-b pb-2">
+          <span className="text-xl">🔒</span> Group Permissions (per sheet)
         </h3>
         {selectedGroupId ? (
           <>
@@ -1094,7 +1094,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
             <div className="mb-4 flex flex-wrap items-center gap-3 bg-slate-50 p-3 rounded-xl border border-slate-100">
               <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Sheet:</label>
               <select
-                className="border border-slate-200 rounded-lg p-2 max-w-[200px] truncate text-sm bg-white focus:ring-2 focus:ring-blue-100 outline-none"
+                className="border border-slate-200 rounded-lg px-3 h-9 max-w-[200px] truncate text-xs bg-white focus:ring-2 focus:ring-blue-100 outline-none"
                 value={selectedGroupSheetId || ""}
                 onChange={(e) => setSelectedGroupSheetId(e.target.value || null)}
               >
@@ -1108,13 +1108,13 @@ export default function UserManagement({ token /* sheetId not required */ }) {
 
               {/* Template toolbar (shows only this group's templates) */}
               <input
-                className="border border-slate-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-100 outline-none"
+                className="border border-slate-200 rounded-lg px-3 h-9 text-sm focus:ring-2 focus:ring-blue-100 outline-none"
                 placeholder="Template name"
                 value={newTplNameGroup}
                 onChange={(e) => setNewTplNameGroup(e.target.value)}
               />
               <button
-                className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-3 py-2 text-sm font-semibold shadow-sm"
+                className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-3 h-9 text-sm font-medium shadow-sm"
                 onClick={handleSaveTemplateFromGroup}
                 disabled={!selectedGroupId}
                 title={selectedGroupId ? "Save current selection as a template (group-scoped)" : "Pick a group first"}
@@ -1122,7 +1122,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                 Save
               </button>
               <select
-                className="border border-slate-200 rounded-lg p-2 text-sm bg-white focus:ring-2 focus:ring-blue-100 outline-none"
+                className="border border-slate-200 rounded-lg px-3 h-9 text-sm bg-white focus:ring-2 focus:ring-blue-100 outline-none"
                 value={selectedTplGroup}
                 onChange={(e) => handleApplyTemplateToGroup(e.target.value)}
                 disabled={!selectedGroupId || !selectedGroupSheetId}
@@ -1135,7 +1135,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
               </select>
               {selectedTplGroup && (
                 <button
-                  className="text-red-500 hover:text-red-600 border border-red-200 hover:bg-red-50 rounded-lg px-3 py-2 text-xs font-semibold"
+                  className="text-red-500 hover:text-red-600 border border-red-200 hover:bg-red-50 rounded-lg px-3 h-9 text-xs font-medium"
                   onClick={() => handleDeleteTemplate(selectedTplGroup)}
                 >
                   Delete
@@ -1156,20 +1156,20 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                         checked={groupAllowedCols.has(h)}
                         onChange={() => toggleGroupAllowed(h)}
                       />
-                      <span className="text-sm">{h}</span>
+                      <span className="text-xs font-medium text-slate-600">{h}</span>
                     </label>
                   ))}
                 </div>
 
                 <div className="mt-2 flex gap-2">
                   <button
-                    className="bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 flex-1"
+                    className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-4 h-8 font-semibold text-xs flex-1 shadow-sm whitespace-nowrap"
                     onClick={saveGroupPermissions}
                   >
                     Save Column Permissions
                   </button>
                   <button
-                    className="bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 flex-1"
+                    className="bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg px-4 h-8 font-semibold text-xs flex-1 shadow-sm transition-colors whitespace-nowrap"
                     onClick={() => {
                       setGroupAllowedCols(new Set());
                       setGroupRowFilters([{ key: "", value: "" }]);
@@ -1181,9 +1181,9 @@ export default function UserManagement({ token /* sheetId not required */ }) {
 
                 <div className="mt-3">
                   <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-semibold">Row Filters:</span>
+                    <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Row Filters:</span>
                     <button
-                      className="bg-blue-600 hover:bg-blue-700 text-white rounded px-2 py-1 text-xs"
+                      className="bg-blue-600 hover:bg-blue-700 text-white rounded px-2 h-7 text-xs font-medium"
                       onClick={() => setGroupRowFilters([...groupRowFilters, { key: "", value: "" }])}
                     >
                       + Add Filter
@@ -1192,7 +1192,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                   {groupRowFilters.map((filter, idx) => (
                     <div key={idx} className="flex items-center gap-2 mb-2">
                       <select
-                        className="border rounded p-1 flex-1"
+                        className="border rounded px-2 h-7 text-xs flex-1"
                         value={filter.key}
                         onChange={e => {
                           const newFilters = [...groupRowFilters];
@@ -1204,7 +1204,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                         {groupSheetHeaders.map(h => <option key={h} value={h}>{h}</option>)}
                       </select>
                       <input
-                        className="border rounded p-1 flex-1"
+                        className="border rounded px-2 h-7 text-xs flex-1"
                         placeholder="value"
                         value={filter.value}
                         onChange={e => {
@@ -1215,7 +1215,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                       />
                       {groupRowFilters.length > 1 && (
                         <button
-                          className="bg-red-600 hover:bg-red-700 text-white rounded px-2 py-1 text-xs"
+                          className="bg-red-600 hover:bg-red-700 text-white rounded px-2 h-7 text-xs font-medium"
                           onClick={() => setGroupRowFilters(groupRowFilters.filter((_, i) => i !== idx))}
                         >
                           Remove
@@ -1224,7 +1224,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                     </div>
                   ))}
                   <button
-                    className="bg-blue-600 hover:bg-blue-700 text-white rounded px-3 py-1 mt-2"
+                    className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-3 h-8 text-xs font-semibold mt-2 shadow-sm whitespace-nowrap"
                     onClick={saveGroupPermissions}
                   >
                     Save
@@ -1232,7 +1232,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                 </div>
 
                 <div className="mt-4">
-                  <h5 className="font-semibold mb-2">View Permissions</h5>
+                  <h5 className="font-semibold mb-2 text-sm text-slate-700">View Permissions</h5>
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-auto border rounded p-2">
                     {views.filter(v => String(v.sheet_id) === String(selectedGroupSheetId)).map((v) => (
                       <label key={v.id} className="flex items-center gap-2">
@@ -1258,7 +1258,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                             setGroupViews(newViews);
                           }}
                         />
-                        <span className="text-sm">{v.name}</span>
+                        <span className="text-xs font-medium text-slate-600">{v.name}</span>
                       </label>
                     ))}
                   </div>
