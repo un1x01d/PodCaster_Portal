@@ -3,8 +3,12 @@
   "version": "1.0.0",
   "type": "module",
   "private": true,
-  "scripts": { "dev": "nodemon server.js", "start": "node server.js" },
+  "scripts": {
+    "dev": "nodemon server.js",
+    "start": "node server.js"
+  },
   "dependencies": {
+    "bcrypt": "^6.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
@@ -13,7 +17,10 @@
     "pg": "^8.11.5",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
-  "devDependencies": { "nodemon": "^3.1.0" },
-  "engines": { "node": ">=18.18" }
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=18.18"
+  }
 }
-
