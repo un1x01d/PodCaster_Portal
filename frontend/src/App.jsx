@@ -56,9 +56,7 @@ export default function App() {
   const [file, setFile] = useState(null);
   const [selectedFileName, setSelectedFileName] = useState("");
 
-  // folders (admin upload only)
-  const [folders, setFolders] = useState([]);
-  const [selectedFolderId, setSelectedFolderId] = useState("");
+
 
   // My files (sheet selection)
   const [myFiles, setMyFiles] = useState([]);
@@ -102,10 +100,12 @@ export default function App() {
   const [trendsValueKey, setTrendsValueKey] = useState("");
   const [trendGranularity, setTrendGranularity] = useState("month"); // Changed from ""
   const [yearsBack, setYearsBack] = useState(5); // Changed from ""
+  // State for trends
+  const [compareYears, setCompareYears] = useState([]); // New 'Years to compare to' array
 
-  // NEW: Trend Grouping
-  const [trendGroupKey, setTrendGroupKey] = useState("");
-  const [trendSelectedGroups, setTrendSelectedGroups] = useState([]);
+  // Removed old trend states
+  // const [trendGroupKey, setTrendGroupKey] = useState('');
+  // const [trendSelectedGroups, setTrendSelectedGroups] = useState([]);
 
 
 
@@ -137,12 +137,10 @@ export default function App() {
           const allowed = columnFilters[col];
           if (!allowed) continue;
 
-          const val = String(row[col]);
-
           if (allowed instanceof Set) {
-            if (allowed.size > 0 && !allowed.has(val)) return false;
+            if (allowed.size > 0 && !allowed.has(String(row[col]))) return false;
           } else if (Array.isArray(allowed)) {
-            if (allowed.length > 0 && !allowed.includes(val)) return false;
+            if (allowed.length > 0 && !allowed.includes(String(row[col]))) return false;
           }
         }
         return true;
@@ -185,15 +183,27 @@ export default function App() {
     return { sortedData: processed, uniqueValuesByColumn: uniques };
   }, [data, columnFilters, sortConfig, headers]);
 
-  // Unique values for the group dropdown (Must be defined AFTER sortedData)
-  const trendGroupOptions = useMemo(() => {
-    if (!trendGroupKey || !sortedData) return [];
+  // Available Years for Dropdown
+  const trendYearOptions = useMemo(() => {
+    if (!sortedData || !trendsDateKey) return [];
     const s = new Set();
     sortedData.forEach(r => {
-      if (r[trendGroupKey]) s.add(String(r[trendGroupKey]));
+      const val = r[trendsDateKey];
+      if (!val) return;
+      // reuse the robust parsing logic or helper?
+      // Let's just do a quick parse.
+      let y;
+      const asNum = Number(val);
+      if (!isNaN(asNum) && asNum > 25569 && asNum < 60000) {
+        y = new Date(Math.round((asNum - 25569) * 86400 * 1000)).getFullYear();
+      } else {
+        const dObj = new Date(val);
+        if (!isNaN(dObj.getTime())) y = dObj.getFullYear();
+      }
+      if (y) s.add(y);
     });
-    return Array.from(s).sort();
-  }, [sortedData, trendGroupKey]);
+    return Array.from(s).sort((a, b) => b - a);
+  }, [sortedData, trendsDateKey]);
 
 
   // Helper for currency/number parsing
@@ -287,8 +297,8 @@ export default function App() {
     sortedData.forEach(r => {
       // 1. Filter Check (condCol1)
       // If condCol1 matches what? The UI for 2-condition has "Condition 1" as a select column.
-      // Does it imply we filter by a specific value? 
-      // The UI in Dashboard says: "First Condition (Filter)" -> Select Column.
+      // Does it imply we filter by a specific value?
+      // "The UI in Dashboard says: "First Condition (Filter)" -> Select Column.
       // But where is the value selector?
       // The original Dashboard had a value selector for the filter?
       // Let's check the UI code I wrote in Dashboard.jsx.
@@ -297,8 +307,8 @@ export default function App() {
       // Maybe the user intends to JUST Group By condCol2?
       // Or maybe they want to Filter condCol1?
       // If I can't filter, I can't do 2-condition filtering.
-      // Let's assume for now we just Group By condCol2 (if present) and Sum Value.
-      // If condCol1 is present, maybe we are supposed to Group by both? 
+      // Let's assume for now we just Group by condCol2 (if present) and Sum Value.
+      // If condCol1 is present, maybe we are supposed to Group by both?
       // Or maybe condCol1 is just ignored if no value is picked?
       // Let's Pivot-style this: Group by condCol2.
 
@@ -322,59 +332,82 @@ export default function App() {
   const trendsData = React.useMemo(() => {
     if (!trendsOn || !trendsDateKey || !trendsValueKey || !sortedData.length) return [];
 
-    // Group by Date granularity
+    // Simplified Logic: Date, Value, Granularity, CompareYear.
     const grouped = {};
+    let maxYear = 0;
+
+    // First pass to find the maximum year in the data
+    sortedData.forEach(r => {
+      let dateRaw = r[trendsDateKey];
+      if (!dateRaw) return;
+
+      let dObj = null;
+      const asNum = Number(dateRaw);
+      if (!isNaN(asNum) && asNum > 25569 && asNum < 60000) {
+        dObj = new Date(Math.round((asNum - 25569) * 86400 * 1000));
+      } else {
+        dObj = new Date(dateRaw);
+      }
+
+      if (dObj && !isNaN(dObj.getTime())) {
+        const y = dObj.getFullYear();
+        if (y > maxYear) maxYear = y;
+      }
+    });
 
     sortedData.forEach(r => {
       const val = parseNum(r[trendsValueKey]);
       let dateRaw = r[trendsDateKey];
-      if (dateRaw === null || dateRaw === undefined || dateRaw === "") return;
+      if (!dateRaw) return;
 
-      let dateKey = null;
-
-      // 1. Excel Serial Date (e.g. 45000)
-      // Check if it looks like a number and is in reasonable range (year 1900-2100)
-      // 25569 = 1970-01-01, 60000 = ~2064
+      let dObj = null;
       const asNum = Number(dateRaw);
       if (!isNaN(asNum) && asNum > 25569 && asNum < 60000) {
-        const dObj = new Date(Math.round((asNum - 25569) * 86400 * 1000));
+        dObj = new Date(Math.round((asNum - 25569) * 86400 * 1000));
+      } else {
+        dObj = new Date(dateRaw);
+      }
+
+      if (dObj && !isNaN(dObj.getTime())) {
         const y = dObj.getFullYear();
         const m = String(dObj.getMonth() + 1).padStart(2, '0');
         const d = String(dObj.getDate()).padStart(2, '0');
-        dateKey = `${y}-${m}-${d}`; // Normalize to YYYY-MM-DD first
-      } else {
-        // 2. String Parse
-        const dObj = new Date(dateRaw);
-        if (!isNaN(dObj.getTime())) {
-          const y = dObj.getFullYear();
-          const m = String(dObj.getMonth() + 1).padStart(2, '0');
-          const d = String(dObj.getDate()).padStart(2, '0');
-          dateKey = `${y}-${m}-${d}`;
+
+        let axisKey = null;
+        let lineKey = "value";
+
+        if (compareYears && compareYears.length > 0) {
+          // Comparison Mode: Overlay `compareYears` vs `maxYear`
+          const targets = compareYears.map(Number);
+          if (y !== maxYear && !targets.includes(y)) return; // Only include data for maxYear and compareYears
+
+          lineKey = String(y); // Series name is the year
+          // Axis normalized to Month-Day
+          if (trendGranularity === 'day') axisKey = `${m}-${d}`;
+          else axisKey = m; // Month
         } else {
-          // Fallback: use raw string if it looks like a year/month?
-          // or just skip
+          // Standard Mode: Time Series
+          if (trendGranularity === 'year') axisKey = String(y);
+          else if (trendGranularity === 'month') axisKey = `${y}-${m}`;
+          else axisKey = `${y}-${m}-${d}`;
         }
-      }
 
-      if (dateKey) {
-        // Respect Granularity
-        if (trendGranularity === 'year') {
-          dateKey = dateKey.substring(0, 4); // YYYY
-        } else if (trendGranularity === 'month') {
-          dateKey = dateKey.substring(0, 7); // YYYY-MM
+        if (axisKey) {
+          if (!grouped[axisKey]) grouped[axisKey] = { date: axisKey, value: 0 };
+          grouped[axisKey].value += val; // Total (useful?)
+          // In comparison mode, 'value' might be sum of both years, which is weird.
+          // But lineKey handles the split.
+          grouped[axisKey][lineKey] = (grouped[axisKey][lineKey] || 0) + val;
         }
-        // else daily YYYY-MM-DD
-
-        grouped[dateKey] = (grouped[dateKey] || 0) + val;
       }
     });
 
     // Convert to array and sort
     return Object.entries(grouped)
-      .map(([date, value]) => ({ date, value }))
+      .map(([k, obj]) => obj)
       .sort((a, b) => a.date.localeCompare(b.date));
 
-  }, [trendsOn, trendsDateKey, trendsValueKey, trendGranularity, sortedData]);
+  }, [trendsOn, trendsDateKey, trendsValueKey, trendGranularity, compareYears, sortedData]);
 
 
   /* -------- Helpers -------- */
@@ -461,11 +494,11 @@ export default function App() {
     loadData(sheetId, true, tabName); // preserve filters when switching tabs
   };
 
-  const handleUpload = async () => {
-    if (!file || !selectedFolderId) return;
+  const handleUpload = async (uploadFile, folderId) => {
+    if (!uploadFile || !folderId) return;
     const formData = new FormData();
-    formData.append("file", file);
-    formData.append("folder_id", selectedFolderId);
+    formData.append("file", uploadFile);
+    formData.append("folder_id", folderId);
 
     try {
       const res = await axios.post(`${API}/upload`, formData, {
@@ -475,8 +508,8 @@ export default function App() {
         },
       });
       alert("Uploaded!");
-      setFile(null);
-      setSelectedFileName("");
+      // setFile(null); // Managed by caller now
+      // setSelectedFileName(""); // Managed by caller now
       // load it
       if (res.data.sheetId) {
         setSheetId(res.data.sheetId);
@@ -501,7 +534,7 @@ export default function App() {
     setMyFilesLoading(true);
     setSelectError("");
     try {
-      const res = await axios.get(`${API}/my-files`, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } });
       setMyFiles(res.data || []);
     } catch (e) {
       setSelectError("Failed");
@@ -555,16 +588,10 @@ export default function App() {
     doc.save(`${activeFilename || "export"}.pdf`);
   };
 
-  const folderOptions = [{ value: "", label: "Folder (required)…" }].concat(
-    folders.map((f) => ({ value: String(f.id), label: f.name }))
-  );
+
 
   useEffect(() => {
     if (token) {
-      // fetch meta (folders, etc)
-      axios.get(`${API}/folders`, { headers: { Authorization: `Bearer ${token}` } })
-        .then(r => setFolders(r.data))
-        .catch(e => console.error(e));
 
       axios.get(`${API}/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
         .then(r => {
@@ -757,8 +784,6 @@ export default function App() {
                       sheetId={sheetId} activeFilename={activeFilename}
                       file={file} setFile={setFile}
                       selectedFileName={selectedFileName} setSelectedFileName={setSelectedFileName}
-                      folderOptions={folderOptions}
-                      selectedFolderId={selectedFolderId} setSelectedFolderId={setSelectedFolderId}
                       handleUpload={handleUpload}
                       loadData={loadData}
                       selectedViewId={selectedViewId} setSelectedViewId={setSelectedViewId}
@@ -800,11 +825,10 @@ export default function App() {
                       setYearsBack={setYearsBack}
                       trendsData={trendsData}
                       // NEW Props for Comparison
-                      trendGroupKey={trendGroupKey}
-                      setTrendGroupKey={setTrendGroupKey}
-                      trendSelectedGroups={trendSelectedGroups}
-                      setTrendSelectedGroups={setTrendSelectedGroups}
-                      trendGroupOptions={trendGroupOptions}
+                      trendYearOptions={trendYearOptions}
+                      compareYears={compareYears}
+                      setCompareYears={setCompareYears}
+                      maxYear={trendYearOptions[0]} // First option is usually max year since sorted descending
 
                       exportCSV={exportCSV} exportXLSX={exportXLSX} exportPDF={exportPDF}
 

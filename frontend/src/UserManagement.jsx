@@ -749,14 +749,13 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                   <option key={t.id} value={t.id}>{t.name}</option>
                 ))}
               </select>
-              {selectedTplUser && (
-                <button
-                  className="text-red-600 border border-red-600 rounded px-2 py-1"
-                  onClick={() => handleDeleteTemplate(selectedTplUser)}
-                >
-                  Delete template
-                </button>
-              )}
+              <button
+                className={`border rounded px-2 py-1 ${selectedTplUser ? "text-red-600 border-red-600 hover:bg-red-50" : "text-gray-300 border-gray-300"}`}
+                onClick={() => selectedTplUser && handleDeleteTemplate(selectedTplUser)}
+                disabled={!selectedTplUser}
+              >
+                Delete template
+              </button>
             </div>
 
             {/* Only show column checkboxes & filter once a sheet is chosen */}

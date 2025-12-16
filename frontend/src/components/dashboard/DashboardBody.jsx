@@ -6,8 +6,10 @@ import {
     ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line,
 } from "recharts";
 import * as XLSX from "xlsx";
+import axios from "axios";
 
 import SearchableSelect from "../common/SearchableSelect";
+import MultiSelect from "../common/MultiSelect";
 import ExportMenu from "./ExportMenu";
 import ChartMenu from "./ChartMenu";
 import ColumnFilterMenu from "./ColumnFilterMenu";
@@ -43,9 +45,7 @@ export default function DashboardBody(props) {
         setFile,
         selectedFileName,
         setSelectedFileName,
-        folderOptions,
-        selectedFolderId,
-        setSelectedFolderId,
+
         handleUpload,
         loadData,
         selectedViewId,
@@ -99,9 +99,8 @@ export default function DashboardBody(props) {
         trendGranularity, setTrendGranularity,
         yearsBack, setYearsBack,
         trendsData,
-        trendGroupKey, setTrendGroupKey,
-        trendSelectedGroups, setTrendSelectedGroups,
-        trendGroupOptions,
+        trendYearOptions,
+        compareYears, setCompareYears, maxYear,
 
         // Actions
         exportCSV,
@@ -128,51 +127,36 @@ export default function DashboardBody(props) {
 
     const headerRef = useRef(null);
 
-    // State for rows to show
-    const [rowsToShow, setRowsToShow] = useState(50);
+    // Internal State for Folders (fetched here to ensure freshness)
+    const [folders, setFolders] = useState([]);
+    const [selectedFolderId, setSelectedFolderId] = useState("");
 
-    // State for year range selection in trends
-    const [trendStartYear, setTrendStartYear] = useState('');
-    const [trendEndYear, setTrendEndYear] = useState('');
+    // Fetch folders on mount
+    React.useEffect(() => {
+        if (!token) return;
+        axios.get(`${API}/folders`, { headers: { Authorization: `Bearer ${token}` } })
+            .then(r => setFolders(r.data || []))
+            .catch(e => console.error("Fetch folders failed", e));
+    }, [token, API]);
 
-    // Helper to format numbers with commas and exactly two decimal places
+    const folderOptions = React.useMemo(() => {
+        return [{ value: "", label: "Folder (required)…" }].concat(
+            folders.map((f) => ({ value: String(f.id), label: f.name }))
+        );
+    }, [folders]);
+
+    // Helper to format numbers in charts
     const formatNumber = (val) => {
         if (typeof val === 'number' && !isNaN(val)) {
-            return new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(val);
-        }
-        const num = Number(val);
-        if (!isNaN(num) && val !== '' && val !== null) {
-            return new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(num);
+            return new Intl.NumberFormat('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(val);
         }
         return val;
     };
 
-    // Compute available years from the selected date column
-    const availableYears = useMemo(() => {
-        if (!trendsDateKey || !sortedData) return [];
-        const yearsSet = new Set();
-        sortedData.forEach(row => {
-            const val = row[trendsDateKey];
-            if (val) {
-                const dt = new Date(val);
-                const y = dt.getFullYear();
-                if (!isNaN(y)) yearsSet.add(y);
-            }
-        });
-        return Array.from(yearsSet).sort((a, b) => a - b);
-    }, [sortedData, trendsDateKey]);
+    // State for rows to show
 
-    // Filter trends data based on selected year range
-    const filteredTrendsData = useMemo(() => {
-        if (!trendsData) return [];
-        if (!trendStartYear && !trendEndYear) return trendsData;
-        const start = trendStartYear ? parseInt(trendStartYear, 10) : -Infinity;
-        const end = trendEndYear ? parseInt(trendEndYear, 10) : Infinity;
-        return trendsData.filter(d => {
-            const y = new Date(d.date).getFullYear();
-            return y >= start && y <= end;
-        });
-    }, [trendsData, trendStartYear, trendEndYear]);
+
+
 
     // tabs and activeTab are now passed as props from App.jsx
 
@@ -268,7 +252,7 @@ export default function DashboardBody(props) {
                         />
 
                         <button
-                            onClick={handleUpload}
+                            onClick={() => handleUpload(file, selectedFolderId)}
                             disabled={!file || !selectedFolderId}
                             className={`${!file || !selectedFolderId
                                 ? "bg-gray-200 cursor-not-allowed text-gray-500"
@@ -343,14 +327,7 @@ export default function DashboardBody(props) {
                 {/* Export dropdown + Charts dropdown */}
                 <div className="flex gap-3 ml-0 md:ml-6 items-center">
                     <ExportMenu onCSV={exportCSV} onXLSX={exportXLSX} onPDF={exportPDF} />
-                    <SearchableSelect
-                        options={[{ value: 50, label: "50 rows" }, { value: 100, label: "100 rows" }, { value: 200, label: "200 rows" }]}
-                        value={rowsToShow}
-                        onChange={(e) => setRowsToShow(Number(e.target.value))}
-                        placeholder="Rows per page"
-                        className="ml-2"
-                        buttonClassName="border border-slate-200 p-2 rounded-lg min-w-[8rem] bg-white h-10"
-                    />
+
                     <ChartMenu
                         pivotOn={pivotOn}
                         setPivotOn={setPivotOn}
@@ -520,56 +497,20 @@ export default function DashboardBody(props) {
                             </select>
                         </div>
                         <div>
-                            <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Start Year</label>
-                            <select value={trendStartYear} onChange={e => setTrendStartYear(e.target.value)} className="border border-slate-300 bg-white p-2 rounded-lg text-sm min-w-[120px] h-10">
-                                <option value="">All</option>
-                                {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
-                            </select>
+                            <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Compare to Years</label>
+                            <MultiSelect
+                                options={trendYearOptions}
+                                value={compareYears}
+                                onChange={setCompareYears}
+                                placeholder="Select years..."
+                                className="min-w-[160px] h-10"
+                            />
                         </div>
-                        <div>
-                            <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Compare By (Group)</label>
-                            <select value={trendGroupKey || ""} onChange={e => {
-                                setTrendGroupKey(e.target.value);
-                                setTrendSelectedGroups([]); // Reset selections on group change
-                            }} className="border border-slate-300 bg-white p-2 rounded-lg text-sm min-w-[150px] h-10">
-                                <option value="">(None)</option>
-                                {headers.map(h => <option key={h} value={h}>{h}</option>)}
-                            </select>
-                        </div>
-                        {trendGroupKey && (
-                            <div>
-                                <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Select Line(s)</label>
-                                <div className="border border-slate-300 bg-white rounded-lg min-w-[150px] h-10 flex items-center px-2 relative group">
-                                    <span className="text-sm truncate w-24">
-                                        {trendSelectedGroups.length ? `${trendSelectedGroups.length} selected` : "Select..."}
-                                    </span>
-                                    <span className="ml-auto opacity-50">▾</span>
-                                    {/* Simple custom dropdown for multi-select */}
-                                    <div className="absolute top-10 left-0 w-64 bg-white border border-gray-200 shadow-xl rounded-lg p-2 max-h-60 overflow-auto z-50 hidden group-hover:block hover:block">
-                                        {trendGroupOptions.map(opt => (
-                                            <label key={opt} className="flex items-center gap-2 p-1 hover:bg-slate-50 rounded cursor-pointer">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={trendSelectedGroups.includes(opt)}
-                                                    onChange={(e) => {
-                                                        const checked = e.target.checked;
-                                                        if (checked) setTrendSelectedGroups(prev => [...prev, opt]);
-                                                        else setTrendSelectedGroups(prev => prev.filter(x => x !== opt));
-                                                    }}
-                                                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                                                />
-                                                <span className="text-sm text-gray-700 truncate">{opt}</span>
-                                            </label>
-                                        ))}
-                                    </div>
-                                </div>
-                            </div>
-                        )}
                     </div>
                     <div className="h-80 w-full bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
-                        {filteredTrendsData && filteredTrendsData.length > 0 ? (
+                        {trendsData && trendsData.length > 0 ? (
                             <ResponsiveContainer width="100%" height="100%">
-                                <LineChart data={filteredTrendsData}>
+                                <LineChart data={trendsData}>
                                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
                                     <XAxis dataKey="date" tick={{ fontSize: 12, fill: '#6b7280' }} tickLine={false} axisLine={false} dy={10} />
                                     <YAxis tick={{ fontSize: 12, fill: '#6b7280' }} tickLine={false} axisLine={false} dx={-10} tickFormatter={formatNumber} />
@@ -579,21 +520,21 @@ export default function DashboardBody(props) {
                                     />
                                     <Legend />
 
-                                    {!trendGroupKey ? (
-                                        // Standard Single Line
+                                    {(!compareYears || compareYears.length === 0) ? (
+                                        // Single Line
                                         <Line type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={3} dot={{ r: 4, strokeWidth: 2, fill: 'white' }} activeDot={{ r: 8, fill: '#3b82f6' }} />
                                     ) : (
-                                        // Multi-Line
-                                        trendSelectedGroups.map((grp, i) => (
+                                        // Comparison Lines (maxYear + selected years)
+                                        [maxYear, ...compareYears].filter(y => y).map((year, i) => (
                                             <Line
-                                                key={grp}
+                                                key={year}
                                                 type="monotone"
-                                                dataKey={grp}
+                                                dataKey={String(year)} // The key in data object is the year string
                                                 stroke={COLORS[i % COLORS.length]}
                                                 strokeWidth={3}
                                                 dot={{ r: 4, strokeWidth: 2, fill: 'white' }}
-                                                activeDot={{ r: 6, fill: COLORS[i % COLORS.length] }}
-                                                name={grp}
+                                                activeDot={{ r: 8 }}
+                                                name={String(year)}
                                             />
                                         ))
                                     )}
@@ -711,7 +652,7 @@ export default function DashboardBody(props) {
                                     {displayHeaders.map((h) => (
                                         <div
                                             key={h}
-                                            style={{ width: minColWidth, flexShrink: 0 }}
+                                            style={{ minWidth: minColWidth, flex: 1 }}
                                             ref={(el) => {
                                                 if (!filterAnchorRefs.current) filterAnchorRefs.current = {};
                                                 filterAnchorRefs.current[h] = el;
@@ -788,7 +729,7 @@ export default function DashboardBody(props) {
                                         {({ height, width }) => (
                                             <List
                                                 height={height}
-                                                itemCount={Math.min(sortedData.length, rowsToShow)}
+                                                itemCount={sortedData.length}
                                                 itemSize={36}
                                                 width={width}
                                                 outerRef={(el) => {
@@ -801,13 +742,13 @@ export default function DashboardBody(props) {
                                                     const row = sortedData[index];
                                                     return (
                                                         <div
-                                                            style={style}
+                                                            style={{ ...style, width: "100%" }}
                                                             className={`flex ${index % 2 === 1 ? "bg-slate-50/50" : "bg-white"} hover:bg-slate-100 transition-colors border-b border-slate-100`}
                                                         >
                                                             {displayHeaders.map((h) => (
                                                                 <div
                                                                     key={h}
-                                                                    style={{ width: minColWidth, flexShrink: 0 }}
+                                                                    style={{ minWidth: minColWidth, flex: 1 }}
                                                                     className="px-4 py-2 whitespace-nowrap text-sm text-gray-700 border-r border-slate-100 truncate"
                                                                     title={typeof row[h] === 'string' ? row[h] : ''}
                                                                 >

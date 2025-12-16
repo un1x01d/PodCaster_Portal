@@ -1131,7 +1131,15 @@ Try asking:
         }
     };
 
-    const handleSend = () => {
+    // Focus input on open
+    const inputRef = useRef(null);
+    useEffect(() => {
+        if (isOpen && inputRef.current) {
+            inputRef.current.focus();
+        }
+    }, [isOpen]);
+
+    const handleSend = async () => {
         if (!input.trim()) return;
 
 
@@ -1562,12 +1570,12 @@ Try asking:
                             <div className="p-4 border-t border-gray-200">
                                 <div className="flex gap-2">
                                     <input
-                                        type="text"
+                                        ref={inputRef}
+                                        className="flex-1 border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                        placeholder="Ask a question about your data..."
                                         value={input}
                                         onChange={(e) => setInput(e.target.value)}
-                                        onKeyPress={handleKeyPress}
-                                        placeholder="Ask about your data..."
-                                        className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400"
+                                        onKeyDown={(e) => e.key === "Enter" && handleSend()}
                                     />
                                     <button
                                         onClick={handleSend}
