@@ -189,7 +189,6 @@ export default function DashboardBody(props) {
             style={{
                 ...style,
                 width: totalRowWidth,
-                minWidth: '100%',
                 position: 'relative'
             }}
             {...rest}
@@ -243,18 +242,21 @@ export default function DashboardBody(props) {
                 {/* Upload (admin) */}
                 {user.role === "admin" && (
                     <>
-                        <label className="flex items-center gap-3 border border-slate-200 rounded-lg px-2 bg-white h-8">
+                        <label className="flex items-center gap-2 cursor-pointer bg-white border border-slate-300 hover:border-blue-400 hover:bg-blue-50 text-slate-700 rounded-lg px-3 h-8 shadow-sm transition-all group">
                             <input
                                 type="file"
                                 onChange={(e) => {
                                     const f = e.target.files?.[0];
                                     setFile(f || null);
                                     setSelectedFileName(f?.name || "");
+                                    // Reset value to allow re-selection
+                                    e.target.value = null;
                                 }}
-                                className="border border-slate-200 p-1 rounded-md"
+                                className="hidden"
                             />
-                            <span className="text-sm text-gray-700">
-                                {selectedFileName || activeFilename || "No file selected"}
+                            <span className="text-lg group-hover:scale-110 transition-transform">📂</span>
+                            <span className="text-xs font-semibold whitespace-nowrap max-w-[8rem] truncate">
+                                {selectedFileName || "Choose File"}
                             </span>
                         </label>
 
@@ -513,7 +515,7 @@ export default function DashboardBody(props) {
                             </select>
                         </div>
                         <div>
-                            <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Compare to Years</label>
+                            <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Select Years</label>
                             <MultiSelect
                                 options={trendYearOptions}
                                 value={compareYears}
@@ -537,8 +539,8 @@ export default function DashboardBody(props) {
                                         // Single Line
                                         <Line type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={3} dot={{ r: 4, strokeWidth: 2, fill: 'white' }} activeDot={{ r: 8, fill: '#3b82f6' }} />
                                     ) : (
-                                        // Comparison Lines (maxYear + selected years)
-                                        [maxYear, ...compareYears].filter(y => y).map((year, i) => (
+                                        // Comparison Lines (selected years)
+                                        [...compareYears].sort((a, b) => b - a).map((year, i) => (
                                             <Line
                                                 key={year}
                                                 type="monotone"
@@ -664,7 +666,7 @@ export default function DashboardBody(props) {
                                     {displayHeaders.map((h) => (
                                         <div
                                             key={h}
-                                            style={{ minWidth: minColWidth, flex: 1 }}
+                                            style={{ width: minColWidth, minWidth: minColWidth }}
                                             ref={(el) => {
                                                 if (!filterAnchorRefs.current) filterAnchorRefs.current = {};
                                                 filterAnchorRefs.current[h] = el;
@@ -762,7 +764,7 @@ export default function DashboardBody(props) {
                                                                 return (
                                                                     <div
                                                                         key={h}
-                                                                        style={{ minWidth: minColWidth, flex: 1 }}
+                                                                        style={{ width: minColWidth, minWidth: minColWidth }}
                                                                         className="border-r border-slate-200 px-3 text-xs text-slate-700 truncate h-full flex items-center whitespace-nowrap"
                                                                         title={String(val)}
                                                                     >

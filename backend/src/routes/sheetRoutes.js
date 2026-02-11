@@ -8,7 +8,8 @@ import {
     getSheetDetails,
     updateSheetDetails,
     getSheetTabs,
-    getSheetData
+    getSheetData,
+    deleteSheet
 } from "../controllers/sheetController.js";
 import { auth } from "../middleware/auth.js";
 
@@ -29,6 +30,7 @@ router.get("/sheets/:id", getSheetDetails);
 router.patch("/sheets/:id", updateSheetDetails);
 router.get("/sheets/:id/tabs", getSheetTabs);
 router.get("/sheets/:id/data", getSheetData);
+router.delete("/sheets/:id", deleteSheet);
 
 // Legacy/Compatibility alias for /sheets/list logic if needed, but listAllSheets covers it
 router.get("/sheets/list", listAllSheets);

@@ -114,6 +114,21 @@ export async function updateGroupMembers(req, res) {
     res.json({ success: true });
 }
 
+export async function addUserToGroup(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const { id } = req.params;
+    const { userId } = req.body;
+    await query("INSERT INTO user_groups (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [id, userId]);
+    res.json({ success: true });
+}
+
+export async function removeUserFromGroup(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const { id, userId } = req.params;
+    await query("DELETE FROM user_groups WHERE group_id=$1 AND user_id=$2", [id, userId]);
+    res.json({ success: true });
+}
+
 export async function getGroupSheets(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     const gid = Number(req.params.id);

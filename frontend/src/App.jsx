@@ -393,9 +393,9 @@ export default function App() {
         let lineKey = "value";
 
         if (compareYears && compareYears.length > 0) {
-          // Comparison Mode: Overlay `compareYears` vs `maxYear`
+          // Comparison Mode: Overlay selected years
           const targets = compareYears.map(Number);
-          if (y !== maxYear && !targets.includes(y)) return; // Only include data for maxYear and compareYears
+          if (!targets.includes(y)) return; 
 
           lineKey = String(y); // Series name is the year
           // Axis normalized to Month-Day
@@ -603,7 +603,24 @@ export default function App() {
 
   const deleteSheet = async (id) => {
     if (!confirm("Delete?")) return;
-    await axios.delete(`${API}/sheets/${id}`, { headers: { Authorization: `Bearer ${token}` } });
+    try {
+      await axios.delete(`${API}/sheets/${id}`, { headers: { Authorization: `Bearer ${token}` } });
+      setMyFiles((prev) => prev.filter((f) => f.id !== id));
+      setFolderFiles((prev) => prev.filter((f) => f.id !== id));
+
+      // If active sheet deleted, clear data
+      if (id === sheetId) {
+        setSheetId(null);
+        setActiveFilename("");
+        setData([]);
+        setHeaders([]);
+        localStorage.removeItem("sheetId");
+        localStorage.removeItem("activeFilename");
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Failed to delete");
+    }
   };
 
   const requestSort = (key) => {

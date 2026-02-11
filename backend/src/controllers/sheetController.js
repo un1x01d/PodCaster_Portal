@@ -251,3 +251,35 @@ export async function getSheetData(req, res) {
         res.status(500).json({ error: "failed" });
     }
 }
+
+export async function deleteSheet(req, res) {
+    const { id } = req.params;
+    const client = await getClient();
+
+    try {
+        await client.query("BEGIN");
+
+        const s = await client.query("SELECT id, folder_id FROM sheets WHERE id = $1", [id]);
+        if (!s.rows.length) {
+            await client.query("ROLLBACK");
+            return res.status(404).json({ error: "not_found" });
+        }
+
+        // Delete permissions manually (no FK cascade in DB schema for these)
+        await client.query("DELETE FROM permissions WHERE sheet_id = $1", [id]);
+        await client.query("DELETE FROM group_permissions WHERE sheet_id = $1", [id]);
+
+        // Delete Sheet (Rows cascade via FK)
+        await client.query("DELETE FROM sheets WHERE id = $1", [id]);
+
+        await client.query("COMMIT");
+        res.json({ success: true, id });
+
+    } catch (e) {
+        await client.query("ROLLBACK");
+        console.error("Delete sheet failed:", e);
+        res.status(500).json({ error: "delete_failed" });
+    } finally {
+        client.release();
+    }
+}

@@ -2,6 +2,7 @@ import express from "express";
 import {
     listUsers, createUser, updateUser, deleteUser, setDefaultView,
     listGroups, createGroup, deleteGroup, getGroupMembers, updateGroupMembers, getGroupSheets,
+    addUserToGroup, removeUserFromGroup,
     listFolders, createFolder, deleteFolder,
     setPermissions, getPermissions, setGroupPermissions, getGroupPermissions
 } from "../controllers/userController.js";
@@ -24,6 +25,8 @@ router.delete("/groups/:id", deleteGroup);
 router.get("/groups/:id/members", getGroupMembers);
 router.post("/groups/:id/members", updateGroupMembers);
 router.get("/groups/:id/users", getGroupMembers); // Alias for frontend compatibility
+router.post("/groups/:id/users", addUserToGroup);
+router.delete("/groups/:id/users/:userId", removeUserFromGroup);
 router.get("/groups/:id/sheets", getGroupSheets);
 
 // Folders

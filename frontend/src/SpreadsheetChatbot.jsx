@@ -724,7 +724,12 @@ Try asking:
                 const pctChange = val1 !== 0 ? (change / val1) * 100 : 0;
                 const direction = change >= 0 ? 'increased' : 'decreased';
 
-                return `Comparison of ${parsed.column}:\n\n• ${r1.label}: ${formatNumber(val1, parsed.column)}\n• ${r2.label}: ${formatNumber(val2, parsed.column)}\n\nDid it go up? Yes, it ${direction} by ${formatNumber(Math.abs(change), parsed.column)} (${Math.abs(pctChange).toFixed(1)}%) from ${r1.label} to ${r2.label}.`;
+                const answer = change >= 0 ? 'Yes' : 'No';
+                const changeDescription = change >= 0
+                    ? `increased by ${formatNumber(Math.abs(change), parsed.column)} (${Math.abs(pctChange).toFixed(1)}%)`
+                    : `decreased by ${formatNumber(Math.abs(change), parsed.column)} (${Math.abs(pctChange).toFixed(1)}%)`;
+
+                return `Comparison of ${parsed.column}:\n\n• ${r1.label}: ${formatNumber(val1, parsed.column)}\n• ${r2.label}: ${formatNumber(val2, parsed.column)}\n\n**Did it go up?** ${answer}, it ${changeDescription} from ${r1.label} to ${r2.label}.`;
             }
 
             // Apply date filter
