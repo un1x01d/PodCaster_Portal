@@ -1,5 +1,5 @@
 import { query } from "../config/db.js";
-import { hashPassword } from "../utils/security.js";
+import { hashPassword, generateComplexPassword } from "../utils/security.js";
 
 // --- Users ---
 
@@ -18,8 +18,8 @@ export async function createUser(req, res) {
 
     try {
         const r = await query(
-            "INSERT INTO users (email, password, role) VALUES ($1, $2, $3) RETURNING id, email, role",
-            [email, hashedFn, role || "producer"]
+            "INSERT INTO users (email, password, role, password_reset_required) VALUES ($1, $2, $3, $4) RETURNING id, email, role",
+            [email, hashedFn, role || "producer", true]
         );
         res.json(r[0]);
     } catch (e) {
@@ -31,18 +31,43 @@ export async function createUser(req, res) {
 export async function updateUser(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     const { id } = req.params;
-    const { email, password, role } = req.body;
+    const { email, password, role, reset } = req.body;
 
-    let sql = "UPDATE users SET email=$1, role=$2 WHERE id=$3";
-    let params = [email, role, id];
-
-    if (password) {
-        const hashed = await hashPassword(password);
-        sql = "UPDATE users SET email=$1, role=$2, password=$3 WHERE id=$4";
-        params = [email, role, hashed, id];
+    // Handle password reset request
+    if (reset) {
+        const newPassword = generateComplexPassword(16);
+        const hashed = await hashPassword(newPassword);
+        await query("UPDATE users SET password=$1, password_reset_required=TRUE WHERE id=$2", [hashed, id]);
+        return res.json({ success: true, newPassword });
     }
 
-    await query(sql, params);
+    // Dynamic partial update
+    const fields = [];
+    const values = [];
+    let idx = 1;
+
+    if (email !== undefined) {
+        fields.push(`email=$${idx++}`);
+        values.push(email);
+    }
+    if (role !== undefined) {
+        fields.push(`role=$${idx++}`);
+        values.push(role);
+    }
+    if (password !== undefined) {
+        const hashed = await hashPassword(password);
+        fields.push(`password=$${idx++}`);
+        values.push(hashed);
+    }
+
+    if (fields.length === 0) {
+        return res.json({ success: true });
+    }
+
+    values.push(id);
+    const sql = `UPDATE users SET ${fields.join(", ")} WHERE id=$${idx}`;
+
+    await query(sql, values);
     res.json({ success: true });
 }
 

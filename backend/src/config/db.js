@@ -28,6 +28,7 @@ export async function initDb() {
   `);
     // Add column if missing (for existing DBs)
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS default_view_id INT;`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_required BOOLEAN DEFAULT FALSE;`);
 
     // GROUPS
     await pool.query(`

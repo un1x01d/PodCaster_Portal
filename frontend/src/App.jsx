@@ -10,6 +10,7 @@ import SpreadsheetChatbot from "./SpreadsheetChatbot";
 import ErrorBoundary from "./ErrorBoundary";
 import DashboardBody from "./components/dashboard/DashboardBody";
 import Modal from "./components/common/Modal";
+import ChangePasswordModal from "./components/common/ChangePasswordModal";
 // App uses Modal for "Select Sheet" and "Folder View"
 
 
@@ -787,7 +788,7 @@ export default function App() {
 
   // ADDED: Fetch views when sheetId changes
   useEffect(() => {
-    if (!sheetId || !token) {
+    if (!sheetId || !token || !user) {
       setViews([]);
       return;
     }
@@ -797,7 +798,7 @@ export default function App() {
         console.error("Fetch views failed", e);
         setViews([]);
       });
-  }, [sheetId, token]);
+  }, [sheetId, token, user]);
 
   /** ---------------------------
    * RENDER
@@ -808,58 +809,60 @@ export default function App() {
         {/* Professional Dark Header */}
         <header className="bg-slate-900 text-white px-6 py-4 flex justify-between items-center shadow-md shrink-0 z-50">
           <div className="flex items-center gap-3">
-            {/* <h1 className="text-lg font-bold tracking-tight text-white">PodCaster Portal</h1> */}
             <LocationTitle />
           </div>
+          {user && (
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={openSelect}
+                className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/50 hover:border-slate-600 px-4 h-8 rounded-lg shadow-sm font-semibold text-xs transition-all flex items-center gap-2 whitespace-nowrap"
+                title="Choose a sheet you have access to"
+              >
+                <span>{activeFilename ? trunc(activeFilename, 20) : "Select Sheet"}</span>
+                <span className="opacity-50 text-xs">▼</span>
+              </button>
 
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={openSelect}
-              className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/50 hover:border-slate-600 px-4 h-8 rounded-lg shadow-sm font-semibold text-xs transition-all flex items-center gap-2 whitespace-nowrap"
-              title="Choose a sheet you have access to"
-            >
-              <span>{activeFilename ? trunc(activeFilename, 20) : "Select Sheet"}</span>
-              <span className="opacity-50 text-xs">▼</span>
-            </button>
+              <span className="text-xs font-semibold text-slate-300 bg-slate-800/50 px-3 py-1.5 rounded-full border border-slate-700/50">
+                {user?.email}
+              </span>
 
-            <span className="text-xs font-semibold text-slate-300 bg-slate-800/50 px-3 py-1.5 rounded-full border border-slate-700/50">
-              {user?.email}
-            </span>
-
-            <button
-              onClick={() => {
-                localStorage.removeItem("token");
-                localStorage.removeItem("sheetId");
-                localStorage.removeItem("activeFilename");
-                localStorage.removeItem("activeTab");
-                setToken("");
-                setUser(null);
-              }}
-              className="bg-red-600/10 hover:bg-red-600 text-red-500 hover:text-white border border-red-900/30 hover:border-red-600 px-4 h-8 rounded-lg shadow-sm text-xs font-semibold transition-all whitespace-nowrap"
-            >
-              Logout
-            </button>
-          </div>
+              <button
+                onClick={() => {
+                  localStorage.removeItem("token");
+                  localStorage.removeItem("sheetId");
+                  localStorage.removeItem("activeFilename");
+                  localStorage.removeItem("activeTab");
+                  setToken("");
+                  setUser(null);
+                }}
+                className="bg-red-600/10 hover:bg-red-600 text-red-500 hover:text-white border border-red-900/30 hover:border-red-600 px-4 h-8 rounded-lg shadow-sm text-xs font-semibold transition-all whitespace-nowrap"
+              >
+                Logout
+              </button>
+            </div>
+          )}
         </header>
 
         {/* Sub-Navigation Bar */}
-        <nav className="bg-white text-slate-500 px-6 flex gap-6 border-b border-slate-200 font-medium shrink-0 z-40 text-sm shadow-sm h-12 items-center">
-          <Link
-            className="hover:text-blue-600 hover:bg-slate-50 px-3 py-1.5 rounded-md transition-all flex items-center gap-2 group font-semibold"
-            to="/"
-          >
-            Dashboard
-          </Link>
-          {user?.role === "admin" && (
+        {user && (
+          <nav className="bg-white text-slate-500 px-6 flex gap-6 border-b border-slate-200 font-medium shrink-0 z-40 text-sm shadow-sm h-12 items-center">
             <Link
-              className="hover:text-blue-600 hover:bg-slate-50 px-3 py-1.5 rounded-md transition-all flex items-center gap-2 group font-medium"
-              to="/users"
+              className="hover:text-blue-600 hover:bg-slate-50 px-3 py-1.5 rounded-md transition-all flex items-center gap-2 group font-semibold"
+              to="/"
             >
-              Manage Users
+              Dashboard
             </Link>
-          )}
-        </nav>
+            {user?.role === "admin" && (
+              <Link
+                className="hover:text-blue-600 hover:bg-slate-50 px-3 py-1.5 rounded-md transition-all flex items-center gap-2 group font-medium"
+                to="/users"
+              >
+                Manage Users
+              </Link>
+            )}
+          </nav>
+        )}
 
         <main className="flex-1 min-h-0 overflow-auto relative">
           <Routes>
@@ -1039,6 +1042,9 @@ export default function App() {
           </Routes>
 
           {/* GLOBAL MODALS */}
+          {user && user.password_reset_required && (
+            <ChangePasswordModal open={true} forceChange={true} onClose={() => { }} />
+          )}
         </main>
       </div>
 

@@ -1,0 +1,6 @@
+nohup: ignoring input
+
+> podcaster-portal-backend@1.0.0 start
+> node server.js
+
+FATAL ERROR: JWT_SECRET is not defined.

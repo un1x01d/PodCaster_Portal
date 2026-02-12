@@ -37,3 +37,32 @@ export async function verifyPassword(password, storedPassword) {
         return { valid: false, rehash: false };
     }
 }
+
+/**
+ * Generates a strong, random password.
+ * @param {number} length - The desired length of the password.
+ * @returns {string} - A randomly generated password.
+ */
+export function generateComplexPassword(length = 16) {
+    const uppercase = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const lowercase = "abcdefghijklmnopqrstuvwxyz";
+    const numbers = "0123456789";
+    const symbols = "!@#$%^&*()-_+=[]{}|;:,.<>?";
+    const allChars = uppercase + lowercase + numbers + symbols;
+
+    let password = "";
+    // Ensure at least one of each type
+    password += uppercase[Math.floor(Math.random() * uppercase.length)];
+    password += lowercase[Math.floor(Math.random() * lowercase.length)];
+    password += numbers[Math.floor(Math.random() * numbers.length)];
+    password += symbols[Math.floor(Math.random() * symbols.length)];
+
+    // Fill the rest of the length
+    for (let i = password.length; i < length; i++) {
+        password += allChars[Math.floor(Math.random() * allChars.length)];
+    }
+
+    // Shuffle the password to ensure randomness of character positions
+    return password.split('').sort(() => 0.5 - Math.random()).join('');
+}
+

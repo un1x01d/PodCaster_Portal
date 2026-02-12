@@ -22,14 +22,50 @@ export async function login(req, res) {
     }
 
     const token = generateToken(user);
-    res.json({ token, user: { id: user.id, email: user.email, role: user.role } });
+    res.json({
+        token,
+        user: {
+            id: user.id,
+            email: user.email,
+            role: user.role,
+            password_reset_required: user.password_reset_required
+        }
+    });
 }
 
 export async function getMe(req, res) {
     const rows = await query(
-        "SELECT id, email, role, default_view_id FROM users WHERE id = $1",
+        "SELECT id, email, role, default_view_id, password_reset_required FROM users WHERE id = $1",
         [req.user.id]
     );
     if (!rows.length) return res.status(404).json({ error: "user_not_found" });
     res.json(rows[0]);
+}
+
+export async function changePassword(req, res) {
+    const { currentPassword, newPassword } = req.body;
+    
+    // Strict Password Policy
+    const minLen = 16;
+    const hasUpper = /[A-Z]/.test(newPassword);
+    const hasLower = /[a-z]/.test(newPassword);
+    const hasNum = /[0-9]/.test(newPassword);
+    const hasSpecial = /[!@#$%^&*()-_+=[\],.<>?]/.test(newPassword); // basic set
+
+    if (!newPassword || newPassword.length < minLen || !hasUpper || !hasLower || !hasNum || !hasSpecial) {
+        return res.status(400).json({ 
+            error: "Password must be 16+ chars, with Upper, Lower, Number, and Special char." 
+        });
+    }
+
+    const rows = await query("SELECT * FROM users WHERE id=$1", [req.user.id]);
+    if (!rows.length) return res.status(404).json({ error: "User not found" });
+    const user = rows[0];
+
+    const { valid } = await verifyPassword(currentPassword, user.password);
+    if (!valid) return res.status(401).json({ error: "Invalid current password" });
+
+    const hashed = await hashPassword(newPassword);
+    await query("UPDATE users SET password=$1, password_reset_required=FALSE WHERE id=$2", [hashed, req.user.id]);
+    res.json({ success: true });
 }

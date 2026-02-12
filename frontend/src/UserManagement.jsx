@@ -710,7 +710,12 @@ export default function UserManagement({ token /* sheetId not required */ }) {
               <div className="flex items-center gap-2">
                 <button
                   className="text-[10px] font-bold uppercase tracking-wider text-slate-500 hover:text-blue-600 hover:bg-blue-50 px-3 py-1.5 rounded-md transition-all border border-transparent hover:border-blue-100 whitespace-nowrap"
-                  onClick={(e) => { e.stopPropagation(); resetPassword(u.id); }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (window.confirm("Are you sure you want to reset this user's password? A temporary password will be generated and the user will be forced to change it on next login.")) {
+                      resetPassword(u.id);
+                    }
+                  }}
                 >Reset</button>
                 <button
                   className="text-[10px] font-bold uppercase tracking-wider text-red-500 hover:text-red-700 hover:bg-red-50 px-3 py-1.5 rounded-md transition-all border border-transparent hover:border-red-100 whitespace-nowrap"
@@ -1129,7 +1134,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                 <option value="">Select a sheet…</option>
                 {allSheets.map(s => (
                   <option key={s.id} value={s.id}>
-                    {s.active ? "(Active) " : ""}{trunc(s.filename, 30)}
+                    {s.active ? "(Active) " : ""}{trunc(s.filename, 50)}
                   </option>
                 ))}
               </select>
