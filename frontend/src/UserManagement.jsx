@@ -744,7 +744,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                 <option value="">Select a sheet…</option>
                 {userSheets.map(s => (
                   <option key={s.id} value={s.id}>
-                    {trunc(s.filename, 50)}
+                    {trunc(s.filename, 100)}
                   </option>
                 ))}
               </select>
@@ -1134,7 +1134,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                 <option value="">Select a sheet…</option>
                 {allSheets.map(s => (
                   <option key={s.id} value={s.id}>
-                    {s.active ? "(Active) " : ""}{trunc(s.filename, 50)}
+                    {s.active ? "(Active) " : ""}{trunc(s.filename, 100)}
                   </option>
                 ))}
               </select>
