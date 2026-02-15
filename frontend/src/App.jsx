@@ -9,25 +9,13 @@ import UserManagement from "./UserManagement";
 import SpreadsheetChatbot from "./SpreadsheetChatbot";
 import ErrorBoundary from "./ErrorBoundary";
 import DashboardBody from "./components/dashboard/DashboardBody";
+import DashboardHeader from "./components/dashboard/DashboardHeader";
 import Modal from "./components/common/Modal";
 import ChangePasswordModal from "./components/common/ChangePasswordModal";
-// App uses Modal for "Select Sheet" and "Folder View"
-
 
 import "./index.css";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
-
-// Dynamic Title Component
-const LocationTitle = () => {
-  const location = useLocation();
-  const isAdmin = location.pathname.startsWith("/users");
-  return (
-    <h1 className="text-lg font-bold tracking-tight text-white">
-      {isAdmin ? "Admin Portal" : "User Portal"}
-    </h1>
-  );
-};
 
 /* ---- Date helpers (force YYYY-MM-DD) ---- */
 const ISO_START_RE = /^\d{4}-\d{2}-\d{2}/;
@@ -73,8 +61,6 @@ export default function App() {
   const [file, setFile] = useState(null);
   const [selectedFileName, setSelectedFileName] = useState("");
 
-
-
   // My files (sheet selection)
   const [myFiles, setMyFiles] = useState([]);
   const [myFilesLoading, setMyFilesLoading] = useState(false);
@@ -115,16 +101,10 @@ export default function App() {
   const [trendsOn, setTrendsOn] = useState(false);
   const [trendsDateKey, setTrendsDateKey] = useState("");
   const [trendsValueKey, setTrendsValueKey] = useState("");
-  const [trendGranularity, setTrendGranularity] = useState("month"); // Changed from ""
-  const [yearsBack, setYearsBack] = useState(5); // Changed from ""
+  const [trendGranularity, setTrendGranularity] = useState("month");
+  const [yearsBack, setYearsBack] = useState(5);
   // State for trends
-  const [compareYears, setCompareYears] = useState([]); // New 'Years to compare to' array
-
-  // Removed old trend states
-  // const [trendGroupKey, setTrendGroupKey] = useState('');
-  // const [trendSelectedGroups, setTrendSelectedGroups] = useState([]);
-
-
+  const [compareYears, setCompareYears] = useState([]); 
 
   // Multi-tab workbook support
   const [tabs, setTabs] = useState([]);
@@ -136,7 +116,6 @@ export default function App() {
   const displayHeaders = React.useMemo(() => {
     // If no data loaded, empty
     if (!headers.length) return [];
-    // If we have a selected view + user is not admin, we might restrict columns
     return headers;
   }, [headers]);
 
@@ -185,11 +164,6 @@ export default function App() {
       });
     }
 
-    // 3. Unique values for filters (computed from FULL data or filtered? Usually full for options)
-    // To allow narrowing options, we could compute from filtered, but standard is full values per col.
-    // Let's compute from `data` for "all options" but maybe that's expensive.
-    // Optimization: Compute once on data load, or memoize separately.
-    // For now, let's just do it here on `data`.
     const uniques = {};
     headers.forEach(h => {
       const set = new Set();
@@ -207,8 +181,6 @@ export default function App() {
     sortedData.forEach(r => {
       const val = r[trendsDateKey];
       if (!val) return;
-      // reuse the robust parsing logic or helper?
-      // Let's just do a quick parse.
       let y;
       const asNum = Number(val);
       if (!isNaN(asNum) && asNum > 25569 && asNum < 60000) {
@@ -240,7 +212,6 @@ export default function App() {
 
     const rowMap = {};
     const dynCols = new Set();
-    // Default column key if none selected
     const cKey = pivotColKey || "Total";
 
     sortedData.forEach((row) => {
@@ -282,7 +253,6 @@ export default function App() {
       return obj;
     });
 
-    // Pie Data: Sum of all values for each pivotRowKey
     const pData = [];
     result.slice(0, parseInt(pieTopN) || 10).forEach(r => {
       let sum = 0;
@@ -298,13 +268,11 @@ export default function App() {
     };
   }, [sortedData, pivotOn, pivotRowKey, pivotColKey, pivotValKey, pivotAgg, pieTopN]);
 
-  // Export helper placeholder...
   const pivotChartRef = useRef(null);
   const exportPivotPDF = async () => { };
 
   /* -------- Computed: Two Condition -------- */
   const summaryData = React.useMemo(() => {
-    // Return structure: { total: number, chartData: [] }
     if (!twoOn || !valueCol || !sortedData.length) return { total: 0, chartData: [] };
 
     let total = 0;
@@ -312,23 +280,6 @@ export default function App() {
     const hasGroup = !!condCol2;
 
     sortedData.forEach(r => {
-      // 1. Filter Check (condCol1)
-      // If condCol1 matches what? The UI for 2-condition has "Condition 1" as a select column.
-      // Does it imply we filter by a specific value?
-      // "The UI in Dashboard says: "First Condition (Filter)" -> Select Column.
-      // But where is the value selector?
-      // The original Dashboard had a value selector for the filter?
-      // Let's check the UI code I wrote in Dashboard.jsx.
-      // It just has "select column". It doesn't have "select value".
-      // So asking for "Condition 1" just as a column doesn't define a filter.
-      // Maybe the user intends to JUST Group By condCol2?
-      // Or maybe they want to Filter condCol1?
-      // If I can't filter, I can't do 2-condition filtering.
-      // Let's assume for now we just Group by condCol2 (if present) and Sum Value.
-      // If condCol1 is present, maybe we are supposed to Group by both?
-      // Or maybe condCol1 is just ignored if no value is picked?
-      // Let's Pivot-style this: Group by condCol2.
-
       const val = parseNum(r[valueCol]);
       total += val;
 
@@ -349,11 +300,9 @@ export default function App() {
   const trendsData = React.useMemo(() => {
     if (!trendsOn || !trendsDateKey || !trendsValueKey || !sortedData.length) return [];
 
-    // Simplified Logic: Date, Value, Granularity, CompareYear.
     const grouped = {};
     let maxYear = 0;
 
-    // First pass to find the maximum year in the data
     sortedData.forEach(r => {
       let dateRaw = r[trendsDateKey];
       if (!dateRaw) return;
@@ -394,16 +343,13 @@ export default function App() {
         let lineKey = "value";
 
         if (compareYears && compareYears.length > 0) {
-          // Comparison Mode: Overlay selected years
           const targets = compareYears.map(Number);
           if (!targets.includes(y)) return; 
 
-          lineKey = String(y); // Series name is the year
-          // Axis normalized to Month-Day
+          lineKey = String(y);
           if (trendGranularity === 'day') axisKey = `${m}-${d}`;
-          else axisKey = m; // Month
+          else axisKey = m;
         } else {
-          // Standard Mode: Time Series
           if (trendGranularity === 'year') axisKey = String(y);
           else if (trendGranularity === 'month') axisKey = `${y}-${m}`;
           else axisKey = `${y}-${m}-${d}`;
@@ -411,34 +357,24 @@ export default function App() {
 
         if (axisKey) {
           if (!grouped[axisKey]) grouped[axisKey] = { date: axisKey, value: 0 };
-          grouped[axisKey].value += val; // Total (useful?)
-          // In comparison mode, 'value' might be sum of both years, which is weird.
-          // But lineKey handles the split.
+          grouped[axisKey].value += val;
           grouped[axisKey][lineKey] = (grouped[axisKey][lineKey] || 0) + val;
         }
       }
     });
 
-    // Convert to array and sort
     const finalData = Object.entries(grouped)
       .map(([k, obj]) => obj)
       .sort((a, b) => a.date.localeCompare(b.date));
 
-    // Post-process: Smart Smoothing
-    // "Do not cut lines unless they are zero for 2 instances"
-    // Strategy: 
-    // - Runs of single '0': Interpolate (bridge graph)
-    // - Runs of 2+ '0's: Set to null (cut graph)
-
     if (finalData.length > 0) {
-      const dataKeys = Object.keys(finalData[0]).filter(k => k !== 'date' && k !== 'value'); // 'value' is total, handle specific keys first
-      if (dataKeys.length === 0) dataKeys.push('value'); // If standard mode
+      const dataKeys = Object.keys(finalData[0]).filter(k => k !== 'date' && k !== 'value');
+      if (dataKeys.length === 0) dataKeys.push('value');
 
       dataKeys.forEach(key => {
         let i = 0;
         while (i < finalData.length) {
           if (finalData[i][key] === 0) {
-            // Found a zero, check run length
             let j = i;
             while (j < finalData.length && finalData[j][key] === 0) {
               j++;
@@ -446,12 +382,10 @@ export default function App() {
             const runLength = j - i;
 
             if (runLength === 1) {
-              // Interpolate
               const prev = i > 0 ? (finalData[i - 1][key] || 0) : 0;
-              const next = j < finalData.length ? (finalData[j][key] || 0) : 0; // finalData[j] is the first non-zero after
+              const next = j < finalData.length ? (finalData[j][key] || 0) : 0;
               finalData[i][key] = (prev + next) / 2;
             } else {
-              // Set to null to break line
               for (let k = i; k < j; k++) {
                 finalData[k][key] = null;
               }
@@ -489,7 +423,6 @@ export default function App() {
   const loadData = async (sid = sheetId, preserveFilters = false, tabName = null) => {
     if (!sid) return;
     try {
-      // Build URL with optional tab parameter
       const url = tabName
         ? `${API}/sheets/${sid}/data?tab=${encodeURIComponent(tabName)}`
         : `${API}/sheets/${sid}/data`;
@@ -509,7 +442,6 @@ export default function App() {
       setHeaders(heads);
       setSheetId(sid);
 
-      // Persist to localStorage
       localStorage.setItem("sheetId", sid);
 
       if (!preserveFilters) {
@@ -522,7 +454,6 @@ export default function App() {
     }
   };
 
-  // Fetch tabs for a sheet
   const fetchTabs = async (sid) => {
     if (!sid) {
       setTabs([]);
@@ -535,7 +466,6 @@ export default function App() {
       });
       const tabList = res.data?.tabs || [];
       setTabs(tabList);
-      // Default to first tab
       if (tabList.length > 0) {
         setActiveTab(tabList[0]);
       }
@@ -546,11 +476,10 @@ export default function App() {
     }
   };
 
-  // Handle tab change
   const handleTabChange = (tabName) => {
     setActiveTab(tabName);
     localStorage.setItem("activeTab", tabName);
-    loadData(sheetId, true, tabName); // preserve filters when switching tabs
+    loadData(sheetId, true, tabName);
   };
 
   const handleUpload = async (uploadFile, folderId) => {
@@ -567,20 +496,21 @@ export default function App() {
         },
       });
       alert("Uploaded!");
-      // setFile(null); // Managed by caller now
-      // setSelectedFileName(""); // Managed by caller now
-      // load it
       if (res.data.sheetId) {
         setSheetId(res.data.sheetId);
         setActiveFilename(res.data.filename);
         localStorage.setItem("activeFilename", res.data.filename);
-        // Set tabs from upload response
         if (res.data.tabs && res.data.tabs.length > 0) {
           setTabs(res.data.tabs);
           setActiveTab(res.data.tabs[0]);
           localStorage.setItem("activeTab", res.data.tabs[0]);
         }
         loadData(res.data.sheetId);
+        // Refresh my files too
+        if(token) {
+           axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } })
+            .then(r => setMyFiles(r.data || []));
+        }
       }
     } catch (e) {
       console.error(e);
@@ -609,7 +539,6 @@ export default function App() {
       setMyFiles((prev) => prev.filter((f) => f.id !== id));
       setFolderFiles((prev) => prev.filter((f) => f.id !== id));
 
-      // If active sheet deleted, clear data
       if (id === sheetId) {
         setSheetId(null);
         setActiveFilename("");
@@ -657,7 +586,6 @@ export default function App() {
   const exportPDF = () => {
     const doc = new jsPDF("l", "pt", "a4");
 
-    // Format data for PDF table
     const tableBody = sortedData.map(row =>
       displayHeaders.map(col => {
         const val = row[col];
@@ -693,15 +621,11 @@ export default function App() {
     doc.save(`${activeFilename || "export"}.pdf`);
   };
 
-
-
   useEffect(() => {
     if (token) {
-
       axios.get(`${API}/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
         .then(r => {
           setUser(r.data);
-          // Restore previously loaded sheet after auth
           const savedSheetId = localStorage.getItem("sheetId");
           const savedTab = localStorage.getItem("activeTab");
           if (savedSheetId) {
@@ -711,9 +635,13 @@ export default function App() {
           }
         })
         .catch(() => { setToken(""); setUser(null); });
+        
+       // Fetch myFiles for the header dropdown
+       axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } })
+        .then(r => setMyFiles(r.data || []))
+        .catch(e => console.error("Fetch files failed", e));
     }
   }, [token]);
-
 
   // Helpers
   const resetPivot = () => {
@@ -739,7 +667,6 @@ export default function App() {
 
     const c = view.config;
     if (c.columnFilters) {
-      // Deserialize Sets
       const deserializedInfo = {};
       Object.entries(c.columnFilters).forEach(([col, val]) => {
         if (Array.isArray(val)) deserializedInfo[col] = new Set(val);
@@ -752,7 +679,6 @@ export default function App() {
     if (c.sortConfig) setSortConfig(c.sortConfig);
     if (c.visibleColumns) setVisibleColumns(c.visibleColumns);
 
-    // Pivot
     if (c.pivotOn) {
       setPivotOn(true);
       setPivotRowKey(c.pivotRowKey || "");
@@ -763,7 +689,6 @@ export default function App() {
       setPivotOn(false);
     }
 
-    // Two Condition
     if (c.twoOn) {
       setTwoOn(true);
       setCondCol1(c.condCol1 || "");
@@ -773,7 +698,6 @@ export default function App() {
       setTwoOn(false);
     }
 
-    // Trends
     if (c.trendsOn) {
       setTrendsOn(true);
       setTrendsDateKey(c.trendsDateKey || "");
@@ -786,7 +710,6 @@ export default function App() {
 
   }, [selectedViewId, views]);
 
-  // ADDED: Fetch views when sheetId changes
   useEffect(() => {
     if (!sheetId || !token || !user) {
       setViews([]);
@@ -799,6 +722,31 @@ export default function App() {
         setViews([]);
       });
   }, [sheetId, token, user]);
+  
+  // Handlers for DashboardHeader
+  const handleLogout = () => {
+    localStorage.removeItem("token");
+    localStorage.removeItem("sheetId");
+    localStorage.removeItem("activeFilename");
+    localStorage.removeItem("activeTab");
+    setToken("");
+    setUser(null);
+    setData([]);
+    setHeaders([]);
+    setSheetId(null);
+    setActiveFilename("");
+  };
+
+  const handleSwitchSheet = (newSheetId) => {
+    if (!newSheetId) return;
+    const f = myFiles.find(file => String(file.id) === String(newSheetId));
+    if (f) {
+        setActiveFilename(f.filename);
+        localStorage.setItem("activeFilename", f.filename);
+    }
+    loadData(newSheetId);
+    fetchTabs(newSheetId);
+  };
 
   /** ---------------------------
    * RENDER
@@ -806,63 +754,24 @@ export default function App() {
   return (
     <Router>
       <div className="flex flex-col h-screen overflow-hidden bg-slate-50 font-sans text-slate-900">
-        {/* Professional Dark Header */}
-        <header className="bg-slate-900 text-white px-6 py-4 flex justify-between items-center shadow-md shrink-0 z-50">
-          <div className="flex items-center gap-3">
-            <LocationTitle />
-          </div>
-          {user && (
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={openSelect}
-                className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/50 hover:border-slate-600 px-4 h-8 rounded-lg shadow-sm font-semibold text-xs transition-all flex items-center gap-2 whitespace-nowrap"
-                title="Choose a sheet you have access to"
-              >
-                <span>{activeFilename ? trunc(activeFilename, 20) : "Select Sheet"}</span>
-                <span className="opacity-50 text-xs">▼</span>
-              </button>
-
-              <span className="text-xs font-semibold text-slate-300 bg-slate-800/50 px-3 py-1.5 rounded-full border border-slate-700/50">
-                {user?.email}
-              </span>
-
-              <button
-                onClick={() => {
-                  localStorage.removeItem("token");
-                  localStorage.removeItem("sheetId");
-                  localStorage.removeItem("activeFilename");
-                  localStorage.removeItem("activeTab");
-                  setToken("");
-                  setUser(null);
-                }}
-                className="bg-red-600/10 hover:bg-red-600 text-red-500 hover:text-white border border-red-900/30 hover:border-red-600 px-4 h-8 rounded-lg shadow-sm text-xs font-semibold transition-all whitespace-nowrap"
-              >
-                Logout
-              </button>
-            </div>
-          )}
-        </header>
-
-        {/* Sub-Navigation Bar */}
+        
+        {/* NEW HEADER */}
         {user && (
-          <nav className="bg-white text-slate-500 px-6 flex gap-6 border-b border-slate-200 font-medium shrink-0 z-40 text-sm shadow-sm h-12 items-center">
-            <Link
-              className="hover:text-blue-600 hover:bg-slate-50 px-3 py-1.5 rounded-md transition-all flex items-center gap-2 group font-semibold"
-              to="/"
-            >
-              Dashboard
-            </Link>
-            {user?.role === "admin" && (
-              <Link
-                className="hover:text-blue-600 hover:bg-slate-50 px-3 py-1.5 rounded-md transition-all flex items-center gap-2 group font-medium"
-                to="/users"
-              >
-                Manage Users
-              </Link>
-            )}
-          </nav>
+            <DashboardHeader 
+                user={user}
+                onLogout={handleLogout}
+                myFiles={myFiles}
+                sheetId={sheetId}
+                activeFilename={activeFilename}
+                onSwitchSheet={handleSwitchSheet}
+            />
         )}
+        
+        {/* Note: Sub-navigation is now handled partly by DashboardHeader (Manage Users/Admin Panel) 
+            and DashboardBody handles the Dashboard View. 
+            However, if we are on /users, we need to be able to get back to /.
+            DashboardHeader logo links to /.
+        */}
 
         <main className="flex-1 min-h-0 overflow-auto relative">
           <Routes>
@@ -1015,8 +924,6 @@ export default function App() {
                           }
 
                           // 4. Fallback: If just a value column is asked for charting without time?
-                          // "Chart Revenue" -> Maybe a Histogram? Or just assume Trends if date exists?
-                          // Default to trends if possible
                           if (config.valueColumn) {
                             const dateCol = headers.find(h => h.toLowerCase().includes('date') || h.toLowerCase().includes('time') || h.toLowerCase().includes('year'));
                             if (dateCol) {
@@ -1048,7 +955,9 @@ export default function App() {
         </main>
       </div>
 
-      {/* 1. Sheet Selector */}
+      {/* 1. Sheet Selector - Hidden now that we have header dropdown, but kept for fallback/modal logic if needed. 
+          Currently selectOpen is not triggered by anything in the new UI. 
+      */}
       <Modal open={selectOpen} onClose={() => setSelectOpen(false)} title={user?.role === "admin" ? "Select or Delete a Sheet" : "Select a Sheet"}>
         {selectError && <div className="text-red-500 mb-2">{selectError}</div>}
         {myFilesLoading ? (
@@ -1090,21 +999,6 @@ export default function App() {
           </table>
         )}
       </Modal>
-
-      {/* 2. Folder Files View (for Admin > Folders > Eye icon, handled inside UserManagement? No, UserManagement has its own logic? 
-          Wait, original code had this modal in App.jsx. 
-          UserManagement might TRIGGER it? Or App triggers it? 
-          Actually UserManagement handles folders logic. App handled Upload Modal logic. 
-          The "Folder Files" modal in App was likely triggered by clicking "View Files" in the Upload section? 
-          Or maybe UserManagement triggers it via some shared state? 
-          Actually, let's keep it simple. If it's not used by Dashboard, likely used by UserManagement? 
-          But UserManagement is separate route.
-          Original App code had "App.openFolderFiles".
-          If I removed that export, I need to check usage.
-          UserManagement.jsx does NOT import App or access its state contextually unless we passed props. 
-          UserManagement handles its own stuff. The "Folder Files" modal in App was possibly for the Dashboard User to explore folders?
-          I will keep logic but if not triggered it's fine.
-      */}
 
       {/* Column Visibility Selector Modal for Saving Views */}
       {
@@ -1179,7 +1073,6 @@ export default function App() {
                         { name: pendingViewName, sheetId, config },
                         { headers: { Authorization: `Bearer ${token}` } }
                       );
-                      // Refresh views list
                       const res = await axios.get(`${API}/views/${sheetId}`, {
                         headers: { Authorization: `Bearer ${token}` },
                       });
