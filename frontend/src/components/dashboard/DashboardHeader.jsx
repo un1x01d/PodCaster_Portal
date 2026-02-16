@@ -12,13 +12,19 @@ export default function DashboardHeader({
 }) {
     // Transform myFiles to options for SearchableSelect
     const startOptions = [{ value: "", label: "Select a sheet..." }];
+    const trunc = (str, n) => {
+        if (!str) return "";
+        return str.length > n ? str.substring(0, n - 1) + "..." : str;
+    };
+
     const fileOptions = (myFiles || []).map(f => {
         // Simple name clean up
         const name = f.filename.replace(/\.[^/.]+$/, ""); // Remove extension
+        const truncatedName = trunc(name, 200);
         const date = new Date(f.uploaded_at).toLocaleString();
         return {
             value: String(f.id),
-            label: `${name} (${date})`
+            label: `${truncatedName} (${date})`
         };
     });
 
