@@ -15,7 +15,7 @@ export default function DashboardHeader({
     const fileOptions = (myFiles || []).map(f => {
         // Simple name clean up
         const name = f.filename.replace(/\.[^/.]+$/, ""); // Remove extension
-        const date = new Date(f.created_at).toLocaleDateString();
+        const date = new Date(f.uploaded_at).toLocaleString();
         return {
             value: String(f.id),
             label: `${name} (${date})`
