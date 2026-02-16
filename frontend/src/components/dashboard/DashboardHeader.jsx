@@ -59,6 +59,7 @@ export default function DashboardHeader({
                         placeholder="Search for a spreadsheet..."
                         className="w-full"
                         buttonClassName="w-full border border-slate-200 bg-slate-50/50 hover:bg-white hover:border-blue-300 transition-all rounded-full h-10 px-4 text-sm text-slate-700 shadow-sm focus:ring-2 focus:ring-blue-100"
+                        panelWidth={600}
                     />
                 </div>
             </div>
