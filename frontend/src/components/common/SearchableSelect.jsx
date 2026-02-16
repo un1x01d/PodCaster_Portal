@@ -82,7 +82,7 @@ export default function SearchableSelect({
                                     title={o.label}
                                 >
                                     <div
-                                        className="flex-1 break-words mr-2 text-sm"
+                                        className="flex-1 break-words mr-2 text-sm font-bold"
                                         onClick={() => {
                                             onChange({ target: { value: o.value } });
                                             setOpen(false);
