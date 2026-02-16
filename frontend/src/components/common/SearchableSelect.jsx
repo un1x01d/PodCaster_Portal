@@ -55,7 +55,7 @@ export default function SearchableSelect({
                     }`}
                 title={selected?.label || placeholder}
             >
-                <div className="truncate text-left flex-1 min-w-0">{selected?.label || placeholder}</div>
+                <div className="truncate text-left flex-1 min-w-0 font-bold">{selected?.label || placeholder}</div>
                 <span className="opacity-70 shrink-0">▾</span>
             </button>
 
