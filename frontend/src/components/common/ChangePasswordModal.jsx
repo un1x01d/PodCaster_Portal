@@ -26,8 +26,8 @@ export default function ChangePasswordModal({ open, onClose, forceChange }) {
       );
       setSuccess("Password changed successfully!");
       if (forceChange) {
-        // Reload to clear force flag state
-        window.location.reload();
+        // Navigate to root so the app re-checks auth state cleanly
+        setTimeout(() => { window.location.href = "/"; }, 1000);
       } else {
         setTimeout(() => onClose(), 1500);
       }

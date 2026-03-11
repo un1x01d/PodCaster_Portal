@@ -1,6 +1,7 @@
 import express from "express";
 import {
     listUsers, createUser, updateUser, deleteUser, setDefaultView,
+    getUserGroups,
     listGroups, createGroup, deleteGroup, getGroupMembers, updateGroupMembers, getGroupSheets,
     addUserToGroup, removeUserFromGroup,
     listFolders, createFolder, deleteFolder,
@@ -13,6 +14,7 @@ router.use(auth);
 
 // Users
 router.get("/users", listUsers);
+router.get("/users/:id/groups", getUserGroups);
 router.post("/users", createUser);
 router.patch("/users/:id", updateUser);
 router.delete("/users/:id", deleteUser);

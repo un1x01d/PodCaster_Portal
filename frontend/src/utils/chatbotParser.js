@@ -1,7 +1,13 @@
 import { analyzeColumns, isNumericColumn, isDateColumn, parseDateRanges } from "./chatbotUtils";
 
 export const parseQuery = (query, headers, data, allData, context = {}) => {
-    const q = query.toLowerCase();
+    // Strip conversational preambles so NLP sees the intent directly
+    const PREAMBLES = [
+        /^(?:give\s+me|show\s+me|tell\s+me|can\s+you|please|what\s+(?:is|are|was|were)(?:\s+the)?|i\s+(?:want|need)(?:\s+to\s+(?:see|know))?(?:\s+the)?)\s+/i,
+    ];
+    let cleaned = query;
+    for (const re of PREAMBLES) cleaned = cleaned.replace(re, '');
+    const q = cleaned.toLowerCase();
     const sourceData = (allData && allData.length > 0) ? allData : data;
     let operation = 'UNKNOWN'; // Default
     let aggregation = 'none';

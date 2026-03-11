@@ -4,20 +4,20 @@ const { Pool } = pg;
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 export async function query(sql, params) {
-    const res = await pool.query(sql, params);
-    return res.rows;
+  const res = await pool.query(sql, params);
+  return res.rows;
 }
 
 export function getClient() {
-    return pool.connect();
+  return pool.connect();
 }
 
 /**
  * DB init (idempotent + schema self-heal)
  */
 export async function initDb() {
-    // USERS
-    await pool.query(`
+  // USERS
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY,
       email TEXT NOT NULL UNIQUE,
@@ -26,23 +26,23 @@ export async function initDb() {
       default_view_id INT
     );
   `);
-    // Add column if missing (for existing DBs)
-    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS default_view_id INT;`);
-    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_required BOOLEAN DEFAULT FALSE;`);
+  // Add column if missing (for existing DBs)
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS default_view_id INT;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_required BOOLEAN DEFAULT FALSE;`);
 
-    // GROUPS
-    await pool.query(`
+  // GROUPS
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS groups (
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL UNIQUE,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `);
-    // Add column if missing (for existing DBs)
-    await pool.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
+  // Add column if missing (for existing DBs)
+  await pool.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
 
-    // USER_GROUPS (membership)
-    await pool.query(`
+  // USER_GROUPS (membership)
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS user_groups (
       id SERIAL PRIMARY KEY,
       user_id INT NOT NULL,
@@ -51,8 +51,8 @@ export async function initDb() {
     );
   `);
 
-    // FOLDERS
-    await pool.query(`
+  // FOLDERS
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS folders (
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL UNIQUE,
@@ -60,10 +60,10 @@ export async function initDb() {
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `);
-    await pool.query(`DROP INDEX IF EXISTS folders_group_unique;`);
+  await pool.query(`DROP INDEX IF EXISTS folders_group_unique;`);
 
-    // SHEETS
-    await pool.query(`
+  // SHEETS
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS sheets (
       id TEXT PRIMARY KEY,
       uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -73,13 +73,13 @@ export async function initDb() {
       folder_id INT
     );
   `);
-    await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS totals_column TEXT;`);
-    await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS stored_path TEXT;`);
-    await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS tab_name TEXT;`);
-    await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS tabs JSONB DEFAULT '[]'::jsonb;`);
+  await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS totals_column TEXT;`);
+  await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS stored_path TEXT;`);
+  await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS tab_name TEXT;`);
+  await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS tabs JSONB DEFAULT '[]'::jsonb;`);
 
-    // SHEET DATA (JSONB rows)
-    await pool.query(`
+  // SHEET DATA (JSONB rows)
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS sheet_rows (
       id SERIAL PRIMARY KEY,
       sheet_id TEXT NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
@@ -88,12 +88,12 @@ export async function initDb() {
       tab_name TEXT
     );
   `);
-    await pool.query(`CREATE INDEX IF NOT EXISTS idx_sheet_rows_sheet_id ON sheet_rows(sheet_id);`);
-    await pool.query(`ALTER TABLE sheet_rows ADD COLUMN IF NOT EXISTS tab_name TEXT;`);
-    await pool.query(`CREATE INDEX IF NOT EXISTS idx_sheet_rows_tab ON sheet_rows(sheet_id, tab_name);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_sheet_rows_sheet_id ON sheet_rows(sheet_id);`);
+  await pool.query(`ALTER TABLE sheet_rows ADD COLUMN IF NOT EXISTS tab_name TEXT;`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_sheet_rows_tab ON sheet_rows(sheet_id, tab_name);`);
 
-    // clean duplicate actives, then re-enforce unique partial index
-    await pool.query(`
+  // clean duplicate actives, then re-enforce unique partial index
+  await pool.query(`
     DO $$
     BEGIN
       IF EXISTS (
@@ -114,14 +114,14 @@ export async function initDb() {
       END IF;
     END $$;
   `);
-    await pool.query(`DROP INDEX IF EXISTS sheets_one_active_true_idx;`);
-    await pool.query(`
+  await pool.query(`DROP INDEX IF EXISTS sheets_one_active_true_idx;`);
+  await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS sheets_one_active_true_idx
       ON sheets (active) WHERE active;
   `);
 
-    // USER permissions
-    await pool.query(`
+  // USER permissions
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS permissions (
       id SERIAL PRIMARY KEY,
       sheet_id TEXT NOT NULL,
@@ -132,8 +132,8 @@ export async function initDb() {
     );
   `);
 
-    // GROUP permissions
-    await pool.query(`
+  // GROUP permissions
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS group_permissions (
       id SERIAL PRIMARY KEY,
       sheet_id TEXT NOT NULL,
@@ -144,8 +144,8 @@ export async function initDb() {
     );
   `);
 
-    // VIEWS (locked)
-    await pool.query(`
+  // VIEWS (locked)
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS views (
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL,
@@ -156,8 +156,8 @@ export async function initDb() {
     );
   `);
 
-    // VIEW permissions
-    await pool.query(`
+  // VIEW permissions
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS view_user_permissions (
       id SERIAL PRIMARY KEY,
       view_id INT NOT NULL,
@@ -165,7 +165,7 @@ export async function initDb() {
       UNIQUE (view_id, user_id)
     );
   `);
-    await pool.query(`
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS view_group_permissions (
       id SERIAL PRIMARY KEY,
       view_id INT NOT NULL,
@@ -174,8 +174,8 @@ export async function initDb() {
     );
   `);
 
-    // seed admin
-    await pool.query(`
+  // seed admin
+  await pool.query(`
     INSERT INTO users (email,password,role)
     VALUES ('admin@example.com','admin123','admin')
     ON CONFLICT (email) DO NOTHING;

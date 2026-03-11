@@ -21,7 +21,7 @@ function saveTemplates(arr) {
   localStorage.setItem(LS_KEY, JSON.stringify(arr || []));
 }
 
-export default function UserManagement({ token /* sheetId not required */ }) {
+export default function UserManagement({ token, user }) {
   const trunc = (s, n) => (s && s.length > n ? s.slice(0, n) + "..." : s);
   const [users, setUsers] = useState([]);
   const [newUser, setNewUser] = useState({ email: "", password: "", role: "producer" });
@@ -127,50 +127,50 @@ export default function UserManagement({ token /* sheetId not required */ }) {
 
   // fetch users
   const fetchUsers = async () => {
-    const res = await axios.get(`${API}/users`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    setUsers(res.data || []);
+    try {
+      const res = await axios.get(`${API}/users`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setUsers(res.data || []);
+    } catch (e) {
+      console.error("fetchUsers failed", e);
+    }
   };
 
   const fetchGroups = async () => {
-    const res = await axios.get(`${API}/groups`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    setGroups(res.data || []);
+    try {
+      const res = await axios.get(`${API}/groups`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setGroups(res.data || []);
+    } catch (e) {
+      console.error("fetchGroups failed", e);
+    }
   };
 
   const fetchGroupMembers = async (gid) => {
     if (!gid) return setGroupMembers([]);
-    const res = await axios.get(`${API}/groups/${gid}/users`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    setGroupMembers(res.data || []);
-  };
-
-  // Helper: for a given user id, determine all groups they belong to using existing endpoints
-  const getGroupsForUser = async (uid) => {
-    // Use /groups then check /groups/:id/users for membership
-    const memberGroupIds = [];
     try {
-      const gRes = await axios.get(`${API}/groups`, {
+      const res = await axios.get(`${API}/groups/${gid}/users`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      const allGroups = gRes.data || [];
-      // Fetch members for each group (sequential to avoid hammering; still fine for admin UI)
-      for (const g of allGroups) {
-        const mRes = await axios.get(`${API}/groups/${g.id}/users`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        const ms = mRes.data || [];
-        if (ms.some((m) => Number(m.id) === Number(uid))) {
-          memberGroupIds.push(g.id);
-        }
-      }
+      setGroupMembers(res.data || []);
+    } catch (e) {
+      console.error("fetchGroupMembers failed", e);
+    }
+  };
+
+  // Fetch all groups a given user belongs to — single DB-side JOIN, O(1) request
+  const getGroupsForUser = async (uid) => {
+    try {
+      const res = await axios.get(`${API}/users/${uid}/groups`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      return (res.data || []).map((g) => g.id);
     } catch (e) {
       console.error("getGroupsForUser failed:", e);
+      return [];
     }
-    return memberGroupIds;
   };
 
   // latest 10 sheets for the SELECTED USER (based on their groups)
@@ -286,10 +286,14 @@ export default function UserManagement({ token /* sheetId not required */ }) {
 
 
   const fetchAllViews = async () => {
-    const res = await axios.get(`${API}/views`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    setViews(res.data || []);
+    try {
+      const res = await axios.get(`${API}/views`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setViews(res.data || []);
+    } catch (e) {
+      console.error("fetchAllViews failed", e);
+    }
   };
 
   const fetchUserViews = async (userId) => {
@@ -378,18 +382,26 @@ export default function UserManagement({ token /* sheetId not required */ }) {
   // --- Actions: users ---
   const addUser = async () => {
     if (!newUser.email || !newUser.password) return;
-    await axios.post(`${API}/users`, newUser, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    setNewUser({ email: "", password: "", role: "producer" });
-    fetchUsers();
+    try {
+      await axios.post(`${API}/users`, newUser, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setNewUser({ email: "", password: "", role: "producer" });
+      fetchUsers();
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to create user");
+    }
   };
 
   const resetPassword = async (id) => {
-    const res = await axios.patch(`${API}/users/${id}`, { reset: true }, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    alert(`Temp password: ${res.data?.newPassword || "(see server log)"}`);
+    try {
+      const res = await axios.patch(`${API}/users/${id}`, { reset: true }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      alert(`Temp password: ${res.data?.newPassword || "(see server log)"}`);
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to reset password");
+    }
   };
 
   const changeRole = async (id, role) => {
@@ -401,11 +413,15 @@ export default function UserManagement({ token /* sheetId not required */ }) {
 
   const deleteUser = async (id) => {
     if (!confirm("Delete user?")) return;
-    await axios.delete(`${API}/users/${id}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (selectedUserId === id) setSelectedUserId(null);
-    fetchUsers();
+    try {
+      await axios.delete(`${API}/users/${id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (selectedUserId === id) setSelectedUserId(null);
+      fetchUsers();
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to delete user");
+    }
   };
 
   const saveUserPermissions = async () => {
@@ -414,42 +430,57 @@ export default function UserManagement({ token /* sheetId not required */ }) {
       return;
     }
     const allowed_columns = Array.from(userAllowedCols);
-    // Convert filter array to object, filtering out empty entries
     const row_filters = {};
     userRowFilters.forEach(f => {
       if (f.key && f.value) row_filters[f.key] = f.value;
     });
-    await axios.post(`${API}/permissions`, {
-      sheetId: selectedUserSheetId, userId: selectedUserId, allowed_columns, row_filters
-    }, { headers: { Authorization: `Bearer ${token}` } });
-    alert("User permissions saved");
+    try {
+      await axios.post(`${API}/permissions`, {
+        sheetId: selectedUserSheetId, userId: selectedUserId, allowed_columns, row_filters
+      }, { headers: { Authorization: `Bearer ${token}` } });
+      alert("User permissions saved");
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to save user permissions");
+    }
   };
 
   // --- Actions: groups ---
   const createGroup = async () => {
     if (!newGroupName.trim()) return;
-    await axios.post(`${API}/groups`, { name: newGroupName.trim() }, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    setNewGroupName("");
-    fetchGroups();
+    try {
+      await axios.post(`${API}/groups`, { name: newGroupName.trim() }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setNewGroupName("");
+      fetchGroups();
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to create group");
+    }
   };
 
   const addUserToGroup = async () => {
     if (!selectedGroupId || !groupAddUserId) return;
-    await axios.post(`${API}/groups/${selectedGroupId}/users`, { userId: Number(groupAddUserId) }, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    setGroupAddUserId("");
-    fetchGroupMembers(selectedGroupId);
+    try {
+      await axios.post(`${API}/groups/${selectedGroupId}/users`, { userId: Number(groupAddUserId) }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setGroupAddUserId("");
+      fetchGroupMembers(selectedGroupId);
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to add user to group");
+    }
   };
 
   const removeUserFromGroup = async (uid) => {
     if (!selectedGroupId) return;
-    await axios.delete(`${API}/groups/${selectedGroupId}/users/${uid}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    fetchGroupMembers(selectedGroupId);
+    try {
+      await axios.delete(`${API}/groups/${selectedGroupId}/users/${uid}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      fetchGroupMembers(selectedGroupId);
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to remove user from group");
+    }
   };
 
   const saveGroupPermissions = async () => {
@@ -486,7 +517,7 @@ export default function UserManagement({ token /* sheetId not required */ }) {
         setGroupSheets([]);
         setSelectedGroupSheetId(null);
         setGroupAllowedCols(new Set());
-        setGroupAllowedCols(new Set());
+        setGroupRowFilters([{ key: "", value: "" }]);
         setGroupSheetHeaders([]);
         setSelectedTplGroup("");
       }
@@ -893,21 +924,25 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                       checked={userViews.has(v.id)}
                       onChange={async () => {
                         const newViews = new Set(userViews);
-                        if (newViews.has(v.id)) {
-                          await axios.delete(
-                            `${API}/views/user-permissions/${v.id}/${selectedUserId}`,
-                            { headers: { Authorization: `Bearer ${token}` } }
-                          );
-                          newViews.delete(v.id);
-                        } else {
-                          await axios.post(
-                            `${API}/views/user-permissions`,
-                            { viewId: v.id, userId: selectedUserId },
-                            { headers: { Authorization: `Bearer ${token}` } }
-                          );
-                          newViews.add(v.id);
+                        try {
+                          if (newViews.has(v.id)) {
+                            await axios.delete(
+                              `${API}/views/user-permissions/${v.id}/${selectedUserId}`,
+                              { headers: { Authorization: `Bearer ${token}` } }
+                            );
+                            newViews.delete(v.id);
+                          } else {
+                            await axios.post(
+                              `${API}/views/user-permissions`,
+                              { viewId: v.id, userId: selectedUserId },
+                              { headers: { Authorization: `Bearer ${token}` } }
+                            );
+                            newViews.add(v.id);
+                          }
+                          setUserViews(newViews);
+                        } catch (e) {
+                          alert(e.response?.data?.error || "Failed to update view permission");
                         }
-                        setUserViews(newViews);
                       }}
                     />
                     <span className="text-xs font-medium text-slate-600">{v.name}</span>
@@ -1277,21 +1312,25 @@ export default function UserManagement({ token /* sheetId not required */ }) {
                           checked={groupViews.has(v.id)}
                           onChange={async () => {
                             const newViews = new Set(groupViews);
-                            if (newViews.has(v.id)) {
-                              await axios.delete(
-                                `${API}/views/group-permissions/${v.id}/${selectedGroupId}`,
-                                { headers: { Authorization: `Bearer ${token}` } }
-                              );
-                              newViews.delete(v.id);
-                            } else {
-                              await axios.post(
-                                `${API}/views/group-permissions`,
-                                { viewId: v.id, groupId: selectedGroupId },
-                                { headers: { Authorization: `Bearer ${token}` } }
-                              );
-                              newViews.add(v.id);
+                            try {
+                              if (newViews.has(v.id)) {
+                                await axios.delete(
+                                  `${API}/views/group-permissions/${v.id}/${selectedGroupId}`,
+                                  { headers: { Authorization: `Bearer ${token}` } }
+                                );
+                                newViews.delete(v.id);
+                              } else {
+                                await axios.post(
+                                  `${API}/views/group-permissions`,
+                                  { viewId: v.id, groupId: selectedGroupId },
+                                  { headers: { Authorization: `Bearer ${token}` } }
+                                );
+                                newViews.add(v.id);
+                              }
+                              setGroupViews(newViews);
+                            } catch (e) {
+                              alert(e.response?.data?.error || "Failed to update view permission");
                             }
-                            setGroupViews(newViews);
                           }}
                         />
                         <span className="text-xs font-medium text-slate-600">{v.name}</span>

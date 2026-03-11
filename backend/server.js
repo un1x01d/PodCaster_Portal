@@ -14,9 +14,18 @@ import viewRoutes from "./src/routes/viewRoutes.js";
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-// Wrappers
+// CORS – explicit allowlist (H5 fix)
+// Set ALLOWED_ORIGINS env var to a comma-separated list for production.
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(",").map((o) => o.trim())
+  : ["http://localhost:5173", "http://localhost:4000"];
+
 const corsOpts = {
-  origin: true,
+  origin: (origin, cb) => {
+    // Allow server-to-server requests (no Origin header) and listed origins
+    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+    cb(new Error(`CORS: origin '${origin}' not allowed`));
+  },
   credentials: true,
   methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
@@ -41,16 +50,13 @@ const UPLOADS_DIR = path.join(__dirname, "uploads");
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
 // Routes
-app.use("/", authRoutes);  // /login, /me (mounted at root to match legacy /auth/login if explicit, or just /login)
-app.use("/auth", authRoutes); // Alias for /auth/login
+app.use("/auth", authRoutes); // /auth/login, /auth/me, /auth/change-password
 app.use("/", sheetRoutes); // /sheets, /upload
 app.use("/", userRoutes);  // /users, /groups, /folders, /permissions
 app.use("/", viewRoutes);  // /views
 
 // Health
-app.get("/healthz", (_req, res) =>
-  res.json({ ok: true, xlsx: XLSX?.version || "unknown" })
-);
+app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
 // Global Error Handler
 app.use((err, req, res, next) => {
@@ -58,10 +64,12 @@ app.use((err, req, res, next) => {
   if (res.headersSent) {
     return next(err);
   }
+  const isDev = process.env.NODE_ENV !== "production";
   res.status(500).json({
     error: "internal_server_error",
-    message: err.message,
-    stack: process.env.NODE_ENV === "development" ? err.stack : undefined
+    // Only expose details in dev — never leak them in production
+    message: isDev ? err.message : undefined,
+    stack: isDev ? err.stack : undefined
   });
 });
 

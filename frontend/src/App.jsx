@@ -64,8 +64,7 @@ export default function App() {
   // My files (sheet selection)
   const [myFiles, setMyFiles] = useState([]);
   const [myFilesLoading, setMyFilesLoading] = useState(false);
-  const [selectOpen, setSelectOpen] = useState(false);
-  const [selectError, setSelectError] = useState("");
+
 
   // Admin folder files view
   const [folderFiles, setFolderFiles] = useState([]);
@@ -104,7 +103,7 @@ export default function App() {
   const [trendGranularity, setTrendGranularity] = useState("month");
   const [yearsBack, setYearsBack] = useState(5);
   // State for trends
-  const [compareYears, setCompareYears] = useState([]); 
+  const [compareYears, setCompareYears] = useState([]);
 
   // Multi-tab workbook support
   const [tabs, setTabs] = useState([]);
@@ -134,7 +133,11 @@ export default function App() {
           if (!allowed) continue;
 
           if (allowed instanceof Set) {
+            // Checkbox-style exact-match filter
             if (allowed.size > 0 && !allowed.has(String(row[col]))) return false;
+          } else if (allowed && typeof allowed === 'object' && allowed.type === 'contains') {
+            // Chatbot substring filter (e.g. "2021" matches "2021-03-01")
+            if (!String(row[col] ?? '').toLowerCase().includes(allowed.value.toLowerCase())) return false;
           } else if (Array.isArray(allowed)) {
             if (allowed.length > 0 && !allowed.includes(String(row[col]))) return false;
           }
@@ -344,7 +347,7 @@ export default function App() {
 
         if (compareYears && compareYears.length > 0) {
           const targets = compareYears.map(Number);
-          if (!targets.includes(y)) return; 
+          if (!targets.includes(y)) return;
 
           lineKey = String(y);
           if (trendGranularity === 'day') axisKey = `${m}-${d}`;
@@ -507,28 +510,14 @@ export default function App() {
         }
         loadData(res.data.sheetId);
         // Refresh my files too
-        if(token) {
-           axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } })
+        if (token) {
+          axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } })
             .then(r => setMyFiles(r.data || []));
         }
       }
     } catch (e) {
       console.error(e);
       alert("Upload failed");
-    }
-  };
-
-  const openSelect = async () => {
-    setSelectOpen(true);
-    setMyFilesLoading(true);
-    setSelectError("");
-    try {
-      const res = await axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } });
-      setMyFiles(res.data || []);
-    } catch (e) {
-      setSelectError("Failed");
-    } finally {
-      setMyFilesLoading(false);
     }
   };
 
@@ -635,9 +624,9 @@ export default function App() {
           }
         })
         .catch(() => { setToken(""); setUser(null); });
-        
-       // Fetch myFiles for the header dropdown
-       axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } })
+
+      // Fetch myFiles for the header dropdown
+      axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } })
         .then(r => setMyFiles(r.data || []))
         .catch(e => console.error("Fetch files failed", e));
     }
@@ -722,7 +711,7 @@ export default function App() {
         setViews([]);
       });
   }, [sheetId, token, user]);
-  
+
   // Handlers for DashboardHeader
   const handleLogout = () => {
     localStorage.removeItem("token");
@@ -741,8 +730,8 @@ export default function App() {
     if (!newSheetId) return;
     const f = myFiles.find(file => String(file.id) === String(newSheetId));
     if (f) {
-        setActiveFilename(f.filename);
-        localStorage.setItem("activeFilename", f.filename);
+      setActiveFilename(f.filename);
+      localStorage.setItem("activeFilename", f.filename);
     }
     loadData(newSheetId);
     fetchTabs(newSheetId);
@@ -754,19 +743,19 @@ export default function App() {
   return (
     <Router>
       <div className="flex flex-col h-screen overflow-hidden bg-slate-50 font-sans text-slate-900">
-        
+
         {/* NEW HEADER */}
         {user && (
-            <DashboardHeader 
-                user={user}
-                onLogout={handleLogout}
-                myFiles={myFiles}
-                sheetId={sheetId}
-                activeFilename={activeFilename}
-                onSwitchSheet={handleSwitchSheet}
-            />
+          <DashboardHeader
+            user={user}
+            onLogout={handleLogout}
+            myFiles={myFiles}
+            sheetId={sheetId}
+            activeFilename={activeFilename}
+            onSwitchSheet={handleSwitchSheet}
+          />
         )}
-        
+
         {/* Note: Sub-navigation is now handled partly by DashboardHeader (Manage Users/Admin Panel) 
             and DashboardBody handles the Dashboard View. 
             However, if we are on /users, we need to be able to get back to /.
@@ -827,7 +816,6 @@ export default function App() {
                       views={views} setViews={setViews}
                       setPendingViewName={setPendingViewName}
                       setShowColumnSelector={setShowColumnSelector}
-                      openSelect={openSelect}
 
                       sortedData={sortedData}
                       headers={headers}
@@ -890,8 +878,19 @@ export default function App() {
                         allData={data}
                         headers={headers}
                         activeFilters={columnFilters}
-                        onApplyFilter={(filters) => {
-                          setColumnFilters(filters);
+                        onApplyFilter={(col, val) => {
+                          if (!val) {
+                            // RESET_FILTER: clear this column's filter
+                            setColumnFilters(prev => {
+                              const next = { ...prev };
+                              delete next[col];
+                              return next;
+                            });
+                          } else {
+                            // APPLY_FILTER: store as contains-filter so partial matches work
+                            // e.g. "2021" should match "2021-03-01", not require exact equality
+                            setColumnFilters(prev => ({ ...prev, [col]: { type: 'contains', value: val } }));
+                          }
                         }}
                         onUpdateChart={(config) => {
                           console.log("Chart Request:", config);
@@ -954,51 +953,6 @@ export default function App() {
           )}
         </main>
       </div>
-
-      {/* 1. Sheet Selector - Hidden now that we have header dropdown, but kept for fallback/modal logic if needed. 
-          Currently selectOpen is not triggered by anything in the new UI. 
-      */}
-      <Modal open={selectOpen} onClose={() => setSelectOpen(false)} title={user?.role === "admin" ? "Select or Delete a Sheet" : "Select a Sheet"}>
-        {selectError && <div className="text-red-500 mb-2">{selectError}</div>}
-        {myFilesLoading ? (
-          <div>Loading...</div>
-        ) : (
-          <table className="w-full text-sm text-left">
-            <thead className="bg-blue-50 text-blue-900 font-semibold border-b">
-              <tr><th className="p-2">Filename</th><th className="p-2">Action</th></tr>
-            </thead>
-            <tbody>
-              {myFiles.map(f => (
-                <tr key={f.id} className="border-b even:bg-slate-50">
-                  <td className="p-2">{f.filename}</td>
-                  <td className="p-2 flex gap-2">
-                    <button
-                      onClick={() => {
-                        loadData(f.id);
-                        fetchTabs(f.id);
-                        setActiveFilename(f.filename);
-                        localStorage.setItem("activeFilename", f.filename);
-                        setSelectOpen(false);
-                      }}
-                      className="bg-blue-900 text-white px-3 py-1 rounded shadow text-xs"
-                    >
-                      Load
-                    </button>
-                    {user?.role === "admin" && (
-                      <button
-                        onClick={() => deleteSheet(f.id)}
-                        className="bg-red-500 text-white px-3 py-1 rounded shadow text-xs"
-                      >
-                        Delete
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </Modal>
 
       {/* Column Visibility Selector Modal for Saving Views */}
       {

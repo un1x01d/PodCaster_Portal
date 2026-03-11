@@ -143,7 +143,7 @@ export default function DataGrid({
                                                 });
                                             }}
                                             onClose={() => setOpenFilterCol(null)}
-                                            tableContainerRef={{ current: document.body }}
+                                            tableContainerRef={tableContainerRef}
                                         />
                                     )}
                                 </div>

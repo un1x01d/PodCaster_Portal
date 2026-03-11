@@ -1,16 +1,48 @@
-import { query } from "../config/db.js";
+import { query, getClient } from "../config/db.js";
 import { hashPassword, generateComplexPassword } from "../utils/security.js";
+
+async function getAdminGroups(userId) {
+    const res = await query('SELECT group_id FROM user_groups WHERE user_id = $1 AND is_admin = TRUE', [userId]);
+    return res.map(r => r.group_id);
+}
 
 // --- Users ---
 
+export async function getUserGroups(req, res) {
+    const id = parseInt(req.params.id, 10);
+    const isGlobalAdmin = req.user.role === "admin";
+    if (!isGlobalAdmin) {
+        const adminGroups = await getAdminGroups(req.user.id);
+        if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
+        const sharesGroup = await query(`SELECT 1 FROM user_groups ug WHERE ug.user_id = $1 AND ug.group_id = ANY($2::int[])`, [id, adminGroups]);
+        if (!sharesGroup.length && req.user.id !== id) return res.status(403).json({ error: "Forbidden" });
+    }
+    const rows = await query(
+        `SELECT g.id, g.name FROM groups g
+         JOIN user_groups ug ON ug.group_id = g.id
+         WHERE ug.user_id = $1
+         ORDER BY g.id ASC`,
+        [id]
+    );
+    res.json(rows);
+}
+
 export async function listUsers(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    if (req.user.role !== "admin") {
+        const adminGroups = await getAdminGroups(req.user.id);
+        if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
+    }
     const users = await query("SELECT id, email, role, default_view_id FROM users ORDER BY id ASC");
     res.json(users);
 }
 
 export async function createUser(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const isGlobalAdmin = req.user.role === "admin";
+    if (!isGlobalAdmin) {
+        const adminGroups = await getAdminGroups(req.user.id);
+        if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
+        if (req.body.role === "admin") return res.status(403).json({ error: "Forbidden" });
+    }
     const { email, password, role } = req.body;
 
     // Hash password for new user
@@ -24,56 +56,89 @@ export async function createUser(req, res) {
         res.json(r[0]);
     } catch (e) {
         if (String(e).includes("unique constraint")) return res.status(400).json({ error: "Email exists" });
-        throw e;
+        res.status(500).json({ error: "failed" });
     }
 }
 
 export async function updateUser(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     const { id } = req.params;
     const { email, password, role, reset } = req.body;
+    
+    const isGlobalAdmin = req.user.role === "admin";
+    if (!isGlobalAdmin) {
+        const adminGroups = await getAdminGroups(req.user.id);
+        if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
+        if (role === "admin") return res.status(403).json({ error: "Forbidden" });
 
-    // Handle password reset request
-    if (reset) {
-        const newPassword = generateComplexPassword(16);
-        const hashed = await hashPassword(newPassword);
-        await query("UPDATE users SET password=$1, password_reset_required=TRUE WHERE id=$2", [hashed, id]);
-        return res.json({ success: true, newPassword });
+        const target = await query("SELECT role FROM users WHERE id=$1", [id]);
+        if (!target.length) return res.status(404).json({ error: "not_found" });
+        if (target[0].role === "admin") return res.status(403).json({ error: "Forbidden" });
+
+        const sharesGroup = await query(`SELECT 1 FROM user_groups ug WHERE ug.user_id = $1 AND ug.group_id = ANY($2::int[])`, [id, adminGroups]);
+        if (!sharesGroup.length) return res.status(403).json({ error: "Forbidden" });
     }
 
-    // Dynamic partial update
-    const fields = [];
-    const values = [];
-    let idx = 1;
+    try {
+        // Handle password reset request
+        if (reset) {
+            const newPassword = generateComplexPassword(16);
+            const hashed = await hashPassword(newPassword);
+            await query("UPDATE users SET password=$1, password_reset_required=TRUE WHERE id=$2", [hashed, id]);
+            return res.json({ success: true, newPassword });
+        }
 
-    if (email !== undefined) {
-        fields.push(`email=$${idx++}`);
-        values.push(email);
-    }
-    if (role !== undefined) {
-        fields.push(`role=$${idx++}`);
-        values.push(role);
-    }
-    if (password !== undefined) {
-        const hashed = await hashPassword(password);
-        fields.push(`password=$${idx++}`);
-        values.push(hashed);
-    }
+        // Dynamic partial update
+        const fields = [];
+        const values = [];
+        let idx = 1;
 
-    if (fields.length === 0) {
-        return res.json({ success: true });
+        if (email !== undefined) {
+            fields.push(`email=$${idx++}`);
+            values.push(email);
+        }
+        if (role !== undefined) {
+            fields.push(`role=$${idx++}`);
+            values.push(role);
+        }
+        if (password !== undefined) {
+            const hashed = await hashPassword(password);
+            fields.push(`password=$${idx++}`);
+            values.push(hashed);
+        }
+
+        if (fields.length === 0) {
+            return res.json({ success: true });
+        }
+
+        values.push(id);
+        const sql = `UPDATE users SET ${fields.join(", ")} WHERE id=$${idx}`;
+
+        await query(sql, values);
+        res.json({ success: true });
+    } catch (e) {
+        if (String(e).includes("unique constraint")) {
+            return res.status(400).json({ error: "Email exists" });
+        }
+        console.error("updateUser error:", e);
+        res.status(500).json({ error: "internal_server_error" });
     }
-
-    values.push(id);
-    const sql = `UPDATE users SET ${fields.join(", ")} WHERE id=$${idx}`;
-
-    await query(sql, values);
-    res.json({ success: true });
 }
 
 export async function deleteUser(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    await query("DELETE FROM users WHERE id=$1", [req.params.id]);
+    const { id } = req.params;
+    const isGlobalAdmin = req.user.role === "admin";
+    if (!isGlobalAdmin) {
+        const adminGroups = await getAdminGroups(req.user.id);
+        if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
+
+        const target = await query("SELECT role FROM users WHERE id=$1", [id]);
+        if (!target.length) return res.status(404).json({ error: "not_found" });
+        if (target[0].role === "admin") return res.status(403).json({ error: "Forbidden" });
+
+        const sharesGroup = await query(`SELECT 1 FROM user_groups ug WHERE ug.user_id = $1 AND ug.group_id = ANY($2::int[])`, [id, adminGroups]);
+        if (!sharesGroup.length) return res.status(403).json({ error: "Forbidden" });
+    }
+    await query("DELETE FROM users WHERE id=$1", [id]);
     res.json({ success: true });
 }
 
@@ -91,7 +156,10 @@ export async function setDefaultView(req, res) {
 // --- Groups ---
 
 export async function listGroups(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    if (req.user.role !== "admin") {
+        const adminGroups = await getAdminGroups(req.user.id);
+        if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
+    }
     const groups = await query("SELECT * FROM groups ORDER BY id ASC");
     res.json(groups);
 }
@@ -115,48 +183,81 @@ export async function deleteGroup(req, res) {
 }
 
 export async function getGroupMembers(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const gid = parseInt(req.params.id, 10);
+    if (req.user.role !== "admin") {
+        const adminGroups = await getAdminGroups(req.user.id);
+        if (!adminGroups.includes(gid)) return res.status(403).json({ error: "Forbidden" });
+    }
     const rows = await query(
-        `SELECT u.id, u.email, u.role 
-         FROM user_groups ug 
-         JOIN users u ON u.id = ug.user_id 
+        `SELECT u.id, u.email, u.role, ug.is_admin
+         FROM user_groups ug
+         JOIN users u ON u.id = ug.user_id
          WHERE ug.group_id=$1
          ORDER BY u.email ASC`,
-        [req.params.id]
+        [gid]
     );
     res.json(rows);
 }
 
 export async function updateGroupMembers(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const { id } = req.params;
-    const { userIds } = req.body; // array
-
-    await query("DELETE FROM user_groups WHERE group_id=$1", [id]);
-    for (const uid of userIds) {
-        await query("INSERT INTO user_groups (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [id, uid]);
+    const gid = parseInt(req.params.id, 10);
+    if (req.user.role !== "admin") {
+        const adminGroups = await getAdminGroups(req.user.id);
+        if (!adminGroups.includes(gid)) return res.status(403).json({ error: "Forbidden" });
     }
-    res.json({ success: true });
+    const { userIds } = req.body; // array
+    if (!Array.isArray(userIds)) return res.status(400).json({ error: "invalid_format" });
+
+    // H9: wrap in transaction to eliminate DELETE+INSERT race condition
+    const client = await getClient();
+    try {
+        await client.query("BEGIN");
+        await client.query("DELETE FROM user_groups WHERE group_id=$1", [gid]);
+        for (const uid of userIds) {
+            await client.query(
+                "INSERT INTO user_groups (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                [gid, uid]
+            );
+        }
+        await client.query("COMMIT");
+        res.json({ success: true });
+    } catch (e) {
+        await client.query("ROLLBACK");
+        console.error("updateGroupMembers failed:", e);
+        res.status(500).json({ error: "update_group_members_failed" });
+    } finally {
+        client.release();
+    }
 }
 
 export async function addUserToGroup(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const { id } = req.params;
+    const gid = parseInt(req.params.id, 10);
+    if (req.user.role !== "admin") {
+        const adminGroups = await getAdminGroups(req.user.id);
+        if (!adminGroups.includes(gid)) return res.status(403).json({ error: "Forbidden" });
+    }
     const { userId } = req.body;
-    await query("INSERT INTO user_groups (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [id, userId]);
+    await query("INSERT INTO user_groups (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [gid, userId]);
     res.json({ success: true });
 }
 
 export async function removeUserFromGroup(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const { id, userId } = req.params;
-    await query("DELETE FROM user_groups WHERE group_id=$1 AND user_id=$2", [id, userId]);
+    const gid = parseInt(req.params.id, 10);
+    if (req.user.role !== "admin") {
+        const adminGroups = await getAdminGroups(req.user.id);
+        if (!adminGroups.includes(gid)) return res.status(403).json({ error: "Forbidden" });
+    }
+    const { userId } = req.params;
+    await query("DELETE FROM user_groups WHERE group_id=$1 AND user_id=$2", [gid, userId]);
     res.json({ success: true });
 }
 
 export async function getGroupSheets(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const gid = Number(req.params.id);
+    const gid = parseInt(req.params.id, 10);
+    if (req.user.role !== "admin") {
+        const adminGroups = await getAdminGroups(req.user.id);
+        if (!adminGroups.includes(gid)) return res.status(403).json({ error: "Forbidden" });
+    }
     const rows = await query(
         `SELECT DISTINCT s.id, s.filename, s.uploaded_at, s.folder_id, f.name AS folder_name
          FROM sheets s
@@ -172,7 +273,10 @@ export async function getGroupSheets(req, res) {
 // --- Folders ---
 
 export async function listFolders(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    if (req.user.role !== "admin") {
+        const adminGroups = await getAdminGroups(req.user.id);
+        if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
+    }
     const rows = await query("SELECT * FROM folders ORDER BY name ASC");
     res.json(rows);
 }

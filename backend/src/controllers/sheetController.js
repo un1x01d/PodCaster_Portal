@@ -1,5 +1,6 @@
 import * as XLSX from "xlsx";
 import path from "path";
+import fs from "fs";
 import { query, getClient } from "../config/db.js";
 
 // Helper to determine active sheet versioning
@@ -48,25 +49,19 @@ export async function uploadSheet(req, res) {
         // Parse Workbook
         let wb;
         try {
-            const buf = req.file.buffer;
-            wb = XLSX.read(buf, { type: "buffer", cellDates: true });
-        } catch (eBuf) {
-            try {
-                const str = req.file.buffer.toString('utf8');
-                wb = XLSX.read(str, { type: "string", cellDates: true });
-            } catch (eStr) {
-                const msg = String(eStr?.message || eBuf?.message || "");
-                if (msg.includes("Invalid HTML: could not find <table>")) {
-                    return res.status(422).json({
-                        error: "html_without_tables",
-                        message: "This file is HTML without <table>. Re-export as CSV/XLSX or include a table."
-                    });
-                }
-                return res.status(400).json({
-                    error: "unreadable_spreadsheet",
-                    message: "Could not parse file as CSV/XLSX/XML/HTML-table."
+            wb = XLSX.readFile(req.file.path, { cellDates: true });
+        } catch (eStr) {
+            const msg = String(eStr?.message || "unknown_error");
+            if (msg.includes("Invalid HTML: could not find <table>")) {
+                return res.status(422).json({
+                    error: "html_without_tables",
+                    message: "This file is HTML without <table>. Re-export as CSV/XLSX or include a table."
                 });
             }
+            return res.status(400).json({
+                error: "unreadable_spreadsheet",
+                message: "Could not parse file as CSV/XLSX/XML/HTML-table."
+            });
         }
 
         const sheetNames = wb.SheetNames;
@@ -149,7 +144,11 @@ export async function uploadSheet(req, res) {
         if (e?.code === "LIMIT_FILE_SIZE") {
             return res.status(413).json({ error: "file_too_large", maxMB: 100 });
         }
-        res.status(500).json({ error: "upload_failed", message: String(e?.message || "unknown_error") });
+        res.status(500).json({ error: "upload_failed", message: "An unexpected error occurred during upload." });
+    } finally {
+        if (req.file && req.file.path) {
+            fs.unlink(req.file.path, () => {});
+        }
     }
 }
 
@@ -201,9 +200,59 @@ export async function listAllSheets(req, res) {
     res.json(rows);
 }
 
+async function checkSheetAccess(sheetId, user) {
+    if (user.role === "admin") return true;
+    const res = await query(
+        `SELECT COUNT(s.id) FROM sheets s
+         LEFT JOIN folders f ON f.id = s.folder_id
+         WHERE s.id = $1 AND (
+             (f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2))
+             OR
+             (s.id IN (SELECT sheet_id FROM permissions WHERE user_id = $2))
+             OR 
+             (s.id IN (SELECT sheet_id FROM group_permissions WHERE group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)))
+         )`,
+        [sheetId, user.id]
+    );
+    return res[0].count !== '0';
+}
+
 export async function getSheetDetails(req, res) {
+    const hasAccess = await checkSheetAccess(req.params.id, req.user);
+    if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
     const s = await query("SELECT id, headers, active, filename, totals_column FROM sheets WHERE id=$1", [req.params.id]);
     if (!s.length) return res.status(404).json({ error: "not_found" });
+
+    // Enforce allowed_columns on the headers array returned
+    if (req.user.role !== "admin") {
+        const folderAccess = await query(
+            `SELECT 1 FROM sheets s LEFT JOIN folders f ON f.id = s.folder_id WHERE s.id = $1 AND f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)`,
+            [req.params.id, req.user.id]
+        );
+        if (folderAccess.length === 0) {
+            const userPerms = await query(
+                `SELECT allowed_columns FROM permissions WHERE user_id = $2 AND sheet_id = $1
+                 UNION ALL
+                 SELECT gp.allowed_columns FROM group_permissions gp
+                 JOIN user_groups ug ON ug.group_id = gp.group_id
+                 WHERE ug.user_id = $2 AND gp.sheet_id = $1`,
+                [req.params.id, req.user.id]
+            );
+            let validCols = new Set();
+            userPerms.forEach(p => {
+                let cols = typeof p.allowed_columns === 'string' ? JSON.parse(p.allowed_columns) : (p.allowed_columns || []);
+                if (cols.length) cols.forEach(c => validCols.add(c));
+            });
+            const validArray = Array.from(validCols);
+            if (validArray.length > 0) {
+                let currentHeaders = typeof s[0].headers === 'string' ? JSON.parse(s[0].headers) : s[0].headers;
+                s[0].headers = currentHeaders.filter(h => validArray.includes(h));
+            } else if (userPerms.length > 0) {
+                s[0].headers = [];
+            }
+        }
+    }
+
     res.json(s[0]);
 }
 
@@ -216,6 +265,8 @@ export async function updateSheetDetails(req, res) {
 
 export async function getSheetTabs(req, res) {
     try {
+        const hasAccess = await checkSheetAccess(req.params.id, req.user);
+        if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
         const s = await query("SELECT tabs, tab_name FROM sheets WHERE id = $1", [req.params.id]);
         if (!s.length) return res.status(404).json({ error: "not_found" });
         const tabs = s[0].tabs || (s[0].tab_name ? [s[0].tab_name] : []);
@@ -229,9 +280,47 @@ export async function getSheetTabs(req, res) {
 export async function getSheetData(req, res) {
     const { id } = req.params;
     const { tab } = req.query;
+    const userId = req.user.id;
 
-    // TODO: Add permission check logic here similar to listMySheets 
-    // For now, allowing authenticated users to match previous behavior/speed
+    let validCols = [];
+    let rowFiltersList = [];
+    let hasFullAccess = false;
+
+    if (req.user.role !== "admin") {
+        const folderAccess = await query(
+            `SELECT 1 FROM sheets s LEFT JOIN folders f ON f.id = s.folder_id WHERE s.id = $1 AND f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)`,
+            [id, userId]
+        );
+        if (folderAccess.length > 0) hasFullAccess = true;
+
+        const userPerms = await query(
+            `SELECT allowed_columns, row_filters FROM permissions WHERE user_id = $2 AND sheet_id = $1`,
+            [id, userId]
+        );
+        const groupPerms = await query(
+            `SELECT gp.allowed_columns, gp.row_filters FROM group_permissions gp JOIN user_groups ug ON ug.group_id = gp.group_id WHERE ug.user_id = $2 AND gp.sheet_id = $1`,
+            [id, userId]
+        );
+
+        const allPerms = [...userPerms, ...groupPerms];
+
+        if (!hasFullAccess && allPerms.length === 0) {
+            return res.status(403).json({ error: "Forbidden", message: "You do not have permission to access this sheet." });
+        }
+
+        if (!hasFullAccess) {
+            let allowedColsSet = new Set();
+            allPerms.forEach(p => {
+                let cols = typeof p.allowed_columns === 'string' ? JSON.parse(p.allowed_columns) : (p.allowed_columns || []);
+                if (cols.length) cols.forEach(c => allowedColsSet.add(c));
+                let filters = typeof p.row_filters === 'string' ? JSON.parse(p.row_filters) : (p.row_filters || {});
+                rowFiltersList.push(filters);
+            });
+            validCols = Array.from(allowedColsSet);
+        }
+    } else {
+        hasFullAccess = true;
+    }
 
     try {
         let sql = `SELECT row_data FROM sheet_rows WHERE sheet_id = $1`;
@@ -244,7 +333,47 @@ export async function getSheetData(req, res) {
 
         sql += ` ORDER BY row_index ASC`;
 
-        const rows = await query(sql, params);
+        let rows = await query(sql, params);
+
+        if (!hasFullAccess) {
+            rows = rows.filter(r => {
+                let rowData = typeof r.row_data === 'string' ? JSON.parse(r.row_data) : r.row_data;
+
+                let rowAllowed = false;
+                for (const filters of rowFiltersList) {
+                    const keys = Object.keys(filters);
+                    if (keys.length === 0) {
+                        rowAllowed = true;
+                        break;
+                    }
+                    let match = true;
+                    for (const key of keys) {
+                        if (String(rowData[key]) !== String(filters[key])) {
+                            match = false;
+                            break;
+                        }
+                    }
+                    if (match) {
+                        rowAllowed = true;
+                        break;
+                    }
+                }
+                if (!rowAllowed) return false;
+
+                if (validCols.length > 0) {
+                    Object.keys(rowData).forEach(k => {
+                        if (!validCols.includes(k)) {
+                            delete rowData[k];
+                        }
+                    });
+                } else {
+                    rowData = {};
+                }
+                r.row_data = rowData;
+                return true;
+            });
+        }
+
         res.json(rows.map(r => r.row_data));
     } catch (e) {
         console.error("Get sheet data failed:", e);
@@ -253,6 +382,7 @@ export async function getSheetData(req, res) {
 }
 
 export async function deleteSheet(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     const { id } = req.params;
     const client = await getClient();
 

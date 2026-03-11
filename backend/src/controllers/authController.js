@@ -6,45 +6,55 @@ export async function login(req, res) {
     const { email, password } = req.body || {};
     if (!email || !password) return res.status(400).json({ error: "Missing credentials" });
 
-    const rows = await query("SELECT * FROM users WHERE email=$1", [email]);
-    if (!rows.length) return res.status(401).json({ error: "Invalid credentials" });
+    try {
+        const rows = await query("SELECT * FROM users WHERE email=$1", [email]);
+        if (!rows.length) return res.status(401).json({ error: "Invalid credentials" });
 
-    const user = rows[0];
-    const { valid, rehash } = await verifyPassword(password, user.password);
+        const user = rows[0];
+        const { valid, rehash } = await verifyPassword(password, user.password);
 
-    if (!valid) return res.status(401).json({ error: "Invalid credentials" });
+        if (!valid) return res.status(401).json({ error: "Invalid credentials" });
 
-    if (rehash) {
-        // Lazy migration: Update to hashed password
-        console.log(`[Auth] Migrating password for user ${user.id} to bcrypt hash.`);
-        const newHash = await hashPassword(password);
-        await query("UPDATE users SET password = $1 WHERE id = $2", [newHash, user.id]);
-    }
-
-    const token = generateToken(user);
-    res.json({
-        token,
-        user: {
-            id: user.id,
-            email: user.email,
-            role: user.role,
-            password_reset_required: user.password_reset_required
+        if (rehash) {
+            // Lazy migration: Update to hashed password
+            console.log(`[Auth] Migrating password for user ${user.id} to bcrypt hash.`);
+            const newHash = await hashPassword(password);
+            await query("UPDATE users SET password = $1 WHERE id = $2", [newHash, user.id]);
         }
-    });
+
+        const token = generateToken(user);
+        res.json({
+            token,
+            user: {
+                id: user.id,
+                email: user.email,
+                role: user.role,
+                password_reset_required: user.password_reset_required
+            }
+        });
+    } catch (err) {
+        console.error("[Auth] login error:", err);
+        res.status(500).json({ error: "internal_server_error" });
+    }
 }
 
 export async function getMe(req, res) {
-    const rows = await query(
-        "SELECT id, email, role, default_view_id, password_reset_required FROM users WHERE id = $1",
-        [req.user.id]
-    );
-    if (!rows.length) return res.status(404).json({ error: "user_not_found" });
-    res.json(rows[0]);
+    try {
+        const rows = await query(
+            "SELECT id, email, role, default_view_id, password_reset_required FROM users WHERE id = $1",
+            [req.user.id]
+        );
+        if (!rows.length) return res.status(404).json({ error: "user_not_found" });
+        res.json(rows[0]);
+    } catch (err) {
+        console.error("[Auth] getMe error:", err);
+        res.status(500).json({ error: "internal_server_error" });
+    }
 }
 
 export async function changePassword(req, res) {
     const { currentPassword, newPassword } = req.body;
-    
+
     // Strict Password Policy
     const minLen = 16;
     const hasUpper = /[A-Z]/.test(newPassword);
@@ -53,8 +63,8 @@ export async function changePassword(req, res) {
     const hasSpecial = /[!@#$%^&*()-_+=[\],.<>?]/.test(newPassword); // basic set
 
     if (!newPassword || newPassword.length < minLen || !hasUpper || !hasLower || !hasNum || !hasSpecial) {
-        return res.status(400).json({ 
-            error: "Password must be 16+ chars, with Upper, Lower, Number, and Special char." 
+        return res.status(400).json({
+            error: "Password must be 16+ chars, with Upper, Lower, Number, and Special char."
         });
     }
 
