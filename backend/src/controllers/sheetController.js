@@ -49,8 +49,10 @@ export async function uploadSheet(req, res) {
         // Parse Workbook
         let wb;
         try {
-            wb = XLSX.readFile(req.file.path, { cellDates: true });
+            const fileBuf = fs.readFileSync(req.file.path);
+            wb = XLSX.read(fileBuf, { type: "buffer", cellDates: true });
         } catch (eStr) {
+            console.error("XLSX.readFile error:", eStr);
             const msg = String(eStr?.message || "unknown_error");
             if (msg.includes("Invalid HTML: could not find <table>")) {
                 return res.status(422).json({
@@ -66,6 +68,7 @@ export async function uploadSheet(req, res) {
 
         const sheetNames = wb.SheetNames;
         if (!sheetNames || sheetNames.length === 0) {
+            console.error("No sheets in workbook");
             return res.status(400).json({ error: "no_sheets" });
         }
 

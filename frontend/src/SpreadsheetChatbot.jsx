@@ -4,7 +4,7 @@
  * The 1769-line inline implementation has been replaced (H2 fix). All analysis logic
  * lives in src/hooks/useChatbotLogic.js and src/utils/chatbotParser.js.
  */
-import React from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useChatbotLogic } from './hooks/useChatbotLogic';
 import ChatHistory from './components/chatbot/ChatHistory';
 import ChatInput from './components/chatbot/ChatInput';
@@ -31,6 +31,7 @@ export default function SpreadsheetChatbot({
         setIsMinimized,
         handleSend,
         messagesEndRef,
+        clearMessages,
     } = useChatbotLogic({
         data,
         headers,
@@ -41,6 +42,43 @@ export default function SpreadsheetChatbot({
         myFiles,
         activeFilename,
     });
+
+    const [chatHeight, setChatHeight] = useState(320);
+    const isResizing = useRef(false);
+
+    useEffect(() => {
+        const handleMouseMove = (e) => {
+            if (!isResizing.current) return;
+            // Calculate new height based on mouse Y position (window height - mouseY - bottom margin)
+            let newHeight = window.innerHeight - e.clientY - 24; // 24 is roughly bottom-6 (1.5rem)
+            // Constrain between reasonable min and max
+            newHeight = Math.max(250, Math.min(newHeight, window.innerHeight - 100));
+            setChatHeight(newHeight);
+        };
+
+        const handleMouseUp = () => {
+            if (isResizing.current) {
+                isResizing.current = false;
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+            }
+        };
+
+        document.addEventListener('mousemove', handleMouseMove);
+        document.addEventListener('mouseup', handleMouseUp);
+        
+        return () => {
+            document.removeEventListener('mousemove', handleMouseMove);
+            document.removeEventListener('mouseup', handleMouseUp);
+        };
+    }, []);
+
+    const handleMouseDown = (e) => {
+        if (isMinimized) return;
+        isResizing.current = true;
+        document.body.style.cursor = 'ns-resize';
+        document.body.style.userSelect = 'none'; // prevent text selection while dragging
+    };
 
     if (!data || data.length === 0) return null;
 
@@ -61,10 +99,23 @@ export default function SpreadsheetChatbot({
 
             {/* Chat Panel */}
             {isOpen && (
-                <div className={`fixed bottom-6 right-6 w-96 ${isMinimized ? 'h-auto' : 'h-[320px]'} bg-white rounded-xl shadow-2xl flex flex-col z-40 border border-slate-200 font-sans overflow-hidden ring-1 ring-black/5`}>
+                <div 
+                    className="fixed bottom-6 right-6 w-96 bg-white rounded-xl shadow-2xl flex flex-col z-40 border border-slate-200 font-sans overflow-hidden ring-1 ring-black/5"
+                    style={{ height: isMinimized ? 'auto' : `${chatHeight}px` }}
+                >
+                    {/* Draggable Top Handle */}
+                    {!isMinimized && (
+                        <div 
+                            className="w-full h-2 cursor-ns-resize hover:bg-slate-300 transition-colors absolute top-0 left-0 right-0 z-50 flex items-center justify-center opacity-0 hover:opacity-100"
+                            onMouseDown={handleMouseDown}
+                        >
+                            <div className="w-10 h-1 bg-slate-400 rounded-full"></div>
+                        </div>
+                    )}
+
                     {/* Header */}
                     <div
-                        className="bg-slate-900 text-white px-3 py-2 border-b border-slate-800 flex justify-between items-center shadow-sm cursor-pointer select-none"
+                        className="bg-slate-900 text-white px-3 py-2 border-b border-slate-800 flex justify-between items-center shadow-sm cursor-pointer select-none relative"
                         onDoubleClick={() => setIsMinimized(!isMinimized)}
                     >
                         <div className="flex items-center gap-2">
@@ -77,6 +128,16 @@ export default function SpreadsheetChatbot({
                             <span className="font-medium text-xs tracking-wide">Data Assistant</span>
                         </div>
                         <div className="flex gap-1.5 items-center">
+                            <button
+                                onClick={(e) => { e.stopPropagation(); clearMessages(); }}
+                                className="text-slate-400 hover:text-red-400 transition-colors p-0.5"
+                                title="Reset Chat"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+                                    <path d="M3 3v5h5"></path>
+                                </svg>
+                            </button>
                             <button
                                 onClick={(e) => { e.stopPropagation(); setIsMinimized(!isMinimized); }}
                                 className="text-slate-400 hover:text-white transition-colors p-0.5"
@@ -108,7 +169,10 @@ export default function SpreadsheetChatbot({
                     {/* Body — only when not minimized */}
                     {!isMinimized && (
                         <>
-                            <ChatHistory messages={messages} />
+                            <ChatHistory 
+                                messages={messages} 
+                                onApplyFilter={onApplyFilter}
+                            />
                             <ChatInput
                                 input={input}
                                 setInput={setInput}

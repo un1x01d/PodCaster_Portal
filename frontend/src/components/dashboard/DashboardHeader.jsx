@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import SearchableSelect from '../common/SearchableSelect';
+import ManageSheetsModal from './ManageSheetsModal';
 
 export default function DashboardHeader({
     user,
@@ -8,8 +9,11 @@ export default function DashboardHeader({
     myFiles,
     sheetId,
     activeFilename,
-    onSwitchSheet
+    onSwitchSheet,
+    onDeleteSheet
 }) {
+    const [isManageSheetsOpen, setIsManageSheetsOpen] = useState(false);
+
     // Transform myFiles to options for SearchableSelect
     const startOptions = [{ value: "", label: "Select a sheet..." }];
     const trunc = (str, n) => {
@@ -56,6 +60,7 @@ export default function DashboardHeader({
                         options={startOptions.concat(fileOptions)}
                         value={currentValue}
                         onChange={(e) => onSwitchSheet(e.target.value)}
+                        onDelete={user?.role === 'admin' ? onDeleteSheet : null}
                         placeholder="Search for a spreadsheet..."
                         className="w-full"
                         buttonClassName="w-full border border-slate-200 bg-slate-50/50 hover:bg-white hover:border-blue-300 transition-all rounded-full h-10 px-4 text-sm text-slate-700 shadow-sm focus:ring-2 focus:ring-blue-100"
@@ -67,9 +72,17 @@ export default function DashboardHeader({
             {/* Right: User Profile & Actions */}
             <div className="flex items-center gap-4">
                 {user.role === 'admin' && (
-                    <Link to="/users" className="text-sm font-medium text-slate-600 hover:text-blue-600 transition-colors px-3 py-1.5 rounded-lg hover:bg-slate-50">
-                        Manage Users
-                    </Link>
+                    <>
+                        <button 
+                            onClick={() => setIsManageSheetsOpen(true)}
+                            className="text-sm font-medium text-slate-600 hover:text-blue-600 transition-colors px-3 py-1.5 rounded-lg hover:bg-slate-50"
+                        >
+                            Manage Sheets
+                        </button>
+                        <Link to="/users" className="text-sm font-medium text-slate-600 hover:text-blue-600 transition-colors px-3 py-1.5 rounded-lg hover:bg-slate-50">
+                            Manage Users
+                        </Link>
+                    </>
                 )}
 
                 <div className="h-6 w-px bg-slate-200"></div>
@@ -89,6 +102,13 @@ export default function DashboardHeader({
                     </button>
                 </div>
             </div>
+
+            <ManageSheetsModal 
+                open={isManageSheetsOpen}
+                onClose={() => setIsManageSheetsOpen(false)}
+                myFiles={myFiles}
+                onDeleteSheet={onDeleteSheet}
+            />
         </header>
     );
 }

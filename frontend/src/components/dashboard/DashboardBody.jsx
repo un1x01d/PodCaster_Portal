@@ -11,6 +11,7 @@ import SheetTabBar from "./SheetTabBar";
 import PivotOverlay from "./PivotOverlay";
 import TrendsOverlay from "./TrendsOverlay";
 import TwoConditionOverlay from "./TwoConditionOverlay";
+import EbitdaMenu from "./EbitdaMenu";
 
 import { renderMaybeDate, formatSmart } from "../../utils/formatting";
 
@@ -89,6 +90,12 @@ export default function DashboardBody(props) {
         tabs,
         activeTab,
         onTabChange,
+
+        // Calcs
+        appendCalculatedColumn,
+
+        // Actions
+        onDeleteSheet
     } = props;
 
     const headerRef = useRef(null);
@@ -111,11 +118,22 @@ export default function DashboardBody(props) {
         );
     }, [folders]);
 
-    // Calculate min col width
-    const minColWidth = 180;
+    // Calculate dynamic col widths based on header length
+    const colWidths = React.useMemo(() => {
+        const widths = {};
+        if (displayHeaders) {
+            displayHeaders.forEach((h) => {
+                // ~8px per character + some padding for sort/filter icons, min 180px
+                widths[h] = Math.max(180, h.length * 8 + 60);
+            });
+        }
+        return widths;
+    }, [displayHeaders]);
 
     // Memoize InnerElement to prevent remounts and issues with ref
-    const totalRowWidth = (displayHeaders?.length || 0) * minColWidth;
+    const totalRowWidth = React.useMemo(() => {
+        return displayHeaders?.reduce((sum, h) => sum + (colWidths[h] || 180), 0) || 0;
+    }, [displayHeaders, colWidths]);
 
     // InnerElement forces the content width to enable horizontal scrolling
     const InnerElement = useMemo(() => forwardRef(({ style, ...rest }, ref) => (
@@ -123,7 +141,7 @@ export default function DashboardBody(props) {
             ref={ref}
             style={{
                 ...style,
-                width: totalRowWidth,
+                width: `${totalRowWidth}px`,
                 position: 'relative'
             }}
             {...rest}
@@ -265,6 +283,10 @@ export default function DashboardBody(props) {
                 )}
 
                 <div className="flex gap-3 ml-0 md:ml-6 items-center">
+                    <EbitdaMenu
+                        headers={displayHeaders}
+                        onCalculate={appendCalculatedColumn}
+                    />
                     <ExportMenu onCSV={exportCSV} onXLSX={exportXLSX} onPDF={exportPDF} />
 
                     <ChartMenu
@@ -349,7 +371,7 @@ export default function DashboardBody(props) {
                                     {displayHeaders.map((h) => (
                                         <div
                                             key={h}
-                                            style={{ width: minColWidth, minWidth: minColWidth }}
+                                            style={{ width: colWidths[h] || 180, minWidth: colWidths[h] || 180 }}
                                             ref={(el) => {
                                                 if (!filterAnchorRefs.current) filterAnchorRefs.current = {};
                                                 filterAnchorRefs.current[h] = el;
@@ -418,6 +440,8 @@ export default function DashboardBody(props) {
                                             )}
                                         </div>
                                     ))}
+                                    {/* Spacer for vertical scrollbar compensation */}
+                                    <div style={{ minWidth: 100, flexShrink: 0 }}></div>
                                 </div>
 
                                 {/* Data List (Fills remaining space) */}
@@ -439,7 +463,7 @@ export default function DashboardBody(props) {
                                                     const row = sortedData[index];
                                                     return (
                                                         <div
-                                                            style={{ ...style, width: "100%" }}
+                                                            style={{ ...style, width: totalRowWidth, minWidth: "100%" }}
                                                             className={`flex ${index % 2 === 1 ? "bg-slate-50" : "bg-white"} hover:bg-blue-50/80 transition-colors border-b border-slate-200 items-center h-8`}
                                                         >
                                                             {displayHeaders.map((h) => {
@@ -447,7 +471,7 @@ export default function DashboardBody(props) {
                                                                 return (
                                                                     <div
                                                                         key={h}
-                                                                        style={{ width: minColWidth, minWidth: minColWidth }}
+                                                                        style={{ width: colWidths[h] || 180, minWidth: colWidths[h] || 180 }}
                                                                         className="border-r border-slate-200 px-3 text-xs text-slate-700 truncate h-full flex items-center whitespace-nowrap"
                                                                         title={String(val)}
                                                                     >

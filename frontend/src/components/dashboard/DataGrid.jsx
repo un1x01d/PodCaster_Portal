@@ -35,7 +35,7 @@ export default function DataGrid({
             ref={ref}
             style={{
                 ...style,
-                width: totalRowWidth,
+                width: `${totalRowWidth}px`,
                 position: 'relative'
             }}
             {...rest}
@@ -70,7 +70,7 @@ export default function DataGrid({
                         {/* Headers Row (Flexible Height) */}
                         <div
                             className="flex bg-slate-100 border-y border-slate-200 shadow-sm z-10 overflow-hidden shrink-0 h-10 items-center"
-                            style={{ width: "100%" }}
+                            style={{ width: `${totalRowWidth}px`, minWidth: "100%" }}
                             ref={(el) => {
                                 if (headerRef) headerRef.current = el;
                                 if (el && tableContainerRef?.current) {
@@ -169,7 +169,7 @@ export default function DataGrid({
                                             const row = sortedData[index];
                                             return (
                                                 <div
-                                                    style={{ ...style, width: "100%" }}
+                                                    style={{ ...style, width: totalRowWidth, minWidth: "100%" }}
                                                     className={`flex ${index % 2 === 1 ? "bg-slate-50" : "bg-white"} hover:bg-blue-50/80 transition-colors border-b border-slate-200 items-center h-8`}
                                                 >
                                                     {displayHeaders.map((h) => {

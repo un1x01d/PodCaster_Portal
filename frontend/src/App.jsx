@@ -521,8 +521,35 @@ export default function App() {
     }
   };
 
+  const appendCalculatedColumn = (colName, columnMap, calculateFunc) => {
+    // 1. Add to headers
+    const newHeaders = [...headers];
+    if (!newHeaders.includes(colName)) {
+      newHeaders.push(colName);
+    }
+
+    // 2. Loop through every row and execute the callback
+    const newData = data.map(row => {
+      // Create an object of just the required values
+      const requiredVals = {};
+      Object.entries(columnMap).forEach(([reqName, sourceColName]) => {
+        const raw = row[sourceColName];
+        requiredVals[reqName] = parseNum(raw); // Ensures it's a number
+      });
+
+      // Calculate the result
+      const result = calculateFunc(requiredVals);
+
+      // Mutate the row definition
+      return { ...row, [colName]: result };
+    });
+
+    // 3. Update State
+    setHeaders(newHeaders);
+    setData(newData);
+  };
+
   const deleteSheet = async (id) => {
-    if (!confirm("Delete?")) return;
     try {
       await axios.delete(`${API}/sheets/${id}`, { headers: { Authorization: `Bearer ${token}` } });
       setMyFiles((prev) => prev.filter((f) => f.id !== id));
@@ -584,7 +611,7 @@ export default function App() {
         }
         if (typeof val === 'number') {
           const isPercent = /(pct|percent|rate|ratio|%)/i.test(col);
-          const isCurrency = !isPercent && /(price|cost|expense|income|budget|fee|amount|revenue|sales|total|value|profit|margin|\$)/i.test(col);
+          const isCurrency = !isPercent && /(price|cost|expense|income|budget|fee|amount|revenue|sales|total|value|profit|margin|ebitda|\$)/i.test(col);
 
           const fmt = new Intl.NumberFormat('en-US', {
             minimumFractionDigits: (isCurrency || isPercent) ? 2 : 0,
@@ -753,6 +780,7 @@ export default function App() {
             sheetId={sheetId}
             activeFilename={activeFilename}
             onSwitchSheet={handleSwitchSheet}
+            onDeleteSheet={deleteSheet}
           />
         )}
 
@@ -820,6 +848,7 @@ export default function App() {
                       sortedData={sortedData}
                       headers={headers}
                       displayHeaders={displayHeaders}
+                      onDeleteSheet={deleteSheet}
 
                       openFilterCol={openFilterCol} setOpenFilterCol={setOpenFilterCol}
                       columnFilters={columnFilters} setColumnFilters={setColumnFilters}
@@ -868,6 +897,7 @@ export default function App() {
                       onTabChange={handleTabChange}
 
                       hasRequiredColumns={hasRequiredColumns}
+                      appendCalculatedColumn={appendCalculatedColumn}
                     />
 
                     {/* Chatbot Overlay */}
@@ -879,6 +909,10 @@ export default function App() {
                         headers={headers}
                         activeFilters={columnFilters}
                         onApplyFilter={(col, val) => {
+                          if (col === "RESET_ALL") {
+                            setColumnFilters({});
+                            return;
+                          }
                           if (!val) {
                             // RESET_FILTER: clear this column's filter
                             setColumnFilters(prev => {

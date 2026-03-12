@@ -98,16 +98,44 @@ export function useChatbotLogic({ data, headers, allData, onApplyFilter, onUpdat
             }
 
             case 'TOP': {
-                const rawQ = filter?.value || column || '';
-                const nMatch = String(rawQ).match(/(\d+)/);
-                const n = nMatch ? parseInt(nMatch[1]) : 5;
+                const n = parsed.limit || 5;
                 if (!column) return `Showing top ${n} rows (no numeric column specified).`;
-                const sorted = [...result].sort((a, b) =>
-                    (Number(String(b[column]).replace(/[$,]/g, '')) || 0) - (Number(String(a[column]).replace(/[$,]/g, '')) || 0)
-                ).slice(0, n);
-                return `Top ${n} by ${column}:\n` + sorted.map((r, i) =>
-                    `${i + 1}. ${formatValue(Number(String(r[column]).replace(/[$,]/g, '')), column)}`
-                ).join('\n');
+
+                if (segmentBy) {
+                    const groups = {};
+                    result.forEach(r => {
+                        const key = String(r[segmentBy] || 'Unknown');
+                        const val = Number(String(r[column]).replace(/[$,]/g, '')) || 0;
+                        groups[key] = (groups[key] || 0) + val;
+                    });
+                    
+                    const sortedGroups = Object.entries(groups)
+                        .map(([label, val]) => ({ label, val }))
+                        .sort((a, b) => parsed.aggregation === 'min_group' ? a.val - b.val : b.val - a.val)
+                        .slice(0, n);
+                        
+                    const term = parsed.aggregation === 'min_group' ? 'Bottom' : 'Top';
+                    return `${term} ${n} ${segmentBy} by ${column}:\n` + sortedGroups.map((item, i) => 
+                        `${i + 1}. **${item.label}**: ${formatValue(item.val, column)}`
+                    ).join('\n');
+                } else {
+                    // Fallback: try to find a descriptive label column (prefer names/customers)
+                    let labelCol = hdrs.find(h => /(name|customer|client|product|title|company)/i.test(h));
+                    if (!labelCol) labelCol = hdrs.find(h => h !== column && !isNumericColumn(h, hdrs, sourceData) && !isDateColumn(h, hdrs, sourceData));
+                    if (!labelCol) labelCol = hdrs.find(h => h !== column);
+
+                    const sorted = [...result].sort((a, b) =>
+                        parsed.aggregation === 'min_group'
+                            ? (Number(String(a[column]).replace(/[$,]/g, '')) || 0) - (Number(String(b[column]).replace(/[$,]/g, '')) || 0)
+                            : (Number(String(b[column]).replace(/[$,]/g, '')) || 0) - (Number(String(a[column]).replace(/[$,]/g, '')) || 0)
+                    ).slice(0, n);
+                    
+                    const term = parsed.aggregation === 'min_group' ? 'Bottom' : 'Top';
+                    return `${term} ${n} by ${column}:\n` + sorted.map((r, i) => {
+                        const labelPrefix = labelCol && r[labelCol] ? `**${r[labelCol]}**: ` : '';
+                        return `${i + 1}. ${labelPrefix}${formatValue(Number(String(r[column]).replace(/[$,]/g, '')), column)}`;
+                    }).join('\n');
+                }
             }
 
             case 'UNIQUE': {
@@ -143,9 +171,9 @@ export function useChatbotLogic({ data, headers, allData, onApplyFilter, onUpdat
             case 'APPLY_FILTER':
                 if (filter && onApplyFilter) {
                     onApplyFilter(filter.column, filter.value);
-                    return `Applied filter: ${filter.column} contains "${filter.value}"`;
+                    return { text: `Applied filter: ${filter.column} contains "${filter.value}"`, isFilter: true, filterCol: filter.column };
                 }
-                return "I couldn't apply that filter.";
+                return { text: "I couldn't apply that filter." };
 
             case 'RESET_FILTER':
                 if (onApplyFilter) {
@@ -153,9 +181,27 @@ export function useChatbotLogic({ data, headers, allData, onApplyFilter, onUpdat
                         onApplyFilter(column, "");
                         return `Cleared filter for ${column}`;
                     }
-                    return "Please use the 'Clear All' button in the dashboard or specify a column to clear.";
+                    onApplyFilter("RESET_ALL");
+                    return "Cleared all filters. Showing all data.";
                 }
                 return "Cannot reset filters.";
+
+            case 'HELP':
+                return `**Here are some things you can ask me:**\n\n` +
+                    `**Math & Aggregation**\n` +
+                    `• "Total Net Income"\n` +
+                    `• "Average Revenue per Region"\n` +
+                    `• "Count rows"\n\n` +
+                    `**Filtering**\n` +
+                    `• "Filter by Region West"\n` +
+                    `• "Only show Cloud Hosting"\n` +
+                    `• "Clear filters"\n\n` +
+                    `**Top Performers**\n` +
+                    `• "Top 5 most profitable customers"\n` +
+                    `• "Worst 3 regions by revenue"\n\n` +
+                    `**Charts**\n` +
+                    `• "Draw a trend of Revenue"\n` +
+                    `• "Compare Profit by Segment"`;
 
             case 'SWITCH_SHEET':
                 if (onSwitchSheet && myFiles?.length) {
@@ -248,21 +294,42 @@ export function useChatbotLogic({ data, headers, allData, onApplyFilter, onUpdat
         }
 
         try {
-            const sourceData = (allData && allData.length > 0) ? allData : data;
+            // Execute queries against the filtered UI data view unless it is empty (then fallback to allData).
+            const sourceData = (data && data.length > 0) ? data : allData;
             const parsed = parseQuery(currentInput, headers, data, allData, context);
 
             // Update Context
             if (parsed.column) setContext(prev => ({ ...prev, lastColumn: parsed.column }));
             if (parsed.operation && parsed.operation !== 'UNKNOWN') setContext(prev => ({ ...prev, lastOperation: parsed.operation }));
 
-            const response = executeCommand(parsed, sourceData, headers);
+            const responseStrOrObj = executeCommand(parsed, sourceData, headers);
+            
+            const botMsg = { type: 'bot', timestamp: new Date() };
+            if (typeof responseStrOrObj === 'string') {
+                botMsg.text = responseStrOrObj;
+            } else {
+                botMsg.text = responseStrOrObj.text;
+                if (responseStrOrObj.isFilter) {
+                    botMsg.isFilter = true;
+                    botMsg.filterCol = responseStrOrObj.filterCol;
+                }
+            }
 
-            setMessages(prev => [...prev, { type: 'bot', text: response, timestamp: new Date() }]);
+            setMessages(prev => [...prev, botMsg]);
 
         } catch (e) {
             console.error(e);
             setMessages(prev => [...prev, { type: 'bot', text: "Sorry, I encountered an error processing that.", timestamp: new Date() }]);
         }
+    };
+
+    const clearMessages = () => {
+        setMessages([{
+            type: 'bot',
+            text: "Chat reset! How can I help you analyze your data?",
+            timestamp: new Date()
+        }]);
+        setContext({});
     };
 
     return {
@@ -274,6 +341,7 @@ export function useChatbotLogic({ data, headers, allData, onApplyFilter, onUpdat
         isMinimized,
         setIsMinimized,
         handleSend,
-        messagesEndRef
+        messagesEndRef,
+        clearMessages
     };
 }

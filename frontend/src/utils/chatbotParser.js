@@ -19,8 +19,8 @@ export const parseQuery = (query, headers, data, allData, context = {}) => {
     const dateRange = dateRanges.length > 0 ? dateRanges[0] : null;
     let segmentBy = null;
 
-    // Detect "by [column]" for Segmentation / Grouping
-    const segmentMatch = q.match(/\bby\s+([a-zA-Z0-9\s]+?)(?:\?$|$| in | for | at | on )/i);
+    // Detect "by [column]" or "per [column]" for Segmentation / Grouping
+    const segmentMatch = q.match(/\b(?:by|per)\s+([a-zA-Z0-9\s]+?)(?:\?$|$| in | for | at | on )/i);
     if (segmentMatch) {
         const potentialSeg = segmentMatch[1].trim();
         const matchedSeg = headers.find(h => h.toLowerCase() === potentialSeg.toLowerCase() || h.toLowerCase().includes(potentialSeg.toLowerCase()));
@@ -51,7 +51,7 @@ export const parseQuery = (query, headers, data, allData, context = {}) => {
         operation = 'RESET_FILTER';
         column = null;
     }
-    else if (q.startsWith('/help') || q.startsWith('/commands')) operation = 'HELP';
+    else if (q.startsWith('/help') || q.startsWith('/commands') || q === 'help' || q === 'commands') operation = 'HELP';
     else if (q.match(/^all\s+(?:of\s+)?(.+)/)) {
         const potentialCol = q.match(/^all\s+(?:of\s+)?(.+)/)[1].trim();
         const matchedCol = headers.find(h => h.toLowerCase() === potentialCol.toLowerCase() || h.toLowerCase().includes(potentialCol.toLowerCase()));
@@ -173,18 +173,29 @@ export const parseQuery = (query, headers, data, allData, context = {}) => {
             const escCol = colName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
             const regex = new RegExp(`(?:filter\\s+by\\s+)?${escCol}\\s*(?:=|is|:|in)\\s+(.+?)(?:$|\\s+(?:and|or|with|using))`, 'i');
             const match = q.match(regex);
-            if (match) filter = { column: column, value: match[1].trim() };
+            if (match) {
+                filter = { column: column, value: match[1].trim() };
+                operation = 'APPLY_FILTER';
+            }
         }
 
-        // 2. Implicit "Value only" search (if not a command)
-        if (!filter && !q.match(/^(?:compare|show|what|how)/) && operation === 'UNKNOWN') {
-            let cleanQuery = q.replace(/^(?:match|search|find|get|filter|by|only|just|show|me|\s)+/i, '').trim();
-            // Try to match against source data
-            if (cleanQuery.length > 1) {
+        // 2. Implicit Categorical Value Search
+        if (!filter && !q.match(/^(?:what|how|list|switch|compare)/)) {
+            // Remove the detected target column and any aggregation verbs to isolate the suspected "filter value"
+            let leftover = q;
+            if (column) leftover = leftover.replace(new RegExp(`\\b${column}\\b`, 'gi'), '');
+            if (segmentBy) leftover = leftover.replace(new RegExp(`\\b${segmentBy}\\b`, 'gi'), '');
+            // Strip structural words
+            leftover = leftover.replace(/\b(sum|total|average|avg|count|max|min|top|bottom|of|for|in|by|show|me|filter|only|just|get|find|match)\b/gi, '').replace(/\s+/g, ' ').trim();
+
+            if (leftover.length > 2) {
                 for (const h of headers) {
-                    if (sourceData.some(r => String(r[h]).toLowerCase().includes(cleanQuery))) {
-                        filter = { column: h, value: cleanQuery };
-                        if (operation === 'UNKNOWN') operation = 'APPLY_FILTER';
+                    if (h === column || h === segmentBy) continue;
+                    
+                    // Does this leftover string exist inside any row for this column?
+                    if (sourceData.some(r => r[h] && String(r[h]).toLowerCase().includes(leftover))) {
+                        filter = { column: h, value: leftover };
+                        operation = 'APPLY_FILTER';
                         break;
                     }
                 }
@@ -208,5 +219,51 @@ export const parseQuery = (query, headers, data, allData, context = {}) => {
         operation = 'APPLY_FILTER';
     }
 
-    return { operation, column, dateRange, dateRanges, filter, segmentBy, aggregation };
+    // Extract limit for TOP
+    let limit = 5;
+    const limitMatch = q.match(/(?:top|bottom|first|last)\s+(\d+)/i);
+    if (limitMatch) limit = parseInt(limitMatch[1], 10);
+
+    // TOP / MAX / MIN operation adjustments
+    if (operation === 'TOP' || operation === 'MAX' || operation === 'MIN') {
+        const types = analyzeColumns(headers, sourceData);
+        
+        // If the user asks "most profitable [text column]", "Max [text]", or "Top [text]"
+        // we swap the text column to segmentBy and try to find a number column to sort by.
+        if (column && types[column] !== 'number') {
+            if (!segmentBy) segmentBy = column;
+            column = null;
+            
+            // If it was a MIN/MAX query on a text field, it actually means 
+            // "Show me the TOP 1 (or BOTTOM 1) [Text] by [Number]".
+            if (operation === 'MAX') {
+                operation = 'TOP';
+                limit = 1;
+            } else if (operation === 'MIN') {
+                operation = 'TOP'; // In the executor, we'll need to handle ascending sort if MIN
+                limit = 1;
+                aggregation = 'min_group'; // Signal to logic to reverse sort
+            }
+        }
+
+        // If we still don't have a numeric column to sort by, infer one based on keywords.
+        if (!column) {
+            if (operation === 'TOP' && q.match(/profit/)) {
+                 const profitCol = headers.find(h => /profit|net income|margin/i.test(h));
+                 if (profitCol) column = profitCol;
+            } else if (operation === 'TOP' && q.match(/revenue|sales/)) {
+                 const revCol = headers.find(h => /revenue|sales|total/i.test(h));
+                 if (revCol) column = revCol;
+            }
+            
+            if (!column && context.lastColumn && types[context.lastColumn] === 'number') {
+                column = context.lastColumn;
+            } else if (!column) {
+                const numCols = headers.filter(h => types[h] === 'number');
+                if (numCols.length > 0) column = numCols[0];
+            }
+        }
+    }
+
+    return { operation, column, dateRange, dateRanges, filter, segmentBy, aggregation, limit };
 };

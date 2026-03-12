@@ -17,7 +17,7 @@ export const renderMaybeDate = (columnName, value) => {
 export const formatSmart = (val, key = null) => {
     if (typeof val === 'number' && !isNaN(val)) {
         const isPercent = key && /(pct|percent|rate|ratio|%)/i.test(key);
-        const isCurrency = !isPercent && key && /(price|cost|expense|income|budget|fee|amount|revenue|sales|total|value|profit|margin|\$)/i.test(key);
+        const isCurrency = !isPercent && key && /(price|cost|expense|income|budget|fee|amount|revenue|sales|total|value|profit|margin|ebitda|\$)/i.test(key);
 
         if (isPercent) {
             return new Intl.NumberFormat('en-US', {
