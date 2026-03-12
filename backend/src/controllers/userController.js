@@ -28,12 +28,28 @@ export async function getUserGroups(req, res) {
 }
 
 export async function listUsers(req, res) {
-    if (req.user.role !== "admin") {
-        const adminGroups = await getAdminGroups(req.user.id);
-        if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
+    const isGlobalAdmin = req.user.role === "admin";
+    try {
+        if (isGlobalAdmin) {
+            const users = await query("SELECT id, email, role, default_view_id FROM users ORDER BY id ASC");
+            return res.json(users);
+        } else {
+            const adminGroups = await getAdminGroups(req.user.id);
+            if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
+            
+            // Return users who share ANY handled group with the admin
+            const users = await query(`
+                SELECT DISTINCT u.id, u.email, u.role, u.default_view_id 
+                FROM users u
+                JOIN user_groups ug ON u.id = ug.user_id
+                WHERE ug.group_id = ANY($1::int[])
+                ORDER BY u.id ASC`, [adminGroups]);
+            return res.json(users);
+        }
+    } catch (e) {
+        console.error("listUsers error:", e);
+        res.status(500).json({ error: "internal_error" });
     }
-    const users = await query("SELECT id, email, role, default_view_id FROM users ORDER BY id ASC");
-    res.json(users);
 }
 
 export async function createUser(req, res) {
@@ -127,19 +143,28 @@ export async function updateUser(req, res) {
 export async function deleteUser(req, res) {
     const { id } = req.params;
     const isGlobalAdmin = req.user.role === "admin";
-    if (!isGlobalAdmin) {
-        const adminGroups = await getAdminGroups(req.user.id);
-        if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
+    
+    try {
+        if (!isGlobalAdmin) {
+            const adminGroups = await getAdminGroups(req.user.id);
+            if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
 
-        const target = await query("SELECT role FROM users WHERE id=$1", [id]);
-        if (!target.length) return res.status(404).json({ error: "not_found" });
-        if (target[0].role === "admin") return res.status(403).json({ error: "Forbidden" });
+            const target = await query("SELECT role FROM users WHERE id=$1", [id]);
+            if (!target.length) return res.status(404).json({ error: "not_found" });
+            if (target[0].role === "admin") return res.status(403).json({ error: "Forbidden" });
 
-        const sharesGroup = await query(`SELECT 1 FROM user_groups ug WHERE ug.user_id = $1 AND ug.group_id = ANY($2::int[])`, [id, adminGroups]);
-        if (!sharesGroup.length) return res.status(403).json({ error: "Forbidden" });
+            // Instead of deleting globally, Group Admin only removes the user from ALL groups that the admin manages.
+            await query(`DELETE FROM user_groups WHERE user_id = $1 AND group_id = ANY($2::int[])`, [id, adminGroups]);
+            return res.json({ success: true, message: "User removed from your managed groups." });
+        }
+
+        // Global admin remains destructive
+        await query("DELETE FROM users WHERE id=$1", [id]);
+        res.json({ success: true });
+    } catch (e) {
+        console.error("deleteUser error:", e);
+        res.status(500).json({ error: "internal_error" });
     }
-    await query("DELETE FROM users WHERE id=$1", [id]);
-    res.json({ success: true });
 }
 
 export async function setDefaultView(req, res) {
@@ -166,9 +191,26 @@ export async function listGroups(req, res) {
 
 export async function createGroup(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const { name } = req.body;
+    const { name, maxFileSizeMb } = req.body;
     try {
-        const r = await query("INSERT INTO groups (name) VALUES ($1) RETURNING *", [name]);
+        const r = await query("INSERT INTO groups (name, max_file_size_mb) VALUES ($1, $2) RETURNING *", [name, maxFileSizeMb || 100]);
+        res.json(r[0]);
+    } catch (e) {
+        if (String(e).includes("unique")) return res.status(400).json({ error: "Name exists" });
+        throw e;
+    }
+}
+
+export async function updateGroup(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const { id } = req.params;
+    const { name, maxFileSizeMb } = req.body;
+    try {
+        const r = await query(
+            "UPDATE groups SET name = COALESCE($1, name), max_file_size_mb = COALESCE($2, max_file_size_mb) WHERE id = $3 RETURNING *",
+            [name, maxFileSizeMb, id]
+        );
+        if (!r.length) return res.status(404).json({ error: "not_found" });
         res.json(r[0]);
     } catch (e) {
         if (String(e).includes("unique")) return res.status(400).json({ error: "Name exists" });
@@ -178,8 +220,26 @@ export async function createGroup(req, res) {
 
 export async function deleteGroup(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    await query("DELETE FROM groups WHERE id=$1", [req.params.id]);
-    res.json({ success: true });
+    const { id } = req.params;
+    try {
+        // Check for members
+        const members = await query("SELECT 1 FROM user_groups WHERE group_id = $1 LIMIT 1", [id]);
+        if (members.length > 0) {
+            return res.status(400).json({ error: "group_not_empty", message: "Cannot delete group with members. Remove all members first." });
+        }
+        
+        // Cleanup other dependencies (folders might still exist, user didn't specify checking those, but permissions should be cleaned)
+        await query("DELETE FROM group_permissions WHERE group_id = $1", [id]);
+        await query("DELETE FROM view_group_permissions WHERE group_id = $1", [id]);
+        
+        const r = await query("DELETE FROM groups WHERE id = $1 RETURNING *", [id]);
+        if (!r.length) return res.status(404).json({ error: "not_found" });
+        
+        res.json({ success: true });
+    } catch (e) {
+        console.error("deleteGroup error:", e);
+        res.status(500).json({ error: "internal_error" });
+    }
 }
 
 export async function getGroupMembers(req, res) {
@@ -212,10 +272,13 @@ export async function updateGroupMembers(req, res) {
     const client = await getClient();
     try {
         await client.query("BEGIN");
-        await client.query("DELETE FROM user_groups WHERE group_id=$1", [gid]);
+        // Delete members NOT in the new list (preserves existing users' flags)
+        await client.query("DELETE FROM user_groups WHERE group_id=$1 AND NOT (user_id = ANY($2::int[]))", [gid, userIds]);
+        
+        // Insert new members (DO NOTHING if already exists)
         for (const uid of userIds) {
             await client.query(
-                "INSERT INTO user_groups (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                "INSERT INTO user_groups (group_id, user_id) VALUES ($1, $2) ON CONFLICT (user_id, group_id) DO NOTHING",
                 [gid, uid]
             );
         }

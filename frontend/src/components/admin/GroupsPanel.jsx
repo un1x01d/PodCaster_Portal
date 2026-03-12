@@ -51,7 +51,10 @@ export default function GroupsPanel({
                         <div className="flex items-center justify-between">
                             <div>
                                 <div className="font-semibold text-slate-800 text-sm">{g.name}</div>
-                                <div className="text-[10px] uppercase tracking-wider text-slate-400 font-bold mt-0.5">ID: {g.id}</div>
+                                <div className="flex gap-2 items-center mt-0.5">
+                                    <div className="text-[10px] uppercase tracking-wider text-slate-400 font-bold">ID: {g.id}</div>
+                                    <div className="text-[10px] uppercase tracking-wider text-blue-400 font-bold border-l pl-2 border-slate-100">Limit: {g.max_file_size_mb || 100}MB</div>
+                                </div>
                             </div>
                             {user?.role === "admin" && (
                                 <button
@@ -68,7 +71,34 @@ export default function GroupsPanel({
 
             {selectedGroupId && (
                 <div className="mt-4 bg-slate-50 p-4 rounded-xl border border-slate-100">
-                    <h4 className="font-bold text-sm text-slate-700 mb-2 uppercase tracking-wider">Members</h4>
+                    <div className="flex justify-between items-center mb-2">
+                        <h4 className="font-bold text-sm text-slate-700 uppercase tracking-wider">Settings</h4>
+                    </div>
+                    {user?.role === "admin" && (
+                        <div className="flex flex-col gap-2 mb-4">
+                            <label className="text-[10px] font-bold text-slate-500 uppercase">Max File Size (MB):</label>
+                            <div className="flex gap-2">
+                                <input
+                                    type="number"
+                                    className="border border-slate-200 rounded-lg px-3 h-9 text-sm w-32 focus:ring-2 focus:ring-blue-100 outline-none bg-white"
+                                    defaultValue={groups.find(g => g.id === selectedGroupId)?.max_file_size_mb || 100}
+                                    onBlur={(e) => {
+                                        const val = parseInt(e.target.value, 10);
+                                        if (!isNaN(val)) {
+                                            // Trigger updating the group (handleUpdateGroup needs to be passed down)
+                                            if (window.confirm(`Update ${groups.find(g => g.id === selectedGroupId)?.name} limit to ${val}MB?`)) {
+                                                if (typeof updateGroup === 'function') {
+                                                    updateGroup(selectedGroupId, { maxFileSizeMb: val });
+                                                }
+                                            }
+                                        }
+                                    }}
+                                />
+                                <span className="text-xs text-slate-400 self-center">MB</span>
+                            </div>
+                        </div>
+                    )}
+                    <h4 className="font-bold text-sm text-slate-700 mb-2 uppercase tracking-wider border-t pt-3 mt-1">Members</h4>
                     <div className="flex gap-2 mb-3">
                         <select
                             className="border border-slate-200 rounded-lg px-2 h-9 flex-1 text-sm bg-white"

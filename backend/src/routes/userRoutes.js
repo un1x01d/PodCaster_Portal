@@ -2,7 +2,7 @@ import express from "express";
 import {
     listUsers, createUser, updateUser, deleteUser, setDefaultView,
     getUserGroups,
-    listGroups, createGroup, deleteGroup, getGroupMembers, updateGroupMembers, getGroupSheets,
+    listGroups, createGroup, updateGroup, deleteGroup, getGroupMembers, updateGroupMembers, getGroupSheets,
     addUserToGroup, removeUserFromGroup,
     listFolders, createFolder, deleteFolder,
     setPermissions, getPermissions, setGroupPermissions, getGroupPermissions
@@ -23,6 +23,7 @@ router.put("/users/:userId/default-view", setDefaultView);
 // Groups
 router.get("/groups", listGroups);
 router.post("/groups", createGroup);
+router.patch("/groups/:id", updateGroup);
 router.delete("/groups/:id", deleteGroup);
 router.get("/groups/:id/members", getGroupMembers);
 router.post("/groups/:id/members", updateGroupMembers);

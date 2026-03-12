@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { parseQuery } from "../utils/chatbotParser";
-import { formatValue, isNumericColumn, isDateColumn, excelDateToJSDate } from "../utils/chatbotUtils";
+import { formatValue, isNumericColumn, isDateColumn, excelDateToJSDate, analyzeColumns } from "../utils/chatbotUtils";
 
 export function useChatbotLogic({ data, headers, allData, onApplyFilter, onUpdateChart, onSwitchSheet, myFiles, activeFilename }) {
     const [messages, setMessages] = useState([]);

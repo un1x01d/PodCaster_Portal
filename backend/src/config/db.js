@@ -40,6 +40,7 @@ export async function initDb() {
   `);
   // Add column if missing (for existing DBs)
   await pool.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
+  await pool.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS max_file_size_mb INT DEFAULT 100;`);
 
   // USER_GROUPS (membership)
   await pool.query(`

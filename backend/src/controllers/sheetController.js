@@ -49,8 +49,8 @@ export async function uploadSheet(req, res) {
         // Parse Workbook
         let wb;
         try {
-            const fileBuf = fs.readFileSync(req.file.path);
-            wb = XLSX.read(fileBuf, { type: "buffer", cellDates: true });
+            // Optimization: Use XLSX.readFile directly on the temp path to avoid loading buffer into JS memory twice
+            wb = XLSX.readFile(req.file.path, { cellDates: true });
         } catch (eStr) {
             console.error("XLSX.readFile error:", eStr);
             const msg = String(eStr?.message || "unknown_error");
@@ -81,11 +81,28 @@ export async function uploadSheet(req, res) {
 
             const sheetId = `${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
 
-            // Folder Resolution
+            // Folder Resolution & Group Limit Check
             let assignedFolderId = null;
             if (Number.isInteger(folderId)) {
-                const f = await client.query(`SELECT id FROM folders WHERE id = $1 LIMIT 1`, [folderId]);
-                if (f.rows.length) assignedFolderId = f.rows[0].id;
+                const f = await client.query(`
+                    SELECT f.id, g.max_file_size_mb 
+                    FROM folders f 
+                    JOIN groups g ON g.id = f.group_id 
+                    WHERE f.id = $1 LIMIT 1
+                `, [folderId]);
+                
+                if (f.rows.length) {
+                    assignedFolderId = f.rows[0].id;
+                    const limitMb = f.rows[0].max_file_size_mb || 100;
+                    if (req.file.size > limitMb * 1024 * 1024) {
+                        await client.query('ROLLBACK');
+                        return res.status(413).json({ 
+                            error: "file_too_large", 
+                            message: `File exceeds group limit of ${limitMb}MB`,
+                            maxMB: limitMb 
+                        });
+                    }
+                }
             }
 
             // Versioning
@@ -320,6 +337,14 @@ export async function getSheetData(req, res) {
                 rowFiltersList.push(filters);
             });
             validCols = Array.from(allowedColsSet);
+
+            // Bug 3: If user has metadata access but no allowed columns, deny data access
+            if (allPerms.length > 0 && validCols.length === 0) {
+                return res.status(403).json({ 
+                    error: "Forbidden", 
+                    message: "You have permission to access this sheet, but no columns have been shared with you." 
+                });
+            }
         }
     } else {
         hasFullAccess = true;
@@ -401,6 +426,15 @@ export async function deleteSheet(req, res) {
         // Delete permissions manually (no FK cascade in DB schema for these)
         await client.query("DELETE FROM permissions WHERE sheet_id = $1", [id]);
         await client.query("DELETE FROM group_permissions WHERE sheet_id = $1", [id]);
+
+        // Bug 2: Cleanup views and their permissions
+        const viewsRes = await client.query("SELECT id FROM views WHERE sheet_id = $1", [id]);
+        const viewIds = viewsRes.rows.map(v => v.id);
+        if (viewIds.length > 0) {
+            await client.query("DELETE FROM view_user_permissions WHERE view_id = ANY($1::int[])", [viewIds]);
+            await client.query("DELETE FROM view_group_permissions WHERE view_id = ANY($1::int[])", [viewIds]);
+            await client.query("DELETE FROM views WHERE id = ANY($1::int[])", [viewIds]);
+        }
 
         // Delete Sheet (Rows cascade via FK)
         await client.query("DELETE FROM sheets WHERE id = $1", [id]);

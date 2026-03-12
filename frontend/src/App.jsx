@@ -936,7 +936,7 @@ export default function App() {
 
                           // 2. Handle Trends (Date-based line chart)
                           // Heuristic: If date column exists and no explicit segmentation (or time-based segmentation)
-                          if (config.dateColumn && (!config.segmentBy || isDateColumn(config.segmentBy))) {
+                          if (config.dateColumn && (!config.segmentBy || looksLikeDateColumn(config.segmentBy))) {
                             setTrendsValueKey(config.valueColumn);
                             setTrendsDateKey(config.dateColumn);
                             setTrendsOn(true);
@@ -976,7 +976,7 @@ export default function App() {
             } />
             <Route path="/users" element={
               user?.role === "admin"
-                ? <div className="pt-0"><UserManagement token={token} sheetId={sheetId} /></div>
+                ? <div className="pt-0"><UserManagement token={token} user={user} sheetId={sheetId} /></div>
                 : <div className="p-8 text-center text-gray-500">Access denied. Admin only.</div>
             } />
           </Routes>
