@@ -21,44 +21,52 @@ export default function ManageSheetsModal({ open, onClose, myFiles, onDeleteShee
     };
 
     return (
-        <Modal open={open} onClose={onClose} title="Manage Sheets" widthClass="max-w-2xl">
-            <div className="flex flex-col gap-4 max-h-[60vh] overflow-hidden pr-2">
+        <Modal open={open} onClose={onClose} title="Select Sheet" widthClass="max-w-md">
+            <div className="flex flex-col">
                 {myFiles.length === 0 ? (
-                    <div className="text-center text-slate-500 py-8">No sheets uploaded yet.</div>
+                    <div className="text-center py-12 bg-slate-50/50 rounded-3xl border border-dashed border-slate-200">
+                        <div className="text-2xl mb-2 opacity-20">📁</div>
+                        <div className="text-slate-400 font-bold uppercase tracking-widest text-[8px]">Empty Library</div>
+                    </div>
                 ) : (
-                    <div className="flex flex-col border border-slate-200 rounded-lg overflow-y-auto">
-                        {myFiles.map((file, idx) => (
+                    <div className="divide-y divide-slate-100 border border-slate-100 rounded-3xl overflow-hidden bg-white shadow-sm">
+                        {myFiles.map((file) => (
                             <div 
                                 key={file.id} 
-                                className={`flex items-center justify-between p-3 ${idx < myFiles.length - 1 ? 'border-b border-slate-100' : ''} hover:bg-slate-50 transition-colors`}
+                                className="group flex items-center justify-between px-4 py-2.5 hover:bg-indigo-50/30 transition-all duration-200"
                             >
-                                <div className="flex flex-col overflow-hidden mr-4">
-                                    <span className="font-semibold text-slate-800 truncate" title={file.filename}>
-                                        {file.filename}
-                                    </span>
-                                    <span className="text-xs text-slate-400">
-                                        Uploaded: {new Date(file.uploaded_at).toLocaleString()}
-                                    </span>
+                                <div className="flex items-center gap-3 overflow-hidden">
+                                    <div className="w-7 h-7 bg-indigo-50 text-indigo-500 rounded-lg flex items-center justify-center text-xs font-bold shrink-0">
+                                        📄
+                                    </div>
+                                    <div className="flex flex-col overflow-hidden">
+                                        <span className="font-bold text-slate-700 truncate text-xs" title={file.filename}>
+                                            {file.filename}
+                                        </span>
+                                        <span className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">
+                                            {new Date(file.uploaded_at).toLocaleDateString()} at {new Date(file.uploaded_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                        </span>
+                                    </div>
                                 </div>
                                 <button
                                     onClick={() => handleDelete(file.id)}
                                     disabled={deletingId === file.id}
-                                    className={`shrink-0 p-2 rounded-lg transition-colors border disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 ${
+                                    className={`shrink-0 flex items-center justify-center w-8 h-8 rounded-lg transition-all duration-200 ${
                                         confirmId === file.id
-                                            ? "bg-red-600 text-white border-red-700 hover:bg-red-700" 
-                                            : "text-red-500 hover:text-white hover:bg-red-500 border-red-100"
+                                            ? "bg-red-500 text-white shadow-md scale-105" 
+                                            : "text-slate-300 hover:text-red-500 hover:bg-red-50"
                                     }`}
-                                    title={confirmId === file.id ? "Click again to confirm" : "Delete Sheet"}
                                 >
                                     {deletingId === file.id ? (
-                                        <span className="text-xs">Deleting...</span>
+                                        <span className="text-[8px] leading-tight text-center">...</span>
                                     ) : (
-                                        <>
-                                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>
-                                            <span className="text-xs font-semibold">
-                                                {confirmId === file.id ? "Are you sure?" : "Delete"}
-                                            </span>
-                                        </>
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                            {confirmId === file.id ? (
+                                                <path d="M20 6L9 17l-5-5" />
+                                            ) : (
+                                                <path d="M18 6L6 18M6 6l12 12" />
+                                            )}
+                                        </svg>
                                     )}
                                 </button>
                             </div>

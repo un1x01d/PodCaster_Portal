@@ -3,7 +3,7 @@ import {
     listUsers, createUser, updateUser, deleteUser, setDefaultView,
     getUserGroups,
     listGroups, createGroup, updateGroup, deleteGroup, getGroupMembers, updateGroupMembers, getGroupSheets,
-    addUserToGroup, removeUserFromGroup,
+    addUserToGroup, removeUserFromGroup, toggleGroupAdmin,
     listFolders, createFolder, deleteFolder,
     setPermissions, getPermissions, setGroupPermissions, getGroupPermissions
 } from "../controllers/userController.js";
@@ -21,6 +21,11 @@ router.delete("/users/:id", deleteUser);
 router.put("/users/:userId/default-view", setDefaultView);
 
 // Groups
+router.use("/groups", (req, res, next) => {
+    console.log(`[debug] Group request: ${req.method} ${req.url}`);
+    next();
+});
+router.post("/groups/:id/users/:userId/admin", toggleGroupAdmin);
 router.get("/groups", listGroups);
 router.post("/groups", createGroup);
 router.patch("/groups/:id", updateGroup);

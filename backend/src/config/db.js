@@ -48,9 +48,11 @@ export async function initDb() {
       id SERIAL PRIMARY KEY,
       user_id INT NOT NULL,
       group_id INT NOT NULL,
+      is_admin BOOLEAN DEFAULT FALSE,
       UNIQUE(user_id, group_id)
     );
   `);
+  await pool.query(`ALTER TABLE user_groups ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE;`);
 
   // FOLDERS
   await pool.query(`

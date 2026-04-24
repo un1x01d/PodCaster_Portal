@@ -315,6 +315,23 @@ export async function removeUserFromGroup(req, res) {
     res.json({ success: true });
 }
 
+export async function toggleGroupAdmin(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const { id: gid, userId } = req.params;
+    const { isAdmin } = req.body;
+    
+    try {
+        await query(
+            "UPDATE user_groups SET is_admin = $1 WHERE group_id = $2 AND user_id = $3",
+            [!!isAdmin, gid, userId]
+        );
+        res.json({ success: true });
+    } catch (e) {
+        console.error("toggleGroupAdmin error:", e);
+        res.status(500).json({ error: "internal_error" });
+    }
+}
+
 export async function getGroupSheets(req, res) {
     const gid = parseInt(req.params.id, 10);
     if (req.user.role !== "admin") {

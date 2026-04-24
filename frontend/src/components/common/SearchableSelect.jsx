@@ -62,7 +62,7 @@ export default function SearchableSelect({
             {open && !disabled && (
                 <div
                     ref={panelRef}
-                    className="absolute z-50 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg p-2"
+                    className="absolute z-50 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg p-2 left-1/2 -translate-x-1/2"
                     style={{ width: panelWidth }}
                 >
                     <input

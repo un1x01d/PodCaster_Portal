@@ -168,11 +168,16 @@ export default function DashboardBody(props) {
     // Non-admin users: show welcome screen until sheet is selected
     if (user.role !== "admin" && !sheetId) {
         return (
-            <div className="w-full min-h-screen flex items-center justify-center bg-slate-50/50">
-                <div className="bg-white/80 backdrop-blur shadow-2xl rounded-2xl p-8 w-96 border border-slate-200 text-center">
-                    <h2 className="text-2xl font-bold mb-4 bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">📊 Welcome</h2>
-                    <p className="text-slate-500 mb-6 font-medium">Please select a sheet to get started</p>
-                    <p className="text-slate-400 text-sm">Use the sheet selector in the top navigation bar to load a spreadsheet.</p>
+            <div className="w-full min-h-screen flex items-center justify-center premium-gradient">
+                <div className="glass rounded-[3rem] p-12 w-[32rem] text-center shadow-2xl animate-in zoom-in-95 duration-500">
+                    <div className="bg-indigo-600 text-white w-16 h-16 rounded-2xl flex items-center justify-center text-3xl shadow-xl shadow-indigo-200 mx-auto mb-6">📊</div>
+                    <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight mb-4">Welcome to Analytics</h2>
+                    <p className="text-slate-500 mb-8 font-medium leading-relaxed">Please select a spreadsheet from the navigation menu above to begin your data analysis journey.</p>
+                    <div className="flex justify-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-indigo-200 animate-bounce delay-0"></span>
+                        <span className="w-2 h-2 rounded-full bg-indigo-400 animate-bounce delay-150"></span>
+                        <span className="w-2 h-2 rounded-full bg-indigo-600 animate-bounce delay-300"></span>
+                    </div>
                 </div>
             </div>
         );
@@ -182,11 +187,11 @@ export default function DashboardBody(props) {
     return (
         <div className="w-full h-full flex flex-col bg-slate-50 relative pointer-events-auto">
             {/* Global Controls Bar */}
-            <div className="flex flex-wrap gap-3 p-4 bg-white/90 backdrop-blur shadow-sm border-b border-slate-100 items-center relative z-30">
+            <div className="flex flex-wrap gap-4 p-5 bg-white/60 backdrop-blur-md border-b border-slate-200/50 items-center justify-center relative z-30">
                 {/* Upload (admin) */}
                 {user.role === "admin" && (
                     <>
-                        <label className="flex items-center gap-2 cursor-pointer bg-white border border-slate-300 hover:border-blue-400 hover:bg-blue-50 text-slate-700 rounded-lg px-3 h-8 shadow-sm transition-all group">
+                        <label className="flex items-center gap-3 cursor-pointer bg-white/80 border border-slate-200 hover:border-indigo-400 hover:bg-white text-slate-700 rounded-xl px-4 h-10 shadow-sm transition-all group">
                             <input
                                 type="file"
                                 onChange={(e) => {
@@ -197,9 +202,9 @@ export default function DashboardBody(props) {
                                 }}
                                 className="hidden"
                             />
-                            <span className="text-lg group-hover:scale-110 transition-transform">📂</span>
-                            <span className="text-xs font-semibold whitespace-nowrap max-w-[8rem] truncate">
-                                {selectedFileName || "Choose File"}
+                            <span className="text-xl group-hover:scale-110 transition-transform">📂</span>
+                            <span className="text-xs font-bold whitespace-nowrap max-w-[10rem] truncate text-slate-600">
+                                {selectedFileName || "Choose spreadsheet"}
                             </span>
                         </label>
 
@@ -207,18 +212,18 @@ export default function DashboardBody(props) {
                             options={folderOptions}
                             value={selectedFolderId}
                             onChange={(e) => setSelectedFolderId(e.target.value)}
-                            placeholder="Folder (required)…"
+                            placeholder="Select Folder…"
                             className="ml-1"
-                            buttonClassName="border border-slate-200 px-2 rounded-lg min-w-[14rem] bg-white h-8 text-xs"
+                            buttonClassName="input-premium py-0 h-10 min-w-[16rem] bg-white/80"
                         />
 
                         <button
                             onClick={() => handleUpload(file, selectedFolderId)}
                             disabled={!file || !selectedFolderId}
-                            className={`${!file || !selectedFolderId
-                                ? "bg-slate-100 cursor-not-allowed text-slate-400 border border-slate-200"
-                                : "bg-blue-600 hover:bg-blue-700 text-white shadow-sm hover:shadow"
-                                } px-4 rounded-lg h-8 font-semibold text-xs transition-all flex items-center gap-2 whitespace-nowrap`}
+                            className={`btn-premium h-10 px-6 ${!file || !selectedFolderId
+                                ? "bg-slate-100 text-slate-400 border-slate-200"
+                                : "bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg shadow-indigo-100"
+                                }`}
                             title={!file ? "Choose a file" : !selectedFolderId ? "Select a folder" : "Upload & Load"}
                         >
                             Upload & Load
@@ -228,7 +233,7 @@ export default function DashboardBody(props) {
 
                 <button
                     onClick={() => loadData(sheetId, user.role !== "admin" && selectedViewId)}
-                    className="bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 px-4 rounded-lg h-8 shadow-sm font-semibold text-xs transition-all whitespace-nowrap"
+                    className="btn-premium h-10 px-5 bg-white/80 border-slate-200 hover:bg-white text-slate-700 shadow-sm"
                 >
                     Refresh
                 </button>
@@ -261,9 +266,9 @@ export default function DashboardBody(props) {
                                 alert("Failed to delete view");
                             }
                         }}
-                        placeholder="Select a view…"
+                        placeholder="Saved Views…"
                         className="ml-1"
-                        buttonClassName="border border-slate-200 px-2 rounded-lg min-w-[14rem] bg-white h-8 text-xs"
+                        buttonClassName="input-premium py-0 h-10 min-w-[16rem] bg-white/80"
                     />
                 )}
 
@@ -276,7 +281,7 @@ export default function DashboardBody(props) {
                                 setShowColumnSelector(true);
                             }
                         }}
-                        className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 rounded-lg h-8 shadow-sm font-semibold text-xs transition-all flex items-center gap-2 whitespace-nowrap"
+                        className="btn-premium h-10 px-6 bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg shadow-emerald-100"
                     >
                         Save View
                     </button>

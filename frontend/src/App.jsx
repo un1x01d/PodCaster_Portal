@@ -471,11 +471,13 @@ export default function App() {
       setTabs(tabList);
       if (tabList.length > 0) {
         setActiveTab(tabList[0]);
+        localStorage.setItem("activeTab", tabList[0]);
       }
     } catch (e) {
       console.error("fetchTabs failed:", e);
       setTabs([]);
       setActiveTab("");
+      localStorage.removeItem("activeTab");
     }
   };
 
@@ -644,7 +646,7 @@ export default function App() {
           setUser(r.data);
           const savedSheetId = localStorage.getItem("sheetId");
           const savedTab = localStorage.getItem("activeTab");
-          if (savedSheetId) {
+          if (savedSheetId && savedSheetId !== "null") {
             loadData(savedSheetId, false, savedTab || null);
             fetchTabs(savedSheetId);
             if (savedTab) setActiveTab(savedTab);
@@ -759,6 +761,8 @@ export default function App() {
     if (f) {
       setActiveFilename(f.filename);
       localStorage.setItem("activeFilename", f.filename);
+      localStorage.removeItem("activeTab"); // Clear tab on sheet switch to prevent cross-sheet contamination
+      setActiveTab("");
     }
     loadData(newSheetId);
     fetchTabs(newSheetId);
@@ -769,7 +773,7 @@ export default function App() {
    * --------------------------- */
   return (
     <Router>
-      <div className="flex flex-col h-screen overflow-hidden bg-slate-50 font-sans text-slate-900">
+      <div className="flex flex-col h-screen overflow-hidden premium-gradient font-sans text-slate-900">
 
         {/* NEW HEADER */}
         {user && (
@@ -795,35 +799,39 @@ export default function App() {
             <Route path="/" element={
               <ErrorBoundary>
                 {!user ? (
-                  <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-slate-100">
-                    <div className="bg-white rounded-2xl shadow-xl p-8 w-96 border border-slate-200">
-                      <h2 className="text-2xl font-bold text-blue-900 mb-6 text-center">📊 Login</h2>
-                      <form onSubmit={handleLogin} className="flex flex-col gap-4">
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                  <div className="min-h-screen flex items-center justify-center p-6">
+                    <div className="glass rounded-3xl p-10 w-full max-w-md animate-in fade-in zoom-in duration-500">
+                      <div className="mb-8 text-center">
+                        <div className="bg-indigo-600 text-white w-16 h-16 rounded-2xl flex items-center justify-center text-3xl shadow-xl shadow-indigo-200 mx-auto mb-4">📊</div>
+                        <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight">Welcome Back</h2>
+                        <p className="text-slate-500 mt-2">Sign in to manage your podcasts</p>
+                      </div>
+                      <form onSubmit={handleLogin} className="flex flex-col gap-5">
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-bold uppercase tracking-wider text-slate-500 ml-1">Email Address</label>
                           <input
                             type="email"
                             value={email}
                             onChange={(e) => setEmail(e.target.value)}
                             placeholder="admin@example.com"
-                            className="w-full border border-slate-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                            className="input-premium"
                             required
                           />
                         </div>
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-bold uppercase tracking-wider text-slate-500 ml-1">Password</label>
                           <input
                             type="password"
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
                             placeholder="••••••••"
-                            className="w-full border border-slate-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                            className="input-premium"
                             required
                           />
                         </div>
                         <button
                           type="submit"
-                          className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-lg shadow transition-colors mt-2"
+                          className="btn-premium bg-indigo-600 hover:bg-indigo-700 text-white w-full py-4 mt-4 shadow-xl shadow-indigo-200"
                         >
                           Sign In
                         </button>
@@ -983,7 +991,7 @@ export default function App() {
 
           {/* GLOBAL MODALS */}
           {user && user.password_reset_required && (
-            <ChangePasswordModal open={true} forceChange={true} onClose={() => { }} />
+            <ChangePasswordModal open={true} forceChange={true} onClose={() => { }} className="glass-modal" />
           )}
         </main>
       </div>
@@ -991,9 +999,18 @@ export default function App() {
       {/* Column Visibility Selector Modal for Saving Views */}
       {
         showColumnSelector && (
-          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-xl shadow-2xl p-6 max-w-2xl w-full max-h-[80vh] overflow-auto">
-              <h2 className="text-xl font-bold mb-4">Select Visible Columns for View: {pendingViewName}</h2>
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[100] animate-in fade-in duration-300">
+            <div className="glass rounded-[2.5rem] p-10 max-w-2xl w-full max-h-[85vh] flex flex-col shadow-2xl animate-in zoom-in-95 duration-300">
+              <div className="flex items-center justify-between mb-8 border-b border-slate-200/50 pb-6">
+                <div>
+                  <h2 className="text-2xl font-extrabold text-slate-900">Configure View</h2>
+                  <p className="text-slate-500 text-sm mt-1">Select visible columns for <span className="text-indigo-600 font-bold">{pendingViewName}</span></p>
+                </div>
+                <button 
+                  onClick={() => setShowColumnSelector(false)}
+                  className="w-10 h-10 rounded-full hover:bg-slate-100 flex items-center justify-center text-slate-400 transition-colors"
+                >✕</button>
+              </div>
               <p className="text-sm text-gray-600 mb-4">
                 Choose which columns should be visible to users when this view is loaded.
                 If no columns are selected, all columns will be visible.
@@ -1021,16 +1038,17 @@ export default function App() {
 
               <div className="flex gap-3 justify-end">
                 <button
+                  className="btn-premium bg-slate-100 hover:bg-slate-200 text-slate-600 px-6"
                   onClick={() => {
                     setShowColumnSelector(false);
                     setPendingViewName("");
                     setVisibleColumns([]);
                   }}
-                  className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
                 >
                   Cancel
                 </button>
                 <button
+                  className="btn-premium bg-indigo-600 hover:bg-indigo-700 text-white px-10 shadow-lg shadow-indigo-100"
                   onClick={async () => {
                     try {
                       const serializableColumnFilters = {};
@@ -1074,7 +1092,6 @@ export default function App() {
                       alert("Failed to save view");
                     }
                   }}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
                 >
                   Save View
                 </button>

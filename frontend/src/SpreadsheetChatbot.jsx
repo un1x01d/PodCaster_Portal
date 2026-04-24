@@ -88,49 +88,57 @@ export default function SpreadsheetChatbot({
             {!isOpen && (
                 <button
                     onClick={() => setIsOpen(true)}
-                    className="fixed bottom-6 right-6 w-10 h-10 bg-slate-900 text-white rounded-full shadow-xl hover:bg-slate-800 hover:shadow-2xl transition-all z-40 flex items-center justify-center focus:outline-none ring-1 ring-white/10"
-                    title="Open Chat"
+                    className="fixed bottom-8 right-8 w-14 h-14 bg-indigo-600 text-white rounded-2xl shadow-2xl shadow-indigo-200 hover:bg-indigo-700 hover:scale-110 transition-all z-40 flex items-center justify-center focus:outline-none group animate-in slide-in-from-right-8 duration-500"
+                    title="Open Data Assistant"
                 >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="group-hover:rotate-12 transition-transform">
                         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
                     </svg>
+                    <span className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full border-2 border-white"></span>
                 </button>
             )}
 
             {/* Chat Panel */}
             {isOpen && (
                 <div 
-                    className="fixed bottom-6 right-6 w-96 bg-white rounded-xl shadow-2xl flex flex-col z-40 border border-slate-200 font-sans overflow-hidden ring-1 ring-black/5"
+                    className="fixed bottom-8 right-8 w-[24rem] glass rounded-[2.5rem] flex flex-col z-[60] shadow-2xl overflow-hidden animate-in slide-in-from-bottom-8 fade-in duration-500"
                     style={{ height: isMinimized ? 'auto' : `${chatHeight}px` }}
                 >
                     {/* Draggable Top Handle */}
                     {!isMinimized && (
                         <div 
-                            className="w-full h-2 cursor-ns-resize hover:bg-slate-300 transition-colors absolute top-0 left-0 right-0 z-50 flex items-center justify-center opacity-0 hover:opacity-100"
+                            className="w-full h-3 cursor-ns-resize hover:bg-white/40 transition-colors absolute top-0 left-0 right-0 z-[70] flex items-center justify-center opacity-0 hover:opacity-100"
                             onMouseDown={handleMouseDown}
                         >
-                            <div className="w-10 h-1 bg-slate-400 rounded-full"></div>
+                            <div className="w-12 h-1 bg-slate-400/50 rounded-full"></div>
                         </div>
                     )}
 
                     {/* Header */}
                     <div
-                        className="bg-slate-900 text-white px-3 py-2 border-b border-slate-800 flex justify-between items-center shadow-sm cursor-pointer select-none relative"
+                        className="bg-indigo-600 text-white px-6 py-5 flex justify-between items-center cursor-pointer select-none"
                         onDoubleClick={() => setIsMinimized(!isMinimized)}
                     >
-                        <div className="flex items-center gap-2">
-                            <div className="w-5 h-5 bg-indigo-500 rounded flex items-center justify-center shadow-inner">
-                                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-white">
-                                    <line x1="12" y1="5" x2="12" y2="19"></line>
-                                    <line x1="5" y1="12" x2="19" y2="12"></line>
+                        <div className="flex items-center gap-3">
+                            <div className="w-9 h-9 bg-white/20 rounded-xl flex items-center justify-center backdrop-blur-md border border-white/20">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M12 2a10 10 0 1 0 10 10H12V2Z"></path>
+                                    <path d="M12 12L2.1 11.9"></path>
+                                    <path d="M12 2a10 10 0 0 1 10 10h-10V2Z"></path>
                                 </svg>
                             </div>
-                            <span className="font-medium text-xs tracking-wide">Data Assistant</span>
+                            <div>
+                                <h3 className="font-bold text-sm tracking-tight leading-none mb-1">Data Assistant</h3>
+                                <div className="flex items-center gap-1.5">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                                    <span className="text-[10px] font-bold text-indigo-100 uppercase tracking-widest">Online</span>
+                                </div>
+                            </div>
                         </div>
-                        <div className="flex gap-1.5 items-center">
+                        <div className="flex gap-2 items-center">
                             <button
                                 onClick={(e) => { e.stopPropagation(); clearMessages(); }}
-                                className="text-slate-400 hover:text-red-400 transition-colors p-0.5"
+                                className="w-8 h-8 rounded-lg bg-white/10 hover:bg-white/20 transition-all flex items-center justify-center"
                                 title="Reset Chat"
                             >
                                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -140,12 +148,15 @@ export default function SpreadsheetChatbot({
                             </button>
                             <button
                                 onClick={(e) => { e.stopPropagation(); setIsMinimized(!isMinimized); }}
-                                className="text-slate-400 hover:text-white transition-colors p-0.5"
-                                title={isMinimized ? 'Maximize' : 'Minimize'}
+                                className="w-8 h-8 rounded-lg bg-white/10 hover:bg-white/20 transition-all flex items-center justify-center"
+                                title={isMinimized ? 'Expand' : 'Collapse'}
                             >
                                 {isMinimized ? (
                                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                                        <polyline points="15 3 21 3 21 9"></polyline>
+                                        <polyline points="9 21 3 21 3 15"></polyline>
+                                        <line x1="21" y1="3" x2="14" y2="10"></line>
+                                        <line x1="3" y1="21" x2="10" y2="14"></line>
                                     </svg>
                                 ) : (
                                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -155,7 +166,7 @@ export default function SpreadsheetChatbot({
                             </button>
                             <button
                                 onClick={() => setIsOpen(false)}
-                                className="text-slate-400 hover:text-white transition-colors p-0.5"
+                                className="w-8 h-8 rounded-lg bg-white/10 hover:bg-red-500/80 transition-all flex items-center justify-center"
                                 title="Close"
                             >
                                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -168,18 +179,20 @@ export default function SpreadsheetChatbot({
 
                     {/* Body — only when not minimized */}
                     {!isMinimized && (
-                        <>
+                        <div className="flex-1 flex flex-col min-h-0 bg-white/30 backdrop-blur-md">
                             <ChatHistory 
                                 messages={messages} 
                                 onApplyFilter={onApplyFilter}
                             />
-                            <ChatInput
-                                input={input}
-                                setInput={setInput}
-                                handleSend={handleSend}
-                                isOpen={isOpen}
-                            />
-                        </>
+                            <div className="p-4 bg-white/50 border-t border-slate-200/50">
+                                <ChatInput
+                                    input={input}
+                                    setInput={setInput}
+                                    handleSend={handleSend}
+                                    isOpen={isOpen}
+                                />
+                            </div>
+                        </div>
                     )}
                 </div>
             )}

@@ -3,16 +3,48 @@
 @tailwind utilities;
 
 :root {
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  /* Premium Palette - Deep Indigo & Cyan */
+  --primary: 230 60% 50%;
+  --primary-foreground: 210 40% 98%;
+  --accent: 190 90% 50%;
+  --accent-foreground: 210 40% 98%;
+  --background: 220 33% 98%;
+  --foreground: 224 71% 4%;
+  --card: 0 0% 100%;
+  --card-foreground: 224 71% 4%;
+  --border: 214 32% 91%;
+  --radius: 1rem;
 }
 
-body {
-  @apply bg-slate-50 text-slate-800;
+@layer base {
+  body {
+    @apply bg-slate-50 text-slate-900 antialiased;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  }
+}
+
+@layer components {
+  .glass {
+    @apply bg-white/70 backdrop-blur-lg border border-white/20 shadow-xl;
+  }
+  
+  .premium-gradient {
+    background: radial-gradient(circle at top right, hsl(var(--primary) / 0.05), transparent),
+                radial-gradient(circle at bottom left, hsl(var(--accent) / 0.05), transparent);
+  }
+
+  .btn-premium {
+    @apply inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold transition-all
+           hover:scale-[1.02] active:scale-[0.98] shadow-md hover:shadow-lg disabled:opacity-50;
+  }
+
+  .input-premium {
+    @apply w-full rounded-xl border border-slate-200 bg-white/50 px-4 py-2 text-sm 
+           transition-all focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 outline-none;
+  }
 }
 
 /* Ensure full-height layout */
-html,
-body,
-#root {
+html, body, #root {
   height: 100%;
 }

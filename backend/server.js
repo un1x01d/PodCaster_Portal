@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import path from "path";
@@ -12,6 +13,7 @@ import userRoutes from "./src/routes/userRoutes.js";
 import viewRoutes from "./src/routes/viewRoutes.js";
 
 const app = express();
+// Force restart
 const PORT = process.env.PORT || 4000;
 
 // CORS – explicit allowlist (H5 fix)

@@ -494,6 +494,18 @@ export default function UserManagement({ token, user, sheetId }) {
     }
   };
 
+  const toggleGroupAdmin = async (uid, isAdmin) => {
+    if (!selectedGroupId) return;
+    try {
+      await axios.post(`${API}/groups/${selectedGroupId}/users/${uid}/admin`, { isAdmin: !isAdmin }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      fetchGroupMembers(selectedGroupId);
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to toggle group admin");
+    }
+  };
+
   const saveGroupPermissions = async () => {
     if (!selectedGroupId || !selectedGroupSheetId) {
       alert("Pick a group and a sheet first.");
@@ -692,35 +704,37 @@ export default function UserManagement({ token, user, sheetId }) {
       return true;
     });
   }, [users]);
-
-
   return (
-    <div className="p-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
-      {/* USERS PANEL */}
-      <div className="bg-white border text-slate-700 rounded-2xl shadow-sm p-6 border-slate-200 h-full flex flex-col">
-        <h3 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2 border-b pb-2">
-          <span className="text-xl">👥</span> Users
-        </h3>
+    <div className="p-8 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-8 justify-center premium-gradient min-h-full overflow-auto">
+      {/* 1. USERS PANEL */}
+      <div className="glass rounded-[2rem] p-8 h-full flex flex-col animate-in fade-in slide-in-from-bottom-4 duration-500">
+        <div className="flex items-center justify-between mb-8 border-b border-slate-200/50 pb-6">
+          <h3 className="font-extrabold text-2xl text-slate-900 flex items-center gap-3">
+            <span className="bg-indigo-600 text-white w-10 h-10 rounded-xl flex items-center justify-center text-xl shadow-lg shadow-indigo-100">👥</span>
+            Users
+          </h3>
+          <span className="bg-white/60 text-indigo-600 text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-full border border-indigo-100">{users.length} Total</span>
+        </div>
 
-        {/* add user */}
-        <div className="flex flex-col gap-3 mb-6 bg-slate-50 p-4 rounded-xl border border-slate-100">
-          <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Add New User</label>
+        {/* Quick Add User */}
+        <div className="flex flex-col gap-4 mb-8 bg-white/40 p-6 rounded-2xl border border-white/60 shadow-sm">
+          <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 ml-1">Quick Add User</label>
           <input
-            className="border border-slate-200 rounded-lg px-3 h-8 text-xs focus:ring-2 focus:ring-blue-100 focus:border-blue-400 outline-none transition-all"
+            className="input-premium"
             placeholder="Email address"
             value={newUser.email}
             onChange={e => setNewUser({ ...newUser, email: e.target.value })}
           />
           <input
-            className="border border-slate-200 rounded-lg px-3 h-8 text-xs focus:ring-2 focus:ring-blue-100 focus:border-blue-400 outline-none transition-all"
+            className="input-premium"
             placeholder="Password"
             type="password"
             value={newUser.password}
             onChange={e => setNewUser({ ...newUser, password: e.target.value })}
           />
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             <select
-              className="border border-slate-200 rounded-lg px-3 h-8 text-xs bg-white flex-1 focus:ring-2 focus:ring-blue-100 focus:border-blue-400 outline-none"
+              className="input-premium py-2 max-w-[120px]"
               value={newUser.role}
               onChange={e => setNewUser({ ...newUser, role: e.target.value })}
             >
@@ -728,7 +742,7 @@ export default function UserManagement({ token, user, sheetId }) {
               <option value="admin">Admin</option>
             </select>
             <button
-              className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-4 h-8 text-xs font-semibold shadow-sm hover:shadow transition-all whitespace-nowrap"
+              className="btn-premium bg-indigo-600 hover:bg-indigo-700 text-white flex-1 py-2.5 shadow-lg shadow-indigo-100"
               onClick={addUser}
             >
               Add User
@@ -736,396 +750,228 @@ export default function UserManagement({ token, user, sheetId }) {
           </div>
         </div>
 
-        {/* list users */}
-        <div className="max-h-96 overflow-auto border border-slate-200 rounded-xl bg-white shadow-inner">
+        {/* Users List */}
+        <div className="space-y-3 overflow-auto pr-2 custom-scrollbar flex-1">
           {uniqueUsers.map((u) => (
             <div
               key={u.id}
-              className={`flex items-center justify-between px-4 py-3 border-b border-slate-100 last:border-0 cursor-pointer transition-colors ${selectedUserId === u.id ? "bg-blue-50 border-l-4 border-l-blue-500 pl-3" : "hover:bg-slate-50"
-                }`}
+              className={`group flex items-center justify-between p-4 rounded-2xl border transition-all cursor-pointer ${
+                selectedUserId === u.id
+                  ? "bg-indigo-600 border-indigo-600 text-white shadow-lg shadow-indigo-100 translate-x-1"
+                  : "bg-white/50 border-slate-200/60 hover:border-indigo-300 hover:bg-white hover:shadow-md"
+              }`}
               onClick={() => setSelectedUserId(u.id)}
             >
-              <div>
-                <div className="font-semibold text-slate-800 text-sm">{u.email}</div>
-                <div className="text-[10px] uppercase tracking-wider text-slate-400 font-bold mt-0.5">{u.role} • ID: {u.id}</div>
+              <div className="flex items-center gap-3">
+                <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm ${
+                  selectedUserId === u.id ? "bg-white/20 text-white" : "bg-indigo-100 text-indigo-600"
+                }`}>
+                  {u.email[0].toUpperCase()}
+                </div>
+                <div className="min-w-0">
+                  <div className={`font-bold text-sm truncate max-w-[100px] ${selectedUserId === u.id ? "text-white" : "text-slate-900"}`}>{u.email}</div>
+                  <div className={`text-[10px] font-bold uppercase tracking-widest mt-0.5 ${selectedUserId === u.id ? "text-indigo-100" : "text-slate-400"}`}>
+                    {u.role}
+                  </div>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                 <button
-                  className="text-[10px] font-bold uppercase tracking-wider text-slate-500 hover:text-blue-600 hover:bg-blue-50 px-3 py-1.5 rounded-md transition-all border border-transparent hover:border-blue-100 whitespace-nowrap"
+                  className={`p-2 rounded-lg transition-colors ${
+                    selectedUserId === u.id ? "hover:bg-white/20 text-white" : "hover:bg-slate-100 text-slate-400 hover:text-indigo-600"
+                  }`}
+                  title="Reset Password"
                   onClick={(e) => {
                     e.stopPropagation();
-                    if (window.confirm("Are you sure you want to reset this user's password? A temporary password will be generated and the user will be forced to change it on next login.")) {
+                    if (window.confirm("Are you sure you want to reset this user's password?")) {
                       resetPassword(u.id);
                     }
                   }}
-                >Reset</button>
+                >🔄</button>
                 <button
-                  className="text-[10px] font-bold uppercase tracking-wider text-red-500 hover:text-red-700 hover:bg-red-50 px-3 py-1.5 rounded-md transition-all border border-transparent hover:border-red-100 whitespace-nowrap"
+                  className={`p-2 rounded-lg transition-colors ${
+                    selectedUserId === u.id ? "hover:bg-white/20 text-white" : "hover:bg-red-50 text-slate-400 hover:text-red-500"
+                  }`}
+                  title="Delete User"
                   onClick={(e) => { e.stopPropagation(); deleteUser(u.id); }}
-                >Delete</button>
+                >🗑️</button>
               </div>
             </div>
           ))}
         </div>
 
-        {/* user permissions (select SHEET from user's groups, latest 10) */}
-        {selectedUserId && (
-          <div className="mt-4">
-            <h4 className="font-semibold mb-2">
-              User Permissions — <span className="text-blue-600 font-bold">{userById.get(selectedUserId)?.email}</span>
-            </h4>
-
-            {/* Sheet selector (latest 10) */}
-            <div className="flex items-center mb-2">
-              <label className="text-xs font-bold uppercase tracking-wider text-slate-400 mr-2 shrink-0">Sheet:</label>
-              <select
-                className="border rounded px-2 h-8 flex-1 min-w-0 truncate text-xs"
-                value={selectedUserSheetId || ""}
-                onChange={(e) => setSelectedUserSheetId(e.target.value || null)}
-              >
-                <option value="">Select a sheet…</option>
-                {userSheets.map(s => (
-                  <option key={s.id} value={s.id}>
-                    {trunc(s.filename, 100)}
-                  </option>
-                ))}
-              </select>
-              <span className="text-xs text-gray-500 ml-2">(latest 10)</span>
-            </div>
-
-            {/* Template toolbar (shows only templates for this sheet's group) */}
-            <div className="flex flex-wrap items-center gap-2 mb-3">
-              <input
-                className="border border-slate-200 rounded-lg px-3 h-8 text-xs focus:ring-2 focus:ring-blue-100 outline-none"
-                placeholder="Template name"
-                value={newTplNameUser}
-                onChange={(e) => setNewTplNameUser(e.target.value)}
-              />
-              <button
-                className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-3 h-8 text-xs font-semibold shadow-sm whitespace-nowrap"
-                onClick={handleSaveTemplateFromUser}
-                disabled={!selectedUserSheetId || !currentUserSheetGroupId}
-                title={selectedUserSheetId ? "Save current selection as a template (group-scoped)" : "Pick a sheet first"}
-              >
-                Save as Template
-              </button>
-              <select
-                className="border border-slate-200 rounded-lg px-3 h-8 text-xs bg-white focus:ring-2 focus:ring-blue-100 outline-none"
-                value={selectedTplUser}
-                onChange={(e) => handleApplyTemplateToUser(e.target.value)}
-                disabled={!selectedUserSheetId || !currentUserSheetGroupId}
-                title={selectedUserSheetId ? "Apply a saved template to this sheet" : "Pick a sheet first"}
-              >
-                <option value="">Load template…</option>
-                {visibleUserTemplates.map(t => (
-                  <option key={t.id} value={t.id}>{t.name}</option>
-                ))}
-              </select>
-              <button
-                className={`border rounded-lg px-3 h-8 text-xs font-semibold transition-colors whitespace-nowrap ${selectedTplUser ? "text-red-500 border-red-200 hover:bg-red-50" : "text-gray-300 border-gray-200"}`}
-                onClick={() => selectedTplUser && handleDeleteTemplate(selectedTplUser)}
-                disabled={!selectedTplUser}
-              >
-                Delete template
-              </button>
-            </div>
-
-            {/* Only show column checkboxes & filter once a sheet is chosen */}
-            {selectedUserSheetId ? (
-              <>
-                <div className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-2">
-                  Select columns allowed for this user. Leave all unchecked to allow all.
-                </div>
-
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-auto border rounded p-2">
-                  {userSheetHeaders.map((h, i) => (
-                    <label key={`${h}-${i}`} className="flex items-center gap-2 min-w-0" title={h}>
-                      <input
-                        type="checkbox"
-                        checked={userAllowedCols.has(h)}
-                        onChange={() => toggleUserAllowed(h)}
-                        className="shrink-0"
-                      />
-                      <span className="text-xs font-medium text-slate-600 truncate">{h}</span>
-                    </label>
-                  ))}
-                </div>
-
-                <div className="mt-2 flex gap-2">
-                  <button
-                    className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-4 h-8 font-semibold text-xs flex-1 shadow-sm whitespace-nowrap"
-                    onClick={saveUserPermissions}
-                  >
-                    Save Column Permissions
-                  </button>
-                  <button
-                    className="bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg px-4 h-8 font-semibold text-xs flex-1 shadow-sm transition-colors whitespace-nowrap"
-                    onClick={() => {
-                      setUserAllowedCols(new Set());
-                      setUserRowFilters([{ key: "", value: "" }]);
-                    }}
-                  >
-                    Reset Permissions
-                  </button>
-                </div>
-
-                <div className="mt-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Row Filters:</span>
-                    <button
-                      className="bg-blue-600 hover:bg-blue-700 text-white rounded px-2 h-7 text-xs font-medium"
-                      onClick={() => setUserRowFilters([...userRowFilters, { key: "", value: "" }])}
-                    >
-                      + Add Filter
-                    </button>
-                  </div>
-                  {userRowFilters.map((filter, idx) => (
-                    <div key={idx} className="flex items-center gap-2 mb-2">
-                      <select
-                        className="border rounded px-2 h-7 text-xs flex-1"
-                        value={filter.key}
-                        onChange={e => {
-                          const newFilters = [...userRowFilters];
-                          newFilters[idx].key = e.target.value;
-                          setUserRowFilters(newFilters);
-                        }}
-                      >
-                        <option value="">(select column)</option>
-                        {userSheetHeaders.map(h => <option key={h} value={h}>{h}</option>)}
-                      </select>
-                      <input
-                        className="border rounded px-2 h-7 text-xs flex-1"
-                        placeholder="value"
-                        value={filter.value}
-                        onChange={e => {
-                          const newFilters = [...userRowFilters];
-                          newFilters[idx].value = e.target.value;
-                          setUserRowFilters(newFilters);
-                        }}
-                      />
-                      {userRowFilters.length > 1 && (
-                        <button
-                          className="bg-red-600 hover:bg-red-700 text-white rounded px-2 py-1 text-xs"
-                          onClick={() => setUserRowFilters(userRowFilters.filter((_, i) => i !== idx))}
-                        >
-                          Remove
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                  <button
-                    className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-3 h-8 text-sm font-medium mt-2 shadow-sm"
-                    onClick={saveUserPermissions}
-                  >
-                    Save
-                  </button>
-                </div>
-              </>
-            ) : (
-              <div className="text-gray-500 mt-2">Select a sheet to configure user permissions.</div>
-            )}
-
-            <div className="mt-4">
-              <h5 className="font-semibold mb-2">View Permissions</h5>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-auto border rounded p-2">
-                {views.filter(v => String(v.sheet_id) === String(selectedUserSheetId)).map((v) => (
-                  <label key={v.id} className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={userViews.has(v.id)}
-                      onChange={async () => {
-                        const newViews = new Set(userViews);
-                        try {
-                          if (newViews.has(v.id)) {
-                            await axios.delete(
-                              `${API}/views/user-permissions/${v.id}/${selectedUserId}`,
-                              { headers: { Authorization: `Bearer ${token}` } }
-                            );
-                            newViews.delete(v.id);
-                          } else {
-                            await axios.post(
-                              `${API}/views/user-permissions`,
-                              { viewId: v.id, userId: selectedUserId },
-                              { headers: { Authorization: `Bearer ${token}` } }
-                            );
-                            newViews.add(v.id);
-                          }
-                          setUserViews(newViews);
-                        } catch (e) {
-                          alert(e.response?.data?.error || "Failed to update view permission");
-                        }
-                      }}
-                    />
-                    <span className="text-xs font-medium text-slate-600">{v.name}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            {/* Default View Selection */}
-            <div className="mt-4">
-              <h5 className="font-semibold mb-2 text-sm text-slate-700">Default View (Auto-load on Login)</h5>
-              <div className="flex gap-2">
-                <select
-                  className="border rounded px-2 h-9 flex-1 text-xs"
-                  value={userDefaultViewId}
-                  onChange={(e) => setUserDefaultViewId(e.target.value)}
-                >
-                  <option value="">(None)</option>
-                  {views.filter(v => userViews.has(v.id)).map((v) => (
-                    <option key={v.id} value={v.id}>{v.name}</option>
-                  ))}
-                </select>
-                <button
-                  className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-4 h-9 font-medium text-sm shadow-sm"
-                  onClick={async () => {
-                    await axios.put(
-                      `${API}/users/${selectedUserId}/default-view`,
-                      { viewId: userDefaultViewId || null },
-                      { headers: { Authorization: `Bearer ${token}` } }
-                    );
-                    alert("Default view saved");
-                  }}
-                >
-                  Save Default View
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
 
-      {/* GROUPS PANEL */}
-      <div className="bg-white border text-slate-700 rounded-2xl shadow-sm p-6 border-slate-200 h-full flex flex-col">
-        <h3 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2 border-b pb-2">
-          <span className="text-xl">🏢</span> Groups
-        </h3>
+      {/* 2. GROUPS PANEL */}
+      <div className="glass rounded-[2rem] p-8 h-full flex flex-col animate-in fade-in slide-in-from-bottom-4 duration-500 delay-75">
+        <div className="flex items-center justify-between mb-8 border-b border-slate-200/50 pb-6">
+          <h3 className="font-extrabold text-2xl text-slate-900 flex items-center gap-3">
+            <span className="bg-emerald-600 text-white w-10 h-10 rounded-xl flex items-center justify-center text-xl shadow-lg shadow-emerald-100">🏢</span>
+            Groups
+          </h3>
+          <span className="bg-white/60 text-emerald-600 text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-full border border-emerald-100">{groups.length} Total</span>
+        </div>
 
-        <div className="flex gap-2 mb-4">
+        <div className="flex gap-3 mb-8 bg-white/40 p-6 rounded-2xl border border-white/60 shadow-sm">
           <input
-            className="border border-slate-200 rounded-lg px-3 h-9 text-sm flex-1 focus:ring-2 focus:ring-blue-100 focus:border-blue-400 outline-none transition-all"
+            className="input-premium flex-1"
             placeholder="New group name"
             value={newGroupName}
             onChange={e => setNewGroupName(e.target.value)}
           />
           <button
-            className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-4 h-9 text-sm font-medium shadow-sm hover:shadow transition-all"
+            className="btn-premium bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2.5 shadow-lg shadow-emerald-100"
             onClick={createGroup}
           >
             Create
           </button>
         </div>
 
-        <div className="max-h-64 overflow-auto border border-slate-200 rounded-xl bg-white shadow-inner mb-4">
+        <div className="space-y-3 overflow-auto pr-2 custom-scrollbar flex-1 mb-6">
           {groups.map(g => (
             <div
               key={g.id}
-              className={`px-4 py-3 border-b border-slate-100 last:border-0 cursor-pointer transition-colors ${selectedGroupId === g.id ? "bg-blue-50 border-l-4 border-l-blue-500 pl-3" : "hover:bg-slate-50"}`}
+              className={`group flex items-center justify-between p-4 rounded-2xl border transition-all cursor-pointer ${
+                selectedGroupId === g.id
+                  ? "bg-emerald-600 border-emerald-600 text-white shadow-lg shadow-emerald-100 translate-x-1"
+                  : "bg-white/50 border-slate-200/60 hover:border-emerald-300 hover:bg-white hover:shadow-md"
+              }`}
               onClick={() => setSelectedGroupId(g.id)}
             >
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="font-semibold text-slate-800 text-sm">{g.name}</div>
-                  <div className="flex gap-2 items-center mt-0.5">
-                    <div className="text-[10px] uppercase tracking-wider text-slate-400 font-bold">ID: {g.id}</div>
-                    <div className="text-[10px] uppercase tracking-wider text-blue-400 font-bold border-l pl-2 border-slate-100">Limit: {g.max_file_size_mb || 100}MB</div>
-                  </div>
+              <div className="min-w-0">
+                <div className={`font-bold text-sm truncate max-w-[140px] ${selectedGroupId === g.id ? "text-white" : "text-slate-900"}`}>{g.name}</div>
+                <div className="flex gap-2 items-center mt-0.5">
+                  <div className={`text-[10px] uppercase tracking-widest font-bold ${selectedGroupId === g.id ? "text-emerald-100" : "text-slate-400"}`}>ID: {g.id}</div>
+                  <div className={`text-[10px] uppercase tracking-widest font-bold border-l pl-2 ${selectedGroupId === g.id ? "border-white/20 text-emerald-100" : "border-slate-100 text-emerald-400"}`}>Limit: {g.max_file_size_mb || 100}MB</div>
                 </div>
-                {user?.role === "admin" && (
-                  <button
-                    className="text-xs font-semibold text-red-500 hover:text-red-700 hover:bg-red-50 px-3 py-1.5 rounded-md transition-all border border-transparent hover:border-red-100"
-                    title="Delete group"
-                    onClick={(e) => { e.stopPropagation(); deleteGroup(g.id); }}
-                  >
-                    Delete
-                  </button>
-                )}
               </div>
+              {user?.role === "admin" && (
+                <button
+                  className={`p-2 rounded-lg transition-colors opacity-0 group-hover:opacity-100 ${
+                    selectedGroupId === g.id ? "hover:bg-white/20 text-white" : "hover:bg-red-50 text-slate-400 hover:text-red-500"
+                  }`}
+                  title="Delete group"
+                  onClick={(e) => { e.stopPropagation(); deleteGroup(g.id); }}
+                >🗑️</button>
+              )}
             </div>
           ))}
         </div>
 
-        {/* group members */}
+        {/* Selected Group Settings */}
         {selectedGroupId && (
-          <div className="mt-4 bg-slate-50 p-4 rounded-xl border border-slate-100">
-            <div className="flex justify-between items-center mb-2">
-              <h4 className="font-bold text-sm text-slate-700 uppercase tracking-wider">Settings</h4>
-            </div>
+          <div className="bg-white/40 p-6 rounded-2xl border border-white/60 shadow-sm animate-in fade-in zoom-in duration-300">
+            <h4 className="font-bold text-xs text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+              Group Settings
+            </h4>
+
             {user?.role === "admin" && (
-              <div className="flex flex-col gap-2 mb-4">
-                <label className="text-[10px] font-bold text-slate-500 uppercase">Max File Size (MB):</label>
+              <div className="mb-6 space-y-2">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Max File Size (MB)</label>
                 <div className="flex gap-2">
                   <input
                     type="number"
-                    className="border border-slate-200 rounded-lg px-3 h-9 text-sm w-32 focus:ring-2 focus:ring-blue-100 outline-none bg-white"
+                    className="input-premium py-2 w-24"
                     key={selectedGroupId}
                     defaultValue={groups.find(g => g.id === selectedGroupId)?.max_file_size_mb || 100}
                     onBlur={(e) => {
                       const val = parseInt(e.target.value, 10);
                       if (!isNaN(val)) {
-                        if (window.confirm(`Update ${groups.find(g => g.id === selectedGroupId)?.name} limit to ${val}MB?`)) {
+                        if (window.confirm(`Update limit to ${val}MB?`)) {
                           updateGroup(selectedGroupId, { maxFileSizeMb: val });
                         }
                       }
                     }}
                   />
-                  <span className="text-xs text-slate-400 self-center">MB</span>
+                  <span className="text-xs text-slate-400 self-center font-bold">MB</span>
                 </div>
               </div>
             )}
-            <h4 className="font-bold text-sm text-slate-700 mb-2 uppercase tracking-wider border-t pt-3 mt-1">Members</h4>
 
-            <div className="flex gap-2 mb-3">
-              <select
-                className="border border-slate-200 rounded-lg px-2 h-9 flex-1 text-sm bg-white"
-                value={groupAddUserId}
-                onChange={e => setGroupAddUserId(e.target.value)}
-              >
-                <option value="">Select user…</option>
-                {uniqueUsers
-                  .filter(u => !uniqueGroupMembers.some(m => String(m.id) === String(u.id)))
-                  .map(u => <option key={String(u.id)} value={u.id}>{u.email}</option>)
-                }
-              </select>
-              <button
-                className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-3 h-9 text-sm font-medium shadow-sm"
-                onClick={addUserToGroup}
-              >
-                Add
-              </button>
-            </div>
+            <div className="space-y-4">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Manage Members</label>
+              <div className="flex gap-2">
+                <select
+                  className="input-premium py-2 flex-1"
+                  value={groupAddUserId}
+                  onChange={e => setGroupAddUserId(e.target.value)}
+                >
+                  <option value="">Select user…</option>
+                  {uniqueUsers
+                    .filter(u => !uniqueGroupMembers.some(m => String(m.id) === String(u.id)))
+                    .map(u => <option key={String(u.id)} value={u.id}>{u.email}</option>)
+                  }
+                </select>
+                <button
+                  className="btn-premium bg-slate-800 text-white px-4 py-2"
+                  onClick={addUserToGroup}
+                >
+                  Add
+                </button>
+              </div>
 
-            <div className="max-h-40 overflow-auto border border-slate-200 rounded-lg bg-white">
-              {uniqueGroupMembers.map(m => (
-                <div key={String(m.id)} className="flex items-center justify-between px-3 py-2.5 border-b border-slate-100 last:border-0 hover:bg-slate-50 transition-colors">
-                  <div className="text-sm font-medium text-slate-700">{m.email}</div>
-                  <button
-                    className="text-xs font-semibold text-red-500 hover:text-red-700 hover:bg-red-50 px-2.5 py-1 rounded-md transition-all"
-                    onClick={() => removeUserFromGroup(m.id)}
-                  >Remove</button>
-                </div>
-              ))}
-              {!uniqueGroupMembers.length && <div className="text-xs text-slate-400 p-3 italic">No members yet.</div>}
+              <div className="space-y-2 max-h-32 overflow-auto pr-1 custom-scrollbar">
+                {uniqueGroupMembers.map(m => (
+                  <div key={String(m.id)} className="group flex items-center justify-between p-3 rounded-xl bg-white/50 border border-slate-200/40 hover:bg-white transition-all">
+                    <div className="flex items-center gap-2 overflow-hidden">
+                      <div className="text-xs font-bold text-slate-700 truncate max-w-[120px]">{m.email}</div>
+                      {m.is_admin && (
+                        <div className="text-[8px] font-black text-amber-500 uppercase tracking-widest bg-amber-50 px-1.5 py-0.5 rounded-md border border-amber-100">Admin</div>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      {user?.role === "admin" && (
+                        <button
+                          onClick={() => toggleGroupAdmin(m.id, m.is_admin)}
+                          className={`p-1.5 rounded-lg transition-all ${
+                            m.is_admin 
+                              ? "text-amber-500 hover:bg-amber-50" 
+                              : "text-slate-300 hover:text-amber-500 hover:bg-indigo-50"
+                          }`}
+                          title={m.is_admin ? "Remove Group Admin" : "Make Group Admin"}
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill={m.is_admin ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+                        </button>
+                      )}
+                      <button
+                        className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                        onClick={() => removeUserFromGroup(m.id)}
+                        title="Remove from group"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                {!uniqueGroupMembers.length && <div className="text-[10px] text-slate-400 italic text-center p-2">No members yet</div>}
+              </div>
             </div>
           </div>
         )}
       </div>
 
-      {/* FOLDERS PANEL */}
-      <div className="bg-white border text-slate-700 rounded-2xl shadow-sm p-6 border-slate-200 h-full flex flex-col">
-        <h3 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2 border-b pb-2">
-          <span className="text-xl">📁</span> Folders
-        </h3>
-        <div className="flex flex-col gap-3 mb-4 bg-slate-50 p-4 rounded-xl border border-slate-100">
+      {/* 3. FOLDERS PANEL */}
+      <div className="glass rounded-[2rem] p-8 h-full flex flex-col animate-in fade-in slide-in-from-bottom-4 duration-500 delay-150">
+        <div className="flex items-center justify-between mb-8 border-b border-slate-200/50 pb-6">
+          <h3 className="font-extrabold text-2xl text-slate-900 flex items-center gap-3">
+            <span className="bg-amber-600 text-white w-10 h-10 rounded-xl flex items-center justify-center text-xl shadow-lg shadow-amber-100">📁</span>
+            Folders
+          </h3>
+          <span className="bg-white/60 text-amber-600 text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-full border border-amber-100">{folders.length} Total</span>
+        </div>
+
+        <div className="flex flex-col gap-3 mb-8 bg-white/40 p-6 rounded-2xl border border-white/60 shadow-sm">
+          <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 ml-1">New Folder</label>
           <input
-            className="border border-slate-200 rounded-lg px-3 h-9 text-sm focus:ring-2 focus:ring-blue-100 focus:border-blue-400 outline-none"
-            placeholder="New folder name"
+            className="input-premium"
+            placeholder="Folder name"
             value={newFolderName}
             onChange={(e) => setNewFolderName(e.target.value)}
           />
           <div className="flex gap-2">
             <select
-              className="border border-slate-200 rounded-lg px-3 h-9 text-sm flex-1 bg-white focus:ring-2 focus:ring-blue-100 outline-none"
+              className="input-premium py-2 flex-1"
               value={folderGroupId}
               onChange={(e) => setFolderGroupId(e.target.value)}
             >
@@ -1133,7 +979,7 @@ export default function UserManagement({ token, user, sheetId }) {
               {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
             </select>
             <button
-              className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-4 h-9 font-medium text-sm shadow-sm"
+              className="btn-premium bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 shadow-lg shadow-amber-100"
               onClick={createFolder}
             >
               Create
@@ -1141,259 +987,252 @@ export default function UserManagement({ token, user, sheetId }) {
           </div>
         </div>
 
-        <div className="max-h-64 overflow-auto border border-slate-200 rounded-xl bg-white shadow-inner">
-          {selectedGroupId ? (
-            <>
-              {folders.filter(f => f.group_id === selectedGroupId).map((f) => (
-                <div key={f.id} className="flex items-center justify-between px-4 py-3 border-b border-slate-100 last:border-0 hover:bg-slate-50 transition-colors">
-                  <div>
-                    <div className="font-semibold text-slate-800 text-sm">{f.name}</div>
-                    {f.group_id && (
-                      <div className="text-[10px] uppercase tracking-wider text-slate-400 font-bold mt-0.5">
-                        Group: {groups.find(g => g.id === f.group_id)?.name || f.group_id}
-                      </div>
-                    )}
-                  </div>
-                  <button
-                    className="text-xs font-semibold text-red-500 hover:text-red-700 hover:bg-red-50 px-3 py-1.5 rounded-md transition-all border border-transparent hover:border-red-100"
-                    onClick={() => deleteFolder(f.id)}
-                  >
-                    Delete
-                  </button>
+        <div className="space-y-3 overflow-auto pr-2 custom-scrollbar flex-1">
+          {folders.filter(f => !selectedGroupId || f.group_id === selectedGroupId).map((f) => (
+            <div key={f.id} className="group flex items-center justify-between p-4 rounded-2xl bg-white/50 border border-slate-200/60 hover:border-amber-300 hover:bg-white hover:shadow-md transition-all">
+              <div>
+                <div className="font-bold text-sm text-slate-900">{f.name}</div>
+                <div className="text-[10px] uppercase tracking-widest font-bold text-slate-400 mt-0.5">
+                  {f.group_id ? `Group: ${groups.find(g => g.id === f.group_id)?.name || f.group_id}` : "Global"}
                 </div>
-              ))}
-              {!folders.filter(f => f.group_id === selectedGroupId).length && (
-                <div className="p-4 text-sm text-slate-400 italic text-center">No folders assigned to this group.</div>
-              )}
-            </>
-          ) : (
-            <>
-              {folders.map((f) => (
-                <div key={f.id} className="flex items-center justify-between px-4 py-3 border-b border-slate-100 last:border-0 hover:bg-slate-50 transition-colors">
-                  <div>
-                    <div className="font-semibold text-slate-800 text-sm">{f.name}</div>
-                    {f.group_id && (
-                      <div className="text-[10px] uppercase tracking-wider text-slate-400 font-bold mt-0.5">
-                        Group: {groups.find(g => g.id === f.group_id)?.name || f.group_id}
-                      </div>
-                    )}
-                  </div>
-                  <button
-                    className="text-xs font-semibold text-red-500 hover:text-red-700 hover:bg-red-50 px-3 py-1.5 rounded-md transition-all border border-transparent hover:border-red-100"
-                    onClick={() => deleteFolder(f.id)}
-                  >
-                    Delete
-                  </button>
-                </div>
-              ))}
-              {!folders.length && <div className="p-4 text-sm text-slate-400 italic text-center">No folders.</div>}
-            </>
+              </div>
+              <button
+                className="p-2 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all font-bold"
+                onClick={() => deleteFolder(f.id)}
+              >🗑️</button>
+            </div>
+          ))}
+          {!folders.filter(f => !selectedGroupId || f.group_id === selectedGroupId).length && (
+            <div className="p-8 text-center bg-white/30 rounded-2xl border border-dashed border-slate-300">
+              <div className="text-3xl mb-2 opacity-30">📂</div>
+              <div className="text-xs text-slate-400 font-medium">No folders found</div>
+            </div>
           )}
         </div>
       </div>
 
-      {/* GROUP PERMISSIONS PANEL (PER-SHEET) */}
-      <div className="bg-white border text-slate-700 rounded-2xl shadow-sm p-6 border-slate-200 h-full flex flex-col">
-        <h3 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2 border-b pb-2">
-          <span className="text-xl">🔒</span> Group Permissions (per sheet)
-        </h3>
-        {selectedGroupId ? (
-          <>
-            {/* select a sheet that belongs to this group's folder */}
-            <div className="mb-4 flex flex-wrap items-center gap-3 bg-slate-50 p-3 rounded-xl border border-slate-100">
-              <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Sheet:</label>
-              <select
-                className="border border-slate-200 rounded-lg px-3 h-9 max-w-[200px] truncate text-xs bg-white focus:ring-2 focus:ring-blue-100 outline-none"
-                value={selectedGroupSheetId || ""}
-                onChange={(e) => setSelectedGroupSheetId(e.target.value || null)}
-              >
-                <option value="">Select a sheet…</option>
-                {allSheets.map(s => (
-                  <option key={s.id} value={s.id}>
-                    {s.active ? "(Active) " : ""}{trunc(s.filename, 100)}
-                  </option>
-                ))}
-              </select>
+      {/* 4. USER OVERRIDE PERMISSIONS PANEL */}
+      <div className="glass rounded-[2rem] p-8 h-full flex flex-col animate-in fade-in slide-in-from-bottom-4 duration-500 delay-200">
+        <div className="flex items-center justify-between mb-8 border-b border-slate-200/50 pb-6">
+          <h3 className="font-extrabold text-2xl text-slate-900 flex items-center gap-3">
+            <span className="bg-indigo-600 text-white w-10 h-10 rounded-xl flex items-center justify-center text-xl shadow-lg shadow-indigo-100">🔒</span>
+            User Overrides
+          </h3>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-indigo-400 text-right min-w-0">
+            {selectedUserId ? (
+              <span className="bg-white/60 px-3 py-1 rounded-full border border-indigo-100 truncate block max-w-[150px]">
+                {userById.get(selectedUserId)?.email}
+              </span>
+            ) : (
+              <span className="text-slate-300 italic">Select user</span>
+            )}
+          </div>
+        </div>
 
-              {/* Template toolbar (shows only this group's templates) */}
-              <input
-                className="border border-slate-200 rounded-lg px-3 h-9 text-sm focus:ring-2 focus:ring-blue-100 outline-none"
-                placeholder="Template name"
-                value={newTplNameGroup}
-                onChange={(e) => setNewTplNameGroup(e.target.value)}
-              />
-              <button
-                className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-3 h-9 text-sm font-medium shadow-sm"
-                onClick={handleSaveTemplateFromGroup}
-                disabled={!selectedGroupId}
-                title={selectedGroupId ? "Save current selection as a template (group-scoped)" : "Pick a group first"}
-              >
-                Save
-              </button>
-              <select
-                className="border border-slate-200 rounded-lg px-3 h-9 text-sm bg-white focus:ring-2 focus:ring-blue-100 outline-none"
-                value={selectedTplGroup}
-                onChange={(e) => handleApplyTemplateToGroup(e.target.value)}
-                disabled={!selectedGroupId || !selectedGroupSheetId}
-                title={selectedGroupId ? "Apply a saved template to this group's sheet" : "Pick a group first"}
-              >
-                <option value="">Load template…</option>
-                {visibleGroupTemplates.map(t => (
-                  <option key={t.id} value={t.id}>{t.name}</option>
-                ))}
-              </select>
-              {selectedTplGroup && (
-                <button
-                  className="text-red-500 hover:text-red-600 border border-red-200 hover:bg-red-50 rounded-lg px-3 h-9 text-xs font-medium"
-                  onClick={() => handleDeleteTemplate(selectedTplGroup)}
-                >
-                  Delete
-                </button>
-              )}
-            </div>
+        {selectedUserId ? (
+          <div className="flex-1 flex flex-col min-h-0">
+            {/* Sheet Selector */}
+            {/* Removed Sheet Selector as per user request */}
 
-            {selectedGroupSheetId ? (
-              <>
-                <div className="text-xs text-gray-500 mb-1">
-                  Columns for this sheet (leave empty for all):
-                </div>
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-auto border rounded p-2">
-                  {groupSheetHeaders.map((h, i) => (
-                    <label key={`${h}-${i}`} className="flex items-center gap-2 min-w-0" title={h}>
-                      <input
-                        type="checkbox"
-                        checked={groupAllowedCols.has(h)}
-                        onChange={() => toggleGroupAllowed(h)}
-                        className="shrink-0"
-                      />
-                      <span className="text-xs font-medium text-slate-600 truncate">{h}</span>
-                    </label>
-                  ))}
-                </div>
-
-                <div className="mt-2 flex gap-2">
-                  <button
-                    className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-4 h-8 font-semibold text-xs flex-1 shadow-sm whitespace-nowrap"
-                    onClick={saveGroupPermissions}
-                  >
-                    Save Column Permissions
-                  </button>
-                  <button
-                    className="bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg px-4 h-8 font-semibold text-xs flex-1 shadow-sm transition-colors whitespace-nowrap"
-                    onClick={() => {
-                      setGroupAllowedCols(new Set());
-                      setGroupRowFilters([{ key: "", value: "" }]);
-                    }}
-                  >
-                    Reset Permissions
-                  </button>
-                </div>
-
-                <div className="mt-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Row Filters:</span>
+            {selectedUserSheetId ? (
+              <div className="flex-1 flex flex-col gap-6 min-h-0 overflow-auto pr-2 custom-scrollbar">
+                {/* Column Permissions */}
+                <div>
+                  <div className="flex items-center justify-between mb-3 border-b border-slate-200/30 pb-2">
+                    <h4 className="font-bold text-sm text-slate-700">Restricted Columns</h4>
                     <button
-                      className="bg-blue-600 hover:bg-blue-700 text-white rounded px-2 h-7 text-xs font-medium"
-                      onClick={() => setGroupRowFilters([...groupRowFilters, { key: "", value: "" }])}
-                    >
-                      + Add Filter
-                    </button>
+                      className="text-[10px] font-bold text-indigo-500 hover:underline"
+                      onClick={() => setUserAllowedCols(new Set())}
+                    >Allow All</button>
                   </div>
-                  {groupRowFilters.map((filter, idx) => (
-                    <div key={idx} className="flex items-center gap-2 mb-2">
-                      <select
-                        className="border rounded px-2 h-7 text-xs flex-1"
-                        value={filter.key}
-                        onChange={e => {
-                          const newFilters = [...groupRowFilters];
-                          newFilters[idx].key = e.target.value;
-                          setGroupRowFilters(newFilters);
-                        }}
-                      >
-                        <option value="">(select column)</option>
-                        {groupSheetHeaders.map(h => <option key={h} value={h}>{h}</option>)}
-                      </select>
-                      <input
-                        className="border rounded px-2 h-7 text-xs flex-1"
-                        placeholder="value"
-                        value={filter.value}
-                        onChange={e => {
-                          const newFilters = [...groupRowFilters];
-                          newFilters[idx].value = e.target.value;
-                          setGroupRowFilters(newFilters);
-                        }}
-                      />
-                      {groupRowFilters.length > 1 && (
-                        <button
-                          className="bg-red-600 hover:bg-red-700 text-white rounded px-2 h-7 text-xs font-medium"
-                          onClick={() => setGroupRowFilters(groupRowFilters.filter((_, i) => i !== idx))}
-                        >
-                          Remove
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                  <button
-                    className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-3 h-8 text-xs font-semibold mt-2 shadow-sm whitespace-nowrap"
-                    onClick={saveGroupPermissions}
-                  >
-                    Save
-                  </button>
-                </div>
-
-                <div className="mt-4">
-                  <h5 className="font-semibold mb-2 text-sm text-slate-700">
-                    View Permissions {views.length > 0 && <span className="text-xs font-normal text-slate-500">(Total Loaded: {views.length})</span>}
-                  </h5>
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-auto border rounded p-2">
-                    {views.filter(v => String(v.sheet_id) === String(selectedGroupSheetId)).map((v) => (
-                      <label key={v.id} className="flex items-center gap-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    {userSheetHeaders.map((h, i) => (
+                      <label key={i} className={`flex items-center gap-3 p-3 rounded-xl border transition-all cursor-pointer ${
+                        userAllowedCols.has(h) ? "bg-indigo-50 border-indigo-200 text-indigo-700 font-bold" : "bg-white/40 border-slate-200/40 text-slate-500 hover:bg-white"
+                      }`}>
                         <input
                           type="checkbox"
-                          checked={groupViews.has(v.id)}
+                          checked={userAllowedCols.has(h)}
+                          onChange={() => toggleUserAllowed(h)}
+                          className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300"
+                        />
+                        <span className="text-xs truncate">{h}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Templates toolbar */}
+                <div className="bg-slate-900/5 p-4 rounded-xl border border-slate-900/10 space-y-3">
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500 block">Template Management</label>
+                  <div className="flex gap-2">
+                    <input
+                      className="input-premium py-1.5 flex-1 bg-white"
+                      placeholder="Template name"
+                      value={newTplNameUser}
+                      onChange={(e) => setNewTplNameUser(e.target.value)}
+                    />
+                    <button
+                      className="btn-premium bg-slate-800 text-white px-3 py-1.5 shadow-sm"
+                      onClick={handleSaveTemplateFromUser}
+                    >Save</button>
+                  </div>
+                  <div className="flex gap-2">
+                    <select
+                      className="input-premium py-1.5 flex-1 bg-white"
+                      value={selectedTplUser}
+                      onChange={(e) => handleApplyTemplateToUser(e.target.value)}
+                    >
+                      <option value="">Apply template…</option>
+                      {visibleUserTemplates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                    </select>
+                    {selectedTplUser && (
+                      <button
+                        className="p-2 rounded-lg bg-red-50 text-red-500 hover:bg-red-100 transition-colors"
+                        onClick={() => handleDeleteTemplate(selectedTplUser)}
+                      >🗑️</button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Row Filters */}
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-bold text-sm text-slate-700">Dynamic Row Filters</h4>
+                    <button
+                      className="bg-indigo-600 text-white rounded-lg px-3 py-1 text-[10px] font-bold shadow-md shadow-indigo-100"
+                      onClick={() => setUserRowFilters([...userRowFilters, { key: "", value: "" }])}
+                    >+ Add Rule</button>
+                  </div>
+                  <div className="space-y-2">
+                    {userRowFilters.map((filter, idx) => (
+                      <div key={idx} className="flex items-center gap-2">
+                        <select
+                          className="input-premium py-1.5 flex-1"
+                          value={filter.key}
+                          onChange={e => {
+                            const next = [...userRowFilters];
+                            next[idx].key = e.target.value;
+                            setUserRowFilters(next);
+                          }}
+                        >
+                          <option value="">Column…</option>
+                          {userSheetHeaders.map(h => <option key={h} value={h}>{h}</option>)}
+                        </select>
+                        <input
+                          className="input-premium py-1.5 flex-1"
+                          placeholder="Value…"
+                          value={filter.value}
+                          onChange={e => {
+                            const next = [...userRowFilters];
+                            next[idx].value = e.target.value;
+                            setUserRowFilters(next);
+                          }}
+                        />
+                        <button
+                          className="p-2 text-red-400 hover:text-red-600 font-bold"
+                          onClick={() => setUserRowFilters(userRowFilters.filter((_, i) => i !== idx))}
+                        >✕</button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="pt-8 border-t border-slate-200/30">
+                  <h4 className="font-bold text-sm text-slate-700 mb-4">View Permissions</h4>
+                  <div className="grid grid-cols-2 gap-2">
+                    {views.filter(v => String(v.sheet_id) === String(selectedUserSheetId)).map((v) => (
+                      <label key={v.id} className={`flex items-center gap-3 p-3 rounded-xl border transition-all cursor-pointer ${
+                        userViews.has(v.id) ? "bg-indigo-50 border-indigo-200 text-indigo-700 font-bold" : "bg-white/40 border-slate-200/40 text-slate-500 hover:bg-white"
+                      }`}>
+                        <input
+                          type="checkbox"
+                          checked={userViews.has(v.id)}
                           onChange={async () => {
-                            const newViews = new Set(groupViews);
+                            const newViews = new Set(userViews);
                             try {
                               if (newViews.has(v.id)) {
                                 await axios.delete(
-                                  `${API}/views/group-permissions/${v.id}/${selectedGroupId}`,
+                                  `${API}/views/user-permissions/${v.id}/${selectedUserId}`,
                                   { headers: { Authorization: `Bearer ${token}` } }
                                 );
                                 newViews.delete(v.id);
                               } else {
                                 await axios.post(
-                                  `${API}/views/group-permissions`,
-                                  { viewId: v.id, groupId: selectedGroupId },
+                                  `${API}/views/user-permissions`,
+                                  { viewId: v.id, userId: selectedUserId },
                                   { headers: { Authorization: `Bearer ${token}` } }
                                 );
                                 newViews.add(v.id);
                               }
-                              setGroupViews(newViews);
+                              setUserViews(newViews);
                             } catch (e) {
                               alert(e.response?.data?.error || "Failed to update view permission");
                             }
                           }}
                         />
-                        <span className="text-xs font-medium text-slate-600">{v.name}</span>
+                        <span className="text-xs truncate">{v.name}</span>
                       </label>
                     ))}
-                    {views.filter(v => String(v.sheet_id) === String(selectedGroupSheetId)).length === 0 && (
-                      <div className="col-span-2 text-xs text-slate-400 italic p-2">
-                        {views.length === 0 ? "No views loaded." : "No views found for this sheet."}
-                      </div>
-                    )}
                   </div>
                 </div>
-              </>
+
+                <div className="pt-8 border-t border-slate-200/30">
+                  <h4 className="font-bold text-sm text-slate-700 mb-4">Default View Selection</h4>
+                  <div className="flex gap-2">
+                    <select
+                      className="input-premium py-2 flex-1"
+                      value={userDefaultViewId}
+                      onChange={(e) => setUserDefaultViewId(e.target.value)}
+                    >
+                      <option value="">(None)</option>
+                      {views.filter(v => userViews.has(v.id)).map((v) => (
+                        <option key={v.id} value={v.id}>{v.name}</option>
+                      ))}
+                    </select>
+                    <button
+                      className="btn-premium bg-slate-800 text-white px-4 py-2 text-xs"
+                      onClick={async () => {
+                        await axios.put(
+                          `${API}/users/${selectedUserId}/default-view`,
+                          { viewId: userDefaultViewId || null },
+                          { headers: { Authorization: `Bearer ${token}` } }
+                        );
+                        alert("Default view saved");
+                      }}
+                    >
+                      Set Default
+                    </button>
+                  </div>
+                </div>
+
+                <button
+                  className="btn-premium bg-indigo-600 hover:bg-indigo-700 text-white w-full py-4 shadow-xl shadow-indigo-200 mt-4 mb-4 shrink-0"
+                  onClick={saveUserPermissions}
+                >
+                  Confirm & Apply Permissions
+                </button>
+              </div>
             ) : (
-              <div className="text-gray-500">Select a sheet to configure permissions.</div>
+              <div className="flex-1 flex items-center justify-center bg-white/30 rounded-3xl border border-dashed border-slate-300">
+                <div className="text-center p-8">
+                  <div className="text-4xl mb-4 opacity-20">🎯</div>
+                  <div className="text-slate-400 font-medium max-w-[200px] mx-auto">Select a spreadsheet to define individual override access</div>
+                </div>
+              </div>
             )}
-          </>
+          </div>
         ) : (
-          <div className="text-gray-500">Select a group to edit permissions.</div>
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center p-12">
+              <div className="text-6xl mb-6 opacity-10 animate-pulse">🔒</div>
+              <h4 className="text-slate-400 font-bold uppercase tracking-widest text-xs mb-2">User Permissions Override</h4>
+              <p className="text-slate-300 text-[10px] max-w-[180px] mx-auto">Select a user from the list to begin configuring their specific data access level</p>
+            </div>
+          </div>
         )}
       </div>
+
     </div>
   );
 }
-
