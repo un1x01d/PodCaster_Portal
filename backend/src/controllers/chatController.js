@@ -136,6 +136,23 @@ function normalizeConversationHistory(history = []) {
     .slice(-8);
 }
 
+function formatAnswerWithBullets(answer = "") {
+  const text = typeof answer === "string" ? answer.trim() : "";
+  if (!text) return "";
+
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (lines.length < 2) return text;
+
+  const hasListMarkers = lines.some((l) => /^([-*]\s+|\d+\.\s+)/.test(l));
+  if (hasListMarkers) return text;
+
+  if (lines[0].endsWith(":")) {
+    return `${lines[0]}\n${lines.slice(1).map((l) => `- ${l}`).join("\n")}`;
+  }
+
+  return lines.map((l) => `- ${l}`).join("\n");
+}
+
 function computeDeterministicAnswer(operation, rows, targetColumn, groupBy, limit = 5) {
   const op = (operation || "none").toLowerCase();
   const nLimit = Number.isFinite(Number(limit)) ? Math.max(1, Number(limit)) : 5;
@@ -309,6 +326,8 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
       "Supported operations: none, filter, count, sum, avg, max, min, top_n.",
       "Use filters for text search when appropriate.",
       "Answer in a conversational tone with 2-5 concise sentences.",
+      "Use bullet points when listing key findings, comparisons, or top drivers.",
+      "When there are multiple distinct points, prefer one short lead sentence followed by bullets.",
       "When user asks 'why' or asks for the cause of a difference, explain the top drivers and include concrete values.",
       "When comparing years, include each year and the numeric delta.",
       "For trend requests, treat quarter/fiscal period columns as temporal and prefer them in chart.date_column.",
@@ -429,6 +448,7 @@ export async function chatQuery(req, res) {
   if (deterministicAnswer && aiAnswer && deterministicAnswer.toLowerCase() !== aiAnswer.toLowerCase()) {
     answer = `${deterministicAnswer}\n\n${aiAnswer}`;
   }
+  answer = formatAnswerWithBullets(answer);
 
   res.json({
     answer,

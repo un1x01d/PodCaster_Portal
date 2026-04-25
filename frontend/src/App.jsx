@@ -224,11 +224,20 @@ export default function App() {
 
   // Helper for currency/number parsing
   const parseNum = (v) => {
-    if (typeof v === 'number') return v;
-    if (!v) return 0;
-    const clean = String(v).replace(/[$,%]/g, '');
-    const n = parseFloat(clean);
-    return isNaN(n) ? 0 : n;
+    if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+    if (v === null || v === undefined || v === "") return 0;
+
+    const raw = String(v).trim();
+    if (!raw) return 0;
+
+    const negativeByParens = raw.startsWith("(") && raw.endsWith(")");
+    const normalized = raw
+      .replace(/[(),\s$,%]/g, "")
+      .replace(/[−–—]/g, "-");
+
+    const n = Number(normalized);
+    if (!Number.isFinite(n)) return 0;
+    return negativeByParens ? -Math.abs(n) : n;
   };
 
   /* -------- Computed: Pivot -------- */
