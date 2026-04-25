@@ -367,13 +367,12 @@ function buildHeuristicRecommendations({ metricCol, categoryCol, series, topCate
   };
 }
 
-function getInsightCacheKey({ sheetId, locale, context, settings, headers, rows }) {
+function getInsightCacheKey({ sheetId, context, settings, headers, rows }) {
   const sampleRows = rows.length > 20
     ? [...rows.slice(0, 10), ...rows.slice(-10)]
     : rows;
   return hashObject({
     sheetId,
-    locale: normalizeLocale(locale || "en"),
     context,
     headers,
     settings,
@@ -526,7 +525,7 @@ function computeSeries(rows, dateCol, metricCol) {
     .map(([period, value]) => ({ period, value }));
 }
 
-async function buildInsights({ rows, headers, settings, context, locale }) {
+async function buildInsights({ rows, headers, settings, context }) {
   const out = [];
   const detected = detectColumns(headers, rows, settings);
   const { dateCol, metricCol, categoryCol } = detected;
@@ -926,16 +925,7 @@ async function buildInsights({ rows, headers, settings, context, locale }) {
     .map((term) => String(term || "").trim())
     .filter(Boolean);
 
-  const localizedCards = isEnglishLocale(locale)
-    ? ranked
-    : await translateDashboardCards({
-        locale,
-        cards: ranked,
-        preserveTerms: preservedTerms.slice(0, 80),
-        context: "insight-cards",
-      });
-
-  return { cards: localizedCards, detected };
+  return { cards: ranked, detected };
 }
 
 async function getInsightSettings(sheetId) {
@@ -980,7 +970,6 @@ export async function getInsights(req, res) {
   const settings = await getInsightSettings(sheetId);
   const cacheKey = getInsightCacheKey({
     sheetId,
-    locale,
     context,
     settings,
     headers: loaded.headers || [],
@@ -988,10 +977,22 @@ export async function getInsights(req, res) {
   });
   const cached = INSIGHT_CACHE.get(cacheKey);
   if (cached) {
-    return res.json(cached);
+    if (isEnglishLocale(locale)) {
+      return res.json(cached);
+    }
+    const translatedCards = await translateDashboardCards({
+      locale,
+      cards: cached.cards || [],
+      preserveTerms: (loaded.headers || []).map((h) => String(h || "")).filter(Boolean).slice(0, 80),
+      context: "insight-cards",
+    });
+    return res.json({
+      ...cached,
+      cards: translatedCards,
+    });
   }
 
-  const generated = await buildInsights({ rows: loaded.rows || [], headers: loaded.headers || [], settings, context, locale });
+  const generated = await buildInsights({ rows: loaded.rows || [], headers: loaded.headers || [], settings, context });
 
   const payload = {
     sheetId,
@@ -1008,7 +1009,19 @@ export async function getInsights(req, res) {
     },
   };
   INSIGHT_CACHE.set(cacheKey, payload);
-  return res.json(payload);
+  if (isEnglishLocale(locale)) {
+    return res.json(payload);
+  }
+  const translatedCards = await translateDashboardCards({
+    locale,
+    cards: payload.cards || [],
+    preserveTerms: (loaded.headers || []).map((h) => String(h || "")).filter(Boolean).slice(0, 80),
+    context: "insight-cards",
+  });
+  return res.json({
+    ...payload,
+    cards: translatedCards,
+  });
 }
 
 export async function updateInsightSettings(req, res) {

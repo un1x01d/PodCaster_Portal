@@ -184,31 +184,17 @@ function Sparkline({ graph, cardType, locale, copy }) {
         <text x={padLeft} y={h - 8} textAnchor="start" fill="#64748b" fontSize="9">{xStart}</text>
         <text x={w - padRight} y={h - 8} textAnchor="end" fill="#64748b" fontSize="9">{xEnd}</text>
         <text x={w / 2} y={h - 4} textAnchor="middle" fill="#64748b" fontSize="8" fontWeight="600">{copy.period}</text>
-        {forecastStartIndex !== null && coords[forecastStartIndex] && (
-          <g>
-            <rect
-              x={coords[forecastStartIndex][0] + 5}
-              y={coords[forecastStartIndex][1] + 6}
-              width="54"
-              height="14"
-              rx="7"
-              fill="rgba(255,255,255,0.92)"
-              stroke={colors.forecast}
-              strokeWidth="0.8"
-            />
-            <text
-              x={coords[forecastStartIndex][0] + 32}
-              y={coords[forecastStartIndex][1] + 16}
-              textAnchor="middle"
-              fill={colors.forecast}
-              fontSize="8"
-              fontWeight="700"
-            >
-              {copy.forecast}
-            </text>
-          </g>
-        )}
       </svg>
+      {forecastStartIndex !== null && (
+        <div className="mt-1 flex justify-end pr-1">
+          <span
+            className="inline-flex items-center rounded-full border bg-white px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+            style={{ color: colors.forecast, borderColor: colors.forecast }}
+          >
+            {copy.forecast}
+          </span>
+        </div>
+      )}
       {hoveredPoint && tooltipPos && (
         <div
           className="pointer-events-none absolute z-10 rounded-md border border-slate-300 bg-white/95 px-2 py-1 shadow-lg backdrop-blur-sm"

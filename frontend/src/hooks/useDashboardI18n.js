@@ -3,6 +3,7 @@ import api from "../api";
 
 const DASHBOARD_COPY_CACHE = new Map();
 const DASHBOARD_COPY_IN_FLIGHT = new Map();
+const DASHBOARD_COPY_STORAGE_PREFIX = "dashboardCopy:";
 
 export const DASHBOARD_COPY_EN = {
   portalTitle: "Data Insights Portal",
@@ -159,6 +160,23 @@ export function useDashboardI18n({ enabled = true } = {}) {
       return undefined;
     }
 
+    if (typeof window !== "undefined") {
+      try {
+        const raw = window.localStorage.getItem(`${DASHBOARD_COPY_STORAGE_PREFIX}${normalized}`);
+        if (raw) {
+          const persisted = JSON.parse(raw);
+          if (persisted && typeof persisted === "object") {
+            DASHBOARD_COPY_CACHE.set(normalized, persisted);
+            setCopy({ ...DASHBOARD_COPY_EN, ...persisted });
+            setLoading(false);
+            return undefined;
+          }
+        }
+      } catch (_) {
+        // no-op
+      }
+    }
+
     const inFlight = DASHBOARD_COPY_IN_FLIGHT.get(normalized);
     if (inFlight) {
       setLoading(true);
@@ -179,6 +197,13 @@ export function useDashboardI18n({ enabled = true } = {}) {
       .then((res) => {
         const translations = res?.data?.translations || {};
         DASHBOARD_COPY_CACHE.set(normalized, translations);
+        if (typeof window !== "undefined") {
+          try {
+            window.localStorage.setItem(`${DASHBOARD_COPY_STORAGE_PREFIX}${normalized}`, JSON.stringify(translations));
+          } catch (_) {
+            // no-op
+          }
+        }
         return translations;
       });
     DASHBOARD_COPY_IN_FLIGHT.set(normalized, request);

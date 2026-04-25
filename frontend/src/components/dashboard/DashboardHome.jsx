@@ -28,7 +28,12 @@ const PIE_COLORS = ["#2f5d8a", "#4b7aa3", "#5f93b2", "#6da8a2", "#7e8ea8", "#5d8
 
 function metricValue(value, locale) {
   if (value === null || value === undefined) return "0";
-  if (typeof value === "number") return value.toLocaleString(locale);
+  if (typeof value === "number") {
+    return value.toLocaleString("en-US", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+  }
   return String(value);
 }
 
@@ -41,10 +46,10 @@ function formatMoneyIfLarge(value, locale) {
   if (!Number.isFinite(value)) return "0";
   const abs = Math.abs(value);
   const sign = value < 0 ? "-" : "";
-  if (abs >= 1000) {
-    return `${sign}$${Math.round(abs).toLocaleString(locale)}`;
-  }
-  return `${sign}$${abs.toLocaleString(locale, { maximumFractionDigits: 2 })}`;
+  return `${sign}$${abs.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
 }
 
 function formatCompactCurrency(value, locale) {
@@ -54,7 +59,7 @@ function formatCompactCurrency(value, locale) {
   if (abs >= 1_000_000_000) return `${sign}$${(abs / 1_000_000_000).toFixed(1)}B`;
   if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
   if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(1)}K`;
-  return `${sign}$${Math.round(abs).toLocaleString(locale)}`;
+  return `${sign}$${Math.round(abs).toLocaleString("en-US")}`;
 }
 
 function formatSparkValue(value, type, locale) {
@@ -708,7 +713,7 @@ export default function DashboardHome({
   }, [effectiveRows, dateCol, locale, ui.to]);
 
   const cards = [
-    { id: "metricTotal", label: metricCol ? `${metricCol} ${ui.total}` : ui.primaryMetricTotal, value: metricCol ? metricSum : 0, sparkline: metricSeries, color: "#2563eb", sparklineType: "currency" },
+    { id: "metricTotal", label: metricCol ? `${metricCol} ${ui.total}` : ui.total, value: metricCol ? metricSum : 0, sparkline: metricSeries, color: "#2563eb", sparklineType: "currency" },
     { id: "metricAvg", label: metricCol ? `${metricCol} ${ui.average}` : ui.primaryMetricAverage, value: metricCol ? metricAvg : 0, sparkline: metricSeries, color: "#2563eb", sparklineType: "currency" },
     {
       id: "incomeTotal",
@@ -846,8 +851,8 @@ export default function DashboardHome({
             ))}
           </div>
         {chatSection && (
-          <div className="rounded-md border border-slate-200 bg-white p-2 shadow-sm h-full">
-            <div className="h-full">{chatSection}</div>
+          <div className="rounded-md border border-slate-200 bg-white p-2 shadow-sm h-[520px] max-h-[60vh] overflow-hidden">
+            <div className="h-full min-h-0">{chatSection}</div>
           </div>
         )}
       </div>

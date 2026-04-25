@@ -34,6 +34,36 @@ function buildConversationHistory(messages = [], limit = 8) {
     .filter((m) => m.content);
 }
 
+function makeChatStorageKey(sheetId, activeTab) {
+  if (!sheetId) return "";
+  const tabPart = activeTab ? String(activeTab) : "__all_tabs__";
+  return `dashboardChat:${sheetId}:${tabPart}`;
+}
+
+function getInitialSystemMessage(copy = {}) {
+  return {
+    type: "bot",
+    text: copy.chatInitialMessage || "Ask about what changed, why it changed, top drivers, and year-over-year differences in this dataset.",
+    timestamp: new Date(),
+    isSystem: true,
+  };
+}
+
+function restoreMessagesFromStorage(key) {
+  if (!key || typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    return parsed
+      .filter((m) => m && typeof m.text === "string" && (m.type === "user" || m.type === "bot"))
+      .map((m) => ({ ...m, timestamp: m.timestamp ? new Date(m.timestamp) : new Date() }));
+  } catch (_) {
+    return null;
+  }
+}
+
 export function useChatbotLogic({
   sheetId,
   data,
@@ -55,6 +85,7 @@ export function useChatbotLogic({
 
   const prevSheetRef = useRef(sheetId);
   const prevTabRef = useRef(activeTab);
+  const prevLocaleRef = useRef(locale);
 
   useEffect(() => {
     // Only reset if it's a real change, not the initial mount
@@ -62,14 +93,11 @@ export function useChatbotLogic({
     const tabChanged = prevTabRef.current !== activeTab;
 
     if (sheetChanged || tabChanged) {
-      setMessages([{
-        type: "bot",
-        text: copy.chatInitialMessage || "Ask about what changed, why it changed, top drivers, and year-over-year differences in this dataset.",
-        timestamp: new Date(),
-        isSystem: true,
-      }]);
+      const key = makeChatStorageKey(sheetId, activeTab);
+      const restored = restoreMessagesFromStorage(key);
+      setMessages(restored && restored.length ? restored : [getInitialSystemMessage(copy)]);
       
-      if (onApplyFilter) {
+      if (!restored?.length && onApplyFilter) {
         onApplyFilter("RESET_ALL");
       }
     }
@@ -80,14 +108,21 @@ export function useChatbotLogic({
 
   useEffect(() => {
     if (messages.length === 0 && headers.length > 0) {
-      setMessages([{
-        type: "bot",
-        text: copy.chatInitialMessage || "Ask about what changed, why it changed, top drivers, and year-over-year differences in this dataset.",
-        timestamp: new Date(),
-        isSystem: true,
-      }]);
+      const key = makeChatStorageKey(sheetId, activeTab);
+      const restored = restoreMessagesFromStorage(key);
+      setMessages(restored && restored.length ? restored : [getInitialSystemMessage(copy)]);
     }
-  }, [headers, messages.length, copy.chatInitialMessage]);
+  }, [headers, messages.length, sheetId, activeTab, copy.chatInitialMessage]);
+
+  useEffect(() => {
+    const key = makeChatStorageKey(sheetId, activeTab);
+    if (!key || typeof window === "undefined" || !Array.isArray(messages) || messages.length === 0) return;
+    try {
+      window.localStorage.setItem(key, JSON.stringify(messages));
+    } catch (_) {
+      // no-op: ignore storage quota or private mode failures
+    }
+  }, [messages, sheetId, activeTab]);
 
   useEffect(() => {
     setMessages((prev) => {
@@ -98,6 +133,39 @@ export function useChatbotLogic({
       }];
     });
   }, [copy.chatInitialMessage]);
+
+  useEffect(() => {
+    if (prevLocaleRef.current === locale) return;
+    prevLocaleRef.current = locale;
+    if (!Array.isArray(messages) || !messages.length) return;
+
+    let cancelled = false;
+    const items = messages
+      .map((m, idx) => ({
+        key: `m_${idx}`,
+        text: String(m?.text || ""),
+      }))
+      .filter((item) => item.text);
+
+    if (!items.length) return undefined;
+
+    api.post("/dashboard/translate", { locale, items })
+      .then((res) => {
+        if (cancelled) return;
+        const translations = res?.data?.translations || {};
+        setMessages((prev) => prev.map((m, idx) => ({
+          ...m,
+          text: translations[`m_${idx}`] || m.text,
+        })));
+      })
+      .catch(() => {
+        // no-op: keep existing text if translation fails
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [locale, messages]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -163,13 +231,22 @@ export function useChatbotLogic({
   }, [input, sheetId, isSending, activeFilters, messages, onApplyFilter, onUpdateChart, locale, copy.appliedFilters, copy.chatRequestFailed]);
 
   const clearMessages = useCallback(() => {
-    setMessages([{
+    const reset = [{
       type: "bot",
       text: copy.chatResetMessage || "Chat reset. Ask another question about this spreadsheet.",
       timestamp: new Date(),
       isSystem: true,
-    }]);
-  }, [copy.chatResetMessage]);
+    }];
+    setMessages(reset);
+    const key = makeChatStorageKey(sheetId, activeTab);
+    if (key && typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem(key, JSON.stringify(reset));
+      } catch (_) {
+        // no-op
+      }
+    }
+  }, [copy.chatResetMessage, sheetId, activeTab]);
 
   return {
     messages,
