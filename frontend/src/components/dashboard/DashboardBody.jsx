@@ -47,7 +47,6 @@ export default function DashboardBody(props) {
         setColumnFilters,
         sortConfig,
         requestSort,
-        uniqueValuesByColumn,
 
         // Charts / Pivot State
         pivotOn, setPivotOn,

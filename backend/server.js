@@ -52,7 +52,9 @@ app.use((req, res, next) => {
 // Paths
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, "uploads");
-fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
 
 // Routes
 app.use("/auth", authRoutes); // /auth/login, /auth/me, /auth/change-password

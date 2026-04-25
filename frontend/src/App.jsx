@@ -15,6 +15,7 @@ import InsightFeed from "./components/dashboard/InsightFeed";
 import Modal from "./components/common/Modal";
 import ChangePasswordModal from "./components/common/ChangePasswordModal";
 import { useDashboardI18n } from "./hooks/useDashboardI18n";
+import { looksLikeDateColumn } from "./utils/dateColumns";
 
 import "./index.css";
 
@@ -33,9 +34,6 @@ const fmtDateOnly = (v) => {
   if (!Number.isNaN(dt.getTime())) return dt.toISOString().slice(0, 10);
   return String(v).slice(0, 10);
 };
-
-const DATE_COL_HINTS = ["date", "uploaded", "created", "updated", "timestamp", "quarter", "fiscal", "period", "month", "year"];
-const looksLikeDateColumn = (h = "") => DATE_COL_HINTS.some((k) => h.toLowerCase().includes(k));
 
 const parseTemporalValue = (raw) => {
   if (raw === null || raw === undefined || raw === "") return null;
@@ -175,14 +173,31 @@ export default function App() {
           const allowed = columnFilters[col];
           if (!allowed) continue;
 
+          // Try exact match first, then fuzzy
+          let rowValue = row[col];
+          if (rowValue === undefined) {
+             const actualCol = headers.find(h => h && String(h).trim() === String(col).trim());
+             if (actualCol) rowValue = row[actualCol];
+          }
+
+          const stringified = String(rowValue ?? "");
+
           if (allowed instanceof Set) {
             // Checkbox-style exact-match filter
-            if (allowed.size > 0 && !allowed.has(String(row[col]))) return false;
-          } else if (allowed && typeof allowed === 'object' && allowed.type === 'contains') {
+            if (allowed.size > 0 && !allowed.has(stringified)) return false;
+          } else if (allowed && typeof allowed === 'object' && (allowed.type === 'contains' || allowed.type === 'filter')) {
             // Chatbot substring filter (e.g. "2021" matches "2021-03-01")
-            if (!String(row[col] ?? '').toLowerCase().includes(allowed.value.toLowerCase())) return false;
+            const filterValue = String(allowed.value || "").toLowerCase();
+            const op = allowed.operator || "contains";
+
+            if (op === "equals") {
+               if (stringified.toLowerCase() !== filterValue) return false;
+            } else {
+               // default to contains
+               if (!stringified.toLowerCase().includes(filterValue)) return false;
+            }
           } else if (Array.isArray(allowed)) {
-            if (allowed.length > 0 && !allowed.includes(String(row[col]))) return false;
+            if (allowed.length > 0 && !allowed.includes(stringified)) return false;
           }
         }
         return true;

@@ -41,6 +41,7 @@ export function useChatbotLogic({
   activeFilters,
   onApplyFilter,
   onUpdateChart,
+  activeTab,
   locale = "en",
   copy = {},
 }) {
@@ -51,6 +52,31 @@ export function useChatbotLogic({
   const [isSending, setIsSending] = useState(false);
 
   const messagesEndRef = useRef(null);
+
+  const prevSheetRef = useRef(sheetId);
+  const prevTabRef = useRef(activeTab);
+
+  useEffect(() => {
+    // Only reset if it's a real change, not the initial mount
+    const sheetChanged = prevSheetRef.current !== sheetId;
+    const tabChanged = prevTabRef.current !== activeTab;
+
+    if (sheetChanged || tabChanged) {
+      setMessages([{
+        type: "bot",
+        text: copy.chatInitialMessage || "Ask about what changed, why it changed, top drivers, and year-over-year differences in this dataset.",
+        timestamp: new Date(),
+        isSystem: true,
+      }]);
+      
+      if (onApplyFilter) {
+        onApplyFilter("RESET_ALL");
+      }
+    }
+
+    prevSheetRef.current = sheetId;
+    prevTabRef.current = activeTab;
+  }, [sheetId, activeTab, onApplyFilter, copy.chatInitialMessage]);
 
   useEffect(() => {
     if (messages.length === 0 && headers.length > 0) {
@@ -102,13 +128,13 @@ export function useChatbotLogic({
       const actions = payload.actions || {};
       const filters = Array.isArray(actions.filters) ? actions.filters : [];
 
-      if (onApplyFilter && actions.reset_filters && filters.length) {
+      if (onApplyFilter && actions.reset_filters) {
         onApplyFilter("RESET_ALL");
       }
       if (onApplyFilter && filters.length) {
         filters.forEach((f) => {
           if (!f?.column) return;
-          onApplyFilter(f.column, String(f.value ?? ""));
+          onApplyFilter(f.column, String(f.value ?? ""), f.operator || "contains");
         });
       }
 
@@ -121,13 +147,9 @@ export function useChatbotLogic({
         });
       }
 
-      const filterNote = filters.length
-        ? `\n\n${copy.appliedFilters || "Applied filters"}: ${filters.map((f) => `${f.column} ${f.operator || "contains"} \"${f.value}\"`).join(", ")}`
-        : "";
-
       setMessages((prev) => [...prev, {
         type: "bot",
-        text: `${answer}${filterNote}`,
+        text: answer,
         timestamp: new Date(),
         isFilter: filters.length > 0,
         filterCol: filters[0]?.column,

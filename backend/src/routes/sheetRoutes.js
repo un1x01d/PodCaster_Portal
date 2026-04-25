@@ -15,6 +15,10 @@ import {
 import { auth } from "../middleware/auth.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 
+import { fileURLToPath } from "url";
+
+const UPLOADS_DIR = path.resolve("uploads");
+
 const router = express.Router();
 const allowedExt = new Set([".xlsx", ".xls", ".csv"]);
 const allowedMime = new Set([
@@ -23,10 +27,11 @@ const allowedMime = new Set([
     "text/csv",
     "application/csv",
     "application/octet-stream",
+    "text/plain",
 ]);
 
 const upload = multer({
-    dest: "uploads/",
+    dest: UPLOADS_DIR,
     limits: { fileSize: 100 * 1024 * 1024 },
     fileFilter: (_req, file, cb) => {
         const ext = path.extname(file.originalname || "").toLowerCase();

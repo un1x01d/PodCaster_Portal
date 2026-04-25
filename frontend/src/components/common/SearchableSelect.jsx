@@ -9,7 +9,7 @@ export default function SearchableSelect({
     className = "",
     disabled = false,
     buttonClassName = "bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white px-3 rounded-lg h-10 shadow-md flex items-center gap-2 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-indigo-200",
-    panelWidth = 260,
+    panelWidth = "100%",
     labelClassName = "",
     optionClassName = "",
     optionTextClassName = "",
@@ -73,8 +73,8 @@ export default function SearchableSelect({
             {open && !disabled && (
                 <div
                     ref={panelRef}
-                    className={`absolute z-50 mt-1 bg-white text-slate-800 border border-gray-200 rounded-lg shadow-lg p-2 left-1/2 -translate-x-1/2 ${panelClassName}`}
-                    style={{ width: panelWidth, ...panelStyle }}
+                    className={`absolute z-50 mt-1 bg-white text-slate-800 border border-gray-200 rounded-lg shadow-lg p-2 left-0 ${panelClassName}`}
+                    style={{ width: panelWidth, minWidth: '100%', ...panelStyle }}
                 >
                     <input
                         autoFocus

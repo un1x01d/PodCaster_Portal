@@ -23,12 +23,14 @@ export const formatSmart = (val, key = null) => {
             return new Intl.NumberFormat('en-US', {
                 minimumFractionDigits: 2,
                 maximumFractionDigits: 2,
+                useGrouping: true,
             }).format(val) + '%';
         }
 
         const fmt = new Intl.NumberFormat('en-US', {
             minimumFractionDigits: isCurrency ? 2 : 0,
             maximumFractionDigits: 2, // Standardize to 2 decimals max
+            useGrouping: true,
         });
         return isCurrency ? `$${fmt.format(val)}` : fmt.format(val);
     }

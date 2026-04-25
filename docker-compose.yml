@@ -40,6 +40,9 @@ services:
         condition: service_healthy
     volumes:
       - ./backend/uploads:/app/uploads
+      - ./backend/src:/app/src
+      - ./backend/server.js:/app/server.js
+    command: npm run dev
     ports:
       - "4000:4000"
     healthcheck:

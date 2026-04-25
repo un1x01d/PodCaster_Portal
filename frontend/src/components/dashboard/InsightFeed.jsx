@@ -11,11 +11,11 @@ function Sparkline({ graph, cardType, locale, copy }) {
   const labels = Array.isArray(graph?.labels) ? graph.labels : [];
   if (clean.length < 2) return null;
   const w = 320;
-  const h = 132;
+  const h = 100; // Reduced from 132 to allow more space for text
   const padLeft = 42;
   const padRight = 12;
-  const padTop = 12;
-  const padBottom = 28;
+  const padTop = 10;
+  const padBottom = 24;
   const chartW = w - padLeft - padRight;
   const chartH = h - padTop - padBottom;
   const min = Math.min(...clean);
@@ -105,10 +105,10 @@ function Sparkline({ graph, cardType, locale, copy }) {
   const shouldFlipLeft = hoveredPoint ? hoveredPoint[0] > w - (tooltipWidth / 2) - 18 : false;
   const shouldDropBelow = hoveredPoint ? hoveredPoint[1] < padTop + 30 : false;
   return (
-    <div className="relative mt-2 rounded border border-slate-200 bg-transparent p-1.5">
+    <div className="relative mt-2 rounded border border-slate-200 bg-transparent p-1">
       <svg
         viewBox={`0 0 ${w} ${h}`}
-        className="w-full h-[132px]"
+        className="w-full h-[100px]"
         onMouseMove={(e) => {
           const rect = e.currentTarget.getBoundingClientRect();
           const x = ((e.clientX - rect.left) / rect.width) * w;
@@ -184,12 +184,12 @@ function Sparkline({ graph, cardType, locale, copy }) {
         <text x={padLeft} y={h - 8} textAnchor="start" fill="#64748b" fontSize="9">{xStart}</text>
         <text x={w - padRight} y={h - 8} textAnchor="end" fill="#64748b" fontSize="9">{xEnd}</text>
         <text x={w / 2} y={h - 4} textAnchor="middle" fill="#64748b" fontSize="8" fontWeight="600">{copy.period}</text>
-        {forecastStartIndex !== null && (
+        {forecastStartIndex !== null && coords[forecastStartIndex] && (
           <g>
             <rect
-              x={padLeft + 6}
-              y={padTop + 2}
-              width="58"
+              x={coords[forecastStartIndex][0] + 5}
+              y={coords[forecastStartIndex][1] + 6}
+              width="54"
               height="14"
               rx="7"
               fill="rgba(255,255,255,0.92)"
@@ -197,8 +197,8 @@ function Sparkline({ graph, cardType, locale, copy }) {
               strokeWidth="0.8"
             />
             <text
-              x={padLeft + 35}
-              y={padTop + 12}
+              x={coords[forecastStartIndex][0] + 32}
+              y={coords[forecastStartIndex][1] + 16}
               textAnchor="middle"
               fill={colors.forecast}
               fontSize="8"
@@ -461,7 +461,7 @@ export default function InsightFeed({
                       </span>
                     )}
                   </div>
-                  <ul className="mt-2 min-h-0 flex-1 overflow-hidden list-disc pl-5 text-xs text-slate-700 space-y-1">
+                  <ul className="mt-2 min-h-0 flex-1 overflow-y-auto list-disc pl-5 text-xs text-slate-700 space-y-1 custom-scrollbar">
                     {(card.bullets || []).map((b, idx) => {
                       if (!isAIRecommendation) {
                         return <li key={`${card.id}-b-${idx}`}>{b}</li>;

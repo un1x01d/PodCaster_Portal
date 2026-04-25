@@ -104,21 +104,28 @@ export async function uploadSheet(req, res) {
         // Parse Workbook
         let wb;
         try {
-            // Optimization: Use XLSX.readFile directly on the temp path to avoid loading buffer into JS memory twice
+            // Primary: Use readFile (most memory efficient)
             wb = XLSX.readFile(req.file.path, { cellDates: true });
         } catch (eStr) {
-            console.error("XLSX.readFile error:", eStr);
-            const msg = String(eStr?.message || "unknown_error");
-            if (msg.includes("Invalid HTML: could not find <table>")) {
-                return res.status(422).json({
-                    error: "html_without_tables",
-                    message: "This file is HTML without <table>. Re-export as CSV/XLSX or include a table."
+            console.warn("XLSX.readFile by path failed, attempting buffer read:", eStr.message);
+            try {
+                // Fallback: Read file into memory buffer first (bypasses some permission issues)
+                const buf = fs.readFileSync(req.file.path);
+                wb = XLSX.read(buf, { type: 'buffer', cellDates: true });
+            } catch (fallbackErr) {
+                console.error("XLSX final read failure:", fallbackErr);
+                const msg = String(fallbackErr?.message || "unknown_error");
+                if (msg.includes("Invalid HTML: could not find <table>")) {
+                    return res.status(422).json({
+                        error: "html_without_tables",
+                        message: "This file is HTML without <table>. Re-export as CSV/XLSX or include a table."
+                    });
+                }
+                return res.status(400).json({
+                    error: "unreadable_spreadsheet",
+                    message: "Could not parse file as CSV/XLSX/XML/HTML-table."
                 });
             }
-            return res.status(400).json({
-                error: "unreadable_spreadsheet",
-                message: "Could not parse file as CSV/XLSX/XML/HTML-table."
-            });
         }
 
         const sheetNames = wb.SheetNames;
