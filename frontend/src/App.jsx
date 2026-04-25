@@ -14,6 +14,7 @@ import DashboardHome from "./components/dashboard/DashboardHome";
 import InsightFeed from "./components/dashboard/InsightFeed";
 import Modal from "./components/common/Modal";
 import ChangePasswordModal from "./components/common/ChangePasswordModal";
+import { useDashboardI18n } from "./hooks/useDashboardI18n";
 
 import "./index.css";
 
@@ -85,6 +86,7 @@ export default function App() {
   const [token, setToken] = useState(localStorage.getItem("token") || "");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const dashboardI18n = useDashboardI18n({ enabled: !!user });
 
   const [sheetId, setSheetId] = useState(() => localStorage.getItem("sheetId") || null);
   const [activeFilename, setActiveFilename] = useState(() => localStorage.getItem("activeFilename") || "");
@@ -916,6 +918,10 @@ export default function App() {
             activeFilename={activeFilename}
             onSwitchSheet={handleSwitchSheet}
             onDeleteSheet={deleteSheet}
+            locale={dashboardI18n.locale}
+            setLocale={dashboardI18n.setLocale}
+            copy={dashboardI18n.copy}
+            supportedLanguages={dashboardI18n.supportedLanguages}
           />
         )}
 
@@ -982,6 +988,8 @@ export default function App() {
                     pivotOn={pivotOn}
                     twoOn={twoOn}
                     trendsOn={trendsOn}
+                    locale={dashboardI18n.locale}
+                    copy={dashboardI18n.copy}
                     insightSection={sheetId ? (
                       <InsightFeed
                         sheetId={sheetId}
@@ -990,6 +998,8 @@ export default function App() {
                         onApplyFilter={applyContainsFilter}
                         onOpenChart={applyChartConfig}
                         onSaveView={saveInsightView}
+                        locale={dashboardI18n.locale}
+                        copy={dashboardI18n.copy}
                       />
                     ) : null}
                     chatSection={sheetId ? (
@@ -1002,6 +1012,8 @@ export default function App() {
                         activeFilters={columnFilters}
                         onApplyFilter={applyContainsFilter}
                         onUpdateChart={applyChartConfig}
+                        locale={dashboardI18n.locale}
+                        copy={dashboardI18n.copy}
                       />
                     ) : null}
                   />
@@ -1112,16 +1124,17 @@ export default function App() {
                       onInsightSaveView={saveInsightView}
                     />
                     {sheetId && (
-                      <SpreadsheetChatbot
-                        mode="floating"
-                        sheetId={sheetId}
-                        data={sortedData}
-                        allData={data}
-                        headers={headers}
-                        activeFilters={columnFilters}
-                        onApplyFilter={applyContainsFilter}
-                        onUpdateChart={applyChartConfig}
-                      />
+                    <SpreadsheetChatbot
+                      mode="floating"
+                      sheetId={sheetId}
+                      data={sortedData}
+                      allData={data}
+                      headers={headers}
+                      activeFilters={columnFilters}
+                      onApplyFilter={applyContainsFilter}
+                      onUpdateChart={applyChartConfig}
+                      locale="en"
+                    />
                     )}
                   </>
                 )}

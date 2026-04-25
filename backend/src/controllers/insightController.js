@@ -1,9 +1,12 @@
+import { createHash } from "crypto";
 import { query } from "../config/db.js";
+import { isEnglishLocale, normalizeLocale, translateDashboardCards } from "../utils/dashboardLocalization.js";
 
 const INSIGHT_MAX_ROWS = Number.parseInt(process.env.INSIGHT_MAX_ROWS || "50000", 10);
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "25000", 10);
+const INSIGHT_CACHE = new Map();
 
 function parseNum(v) {
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
@@ -79,6 +82,10 @@ function quantile(sortedAsc, q) {
 function toPct(v) {
   if (!Number.isFinite(v)) return "0.0%";
   return `${v.toFixed(1)}%`;
+}
+
+function hashObject(value) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
 function money(v) {
@@ -360,6 +367,21 @@ function buildHeuristicRecommendations({ metricCol, categoryCol, series, topCate
   };
 }
 
+function getInsightCacheKey({ sheetId, locale, context, settings, headers, rows }) {
+  const sampleRows = rows.length > 20
+    ? [...rows.slice(0, 10), ...rows.slice(-10)]
+    : rows;
+  return hashObject({
+    sheetId,
+    locale: normalizeLocale(locale || "en"),
+    context,
+    headers,
+    settings,
+    rowCount: rows.length,
+    sampleRows,
+  });
+}
+
 function resolveColumn(headers, requested) {
   if (!requested || !headers?.length) return null;
   const exact = headers.find((h) => h.toLowerCase() === String(requested).toLowerCase());
@@ -504,7 +526,7 @@ function computeSeries(rows, dateCol, metricCol) {
     .map(([period, value]) => ({ period, value }));
 }
 
-async function buildInsights({ rows, headers, settings, context }) {
+async function buildInsights({ rows, headers, settings, context, locale }) {
   const out = [];
   const detected = detectColumns(headers, rows, settings);
   const { dateCol, metricCol, categoryCol } = detected;
@@ -893,7 +915,27 @@ async function buildInsights({ rows, headers, settings, context }) {
     });
   }
 
-  return { cards: ranked, detected };
+  const preservedTerms = [
+    ...headers,
+    dateCol,
+    metricCol,
+    categoryCol,
+    ...categoryDeltas.map((item) => item?.key).filter(Boolean),
+    ...series.map((point) => point?.period).filter(Boolean),
+  ]
+    .map((term) => String(term || "").trim())
+    .filter(Boolean);
+
+  const localizedCards = isEnglishLocale(locale)
+    ? ranked
+    : await translateDashboardCards({
+        locale,
+        cards: ranked,
+        preserveTerms: preservedTerms.slice(0, 80),
+        context: "insight-cards",
+      });
+
+  return { cards: localizedCards, detected };
 }
 
 async function getInsightSettings(sheetId) {
@@ -926,6 +968,7 @@ async function getInsightSettings(sheetId) {
 export async function getInsights(req, res) {
   const { sheetId } = req.params;
   const context = req.query.context === "workspace" ? "workspace" : "dashboard";
+  const locale = normalizeLocale(req.query.locale || req.query.lang || "en");
   if (!sheetId) return res.status(400).json({ error: "sheet_id_required" });
   const hasAccess = await checkSheetAccess(sheetId, req.user);
   if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
@@ -935,9 +978,22 @@ export async function getInsights(req, res) {
   if (loaded.tooLarge) return res.status(413).json({ error: "sheet_too_large_for_insights", maxRows: INSIGHT_MAX_ROWS });
 
   const settings = await getInsightSettings(sheetId);
-  const generated = await buildInsights({ rows: loaded.rows || [], headers: loaded.headers || [], settings, context });
+  const cacheKey = getInsightCacheKey({
+    sheetId,
+    locale,
+    context,
+    settings,
+    headers: loaded.headers || [],
+    rows: loaded.rows || [],
+  });
+  const cached = INSIGHT_CACHE.get(cacheKey);
+  if (cached) {
+    return res.json(cached);
+  }
 
-  return res.json({
+  const generated = await buildInsights({ rows: loaded.rows || [], headers: loaded.headers || [], settings, context, locale });
+
+  const payload = {
     sheetId,
     generatedAt: new Date().toISOString(),
     settings,
@@ -950,7 +1006,9 @@ export async function getInsights(req, res) {
       totalRows: loaded.rows.length,
       context,
     },
-  });
+  };
+  INSIGHT_CACHE.set(cacheKey, payload);
+  return res.json(payload);
 }
 
 export async function updateInsightSettings(req, res) {

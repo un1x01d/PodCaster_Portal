@@ -1,7 +1,8 @@
 import React from "react";
 import api from "../../api";
+import { DASHBOARD_COPY_EN } from "../../hooks/useDashboardI18n";
 
-function Sparkline({ graph, cardType }) {
+function Sparkline({ graph, cardType, locale, copy }) {
   const [hoveredIndex, setHoveredIndex] = React.useState(null);
   const [tooltipPos, setTooltipPos] = React.useState(null);
   const clean = Array.isArray(graph?.values)
@@ -26,7 +27,19 @@ function Sparkline({ graph, cardType }) {
     const abs = Math.abs(v);
     if (abs >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
     if (abs >= 1_000) return `${(v / 1_000).toFixed(1)}k`;
-    return Number(v).toFixed(0);
+    return Number(v).toLocaleString(locale, { maximumFractionDigits: 0 });
+  };
+  const formatLabel = (value) => {
+    const text = String(value || "");
+    if (/^\d{4}-\d{2}$/.test(text)) {
+      const [y, m] = text.split("-").map((v) => Number(v));
+      if (y && m) return new Intl.DateTimeFormat(locale, { month: "short", year: "numeric" }).format(new Date(y, m - 1, 1));
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+      const [y, m, d] = text.split("-").map((v) => Number(v));
+      if (y && m && d) return new Intl.DateTimeFormat(locale, { month: "short", day: "numeric", year: "numeric" }).format(new Date(y, m - 1, d));
+    }
+    return text;
   };
   const coords = clean.map((v, i) => {
     const x = padLeft + i * stepX;
@@ -77,15 +90,15 @@ function Sparkline({ graph, cardType }) {
     { value: mid, y: yFor(mid) },
     { value: min, y: yFor(min) },
   ];
-  const xStart = labels[0] ? String(labels[0]) : "Start";
-  const xEnd = labels[labels.length - 1] ? String(labels[labels.length - 1]) : "End";
+  const xStart = labels[0] ? formatLabel(labels[0]) : copy.start;
+  const xEnd = labels[labels.length - 1] ? formatLabel(labels[labels.length - 1]) : copy.end;
   const actualCoords = forecastStartIndex === null ? coords : coords.slice(0, forecastStartIndex + 1);
   const forecastCoords = forecastStartIndex === null ? [] : coords.slice(forecastStartIndex);
   const actualPath = buildCurvedPath(actualCoords);
   const forecastPath = buildCurvedPath(forecastCoords);
   const hoveredPoint = hoveredIndex !== null ? coords[hoveredIndex] : null;
   const hoveredValue = hoveredIndex !== null ? clean[hoveredIndex] : null;
-  const hoveredLabel = hoveredIndex !== null ? String(labels[hoveredIndex] ?? `Point ${hoveredIndex + 1}`) : "";
+  const hoveredLabel = hoveredIndex !== null ? formatLabel(labels[hoveredIndex] ?? `${copy.point} ${hoveredIndex + 1}`) : "";
   const isForecastPoint = hoveredIndex !== null && forecastStartIndex !== null && hoveredIndex >= forecastStartIndex;
   const tooltipWidth = 132;
   const tooltipHeight = 44;
@@ -170,7 +183,7 @@ function Sparkline({ graph, cardType }) {
         ))}
         <text x={padLeft} y={h - 8} textAnchor="start" fill="#64748b" fontSize="9">{xStart}</text>
         <text x={w - padRight} y={h - 8} textAnchor="end" fill="#64748b" fontSize="9">{xEnd}</text>
-        <text x={w / 2} y={h - 4} textAnchor="middle" fill="#64748b" fontSize="8" fontWeight="600">Period</text>
+        <text x={w / 2} y={h - 4} textAnchor="middle" fill="#64748b" fontSize="8" fontWeight="600">{copy.period}</text>
         {forecastStartIndex !== null && (
           <g>
             <rect
@@ -191,7 +204,7 @@ function Sparkline({ graph, cardType }) {
               fontSize="8"
               fontWeight="700"
             >
-              Forecast
+              {copy.forecast}
             </text>
           </g>
         )}
@@ -211,7 +224,7 @@ function Sparkline({ graph, cardType }) {
           <div className="text-[11px] text-slate-700">{formatMetric(hoveredValue)}</div>
           {isForecastPoint && (
             <div className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: colors.forecast }}>
-              Forecast
+              {copy.forecast}
             </div>
           )}
         </div>
@@ -226,7 +239,10 @@ export default function InsightFeed({
   user,
   onOpenChart,
   className = "",
+  locale,
+  copy = DASHBOARD_COPY_EN,
 }) {
+  const ui = copy || DASHBOARD_COPY_EN;
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState("");
   const [cards, setCards] = React.useState([]);
@@ -246,16 +262,16 @@ export default function InsightFeed({
     setLoading(true);
     setError("");
     try {
-      const res = await api.get(`/insights/${sheetId}`, { params: { context } });
+      const res = await api.get(`/insights/${sheetId}`, { params: { context, locale } });
       setCards(Array.isArray(res?.data?.cards) ? res.data.cards : []);
       setSettings(res?.data?.settings || null);
       setAvailable(res?.data?.available || { dateColumns: [], metricColumns: [] });
     } catch (e) {
-      setError(e?.response?.data?.error || "Failed to load insights");
+      setError(e?.response?.data?.error || ui.failedToLoadInsights);
     } finally {
       setLoading(false);
     }
-  }, [sheetId, context]);
+  }, [sheetId, context, locale]);
 
   React.useEffect(() => {
     loadInsights();
@@ -292,7 +308,7 @@ export default function InsightFeed({
       await api.put(`/insights/${sheetId}/settings`, settings);
       await loadInsights();
     } catch (e) {
-      setError(e?.response?.data?.error || "Failed to save settings");
+      setError(e?.response?.data?.error || ui.failedToSaveSettings);
     } finally {
       setSaving(false);
     }
@@ -302,8 +318,8 @@ export default function InsightFeed({
     <section className={`rounded-md border border-slate-200 bg-white shadow-sm ${className}`}>
       <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
         <div>
-          <div className="text-[11px] font-bold uppercase tracking-wider text-slate-700">Insight Feed</div>
-          <div className="text-xs text-slate-500">Automatic trends, drivers, and anomalies</div>
+          <div className="text-[11px] font-bold uppercase tracking-wider text-slate-700">{ui.insightFeed}</div>
+          <div className="text-xs text-slate-500">{ui.automaticInsights}</div>
         </div>
         <div className="flex items-center gap-2">
           {user?.role === "admin" && (
@@ -312,7 +328,7 @@ export default function InsightFeed({
               className="text-xs px-2 py-1 rounded border border-slate-300 text-slate-700 hover:bg-slate-50"
               onClick={() => setShowSettings((v) => !v)}
             >
-              {showSettings ? "Hide Settings" : "Settings"}
+              {showSettings ? ui.hideSettings : ui.settings}
             </button>
           )}
           <button
@@ -320,7 +336,7 @@ export default function InsightFeed({
             className="text-xs px-2 py-1 rounded border border-slate-300 text-slate-700 hover:bg-slate-50"
             onClick={loadInsights}
           >
-            Refresh
+            {ui.refresh}
           </button>
         </div>
       </div>
@@ -329,7 +345,7 @@ export default function InsightFeed({
         <div className="px-4 py-3 border-b border-slate-200 bg-slate-50/60">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <label className="text-xs text-slate-700 font-semibold">
-              Sensitivity ({Number(settings.sensitivity || 1).toFixed(1)})
+              {ui.sensitivity} ({Number(settings.sensitivity || 1).toFixed(1)})
               <input
                 type="range"
                 min="0.5"
@@ -341,7 +357,7 @@ export default function InsightFeed({
               />
             </label>
             <label className="text-xs text-slate-700 font-semibold">
-              Min Impact %
+              {ui.minImpactPercent}
               <input
                 type="number"
                 min="1"
@@ -352,30 +368,30 @@ export default function InsightFeed({
               />
             </label>
             <label className="text-xs text-slate-700 font-semibold">
-              Preferred Date Column
+              {ui.preferredDateColumn}
               <select
                 value={settings.preferred_date_column || ""}
                 onChange={(e) => updateSetting("preferred_date_column", e.target.value || null)}
                 className="w-full mt-1 rounded border border-slate-300 px-2 py-1 text-sm"
               >
-                <option value="">Auto-detect</option>
+                <option value="">{ui.autoDetect}</option>
                 {available.dateColumns.map((col) => <option key={col} value={col}>{col}</option>)}
               </select>
             </label>
             <label className="text-xs text-slate-700 font-semibold">
-              Preferred Metric Column
+              {ui.preferredMetricColumn}
               <select
                 value={settings.preferred_metric_column || ""}
                 onChange={(e) => updateSetting("preferred_metric_column", e.target.value || null)}
                 className="w-full mt-1 rounded border border-slate-300 px-2 py-1 text-sm"
               >
-                <option value="">Auto-detect</option>
+                <option value="">{ui.autoDetect}</option>
                 {available.metricColumns.map((col) => <option key={col} value={col}>{col}</option>)}
               </select>
             </label>
           </div>
           <div className="mt-3">
-            <div className="text-xs font-semibold text-slate-700 mb-1">Muted Metrics</div>
+            <div className="text-xs font-semibold text-slate-700 mb-1">{ui.mutedMetrics}</div>
             <div className="flex flex-wrap gap-2">
               {available.metricColumns.map((metric) => {
                 const isMuted = Array.isArray(settings.muted_metrics) && settings.muted_metrics.includes(metric);
@@ -386,7 +402,7 @@ export default function InsightFeed({
                     onClick={() => toggleMutedMetric(metric)}
                     className={`text-xs px-2 py-1 rounded border ${isMuted ? "bg-slate-200 text-slate-700 border-slate-300" : "bg-white text-slate-700 border-slate-300"}`}
                   >
-                    {isMuted ? `Unmute ${metric}` : `Mute ${metric}`}
+                    {isMuted ? `${ui.unmute} ${metric}` : `${ui.mute} ${metric}`}
                   </button>
                 );
               })}
@@ -399,17 +415,17 @@ export default function InsightFeed({
               disabled={saving}
               className={`text-xs px-3 py-1.5 rounded ${saving ? "bg-slate-300 text-slate-600" : "bg-blue-700 text-white hover:bg-blue-800"}`}
             >
-              {saving ? "Saving..." : "Save Insight Settings"}
+              {saving ? ui.saving : ui.saveInsightSettings}
             </button>
           </div>
         </div>
       )}
 
       <div className="p-4">
-        {loading && <div className="text-sm text-slate-500">Loading insights...</div>}
+        {loading && <div className="text-sm text-slate-500">{ui.loadingInsights}</div>}
         {error && <div className="text-sm text-rose-600">{error}</div>}
         {!loading && !error && cards.length === 0 && (
-          <div className="text-sm text-slate-500">No insights yet for this sheet.</div>
+          <div className="text-sm text-slate-500">{ui.noInsightsYet}</div>
         )}
 
         {!loading && !error && cards.length > 0 && (
@@ -441,7 +457,7 @@ export default function InsightFeed({
                               : "border-orange-300 text-orange-700"
                         }`}
                       >
-                        {card.type === "attention" ? "Needs Attention" : card.type === "ai_recommendation" ? "AI Recommendations" : "Recommendation"}
+                        {card.type === "attention" ? ui.needsAttention : card.type === "ai_recommendation" ? ui.aiRecommendations : ui.recommendation}
                       </span>
                     )}
                   </div>
@@ -464,7 +480,7 @@ export default function InsightFeed({
                     })}
                   </ul>
                   <div className="mt-3 shrink-0 border-t border-slate-200 pt-2">
-                    <Sparkline graph={card.graph} cardType={card.type} />
+                    <Sparkline graph={card.graph} cardType={card.type} locale={locale} copy={ui} />
                   </div>
                 </article>
               );

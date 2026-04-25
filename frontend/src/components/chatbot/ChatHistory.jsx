@@ -1,6 +1,7 @@
 import React, { useRef, useEffect } from 'react';
+import { DASHBOARD_COPY_EN } from "../../hooks/useDashboardI18n";
 
-export default function ChatHistory({ messages, onApplyFilter }) {
+export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_COPY_EN }) {
     const messagesEndRef = useRef(null);
 
     useEffect(() => {
@@ -32,12 +33,12 @@ export default function ChatHistory({ messages, onApplyFilter }) {
                                     <button
                                         onClick={() => onApplyFilter(msg.filterCol, "")}
                                         className="text-[10px] font-semibold text-blue-500 hover:text-blue-700 hover:underline transition-colors flex items-center gap-1"
-                                    >
+                                        >
                                         <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                             <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
                                             <path d="M3 3v5h5"></path>
                                         </svg>
-                                        Revert Filter
+                                        {copy.revertFilter || "Revert Filter"}
                                     </button>
                                 </div>
                             )}

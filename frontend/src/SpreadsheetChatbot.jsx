@@ -8,6 +8,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useChatbotLogic } from './hooks/useChatbotLogic';
 import ChatHistory from './components/chatbot/ChatHistory';
 import ChatInput from './components/chatbot/ChatInput';
+import { DASHBOARD_COPY_EN } from "./hooks/useDashboardI18n";
 
 export default function SpreadsheetChatbot({
     sheetId,
@@ -21,7 +22,10 @@ export default function SpreadsheetChatbot({
     onUpdateChart,
     activeFilters = {},
     mode = "floating",
+    locale = "en",
+    copy = DASHBOARD_COPY_EN,
 }) {
+    const ui = copy || DASHBOARD_COPY_EN;
     const inline = mode === "inline";
     const chatData = Array.isArray(data) && data.length
         ? data
@@ -48,6 +52,8 @@ export default function SpreadsheetChatbot({
         onSwitchSheet,
         myFiles,
         activeFilename,
+        locale,
+        copy: ui,
     });
 
     const [chatHeight, setChatHeight] = useState(460);
@@ -102,6 +108,7 @@ export default function SpreadsheetChatbot({
                     <ChatHistory
                         messages={messages}
                         onApplyFilter={onApplyFilter}
+                        copy={ui}
                     />
                     <div className="border-t border-slate-200 bg-white">
                         <ChatInput
@@ -109,6 +116,7 @@ export default function SpreadsheetChatbot({
                             setInput={setInput}
                             handleSend={handleSend}
                             isOpen={true}
+                            copy={ui}
                         />
                     </div>
                 </div>
@@ -123,7 +131,7 @@ export default function SpreadsheetChatbot({
                 <button
                     onClick={() => setIsOpen(true)}
                     className="fixed bottom-6 right-6 w-14 h-14 bg-indigo-600 text-white rounded-2xl shadow-2xl shadow-indigo-200 hover:bg-indigo-700 hover:scale-110 transition-all z-[120] flex items-center justify-center focus:outline-none group animate-in slide-in-from-right-8 duration-500"
-                    title="Open Data Assistant"
+                    title={ui.openDataAssistant}
                 >
                     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="group-hover:rotate-12 transition-transform">
                         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
@@ -162,14 +170,14 @@ export default function SpreadsheetChatbot({
                                 </svg>
                             </div>
                             <div>
-                                <h3 className="font-bold text-[11px] tracking-tight leading-none">Data Assistant</h3>
+                                <h3 className="font-bold text-[11px] tracking-tight leading-none">{ui.dataAssistant}</h3>
                             </div>
                         </div>
                         <div className="flex gap-2 items-center">
                             <button
                                 onClick={(e) => { e.stopPropagation(); clearMessages(); }}
                                 className="w-8 h-8 rounded-lg bg-white/10 hover:bg-white/20 transition-all flex items-center justify-center"
-                                title="Reset Chat"
+                                title={ui.resetChat}
                             >
                                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                     <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
@@ -179,7 +187,7 @@ export default function SpreadsheetChatbot({
                             <button
                                 onClick={(e) => { e.stopPropagation(); setIsMinimized(!isMinimized); }}
                                 className="w-8 h-8 rounded-lg bg-white/10 hover:bg-white/20 transition-all flex items-center justify-center"
-                                title={isMinimized ? 'Expand' : 'Collapse'}
+                                title={isMinimized ? ui.expand : ui.collapse}
                             >
                                 {isMinimized ? (
                                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -197,7 +205,7 @@ export default function SpreadsheetChatbot({
                             <button
                                 onClick={(e) => { e.stopPropagation(); setIsOpen(false); }}
                                 className="w-8 h-8 rounded-lg bg-white/10 hover:bg-red-500/80 transition-all flex items-center justify-center"
-                                title="Close"
+                                title={ui.close}
                             >
                                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                     <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -213,6 +221,7 @@ export default function SpreadsheetChatbot({
                             <ChatHistory 
                                 messages={messages} 
                                 onApplyFilter={onApplyFilter}
+                                copy={ui}
                             />
                             <div className="p-4 bg-white/50 border-t border-slate-200/50">
                                 <ChatInput
@@ -220,6 +229,7 @@ export default function SpreadsheetChatbot({
                                     setInput={setInput}
                                     handleSend={handleSend}
                                     isOpen={isOpen}
+                                    copy={ui}
                                 />
                             </div>
                         </div>

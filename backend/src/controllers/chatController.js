@@ -1,4 +1,5 @@
 import { query } from "../config/db.js";
+import { normalizeLocale, translateDashboardItems } from "../utils/dashboardLocalization.js";
 
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
@@ -410,7 +411,8 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
 }
 
 export async function chatQuery(req, res) {
-  const { sheetId, message, activeFilters = {}, conversationHistory = [] } = req.body || {};
+  const { sheetId, message, activeFilters = {}, conversationHistory = [], locale: rawLocale } = req.body || {};
+  const locale = normalizeLocale(rawLocale || "en");
   if (!sheetId || !message || typeof message !== "string") {
     return res.status(400).json({ error: "sheetId_and_message_required" });
   }
@@ -471,6 +473,19 @@ export async function chatQuery(req, res) {
   }
   answer = formatAnswerWithBullets(answer);
 
+  if (locale && !locale.startsWith("en")) {
+    const translated = await translateDashboardItems({
+      locale,
+      context: "chat-answer",
+      items: [{
+        key: "answer",
+        text: answer,
+        preserveTerms: headers,
+      }],
+    });
+    answer = translated[0]?.text || answer;
+  }
+
   res.json({
     answer,
     actions: {
@@ -482,7 +497,8 @@ export async function chatQuery(req, res) {
     meta: {
       totalRows: rows.length,
       matchedRows: matchedRows.length,
-      operation: ai?.operation || "none"
+      operation: ai?.operation || "none",
+      locale,
     }
   });
 }

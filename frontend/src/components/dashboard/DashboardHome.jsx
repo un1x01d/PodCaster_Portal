@@ -1,5 +1,6 @@
 import React from "react";
 import { Link } from "react-router-dom";
+import { DASHBOARD_COPY_EN, formatTemplate } from "../../hooks/useDashboardI18n";
 import {
   ResponsiveContainer,
   ComposedChart,
@@ -25,9 +26,9 @@ const INCOME_HINTS = ["income", "net income", "gross income", "operating income"
 const EXPENSE_HINTS = ["expense", "cost", "cogs", "opex", "operating expense"];
 const PIE_COLORS = ["#2f5d8a", "#4b7aa3", "#5f93b2", "#6da8a2", "#7e8ea8", "#5d86c7", "#4f6f96", "#6c8fa8"];
 
-function metricValue(value) {
+function metricValue(value, locale) {
   if (value === null || value === undefined) return "0";
-  if (typeof value === "number") return value.toLocaleString();
+  if (typeof value === "number") return value.toLocaleString(locale);
   return String(value);
 }
 
@@ -36,37 +37,37 @@ function pct(value) {
   return `${value.toFixed(1)}%`;
 }
 
-function formatMoneyIfLarge(value) {
+function formatMoneyIfLarge(value, locale) {
   if (!Number.isFinite(value)) return "0";
   const abs = Math.abs(value);
   const sign = value < 0 ? "-" : "";
   if (abs >= 1000) {
-    return `${sign}$${Math.round(abs).toLocaleString()}`;
+    return `${sign}$${Math.round(abs).toLocaleString(locale)}`;
   }
-  return `${sign}$${abs.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+  return `${sign}$${abs.toLocaleString(locale, { maximumFractionDigits: 2 })}`;
 }
 
-function formatCompactCurrency(value) {
+function formatCompactCurrency(value, locale) {
   if (!Number.isFinite(value)) return "$0";
   const abs = Math.abs(value);
   const sign = value < 0 ? "-" : "";
   if (abs >= 1_000_000_000) return `${sign}$${(abs / 1_000_000_000).toFixed(1)}B`;
   if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
   if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(1)}K`;
-  return `${sign}$${Math.round(abs).toLocaleString()}`;
+  return `${sign}$${Math.round(abs).toLocaleString(locale)}`;
 }
 
-function formatSparkValue(value, type) {
+function formatSparkValue(value, type, locale) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return "0";
   if (type === "percent") return `${numeric.toFixed(1)}%`;
-  if (type === "count") return Math.round(numeric).toLocaleString();
-  return formatMoneyIfLarge(numeric);
+  if (type === "count") return Math.round(numeric).toLocaleString(locale);
+  return formatMoneyIfLarge(numeric, locale);
 }
 
-function formatPeriodAsDateRange(period) {
+function formatPeriodAsDateRange(period, locale) {
   if (typeof period !== "string") return String(period || "");
-  const fmt = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" });
+  const fmt = new Intl.DateTimeFormat(locale, { month: "short", day: "numeric", year: "numeric" });
   if (/^\d{1,2}$/.test(period)) {
     const month = Number(period);
     if (month >= 1 && month <= 12) {
@@ -90,30 +91,30 @@ function formatPeriodAsDateRange(period) {
   return `${fmt.format(start)} - ${fmt.format(end)}`;
 }
 
-function formatPeriodForTooltip(period) {
+function formatPeriodForTooltip(period, locale) {
   if (typeof period !== "string") return String(period || "");
   if (/^\d{1,2}$/.test(period)) {
     const month = Number(period);
     if (month >= 1 && month <= 12) {
       const y = new Date().getFullYear();
-      return new Intl.DateTimeFormat(undefined, { month: "short", year: "numeric" }).format(new Date(y, month - 1, 1));
+      return new Intl.DateTimeFormat(locale, { month: "short", year: "numeric" }).format(new Date(y, month - 1, 1));
     }
   }
   if (/^\d{4}-\d{2}$/.test(period)) {
     const [y, m] = period.split("-").map((v) => Number(v));
     if (!y || !m || m < 1 || m > 12) return period;
-    return new Intl.DateTimeFormat(undefined, { month: "short", year: "numeric" }).format(new Date(y, m - 1, 1));
+    return new Intl.DateTimeFormat(locale, { month: "short", year: "numeric" }).format(new Date(y, m - 1, 1));
   }
   if (/^\d{4}-\d{2}-\d{2}$/.test(period)) {
     const [y, m, d] = period.split("-").map((v) => Number(v));
     if (!y || !m || !d) return period;
-    return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(new Date(y, m - 1, d));
+    return new Intl.DateTimeFormat(locale, { month: "short", day: "numeric", year: "numeric" }).format(new Date(y, m - 1, d));
   }
   return String(period || "");
 }
 
-function formatPeriodAsExactDate(period) {
-  const fmt = new Intl.DateTimeFormat("en-US", { month: "long", day: "numeric", year: "numeric" });
+function formatPeriodAsExactDate(period, locale) {
+  const fmt = new Intl.DateTimeFormat(locale, { month: "long", day: "numeric", year: "numeric" });
   if (typeof period !== "string") return String(period || "");
   if (/^\d{4}$/.test(period)) {
     return fmt.format(new Date(Number(period), 0, 1));
@@ -147,8 +148,8 @@ function toBucketKey(d, granularity) {
   return granularity === "month" ? toMonthKey(d) : toDateKey(d);
 }
 
-function formatDateDisplay(date) {
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(date);
+function formatDateDisplay(date, locale) {
+  return new Intl.DateTimeFormat(locale, { month: "short", day: "numeric", year: "numeric" }).format(date);
 }
 
 function periodKeyToBounds(key) {
@@ -302,7 +303,10 @@ export default function DashboardHome({
   trendsOn,
   chatSection = null,
   insightSection = null,
+  locale,
+  copy = DASHBOARD_COPY_EN,
 }) {
+  const ui = copy || DASHBOARD_COPY_EN;
   const [rangeDraft, setRangeDraft] = React.useState(null);
   const [appliedRange, setAppliedRange] = React.useState(null);
 
@@ -631,7 +635,7 @@ export default function DashboardHome({
 
   const latestTrendPoint = trendData.length ? trendData[trendData.length - 1] : null;
   const topCategory = categoryAgg.length ? categoryAgg[0] : null;
-  const topCategoryName = topCategory ? topCategory.name : "No category";
+  const topCategoryName = topCategory ? topCategory.name : ui.noCategory;
   const topCategoryValue = topCategory ? topCategory.value : 0;
   const topCategoryShare = topCategory && metricSum ? (topCategory.value / metricSum) * 100 : 0;
 
@@ -699,16 +703,16 @@ export default function DashboardHome({
       if (!maxDate || d > maxDate) maxDate = d;
     });
     if (!minDate || !maxDate) return "";
-    if (toDateKey(minDate) === toDateKey(maxDate)) return formatDateDisplay(minDate);
-    return `${formatDateDisplay(minDate)} to ${formatDateDisplay(maxDate)}`;
-  }, [effectiveRows, dateCol]);
+    if (toDateKey(minDate) === toDateKey(maxDate)) return formatDateDisplay(minDate, locale);
+    return `${formatDateDisplay(minDate, locale)} ${ui.to} ${formatDateDisplay(maxDate, locale)}`;
+  }, [effectiveRows, dateCol, locale, ui.to]);
 
   const cards = [
-    { id: "metricTotal", label: metricCol ? `${metricCol} Total` : "Primary Metric Total", value: metricCol ? metricSum : 0, sparkline: metricSeries, color: "#2563eb", sparklineType: "currency" },
-    { id: "metricAvg", label: metricCol ? `${metricCol} Average` : "Primary Metric Average", value: metricCol ? metricAvg : 0, sparkline: metricSeries, color: "#2563eb", sparklineType: "currency" },
+    { id: "metricTotal", label: metricCol ? `${metricCol} ${ui.total}` : ui.primaryMetricTotal, value: metricCol ? metricSum : 0, sparkline: metricSeries, color: "#2563eb", sparklineType: "currency" },
+    { id: "metricAvg", label: metricCol ? `${metricCol} ${ui.average}` : ui.primaryMetricAverage, value: metricCol ? metricAvg : 0, sparkline: metricSeries, color: "#2563eb", sparklineType: "currency" },
     {
       id: "incomeTotal",
-      label: incomeCol ? `${incomeCol} Total` : (profitCol ? `${profitCol} Total` : (metricCol ? `${metricCol} Median` : "Primary Metric Median")),
+      label: incomeCol ? `${incomeCol} ${ui.total}` : (profitCol ? `${profitCol} ${ui.total}` : (metricCol ? `${metricCol} ${ui.median}` : ui.primaryMetricTotal)),
       value: incomeCol ? incomeTotal : (profitCol ? profitTotal : metricMedian),
       sparkline: incomeCol ? incomeSeries : (profitCol ? profitSeries : metricSeries),
       color: incomeCol || profitCol ? "#16a34a" : "#2563eb",
@@ -716,7 +720,7 @@ export default function DashboardHome({
     },
     {
       id: "incomeAvg",
-      label: incomeCol ? `${incomeCol} Average` : (expenseCol ? `${expenseCol} Total` : "Income / Expense"),
+      label: incomeCol ? `${incomeCol} ${ui.average}` : (expenseCol ? `${expenseCol} ${ui.total}` : `${ui.income} / ${ui.expense}`),
       value: incomeCol ? incomeAvg : (expenseCol ? expenseTotal : 0),
       sparkline: incomeCol ? incomeSeries : (expenseCol ? expenseSeries : metricSeries),
       color: incomeCol ? "#16a34a" : "#b45309",
@@ -724,7 +728,7 @@ export default function DashboardHome({
     },
     {
       id: "incomeMargin",
-      label: incomeCol && revenueCol ? "Income Margin" : (expenseCol ? "Expense Share" : "Income Ratio"),
+      label: incomeCol && revenueCol ? ui.incomeMargin : (expenseCol ? ui.expenseShare : ui.incomeRatio),
       value: incomeCol && revenueCol
         ? pct(marginPct)
         : (expenseCol && metricSum ? pct((expenseTotal / metricSum) * 100) : "0%"),
@@ -732,9 +736,9 @@ export default function DashboardHome({
       color: "#0f766e",
       sparklineType: "percent",
     },
-    { id: "latestPeriod", label: "Latest Period Value", value: latestTrendPoint ? latestTrendPoint.metricValue : 0, sparkline: metricSeries, color: "#2563eb", sparklineType: "currency" },
-    { id: "topValue", label: "Top Category Value", subtitle: topCategoryName, value: topCategoryValue, sparkline: topCategoryValueSeries, color: "#7c3aed", sparklineType: "currency" },
-    { id: "topShare", label: "Top Category Share", value: pct(topCategoryShare), sparkline: topCategoryShareSeries, color: "#0369a1", sparklineType: "percent" },
+    { id: "latestPeriod", label: ui.latestPeriodValue, value: latestTrendPoint ? latestTrendPoint.metricValue : 0, sparkline: metricSeries, color: "#2563eb", sparklineType: "currency" },
+    { id: "topValue", label: ui.topCategoryValue, subtitle: topCategoryName, value: topCategoryValue, sparkline: topCategoryValueSeries, color: "#7c3aed", sparklineType: "currency" },
+    { id: "topShare", label: ui.topCategoryShare, value: pct(topCategoryShare), sparkline: topCategoryShareSeries, color: "#0369a1", sparklineType: "percent" },
   ];
 
   return (
@@ -743,10 +747,10 @@ export default function DashboardHome({
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
             <h2 className="text-2xl md:text-3xl font-bold text-slate-900 tracking-tight">
-              Dashboard Overview
+              {ui.dashboardOverview}
             </h2>
             <p className="text-slate-600 mt-1 text-sm md:text-base">
-              Common metrics and system state for {user?.email || "current user"}.
+              {formatTemplate(ui.dashboardSubtitle, { user: user?.email || "current user" })}
             </p>
           </div>
           <div className="flex gap-3">
@@ -754,14 +758,14 @@ export default function DashboardHome({
               to="/workspace"
               className="btn-premium bg-blue-700 hover:bg-blue-800 text-white px-5"
             >
-              Open Workspace
+              {ui.openWorkspace}
             </Link>
             {user?.role === "admin" && (
               <Link
                 to="/users"
                 className="btn-premium bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 px-5"
               >
-                Admin Panel
+                {ui.adminPanel}
               </Link>
             )}
           </div>
@@ -788,7 +792,7 @@ export default function DashboardHome({
                   </div>
                 )}
                 <div className="mt-1.5 text-2xl font-semibold text-slate-900">
-                  {typeof card.value === "number" ? formatMoneyIfLarge(card.value) : metricValue(card.value)}
+                  {typeof card.value === "number" ? formatMoneyIfLarge(card.value, locale) : metricValue(card.value, locale)}
                 </div>
                 {card.sparkline?.length > 1 && (
                   <div className="mt-2 h-12">
@@ -809,10 +813,10 @@ export default function DashboardHome({
                               background: "rgba(255,255,255,0.96)"
                             }}>
                               <div style={{ fontSize: "11px", fontWeight: 700, color: "#0f172a", marginBottom: "2px" }}>
-                                Date: {formatPeriodAsExactDate(pointPeriod)}
+                                {ui.date}: {formatPeriodAsExactDate(pointPeriod, locale)}
                               </div>
                               <div style={{ fontSize: "11px", color: "#0f172a", fontWeight: 600 }}>
-                                {formatSparkValue(row?.value, card.sparklineType)}
+                                {formatSparkValue(row?.value, card.sparklineType, locale)}
                               </div>
                             </div>
                           );
@@ -853,19 +857,19 @@ export default function DashboardHome({
             <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
               <div className="rounded-md border border-slate-200 bg-white p-4 shadow-sm xl:col-span-2">
                 <div className="text-[11px] font-bold uppercase tracking-wider text-slate-700 mb-2">
-                  Trend Over Time {dateCol && revenueMetricCol ? `(${revenueMetricCol}${incomeMetricCol ? `, ${incomeMetricCol}` : ""}${expenseCol || canDeriveExpense ? ", Expense" : ""} by ${dateCol})` : ""}
+                  {ui.trendOverTime} {dateCol && revenueMetricCol ? `(${revenueMetricCol}${incomeMetricCol ? `, ${incomeMetricCol}` : ""}${expenseCol || canDeriveExpense ? `, ${ui.expense}` : ""} ${ui.by} ${dateCol})` : ""}
                 </div>
                 {appliedRange && (
                   <div className="mb-2 flex items-center gap-2">
                     <span className="text-[11px] text-slate-800 font-semibold">
-                      Range: {formatPeriodAsDateRange(appliedRange.start)} to {formatPeriodAsDateRange(appliedRange.end)}
+                      {ui.range}: {formatPeriodAsDateRange(appliedRange.start, locale)} {ui.to} {formatPeriodAsDateRange(appliedRange.end, locale)}
                     </span>
                     <button
                       type="button"
                       className="text-[11px] font-bold text-slate-700 hover:text-slate-900 underline"
                       onClick={() => setAppliedRange(null)}
                     >
-                      Reset range
+                      {ui.resetRange}
                     </button>
                   </div>
                 )}
@@ -885,11 +889,11 @@ export default function DashboardHome({
                         <XAxis
                           dataKey="period"
                           tick={{ fontSize: 11, fill: "#334155" }}
-                          tickFormatter={(v) => formatPeriodAsDateRange(v)}
+                          tickFormatter={(v) => formatPeriodAsDateRange(v, locale)}
                           interval="preserveStartEnd"
                           minTickGap={46}
                         />
-                        <YAxis width={68} tick={{ fontSize: 11, fill: "#334155" }} tickFormatter={(v) => formatCompactCurrency(Number(v))} />
+                        <YAxis width={68} tick={{ fontSize: 11, fill: "#334155" }} tickFormatter={(v) => formatCompactCurrency(Number(v), locale)} />
                         <Tooltip
                           content={({ active, payload, label }) => {
                             if (!active || !payload?.length) return null;
@@ -898,7 +902,7 @@ export default function DashboardHome({
                             const rowOrder = (name = "") => {
                               const n = String(name).toLowerCase();
                               if (n.includes("revenue")) return 0;
-                              if (n.includes("expense")) return 1;
+                              if (n.includes("expense") || n === "gapband") return 1;
                               if (n.includes("income")) return 2;
                               return 3;
                             };
@@ -909,7 +913,7 @@ export default function DashboardHome({
                             });
                             const metricColor = (name = "") => {
                               const lower = String(name).toLowerCase();
-                              if (lower.includes("expense")) return "#ea580c";
+                              if (lower.includes("expense") || lower === "gapband") return "#ea580c";
                               if (lower.includes("income")) return "#16a34a";
                               if (lower.includes("revenue")) return "#2563eb";
                               return "#334155";
@@ -924,20 +928,20 @@ export default function DashboardHome({
                                 background: "rgba(255,255,255,0.96)"
                               }}>
                                 <div style={{ fontSize: "11px", fontWeight: 800, color: "#0f172a", marginBottom: "4px" }}>
-                                  {formatPeriodForTooltip(label)}
+                                  {formatPeriodForTooltip(label, locale)}
                                 </div>
                                 {orderedRows.map((row, idx) => {
-                                  const rawName = row?.name || row?.dataKey || "Value";
-                                  const name = rawName === "gapBand" ? "Expenses" : rawName;
-                                  const rawVal = name === "Expenses"
+                                  const rawName = row?.name || row?.dataKey || ui.value;
+                                  const displayName = rawName === "gapBand" ? ui.expense : rawName;
+                                  const rawVal = displayName === ui.expense
                                     ? row?.payload?.expenseFromRevenueIncome
                                     : row?.value;
-                                  const color = metricColor(name);
+                                  const color = metricColor(rawName);
                                   return (
-                                    <div key={`${name}-${idx}`} style={{ fontSize: "11px", color: "#334155", margin: "1px 0", padding: 0, display: "flex", alignItems: "center", gap: "6px" }}>
+                                    <div key={`${displayName}-${idx}`} style={{ fontSize: "11px", color: "#334155", margin: "1px 0", padding: 0, display: "flex", alignItems: "center", gap: "6px" }}>
                                       <span style={{ width: "8px", height: "8px", borderRadius: "9999px", background: color, display: "inline-block" }} />
-                                      <span style={{ fontWeight: 800, color }}>{name}:</span>
-                                      <span style={{ fontWeight: 600 }}>{formatMoneyIfLarge(Number(rawVal))}</span>
+                                      <span style={{ fontWeight: 800, color }}>{displayName}:</span>
+                                      <span style={{ fontWeight: 600 }}>{formatMoneyIfLarge(Number(rawVal), locale)}</span>
                                     </div>
                                   );
                                 })}
@@ -975,13 +979,13 @@ export default function DashboardHome({
                     </ResponsiveContainer>
                   </div>
                 ) : (
-                  <div className="text-sm text-slate-700">Need both a date column and numeric metric to render trend chart.</div>
+                  <div className="text-sm text-slate-700">{ui.needDateAndMetric}</div>
                 )}
               </div>
 
               <div className="rounded-md border border-slate-200 bg-white p-4 shadow-sm">
                 <div className="text-[11px] font-bold uppercase tracking-wider text-slate-700 mb-2">
-                  Top Categories {categoryCol && metricCol ? `(${categoryCol} by ${metricCol})` : ""}
+                  {ui.topCategories} {categoryCol && metricCol ? `(${categoryCol} ${ui.by} ${metricCol})` : ""}
                 </div>
                 {categoryAgg.length > 0 ? (
                   <div className="h-64">
@@ -989,7 +993,7 @@ export default function DashboardHome({
                       <BarChart data={categoryAgg}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                         <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#334155" }} interval={0} angle={-15} textAnchor="end" height={60} />
-                        <YAxis width={68} tick={{ fontSize: 11, fill: "#334155" }} tickFormatter={(v) => formatCompactCurrency(Number(v))} />
+                        <YAxis width={68} tick={{ fontSize: 11, fill: "#334155" }} tickFormatter={(v) => formatCompactCurrency(Number(v), locale)} />
                         <Tooltip
                           content={({ active, payload, label }) => {
                             if (!active || !payload?.length) return null;
@@ -1009,8 +1013,8 @@ export default function DashboardHome({
                                 </div>
                                 <div style={{ fontSize: "11px", margin: 0, padding: 0, display: "flex", alignItems: "center", gap: "6px" }}>
                                   <span style={{ width: "8px", height: "8px", borderRadius: "9999px", background: color, display: "inline-block" }} />
-                                  <span style={{ fontWeight: 800, color }}>Value:</span>
-                                  <span style={{ fontWeight: 600, color: "#334155" }}>{formatMoneyIfLarge(Number(row?.value))}</span>
+                                  <span style={{ fontWeight: 800, color }}>{ui.value}:</span>
+                                  <span style={{ fontWeight: 600, color: "#334155" }}>{formatMoneyIfLarge(Number(row?.value), locale)}</span>
                                 </div>
                               </div>
                             );
@@ -1025,7 +1029,7 @@ export default function DashboardHome({
                     </ResponsiveContainer>
                   </div>
                 ) : (
-                  <div className="text-sm text-slate-700">Need a categorical column to render category bar chart.</div>
+                  <div className="text-sm text-slate-700">{ui.needCategoryColumn}</div>
                 )}
               </div>
             </div>

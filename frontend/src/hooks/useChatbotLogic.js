@@ -25,7 +25,7 @@ function buildConversationHistory(messages = [], limit = 8) {
   if (!Array.isArray(messages)) return [];
   return messages
     .filter((m) => m && (m.type === "user" || m.type === "bot") && typeof m.text === "string")
-    .filter((m) => !m.text.startsWith("Hi! I analyze this loaded spreadsheet with an AI model."))
+    .filter((m) => !m.isSystem)
     .slice(-limit)
     .map((m) => ({
       role: m.type === "user" ? "user" : "assistant",
@@ -41,6 +41,8 @@ export function useChatbotLogic({
   activeFilters,
   onApplyFilter,
   onUpdateChart,
+  locale = "en",
+  copy = {},
 }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
@@ -54,11 +56,22 @@ export function useChatbotLogic({
     if (messages.length === 0 && headers.length > 0) {
       setMessages([{
         type: "bot",
-        text: "Ask about what changed, why it changed, top drivers, and year-over-year differences in this dataset.",
+        text: copy.chatInitialMessage || "Ask about what changed, why it changed, top drivers, and year-over-year differences in this dataset.",
         timestamp: new Date(),
+        isSystem: true,
       }]);
     }
-  }, [headers, messages.length]);
+  }, [headers, messages.length, copy.chatInitialMessage]);
+
+  useEffect(() => {
+    setMessages((prev) => {
+      if (prev.length !== 1 || !prev[0]?.isSystem) return prev;
+      return [{
+        ...prev[0],
+        text: copy.chatInitialMessage || prev[0].text,
+      }];
+    });
+  }, [copy.chatInitialMessage]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -78,12 +91,13 @@ export function useChatbotLogic({
         message: q,
         activeFilters: serializeActiveFilters(activeFilters),
         conversationHistory: buildConversationHistory(messages),
+        locale,
       });
 
       const payload = res?.data || {};
       const answer = typeof payload.answer === "string" && payload.answer.trim()
         ? payload.answer
-        : "I could not produce a response.";
+        : (copy.chatNoResponse || "I could not produce a response.");
 
       const actions = payload.actions || {};
       const filters = Array.isArray(actions.filters) ? actions.filters : [];
@@ -108,7 +122,7 @@ export function useChatbotLogic({
       }
 
       const filterNote = filters.length
-        ? `\n\nApplied filters: ${filters.map((f) => `${f.column} ${f.operator || "contains"} \"${f.value}\"`).join(", ")}`
+        ? `\n\n${copy.appliedFilters || "Applied filters"}: ${filters.map((f) => `${f.column} ${f.operator || "contains"} \"${f.value}\"`).join(", ")}`
         : "";
 
       setMessages((prev) => [...prev, {
@@ -119,20 +133,21 @@ export function useChatbotLogic({
         filterCol: filters[0]?.column,
       }]);
     } catch (e) {
-      const msg = e?.response?.data?.message || e?.response?.data?.error || "AI chat request failed.";
+      const msg = e?.response?.data?.message || e?.response?.data?.error || copy.chatRequestFailed || "AI chat request failed.";
       setMessages((prev) => [...prev, { type: "bot", text: msg, timestamp: new Date() }]);
     } finally {
       setIsSending(false);
     }
-  }, [input, sheetId, isSending, activeFilters, messages, onApplyFilter, onUpdateChart]);
+  }, [input, sheetId, isSending, activeFilters, messages, onApplyFilter, onUpdateChart, locale, copy.appliedFilters, copy.chatRequestFailed]);
 
   const clearMessages = useCallback(() => {
     setMessages([{
       type: "bot",
-      text: "Chat reset. Ask another question about this spreadsheet.",
+      text: copy.chatResetMessage || "Chat reset. Ask another question about this spreadsheet.",
       timestamp: new Date(),
+      isSystem: true,
     }]);
-  }, []);
+  }, [copy.chatResetMessage]);
 
   return {
     messages,
