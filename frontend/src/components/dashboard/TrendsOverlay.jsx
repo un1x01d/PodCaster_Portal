@@ -6,6 +6,34 @@ import { formatSmart } from "../../utils/formatting";
 
 const COLORS = ["#6366f1", "#10b981", "#f59e0b", "#f43f5e", "#8b5cf6", "#0ea5e9", "#ec4899", "#84cc16"];
 
+function formatTrendAxisLabel(label, trendGranularity, compareYears) {
+    const raw = String(label ?? "");
+    const hasCompare = Array.isArray(compareYears) && compareYears.length > 0;
+
+    if (trendGranularity === "month") {
+        if (hasCompare && /^\d{2}$/.test(raw)) {
+            return new Intl.DateTimeFormat(undefined, { month: "short" }).format(new Date(2000, Number(raw) - 1, 1));
+        }
+        if (/^\d{4}-\d{2}$/.test(raw)) {
+            const [y, m] = raw.split("-").map(Number);
+            return new Intl.DateTimeFormat(undefined, { month: "short", year: "numeric" }).format(new Date(y, m - 1, 1));
+        }
+    }
+
+    if (trendGranularity === "day") {
+        if (hasCompare && /^\d{2}-\d{2}$/.test(raw)) {
+            const [m, d] = raw.split("-").map(Number);
+            return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(2000, m - 1, d));
+        }
+        if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+            const [y, m, d] = raw.split("-").map(Number);
+            return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(y, m - 1, d));
+        }
+    }
+
+    return raw;
+}
+
 export default function TrendsOverlay({
     setTrendsOn,
     trendsDateKey, setTrendsDateKey,
@@ -62,9 +90,20 @@ export default function TrendsOverlay({
                     <ResponsiveContainer width="100%" height="100%">
                         <LineChart data={trendsData}>
                             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
-                            <XAxis dataKey="date" tick={{ fontSize: 12, fill: '#6b7280' }} tickLine={false} axisLine={false} dy={10} />
+                            <XAxis
+                                dataKey="date"
+                                tick={{ fontSize: 12, fill: '#6b7280' }}
+                                tickLine={false}
+                                axisLine={false}
+                                dy={10}
+                                tickFormatter={(label) => formatTrendAxisLabel(label, trendGranularity, compareYears)}
+                            />
                             <YAxis tick={{ fontSize: 12, fill: '#6b7280' }} tickLine={false} axisLine={false} dx={-10} tickFormatter={(val) => formatSmart(val, trendsValueKey)} width={80} />
-                            <Tooltip content={<TrendTooltip />} cursor={{ stroke: '#cbd5e1', strokeWidth: 1, strokeDasharray: '4 4' }} />
+                            <Tooltip
+                                content={<TrendTooltip />}
+                                labelFormatter={(label) => formatTrendAxisLabel(label, trendGranularity, compareYears)}
+                                cursor={{ stroke: '#cbd5e1', strokeWidth: 1, strokeDasharray: '4 4' }}
+                            />
                             <Legend />
 
                             {(!compareYears || compareYears.length === 0) ? (

@@ -23,6 +23,9 @@ export default function SpreadsheetChatbot({
     mode = "floating",
 }) {
     const inline = mode === "inline";
+    const chatData = Array.isArray(data) && data.length
+        ? data
+        : (Array.isArray(allData) ? allData : []);
     const {
         messages,
         input,
@@ -36,7 +39,7 @@ export default function SpreadsheetChatbot({
         clearMessages,
     } = useChatbotLogic({
         sheetId,
-        data,
+        data: chatData,
         headers,
         activeFilters,
         allData,
@@ -90,7 +93,7 @@ export default function SpreadsheetChatbot({
         if (isMinimized) setIsMinimized(false);
     }, [inline, isOpen, isMinimized, setIsOpen, setIsMinimized]);
 
-    if (!data || data.length === 0) return null;
+    if (!sheetId) return null;
 
     if (inline) {
         return (
@@ -119,7 +122,7 @@ export default function SpreadsheetChatbot({
             {!isOpen && (
                 <button
                     onClick={() => setIsOpen(true)}
-                    className="fixed bottom-8 right-8 w-14 h-14 bg-indigo-600 text-white rounded-2xl shadow-2xl shadow-indigo-200 hover:bg-indigo-700 hover:scale-110 transition-all z-40 flex items-center justify-center focus:outline-none group animate-in slide-in-from-right-8 duration-500"
+                    className="fixed bottom-6 right-6 w-14 h-14 bg-indigo-600 text-white rounded-2xl shadow-2xl shadow-indigo-200 hover:bg-indigo-700 hover:scale-110 transition-all z-[120] flex items-center justify-center focus:outline-none group animate-in slide-in-from-right-8 duration-500"
                     title="Open Data Assistant"
                 >
                     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="group-hover:rotate-12 transition-transform">
@@ -132,7 +135,7 @@ export default function SpreadsheetChatbot({
             {/* Chat Panel */}
             {isOpen && (
                 <div 
-                    className="fixed bottom-8 right-8 w-[20rem] glass rounded-[1.75rem] flex flex-col z-[60] shadow-2xl overflow-hidden animate-in slide-in-from-bottom-8 fade-in duration-500"
+                    className="fixed bottom-6 right-6 w-[20rem] glass rounded-[1.75rem] flex flex-col z-[130] shadow-2xl overflow-hidden animate-in slide-in-from-bottom-8 fade-in duration-500"
                     style={{ height: isMinimized ? 'auto' : `${chatHeight}px` }}
                 >
                     {/* Draggable Top Handle */}

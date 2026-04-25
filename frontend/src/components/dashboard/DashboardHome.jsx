@@ -67,6 +67,15 @@ function formatSparkValue(value, type) {
 function formatPeriodAsDateRange(period) {
   if (typeof period !== "string") return String(period || "");
   const fmt = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" });
+  if (/^\d{1,2}$/.test(period)) {
+    const month = Number(period);
+    if (month >= 1 && month <= 12) {
+      const y = new Date().getFullYear();
+      const start = new Date(y, month - 1, 1);
+      const end = new Date(y, month, 0);
+      return `${fmt.format(start)} - ${fmt.format(end)}`;
+    }
+  }
   if (/^\d{4}-\d{2}-\d{2}$/.test(period)) {
     const [y, m, d] = period.split("-").map((v) => Number(v));
     if (!y || !m || !d) return period;
@@ -83,6 +92,13 @@ function formatPeriodAsDateRange(period) {
 
 function formatPeriodForTooltip(period) {
   if (typeof period !== "string") return String(period || "");
+  if (/^\d{1,2}$/.test(period)) {
+    const month = Number(period);
+    if (month >= 1 && month <= 12) {
+      const y = new Date().getFullYear();
+      return new Intl.DateTimeFormat(undefined, { month: "short", year: "numeric" }).format(new Date(y, month - 1, 1));
+    }
+  }
   if (/^\d{4}-\d{2}$/.test(period)) {
     const [y, m] = period.split("-").map((v) => Number(v));
     if (!y || !m || m < 1 || m > 12) return period;

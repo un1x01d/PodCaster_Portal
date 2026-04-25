@@ -1031,6 +1031,7 @@ export default function App() {
                     />
                     {sheetId && (
                       <SpreadsheetChatbot
+                        mode="floating"
                         sheetId={sheetId}
                         data={sortedData}
                         allData={data}
