@@ -12,6 +12,7 @@ import sheetRoutes from "./src/routes/sheetRoutes.js";
 import userRoutes from "./src/routes/userRoutes.js";
 import viewRoutes from "./src/routes/viewRoutes.js";
 import chatRoutes from "./src/routes/chatRoutes.js";
+import insightRoutes from "./src/routes/insightRoutes.js";
 
 const app = express();
 // Force restart
@@ -58,6 +59,7 @@ app.use("/", sheetRoutes); // /sheets, /upload
 app.use("/", userRoutes);  // /users, /groups, /folders, /permissions
 app.use("/", viewRoutes);  // /views
 app.use("/", chatRoutes);  // /chat/query
+app.use("/", insightRoutes); // /insights/:sheetId
 
 // Health
 app.get("/healthz", (_req, res) => res.json({ ok: true }));

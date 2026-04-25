@@ -236,6 +236,27 @@ export async function initDb() {
     );
   `);
 
+  // Insight settings (per sheet)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS insight_settings (
+      sheet_id TEXT PRIMARY KEY,
+      sensitivity NUMERIC NOT NULL DEFAULT 1,
+      min_impact_percent NUMERIC NOT NULL DEFAULT 5,
+      muted_metrics JSONB NOT NULL DEFAULT '[]'::jsonb,
+      preferred_date_column TEXT,
+      preferred_metric_column TEXT,
+      thresholds JSONB NOT NULL DEFAULT '{}'::jsonb,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`ALTER TABLE insight_settings ADD COLUMN IF NOT EXISTS sensitivity NUMERIC NOT NULL DEFAULT 1;`);
+  await pool.query(`ALTER TABLE insight_settings ADD COLUMN IF NOT EXISTS min_impact_percent NUMERIC NOT NULL DEFAULT 5;`);
+  await pool.query(`ALTER TABLE insight_settings ADD COLUMN IF NOT EXISTS muted_metrics JSONB NOT NULL DEFAULT '[]'::jsonb;`);
+  await pool.query(`ALTER TABLE insight_settings ADD COLUMN IF NOT EXISTS preferred_date_column TEXT;`);
+  await pool.query(`ALTER TABLE insight_settings ADD COLUMN IF NOT EXISTS preferred_metric_column TEXT;`);
+  await pool.query(`ALTER TABLE insight_settings ADD COLUMN IF NOT EXISTS thresholds JSONB NOT NULL DEFAULT '{}'::jsonb;`);
+  await pool.query(`ALTER TABLE insight_settings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
+
   // seed admin
   await pool.query(`
     INSERT INTO users (email,password,role)

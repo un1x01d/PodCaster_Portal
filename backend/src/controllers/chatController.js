@@ -14,14 +14,35 @@ function toNum(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+function toLocalDateFromExcelSerial(serial) {
+  if (!Number.isFinite(serial)) return null;
+  const ms = (serial - 25569) * 86400 * 1000;
+  const d = new Date(Date.UTC(1970, 0, 1) + ms);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function toLocalCalendarDate(d) {
+  if (!(d instanceof Date) || Number.isNaN(d.getTime())) return null;
+  return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+}
+
 function parseDate(v) {
   if (v === null || v === undefined || v === "") return null;
-  const d = new Date(v);
-  if (!Number.isNaN(d.getTime())) return d;
+  if (v instanceof Date) return toLocalCalendarDate(v);
+  if (typeof v === "string") {
+    const text = v.trim();
+    const isoDateOnly = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (isoDateOnly) {
+      const [, y, m, d] = isoDateOnly;
+      return new Date(Number(y), Number(m) - 1, Number(d));
+    }
+    const direct = new Date(text);
+    if (!Number.isNaN(direct.getTime())) return toLocalCalendarDate(direct);
+  }
   const n = Number(v);
   if (!Number.isNaN(n) && n > 25569 && n < 60000) {
-    const excelDate = new Date(Math.round((n - 25569) * 86400 * 1000));
-    if (!Number.isNaN(excelDate.getTime())) return excelDate;
+    const excelDate = toLocalDateFromExcelSerial(n);
+    if (excelDate) return excelDate;
   }
   return null;
 }

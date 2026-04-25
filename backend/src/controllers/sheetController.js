@@ -26,6 +26,37 @@ const SHEET_DATA_HARD_CAP = Number.parseInt(
     10
 );
 
+function normalizeSheetCellValue(value) {
+    if (value instanceof Date && !Number.isNaN(value.getTime())) {
+        const y = value.getFullYear();
+        const m = String(value.getMonth() + 1).padStart(2, "0");
+        const d = String(value.getDate()).padStart(2, "0");
+        return `${y}-${m}-${d}`;
+    }
+    if (typeof value === "string") {
+        const text = value.trim();
+        if (!text) return value;
+        const isoDateOnly = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (isoDateOnly) return text;
+        const parsed = new Date(text);
+        if (!Number.isNaN(parsed.getTime())) {
+            const y = parsed.getFullYear();
+            const m = String(parsed.getMonth() + 1).padStart(2, "0");
+            const d = String(parsed.getDate()).padStart(2, "0");
+            return `${y}-${m}-${d}`;
+        }
+    }
+    return value;
+}
+
+function normalizeSheetRow(row) {
+    const out = {};
+    Object.entries(row || {}).forEach(([key, value]) => {
+        out[key] = normalizeSheetCellValue(value);
+    });
+    return out;
+}
+
 // Helper to determine active sheet versioning
 async function getVersionedFilename(client, folderId, originalName) {
     if (!folderId) return originalName; // No versioning in root? Or just basic? adhering to original logic which only checked folder
@@ -144,7 +175,7 @@ export async function uploadSheet(req, res) {
             const versionedFilename = await getVersionedFilename(client, assignedFolderId, originalName);
 
             // Get headers from FIRST tab
-            const firstTabRows = XLSX.utils.sheet_to_json(wb.Sheets[sheetNames[0]], { defval: "" });
+            const firstTabRows = XLSX.utils.sheet_to_json(wb.Sheets[sheetNames[0]], { defval: "" }).map(normalizeSheetRow);
             const headers = Object.keys(firstTabRows[0] || {});
             if (headers.length > MAX_UPLOAD_COLUMNS) {
                 await client.query('ROLLBACK');
@@ -164,7 +195,7 @@ export async function uploadSheet(req, res) {
             // Insert Rows
             let totalRows = 0;
             for (const sn of sheetNames) {
-                const rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { defval: "" });
+                const rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { defval: "" }).map(normalizeSheetRow);
                 if (rows.length > MAX_UPLOAD_ROWS_PER_SHEET) {
                     await client.query('ROLLBACK');
                     return res.status(413).json({

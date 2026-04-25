@@ -11,6 +11,7 @@ import ErrorBoundary from "./ErrorBoundary";
 import DashboardBody from "./components/dashboard/DashboardBody";
 import DashboardHeader from "./components/dashboard/DashboardHeader";
 import DashboardHome from "./components/dashboard/DashboardHome";
+import InsightFeed from "./components/dashboard/InsightFeed";
 import Modal from "./components/common/Modal";
 import ChangePasswordModal from "./components/common/ChangePasswordModal";
 
@@ -42,12 +43,20 @@ const parseTemporalValue = (raw) => {
 
   const asNum = Number(text);
   if (!Number.isNaN(asNum) && asNum > 25569 && asNum < 60000) {
-    const d = new Date(Math.round((asNum - 25569) * 86400 * 1000));
+    const d = new Date(Date.UTC(1970, 0, 1) + (asNum - 25569) * 86400 * 1000);
     if (!Number.isNaN(d.getTime())) return d;
   }
 
+  const isoDateOnly = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoDateOnly) {
+    const [, y, m, d] = isoDateOnly;
+    return new Date(Number(y), Number(m) - 1, Number(d));
+  }
+
   const direct = new Date(text);
-  if (!Number.isNaN(direct.getTime())) return direct;
+  if (!Number.isNaN(direct.getTime())) {
+    return new Date(direct.getUTCFullYear(), direct.getUTCMonth(), direct.getUTCDate());
+  }
 
   const qYear = text.match(/^(?:FY\s*)?(\d{4})\s*[-/\s]?\s*Q([1-4])$/i);
   if (qYear) {
@@ -239,6 +248,67 @@ export default function App() {
     if (!Number.isFinite(n)) return 0;
     return negativeByParens ? -Math.abs(n) : n;
   };
+
+  const applyContainsFilter = React.useCallback((col, val) => {
+    if (col === "RESET_ALL") {
+      setColumnFilters({});
+      return;
+    }
+    if (!val) {
+      setColumnFilters((prev) => {
+        const next = { ...prev };
+        delete next[col];
+        return next;
+      });
+      return;
+    }
+    setColumnFilters((prev) => ({ ...prev, [col]: { type: "contains", value: val } }));
+  }, []);
+
+  const applyChartConfig = React.useCallback((config) => {
+    if (!config || !config.valueColumn) return;
+    setTrendsOn(false);
+    setPivotOn(false);
+    setTwoOn(false);
+    const isTemporalColumn = (col = "") => looksLikeDateColumn(col);
+    if (config.dateColumn && (!config.segmentBy || isTemporalColumn(config.segmentBy))) {
+      setTrendsValueKey(config.valueColumn);
+      setTrendsDateKey(config.dateColumn);
+      setTrendGranularity(isTemporalColumn(config.dateColumn) && /quarter|fiscal/i.test(config.dateColumn) ? "quarter" : "month");
+      setTrendsOn(true);
+      setPendingViewName(`Trend of ${config.valueColumn}`);
+      return;
+    }
+    if (!config.dateColumn && config.segmentBy && config.valueColumn && isTemporalColumn(config.segmentBy)) {
+      setTrendsValueKey(config.valueColumn);
+      setTrendsDateKey(config.segmentBy);
+      setTrendGranularity(/quarter|fiscal/i.test(config.segmentBy) ? "quarter" : "month");
+      setTrendsOn(true);
+      setPendingViewName(`Trend of ${config.valueColumn}`);
+      return;
+    }
+    if (config.segmentBy && config.valueColumn) {
+      setPivotRowKey(config.segmentBy);
+      setPivotValKey(config.valueColumn);
+      setPivotColKey(null);
+      setPivotAgg(config.aggregation === "avg" ? "Average" : "Sum");
+      setPivotOn(true);
+      setPendingViewName(`${config.valueColumn} by ${config.segmentBy}`);
+      return;
+    }
+    const dateCol = headers.find((h) => h.toLowerCase().includes("date") || h.toLowerCase().includes("time") || h.toLowerCase().includes("year"));
+    if (dateCol) {
+      setTrendsValueKey(config.valueColumn);
+      setTrendsDateKey(dateCol);
+      setTrendsOn(true);
+      setPendingViewName(`Trend of ${config.valueColumn}`);
+    }
+  }, [headers]);
+
+  const saveInsightView = React.useCallback((name) => {
+    setPendingViewName(name || "Insight View");
+    setShowColumnSelector(true);
+  }, []);
 
   /* -------- Computed: Pivot -------- */
   const { pivotRows, pivotHeaders, pivotSeriesKeys, pieData } = React.useMemo(() => {
@@ -620,6 +690,9 @@ export default function App() {
 
   const exportPDF = () => {
     const doc = new jsPDF("l", "pt", "a4");
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const marginX = 24;
+    const availableWidth = pageWidth - marginX * 2;
 
     const tableBody = sortedData.map(row =>
       displayHeaders.map(col => {
@@ -648,10 +721,51 @@ export default function App() {
       })
     );
 
+    const numericColumns = displayHeaders.map((col) => {
+      for (let i = 0; i < sortedData.length; i += 1) {
+        const value = sortedData[i]?.[col];
+        if (value === null || value === undefined || value === "") continue;
+        return typeof value === "number";
+      }
+      return false;
+    });
+
+    const estimatedWidths = displayHeaders.map((col, colIndex) => {
+      let maxLen = String(col || "").length;
+      for (let i = 0; i < tableBody.length; i += 1) {
+        const cellLen = String(tableBody[i]?.[colIndex] ?? "").length;
+        if (cellLen > maxLen) maxLen = cellLen;
+      }
+      const px = Math.max(70, Math.min(180, maxLen * 6.2));
+      return px;
+    });
+
+    const rawTotalWidth = estimatedWidths.reduce((sum, w) => sum + w, 0);
+    const widthScale = rawTotalWidth > 0 ? Math.min(1, availableWidth / rawTotalWidth) : 1;
+    const columnStyles = {};
+
+    estimatedWidths.forEach((width, idx) => {
+      const scaledWidth = Math.max(48, Math.floor(width * widthScale));
+      columnStyles[idx] = {
+        cellWidth: scaledWidth,
+        halign: numericColumns[idx] ? "right" : "left",
+      };
+    });
+
     autoTable(doc, {
       head: [displayHeaders],
       body: tableBody,
-      styles: { fontSize: 8 },
+      margin: { left: marginX, right: marginX, top: 24, bottom: 24 },
+      styles: {
+        fontSize: 8,
+        overflow: "linebreak",
+        cellPadding: { top: 4, right: 4, bottom: 4, left: 4 },
+        valign: "middle",
+      },
+      headStyles: {
+        halign: "left",
+      },
+      columnStyles,
     });
     doc.save(`${activeFilename || "export"}.pdf`);
   };
@@ -868,6 +982,16 @@ export default function App() {
                     pivotOn={pivotOn}
                     twoOn={twoOn}
                     trendsOn={trendsOn}
+                    insightSection={sheetId ? (
+                      <InsightFeed
+                        sheetId={sheetId}
+                        context="dashboard"
+                        user={user}
+                        onApplyFilter={applyContainsFilter}
+                        onOpenChart={applyChartConfig}
+                        onSaveView={saveInsightView}
+                      />
+                    ) : null}
                     chatSection={sheetId ? (
                       <SpreadsheetChatbot
                         mode="inline"
@@ -876,62 +1000,8 @@ export default function App() {
                         allData={data}
                         headers={headers}
                         activeFilters={columnFilters}
-                        onApplyFilter={(col, val) => {
-                          if (col === "RESET_ALL") {
-                            setColumnFilters({});
-                            return;
-                          }
-                          if (!val) {
-                            setColumnFilters(prev => {
-                              const next = { ...prev };
-                              delete next[col];
-                              return next;
-                            });
-                          } else {
-                            setColumnFilters(prev => ({ ...prev, [col]: { type: 'contains', value: val } }));
-                          }
-                        }}
-                        onUpdateChart={(config) => {
-                          console.log("Chart Request:", config);
-                          setTrendsOn(false);
-                          setPivotOn(false);
-                          setTwoOn(false);
-                          const isTemporalColumn = (col = "") => looksLikeDateColumn(col);
-                          if (config.dateColumn && (!config.segmentBy || isTemporalColumn(config.segmentBy))) {
-                            setTrendsValueKey(config.valueColumn);
-                            setTrendsDateKey(config.dateColumn);
-                            setTrendGranularity(isTemporalColumn(config.dateColumn) && /quarter|fiscal/i.test(config.dateColumn) ? "quarter" : "month");
-                            setTrendsOn(true);
-                            setPendingViewName(`Trend of ${config.valueColumn}`);
-                            return;
-                          }
-                          if (!config.dateColumn && config.segmentBy && config.valueColumn && isTemporalColumn(config.segmentBy)) {
-                            setTrendsValueKey(config.valueColumn);
-                            setTrendsDateKey(config.segmentBy);
-                            setTrendGranularity(/quarter|fiscal/i.test(config.segmentBy) ? "quarter" : "month");
-                            setTrendsOn(true);
-                            setPendingViewName(`Trend of ${config.valueColumn}`);
-                            return;
-                          }
-                          if (config.segmentBy && config.valueColumn) {
-                            setPivotRowKey(config.segmentBy);
-                            setPivotValKey(config.valueColumn);
-                            setPivotColKey(null);
-                            setPivotAgg(config.aggregation === 'avg' ? 'Average' : 'Sum');
-                            setPivotOn(true);
-                            setPendingViewName(`${config.valueColumn} by ${config.segmentBy}`);
-                            return;
-                          }
-                          if (config.valueColumn) {
-                            const dateCol = headers.find(h => h.toLowerCase().includes('date') || h.toLowerCase().includes('time') || h.toLowerCase().includes('year'));
-                            if (dateCol) {
-                              setTrendsValueKey(config.valueColumn);
-                              setTrendsDateKey(dateCol);
-                              setTrendsOn(true);
-                              setPendingViewName(`Trend of ${config.valueColumn}`);
-                            }
-                          }
-                        }}
+                        onApplyFilter={applyContainsFilter}
+                        onUpdateChart={applyChartConfig}
                       />
                     ) : null}
                   />
@@ -1037,6 +1107,9 @@ export default function App() {
                       onTabChange={handleTabChange}
                       hasRequiredColumns={hasRequiredColumns}
                       appendCalculatedColumn={appendCalculatedColumn}
+                      onInsightApplyFilter={applyContainsFilter}
+                      onInsightOpenChart={applyChartConfig}
+                      onInsightSaveView={saveInsightView}
                     />
                     {sheetId && (
                       <SpreadsheetChatbot
@@ -1046,62 +1119,8 @@ export default function App() {
                         allData={data}
                         headers={headers}
                         activeFilters={columnFilters}
-                        onApplyFilter={(col, val) => {
-                          if (col === "RESET_ALL") {
-                            setColumnFilters({});
-                            return;
-                          }
-                          if (!val) {
-                            setColumnFilters(prev => {
-                              const next = { ...prev };
-                              delete next[col];
-                              return next;
-                            });
-                          } else {
-                            setColumnFilters(prev => ({ ...prev, [col]: { type: 'contains', value: val } }));
-                          }
-                        }}
-                        onUpdateChart={(config) => {
-                          console.log("Chart Request:", config);
-                          setTrendsOn(false);
-                          setPivotOn(false);
-                          setTwoOn(false);
-                          const isTemporalColumn = (col = "") => looksLikeDateColumn(col);
-                          if (config.dateColumn && (!config.segmentBy || isTemporalColumn(config.segmentBy))) {
-                            setTrendsValueKey(config.valueColumn);
-                            setTrendsDateKey(config.dateColumn);
-                            setTrendGranularity(isTemporalColumn(config.dateColumn) && /quarter|fiscal/i.test(config.dateColumn) ? "quarter" : "month");
-                            setTrendsOn(true);
-                            setPendingViewName(`Trend of ${config.valueColumn}`);
-                            return;
-                          }
-                          if (!config.dateColumn && config.segmentBy && config.valueColumn && isTemporalColumn(config.segmentBy)) {
-                            setTrendsValueKey(config.valueColumn);
-                            setTrendsDateKey(config.segmentBy);
-                            setTrendGranularity(/quarter|fiscal/i.test(config.segmentBy) ? "quarter" : "month");
-                            setTrendsOn(true);
-                            setPendingViewName(`Trend of ${config.valueColumn}`);
-                            return;
-                          }
-                          if (config.segmentBy && config.valueColumn) {
-                            setPivotRowKey(config.segmentBy);
-                            setPivotValKey(config.valueColumn);
-                            setPivotColKey(null);
-                            setPivotAgg(config.aggregation === 'avg' ? 'Average' : 'Sum');
-                            setPivotOn(true);
-                            setPendingViewName(`${config.valueColumn} by ${config.segmentBy}`);
-                            return;
-                          }
-                          if (config.valueColumn) {
-                            const dateCol = headers.find(h => h.toLowerCase().includes('date') || h.toLowerCase().includes('time') || h.toLowerCase().includes('year'));
-                            if (dateCol) {
-                              setTrendsValueKey(config.valueColumn);
-                              setTrendsDateKey(dateCol);
-                              setTrendsOn(true);
-                              setPendingViewName(`Trend of ${config.valueColumn}`);
-                            }
-                          }
-                        }}
+                        onApplyFilter={applyContainsFilter}
+                        onUpdateChart={applyChartConfig}
                       />
                     )}
                   </>

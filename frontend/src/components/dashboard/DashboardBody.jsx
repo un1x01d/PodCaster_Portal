@@ -11,6 +11,7 @@ import PivotOverlay from "./PivotOverlay";
 import TrendsOverlay from "./TrendsOverlay";
 import TwoConditionOverlay from "./TwoConditionOverlay";
 import EbitdaMenu from "./EbitdaMenu";
+import InsightFeed from "./InsightFeed";
 
 import { renderMaybeDate, formatSmart } from "../../utils/formatting";
 
@@ -96,6 +97,10 @@ export default function DashboardBody(props) {
 
         // Actions
         onDeleteSheet
+        ,
+        onInsightApplyFilter,
+        onInsightOpenChart,
+        onInsightSaveView,
     } = props;
 
     const headerRef = useRef(null);
@@ -107,11 +112,13 @@ export default function DashboardBody(props) {
     const [expandedMenus, setExpandedMenus] = useState({
         view: true,
         data: false,
+        insights: false,
         charts: false,
         export: false,
         admin: false,
         danger: false
     });
+    const [insightsOn, setInsightsOn] = useState(false);
 
     const toggleMenu = (key) => {
         setExpandedMenus((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -413,6 +420,21 @@ export default function DashboardBody(props) {
                         </div>
 
                         <div className="left-menu-group">
+                            <button className="left-menu-section-toggle" onClick={() => toggleMenu("insights")} aria-expanded={expandedMenus.insights}>
+                                <span>Insights</span>
+                                <span>{expandedMenus.insights ? "▾" : "▸"}</span>
+                            </button>
+                            {expandedMenus.insights && (
+                                <div className="left-menu-submenu">
+                                    <button className="left-menu-action left-menu-toggle-row" onClick={() => setInsightsOn((p) => !p)}>
+                                        <span>Insight Feed Panel</span>
+                                        <span className="left-menu-state">{insightsOn ? "ON" : "OFF"}</span>
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="left-menu-group">
                             <button className="left-menu-section-toggle" onClick={() => toggleMenu("export")} aria-expanded={expandedMenus.export}>
                                 <span>Export</span>
                                 <span>{expandedMenus.export ? "▾" : "▸"}</span>
@@ -684,6 +706,18 @@ export default function DashboardBody(props) {
                 </div>
             </div>
             </div>
+            {insightsOn && (
+                <aside className="w-[22rem] shrink-0 h-full border-l border-slate-200 bg-slate-50 p-3 overflow-y-auto">
+                    <InsightFeed
+                        sheetId={sheetId}
+                        context="workspace"
+                        user={user}
+                        onApplyFilter={onInsightApplyFilter}
+                        onOpenChart={onInsightOpenChart}
+                        onSaveView={onInsightSaveView}
+                    />
+                </aside>
+            )}
         </div>
     );
 }

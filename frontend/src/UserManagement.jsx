@@ -815,55 +815,8 @@ export default function UserManagement({ token, user, sheetId }) {
           Group User Management
         </div>
 
-        <div className="flex gap-3 mb-8 bg-slate-50 p-4 rounded-md border border-slate-200">
-          <input
-            className="input-premium flex-1"
-            placeholder="New group name"
-            value={newGroupName}
-            onChange={e => setNewGroupName(e.target.value)}
-          />
-          <button
-            className="btn-premium bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2.5 shadow-sm"
-            onClick={createGroup}
-          >
-            Create
-          </button>
-        </div>
-
-        <div className="space-y-3 overflow-auto pr-2 custom-scrollbar flex-1 mb-6">
-          {groups.map(g => (
-            <div
-              key={g.id}
-              className={`group flex items-center justify-between p-4 rounded-md border transition-all cursor-pointer ${
-                selectedGroupId === g.id
-                  ? "bg-emerald-600 border-emerald-600 text-white shadow-sm translate-x-1"
-                  : "bg-white border-slate-200 hover:border-emerald-300 hover:bg-slate-50"
-              }`}
-              onClick={() => setSelectedGroupId((prev) => (prev === g.id ? null : g.id))}
-            >
-              <div className="min-w-0">
-                <div className={`font-bold text-sm truncate max-w-[140px] ${selectedGroupId === g.id ? "text-white" : "text-slate-900"}`}>{g.name}</div>
-                <div className="flex gap-2 items-center mt-0.5">
-                  <div className={`text-[10px] uppercase tracking-widest font-bold ${selectedGroupId === g.id ? "text-emerald-100" : "text-slate-400"}`}>ID: {g.id}</div>
-                  <div className={`text-[10px] uppercase tracking-widest font-bold border-l pl-2 ${selectedGroupId === g.id ? "border-white/20 text-emerald-100" : "border-slate-100 text-emerald-400"}`}>Limit: {g.max_file_size_mb || 100}MB</div>
-                </div>
-              </div>
-              {user?.role === "admin" && (
-                <button
-                  className={`p-2 rounded-lg transition-colors opacity-0 group-hover:opacity-100 ${
-                    selectedGroupId === g.id ? "hover:bg-white/20 text-white" : "hover:bg-red-50 text-slate-400 hover:text-red-500"
-                  }`}
-                  title="Delete group"
-                  onClick={(e) => { e.stopPropagation(); deleteGroup(g.id); }}
-                >🗑️</button>
-              )}
-            </div>
-          ))}
-        </div>
-
-        {/* Selected Group Settings */}
         {selectedGroupId && (
-          <div className="bg-slate-50 p-4 rounded-md border border-slate-200 animate-in fade-in zoom-in duration-300">
+          <div className="mb-6 bg-slate-50 p-4 rounded-md border border-slate-200 animate-in fade-in zoom-in duration-300">
             <h4 className="font-bold text-xs text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
               Group Settings
@@ -928,8 +881,8 @@ export default function UserManagement({ token, user, sheetId }) {
                         <button
                           onClick={() => toggleGroupAdmin(m.id, m.is_admin)}
                           className={`p-1.5 rounded-lg transition-all ${
-                            m.is_admin 
-                              ? "text-amber-500 hover:bg-amber-50" 
+                            m.is_admin
+                              ? "text-amber-500 hover:bg-amber-50"
                               : "text-slate-300 hover:text-amber-500 hover:bg-indigo-50"
                           }`}
                           title={m.is_admin ? "Remove Group Admin" : "Make Group Admin"}
@@ -950,9 +903,55 @@ export default function UserManagement({ token, user, sheetId }) {
                 {!uniqueGroupMembers.length && <div className="text-[10px] text-slate-400 italic text-center p-2">No members yet</div>}
               </div>
             </div>
-
           </div>
         )}
+
+        <div className="flex gap-3 mb-8 bg-slate-50 p-4 rounded-md border border-slate-200">
+          <input
+            className="input-premium flex-1"
+            placeholder="New group name"
+            value={newGroupName}
+            onChange={e => setNewGroupName(e.target.value)}
+          />
+          <button
+            className="btn-premium bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2.5 shadow-sm"
+            onClick={createGroup}
+          >
+            Create
+          </button>
+        </div>
+
+        <div className="space-y-3 overflow-auto pr-2 custom-scrollbar flex-1 mb-6">
+          {groups.map(g => (
+            <div
+              key={g.id}
+              className={`group flex items-center justify-between p-4 rounded-md border transition-all cursor-pointer ${
+                selectedGroupId === g.id
+                  ? "bg-emerald-600 border-emerald-600 text-white shadow-sm translate-x-1"
+                  : "bg-white border-slate-200 hover:border-emerald-300 hover:bg-slate-50"
+              }`}
+              onClick={() => setSelectedGroupId((prev) => (prev === g.id ? null : g.id))}
+            >
+              <div className="min-w-0">
+                <div className={`font-bold text-sm truncate max-w-[140px] ${selectedGroupId === g.id ? "text-white" : "text-slate-900"}`}>{g.name}</div>
+                <div className="flex gap-2 items-center mt-0.5">
+                  <div className={`text-[10px] uppercase tracking-widest font-bold ${selectedGroupId === g.id ? "text-emerald-100" : "text-slate-400"}`}>ID: {g.id}</div>
+                  <div className={`text-[10px] uppercase tracking-widest font-bold border-l pl-2 ${selectedGroupId === g.id ? "border-white/20 text-emerald-100" : "border-slate-100 text-emerald-400"}`}>Limit: {g.max_file_size_mb || 100}MB</div>
+                </div>
+              </div>
+              {user?.role === "admin" && (
+                <button
+                  className={`p-2 rounded-lg transition-colors opacity-0 group-hover:opacity-100 ${
+                    selectedGroupId === g.id ? "hover:bg-white/20 text-white" : "hover:bg-red-50 text-slate-400 hover:text-red-500"
+                  }`}
+                  title="Delete group"
+                  onClick={(e) => { e.stopPropagation(); deleteGroup(g.id); }}
+                >🗑️</button>
+              )}
+            </div>
+          ))}
+        </div>
+
       </div>
 
       {/* 3. FOLDERS PANEL */}

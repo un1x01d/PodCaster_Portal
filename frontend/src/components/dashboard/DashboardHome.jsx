@@ -174,11 +174,24 @@ function parseNumber(v) {
 
 function parseDate(v) {
   if (v === null || v === undefined || v === "") return null;
-  const d = new Date(v);
-  if (!Number.isNaN(d.getTime())) return d;
+  if (v instanceof Date && !Number.isNaN(v.getTime())) {
+    return new Date(v.getUTCFullYear(), v.getUTCMonth(), v.getUTCDate());
+  }
+  if (typeof v === "string") {
+    const text = v.trim();
+    const isoDateOnly = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (isoDateOnly) {
+      const [, y, m, d] = isoDateOnly;
+      return new Date(Number(y), Number(m) - 1, Number(d));
+    }
+    const parsed = new Date(text);
+    if (!Number.isNaN(parsed.getTime())) {
+      return new Date(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate());
+    }
+  }
   const n = Number(v);
   if (!Number.isNaN(n) && n > 25569 && n < 60000) {
-    const excelDate = new Date(Math.round((n - 25569) * 86400 * 1000));
+    const excelDate = new Date(Date.UTC(1970, 0, 1) + (n - 25569) * 86400 * 1000);
     if (!Number.isNaN(excelDate.getTime())) return excelDate;
   }
   return null;
@@ -288,6 +301,7 @@ export default function DashboardHome({
   twoOn,
   trendsOn,
   chatSection = null,
+  insightSection = null,
 }) {
   const [rangeDraft, setRangeDraft] = React.useState(null);
   const [appliedRange, setAppliedRange] = React.useState(null);
@@ -827,197 +841,202 @@ export default function DashboardHome({
               </div>
             ))}
           </div>
-          {chatSection && (
-            <div className="rounded-md border border-slate-200 bg-white p-2 shadow-sm h-full">
-              <div className="h-full">{chatSection}</div>
-            </div>
-          )}
-        </div>
+        {chatSection && (
+          <div className="rounded-md border border-slate-200 bg-white p-2 shadow-sm h-full">
+            <div className="h-full">{chatSection}</div>
+          </div>
+        )}
+      </div>
 
         <div className="mt-5 grid grid-cols-1 gap-3">
           <div className="min-w-0 space-y-3">
             <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
               <div className="rounded-md border border-slate-200 bg-white p-4 shadow-sm xl:col-span-2">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-700 mb-2">
-              Trend Over Time {dateCol && revenueMetricCol ? `(${revenueMetricCol}${incomeMetricCol ? `, ${incomeMetricCol}` : ""}${expenseCol || canDeriveExpense ? ", Expense" : ""} by ${dateCol})` : ""}
-            </div>
-            {appliedRange && (
-              <div className="mb-2 flex items-center gap-2">
-                <span className="text-[11px] text-slate-800 font-semibold">
-                  Range: {formatPeriodAsDateRange(appliedRange.start)} to {formatPeriodAsDateRange(appliedRange.end)}
-                </span>
-                <button
-                  type="button"
-                  className="text-[11px] font-bold text-slate-700 hover:text-slate-900 underline"
-                  onClick={() => setAppliedRange(null)}
-                >
-                  Reset range
-                </button>
-              </div>
-            )}
-            {trendData.length > 1 ? (
-              <div
-                className="h-64 select-none"
-                onMouseDownCapture={(e) => e.preventDefault()}
-              >
-                <ResponsiveContainer width="100%" height="100%">
-                  <ComposedChart
-                    data={trendData}
-                    onMouseDown={onTrendMouseDown}
-                    onMouseMove={onTrendMouseMove}
-                    onMouseUp={onTrendMouseUp}
+                <div className="text-[11px] font-bold uppercase tracking-wider text-slate-700 mb-2">
+                  Trend Over Time {dateCol && revenueMetricCol ? `(${revenueMetricCol}${incomeMetricCol ? `, ${incomeMetricCol}` : ""}${expenseCol || canDeriveExpense ? ", Expense" : ""} by ${dateCol})` : ""}
+                </div>
+                {appliedRange && (
+                  <div className="mb-2 flex items-center gap-2">
+                    <span className="text-[11px] text-slate-800 font-semibold">
+                      Range: {formatPeriodAsDateRange(appliedRange.start)} to {formatPeriodAsDateRange(appliedRange.end)}
+                    </span>
+                    <button
+                      type="button"
+                      className="text-[11px] font-bold text-slate-700 hover:text-slate-900 underline"
+                      onClick={() => setAppliedRange(null)}
+                    >
+                      Reset range
+                    </button>
+                  </div>
+                )}
+                {trendData.length > 1 ? (
+                  <div
+                    className="h-64 select-none"
+                    onMouseDownCapture={(e) => e.preventDefault()}
                   >
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                    <XAxis
-                      dataKey="period"
-                      tick={{ fontSize: 11, fill: "#334155" }}
-                      tickFormatter={(v) => formatPeriodAsDateRange(v)}
-                      interval="preserveStartEnd"
-                      minTickGap={46}
-                    />
-                    <YAxis width={68} tick={{ fontSize: 11, fill: "#334155" }} tickFormatter={(v) => formatCompactCurrency(Number(v))} />
-                    <Tooltip
-                      content={({ active, payload, label }) => {
-                        if (!active || !payload?.length) return null;
-                        const rows = payload.filter((p) => p?.dataKey !== "gapLower");
-                        if (!rows.length) return null;
-                        const rowOrder = (name = "") => {
-                          const n = String(name).toLowerCase();
-                          if (n.includes("revenue")) return 0;
-                          if (n.includes("expense")) return 1;
-                          if (n.includes("income")) return 2;
-                          return 3;
-                        };
-                        const orderedRows = [...rows].sort((a, b) => {
-                          const aName = (a?.name || a?.dataKey || "").toString();
-                          const bName = (b?.name || b?.dataKey || "").toString();
-                          return rowOrder(aName) - rowOrder(bName);
-                        });
-                        const metricColor = (name = "") => {
-                          const lower = String(name).toLowerCase();
-                          if (lower.includes("expense")) return "#ea580c";
-                          if (lower.includes("income")) return "#16a34a";
-                          if (lower.includes("revenue")) return "#2563eb";
-                          return "#334155";
-                        };
-                        return (
-                          <div style={{
-                            fontSize: "11px",
-                            borderRadius: "10px",
-                            border: "1px solid #e2e8f0",
-                            boxShadow: "0 10px 22px rgba(15,23,42,0.10)",
-                            padding: "8px 10px",
-                            background: "rgba(255,255,255,0.96)"
-                          }}>
-                            <div style={{ fontSize: "11px", fontWeight: 800, color: "#0f172a", marginBottom: "4px" }}>
-                              {formatPeriodForTooltip(label)}
-                            </div>
-                            {orderedRows.map((row, idx) => {
-                              const rawName = row?.name || row?.dataKey || "Value";
-                              const name = rawName === "gapBand" ? "Expenses" : rawName;
-                              const rawVal = name === "Expenses"
-                                ? row?.payload?.expenseFromRevenueIncome
-                                : row?.value;
-                              const color = metricColor(name);
-                              return (
-                                <div key={`${name}-${idx}`} style={{ fontSize: "11px", color: "#334155", margin: "1px 0", padding: 0, display: "flex", alignItems: "center", gap: "6px" }}>
-                                  <span style={{ width: "8px", height: "8px", borderRadius: "9999px", background: color, display: "inline-block" }} />
-                                  <span style={{ fontWeight: 800, color }}>{name}:</span>
-                                  <span style={{ fontWeight: 600 }}>{formatMoneyIfLarge(Number(rawVal))}</span>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <ComposedChart
+                        data={trendData}
+                        onMouseDown={onTrendMouseDown}
+                        onMouseMove={onTrendMouseMove}
+                        onMouseUp={onTrendMouseUp}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                        <XAxis
+                          dataKey="period"
+                          tick={{ fontSize: 11, fill: "#334155" }}
+                          tickFormatter={(v) => formatPeriodAsDateRange(v)}
+                          interval="preserveStartEnd"
+                          minTickGap={46}
+                        />
+                        <YAxis width={68} tick={{ fontSize: 11, fill: "#334155" }} tickFormatter={(v) => formatCompactCurrency(Number(v))} />
+                        <Tooltip
+                          content={({ active, payload, label }) => {
+                            if (!active || !payload?.length) return null;
+                            const rows = payload.filter((p) => p?.dataKey !== "gapLower");
+                            if (!rows.length) return null;
+                            const rowOrder = (name = "") => {
+                              const n = String(name).toLowerCase();
+                              if (n.includes("revenue")) return 0;
+                              if (n.includes("expense")) return 1;
+                              if (n.includes("income")) return 2;
+                              return 3;
+                            };
+                            const orderedRows = [...rows].sort((a, b) => {
+                              const aName = (a?.name || a?.dataKey || "").toString();
+                              const bName = (b?.name || b?.dataKey || "").toString();
+                              return rowOrder(aName) - rowOrder(bName);
+                            });
+                            const metricColor = (name = "") => {
+                              const lower = String(name).toLowerCase();
+                              if (lower.includes("expense")) return "#ea580c";
+                              if (lower.includes("income")) return "#16a34a";
+                              if (lower.includes("revenue")) return "#2563eb";
+                              return "#334155";
+                            };
+                            return (
+                              <div style={{
+                                fontSize: "11px",
+                                borderRadius: "10px",
+                                border: "1px solid #e2e8f0",
+                                boxShadow: "0 10px 22px rgba(15,23,42,0.10)",
+                                padding: "8px 10px",
+                                background: "rgba(255,255,255,0.96)"
+                              }}>
+                                <div style={{ fontSize: "11px", fontWeight: 800, color: "#0f172a", marginBottom: "4px" }}>
+                                  {formatPeriodForTooltip(label)}
                                 </div>
-                              );
-                            })}
-                          </div>
-                        );
-                      }}
-                    />
-                    <Legend wrapperStyle={{ fontSize: "11px", color: "#1e293b" }} />
-                    <Area
-                      type="monotone"
-                      dataKey="gapLower"
-                      stackId="revIncomeGap"
-                      fill="transparent"
-                      fillOpacity={0}
-                      stroke="none"
-                      legendType="none"
-                      isAnimationActive={false}
-                      connectNulls
-                    />
-                    <Area type="monotone" dataKey="gapBand" stackId="revIncomeGap" fill="#fb923c" fillOpacity={0.2} stroke="none" isAnimationActive={false} connectNulls name="Expenses" />
-                    <Line type="monotone" dataKey="revenueValue" name={revenueMetricCol || "Revenue"} stroke="#2563eb" strokeWidth={2.2} dot={false} connectNulls />
-                    {incomeMetricCol && (
-                      <Line type="monotone" dataKey="incomeValue" name={incomeMetricCol} stroke="#16a34a" strokeWidth={2.2} dot={false} connectNulls />
-                    )}
-                    {rangeDraft?.start && rangeDraft?.end && (
-                      <ReferenceArea
-                        x1={rangeDraft.start}
-                        x2={rangeDraft.end}
-                        strokeOpacity={0.25}
-                        fill="#93c5fd"
-                        fillOpacity={0.3}
-                      />
-                    )}
-                  </ComposedChart>
-                </ResponsiveContainer>
-              </div>
-            ) : (
-              <div className="text-sm text-slate-700">Need both a date column and numeric metric to render trend chart.</div>
-            )}
+                                {orderedRows.map((row, idx) => {
+                                  const rawName = row?.name || row?.dataKey || "Value";
+                                  const name = rawName === "gapBand" ? "Expenses" : rawName;
+                                  const rawVal = name === "Expenses"
+                                    ? row?.payload?.expenseFromRevenueIncome
+                                    : row?.value;
+                                  const color = metricColor(name);
+                                  return (
+                                    <div key={`${name}-${idx}`} style={{ fontSize: "11px", color: "#334155", margin: "1px 0", padding: 0, display: "flex", alignItems: "center", gap: "6px" }}>
+                                      <span style={{ width: "8px", height: "8px", borderRadius: "9999px", background: color, display: "inline-block" }} />
+                                      <span style={{ fontWeight: 800, color }}>{name}:</span>
+                                      <span style={{ fontWeight: 600 }}>{formatMoneyIfLarge(Number(rawVal))}</span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            );
+                          }}
+                        />
+                        <Legend wrapperStyle={{ fontSize: "11px", color: "#1e293b" }} />
+                        <Area
+                          type="monotone"
+                          dataKey="gapLower"
+                          stackId="revIncomeGap"
+                          fill="transparent"
+                          fillOpacity={0}
+                          stroke="none"
+                          legendType="none"
+                          isAnimationActive={false}
+                          connectNulls
+                        />
+                        <Area type="monotone" dataKey="gapBand" stackId="revIncomeGap" fill="#fb923c" fillOpacity={0.2} stroke="none" isAnimationActive={false} connectNulls name="Expenses" />
+                        <Line type="monotone" dataKey="revenueValue" name={revenueMetricCol || "Revenue"} stroke="#2563eb" strokeWidth={2.2} dot={false} connectNulls />
+                        {incomeMetricCol && (
+                          <Line type="monotone" dataKey="incomeValue" name={incomeMetricCol} stroke="#16a34a" strokeWidth={2.2} dot={false} connectNulls />
+                        )}
+                        {rangeDraft?.start && rangeDraft?.end && (
+                          <ReferenceArea
+                            x1={rangeDraft.start}
+                            x2={rangeDraft.end}
+                            strokeOpacity={0.25}
+                            fill="#93c5fd"
+                            fillOpacity={0.3}
+                          />
+                        )}
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <div className="text-sm text-slate-700">Need both a date column and numeric metric to render trend chart.</div>
+                )}
               </div>
 
               <div className="rounded-md border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-700 mb-2">
-              Top Categories {categoryCol && metricCol ? `(${categoryCol} by ${metricCol})` : ""}
-            </div>
-            {categoryAgg.length > 0 ? (
-              <div className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={categoryAgg}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                    <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#334155" }} interval={0} angle={-15} textAnchor="end" height={60} />
-                    <YAxis width={68} tick={{ fontSize: 11, fill: "#334155" }} tickFormatter={(v) => formatCompactCurrency(Number(v))} />
-                    <Tooltip
-                      content={({ active, payload, label }) => {
-                        if (!active || !payload?.length) return null;
-                        const row = payload[0];
-                        const color = row?.color || "#334155";
-                        return (
-                          <div style={{
-                            fontSize: "11px",
-                            borderRadius: "10px",
-                            border: "1px solid #e2e8f0",
-                            boxShadow: "0 10px 22px rgba(15,23,42,0.10)",
-                            padding: "8px 10px",
-                            background: "rgba(255,255,255,0.96)"
-                          }}>
-                            <div style={{ fontSize: "11px", fontWeight: 800, color: "#0f172a", marginBottom: "4px" }}>
-                              {label}
-                            </div>
-                            <div style={{ fontSize: "11px", margin: 0, padding: 0, display: "flex", alignItems: "center", gap: "6px" }}>
-                              <span style={{ width: "8px", height: "8px", borderRadius: "9999px", background: color, display: "inline-block" }} />
-                              <span style={{ fontWeight: 800, color }}>Value:</span>
-                              <span style={{ fontWeight: 600, color: "#334155" }}>{formatMoneyIfLarge(Number(row?.value))}</span>
-                            </div>
-                          </div>
-                        );
-                      }}
-                    />
-                    <Bar dataKey="value" radius={[2, 2, 0, 0]}>
-                      {categoryAgg.map((entry, idx) => (
-                        <Cell key={entry.name} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            ) : (
-              <div className="text-sm text-slate-700">Need a categorical column to render category bar chart.</div>
-            )}
+                <div className="text-[11px] font-bold uppercase tracking-wider text-slate-700 mb-2">
+                  Top Categories {categoryCol && metricCol ? `(${categoryCol} by ${metricCol})` : ""}
+                </div>
+                {categoryAgg.length > 0 ? (
+                  <div className="h-64">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={categoryAgg}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                        <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#334155" }} interval={0} angle={-15} textAnchor="end" height={60} />
+                        <YAxis width={68} tick={{ fontSize: 11, fill: "#334155" }} tickFormatter={(v) => formatCompactCurrency(Number(v))} />
+                        <Tooltip
+                          content={({ active, payload, label }) => {
+                            if (!active || !payload?.length) return null;
+                            const row = payload[0];
+                            const color = row?.color || "#334155";
+                            return (
+                              <div style={{
+                                fontSize: "11px",
+                                borderRadius: "10px",
+                                border: "1px solid #e2e8f0",
+                                boxShadow: "0 10px 22px rgba(15,23,42,0.10)",
+                                padding: "8px 10px",
+                                background: "rgba(255,255,255,0.96)"
+                              }}>
+                                <div style={{ fontSize: "11px", fontWeight: 800, color: "#0f172a", marginBottom: "4px" }}>
+                                  {label}
+                                </div>
+                                <div style={{ fontSize: "11px", margin: 0, padding: 0, display: "flex", alignItems: "center", gap: "6px" }}>
+                                  <span style={{ width: "8px", height: "8px", borderRadius: "9999px", background: color, display: "inline-block" }} />
+                                  <span style={{ fontWeight: 800, color }}>Value:</span>
+                                  <span style={{ fontWeight: 600, color: "#334155" }}>{formatMoneyIfLarge(Number(row?.value))}</span>
+                                </div>
+                              </div>
+                            );
+                          }}
+                        />
+                        <Bar dataKey="value" radius={[2, 2, 0, 0]}>
+                          {categoryAgg.map((entry, idx) => (
+                            <Cell key={entry.name} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <div className="text-sm text-slate-700">Need a categorical column to render category bar chart.</div>
+                )}
               </div>
             </div>
           </div>
-
         </div>
+
+        {insightSection && (
+          <div className="mt-5">
+            {insightSection}
+          </div>
+        )}
       </div>
     </div>
   );
