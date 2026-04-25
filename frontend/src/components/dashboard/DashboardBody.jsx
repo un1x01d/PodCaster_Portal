@@ -280,15 +280,6 @@ export default function DashboardBody(props) {
                                         type="button"
                                         className="left-menu-action"
                                         onClick={() => {
-                                            navigate("/workspace");
-                                        }}
-                                    >
-                                        Data Workspace
-                                    </button>
-                                    <button
-                                        type="button"
-                                        className="left-menu-action"
-                                        onClick={() => {
                                             loadData(sheetId, user.role !== "admin" && selectedViewId);
                                             setMenuOpen(false);
                                         }}

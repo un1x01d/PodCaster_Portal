@@ -150,11 +150,11 @@ export default function SpreadsheetChatbot({
 
                     {/* Header */}
                     <div
-                        className="bg-indigo-600 text-white px-4 py-3 flex justify-between items-center cursor-pointer select-none"
+                        className="bg-indigo-600 text-white px-3 py-2 flex justify-between items-center cursor-pointer select-none"
                         onClick={() => setIsMinimized(!isMinimized)}
                     >
                         <div className="flex items-center gap-3">
-                            <div className="w-8 h-8 bg-white/20 rounded-lg flex items-center justify-center backdrop-blur-md border border-white/20">
+                            <div className="w-7 h-7 bg-white/20 rounded-lg flex items-center justify-center backdrop-blur-md border border-white/20">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                                     <path d="M12 2a10 10 0 1 0 10 10H12V2Z"></path>
                                     <path d="M12 12L2.1 11.9"></path>
@@ -162,11 +162,7 @@ export default function SpreadsheetChatbot({
                                 </svg>
                             </div>
                             <div>
-                                <h3 className="font-bold text-xs tracking-tight leading-none mb-1">Data Assistant</h3>
-                                <div className="flex items-center gap-1.5">
-                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                                    <span className="text-[9px] font-bold text-indigo-100 uppercase tracking-widest">Online</span>
-                                </div>
+                                <h3 className="font-bold text-[11px] tracking-tight leading-none">Data Assistant</h3>
                             </div>
                         </div>
                         <div className="flex gap-2 items-center">
