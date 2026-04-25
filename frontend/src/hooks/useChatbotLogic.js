@@ -1,347 +1,149 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { parseQuery } from "../utils/chatbotParser";
-import { formatValue, isNumericColumn, isDateColumn, excelDateToJSDate, analyzeColumns } from "../utils/chatbotUtils";
+import api from "../api";
 
-export function useChatbotLogic({ data, headers, allData, onApplyFilter, onUpdateChart, onSwitchSheet, myFiles, activeFilename }) {
-    const [messages, setMessages] = useState([]);
-    const [input, setInput] = useState("");
-    const [isOpen, setIsOpen] = useState(false);
-    const [isMinimized, setIsMinimized] = useState(false);
-    const [context, setContext] = useState({}); // Conversation memory
+function serializeActiveFilters(activeFilters = {}) {
+  if (!activeFilters || typeof activeFilters !== "object") return {};
+  const out = {};
+  Object.entries(activeFilters).forEach(([k, v]) => {
+    if (!v) return;
+    if (v instanceof Set) {
+      out[k] = Array.from(v);
+      return;
+    }
+    if (Array.isArray(v)) {
+      out[k] = v;
+      return;
+    }
+    if (typeof v === "object" && v.type === "contains") {
+      out[k] = { type: "contains", value: String(v.value || "") };
+    }
+  });
+  return out;
+}
 
-    const messagesEndRef = useRef(null);
+function buildConversationHistory(messages = [], limit = 8) {
+  if (!Array.isArray(messages)) return [];
+  return messages
+    .filter((m) => m && (m.type === "user" || m.type === "bot") && typeof m.text === "string")
+    .filter((m) => !m.text.startsWith("Hi! I analyze this loaded spreadsheet with an AI model."))
+    .slice(-limit)
+    .map((m) => ({
+      role: m.type === "user" ? "user" : "assistant",
+      content: m.text.trim(),
+    }))
+    .filter((m) => m.content);
+}
 
-    // Initial Welcome
-    useEffect(() => {
-        if (messages.length === 0 && headers.length > 0) {
-            setMessages([{
-                type: 'bot',
-                text: "Hi! I can help you analyze your data. Try asking:\n• \"Filter by Region West\"\n• \"Show top 5 Revenue\"\n• \"Sum of Cost\"",
-                timestamp: new Date()
-            }]);
-        }
-    }, [headers, messages.length]);
+export function useChatbotLogic({
+  sheetId,
+  data,
+  headers,
+  activeFilters,
+  onApplyFilter,
+  onUpdateChart,
+}) {
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [isOpen, setIsOpen] = useState(false);
+  const [isMinimized, setIsMinimized] = useState(false);
+  const [isSending, setIsSending] = useState(false);
 
-    const scrollToBottom = () => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    };
+  const messagesEndRef = useRef(null);
 
-    useEffect(() => {
-        scrollToBottom();
-    }, [messages, isOpen]);
+  useEffect(() => {
+    if (messages.length === 0 && headers.length > 0) {
+      setMessages([{
+        type: "bot",
+        text: "Ask about what changed, why it changed, top drivers, and year-over-year differences in this dataset.",
+        timestamp: new Date(),
+      }]);
+    }
+  }, [headers, messages.length]);
 
-    // executeCommand must be declared BEFORE handleSend (no hoisting for const/useCallback)
-    const executeCommand = useCallback((parsed, sourceData, hdrs) => {
-        const { operation, column, filter, dateRange, segmentBy } = parsed;
-        let result = [...sourceData];
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, isOpen]);
 
-        // Pre-filter by date range (e.g. "in 2022", "last year")
-        if (dateRange) {
-            // Find a date column: prefer one explicitly matching the query column,
-            // otherwise pick the first header that looks like a date column
-            const dateCol = hdrs.find(h => isDateColumn(h, hdrs, sourceData))
-                || hdrs.find(h => /date|month|year|period|time/i.test(h));
-            if (dateCol) {
-                result = result.filter(r => {
-                    const raw = r[dateCol];
-                    if (raw == null || raw === '') return false;
-                    let d;
-                    const n = Number(raw);
-                    if (!isNaN(n) && n > 35000 && n < 60000) {
-                        d = excelDateToJSDate(n);
-                    } else {
-                        d = new Date(raw);
-                    }
-                    if (isNaN(d.getTime())) return false;
-                    return d >= dateRange.start && d <= dateRange.end;
-                });
-            }
-        }
+  const handleSend = useCallback(async () => {
+    const q = input.trim();
+    if (!q || !sheetId || isSending) return;
 
-        // Pre-filter if a non-date filter was also present (non-FILTER operations)
-        if (filter && operation !== 'FILTER' && operation !== 'APPLY_FILTER') {
-            result = result.filter(r => String(r[filter.column]).toLowerCase().includes(filter.value.toLowerCase()));
-        }
+    setMessages((prev) => [...prev, { type: "user", text: q, timestamp: new Date() }]);
+    setInput("");
+    setIsSending(true);
 
-        const dateLabel = dateRange ? ` (${dateRange.label})` : '';
+    try {
+      const res = await api.post("/chat/query", {
+        sheetId,
+        message: q,
+        activeFilters: serializeActiveFilters(activeFilters),
+        conversationHistory: buildConversationHistory(messages),
+      });
 
-        switch (operation) {
-            case 'SUM':
-                if (!column) return "Which column should I sum?";
-                const sum = result.reduce((acc, row) => acc + (Number(String(row[column]).replace(/[$,]/g, '')) || 0), 0);
-                return `Total ${column}${dateLabel}: ${formatValue(sum, column)}`;
+      const payload = res?.data || {};
+      const answer = typeof payload.answer === "string" && payload.answer.trim()
+        ? payload.answer
+        : "I could not produce a response.";
 
-            case 'AVG':
-                if (!column) return "Which column to average?";
-                const avg = result.reduce((acc, row) => acc + (Number(String(row[column]).replace(/[$,]/g, '')) || 0), 0) / (result.length || 1);
-                return `Average ${column}${dateLabel}: ${formatValue(avg, column)}`;
+      const actions = payload.actions || {};
+      const filters = Array.isArray(actions.filters) ? actions.filters : [];
 
-            case 'COUNT':
-                return `Count${dateLabel}: ${result.length} rows`;
+      if (onApplyFilter && actions.reset_filters && filters.length) {
+        onApplyFilter("RESET_ALL");
+      }
+      if (onApplyFilter && filters.length) {
+        filters.forEach((f) => {
+          if (!f?.column) return;
+          onApplyFilter(f.column, String(f.value ?? ""));
+        });
+      }
 
-            case 'MAX':
-                if (!column) return "Which column?";
-                const max = Math.max(...result.map(r => Number(String(r[column]).replace(/[$,]/g, '')) || -Infinity));
-                return `Max ${column}${dateLabel}: ${formatValue(max, column)}`;
+      if (onUpdateChart && actions.chart && actions.chart.valueColumn) {
+        onUpdateChart({
+          dateColumn: actions.chart.dateColumn || null,
+          valueColumn: actions.chart.valueColumn,
+          segmentBy: actions.chart.segmentBy || null,
+          aggregation: actions.chart.aggregation || "sum",
+        });
+      }
 
-            case 'MIN':
-                if (!column) return "Which column?";
-                const min = Math.min(...result.map(r => Number(String(r[column]).replace(/[$,]/g, '')) || Infinity));
-                return `Min ${column}${dateLabel}: ${formatValue(min, column)}`;
+      const filterNote = filters.length
+        ? `\n\nApplied filters: ${filters.map((f) => `${f.column} ${f.operator || "contains"} \"${f.value}\"`).join(", ")}`
+        : "";
 
-            case 'MODE': {
-                if (!column) return "Which column?";
-                const freq = {};
-                result.forEach(r => { const v = String(r[column]); freq[v] = (freq[v] || 0) + 1; });
-                const topVal = Object.entries(freq).sort((a, b) => b[1] - a[1])[0];
-                return topVal ? `Most common ${column}: "${topVal[0]}" (${topVal[1]} times)` : "No data.";
-            }
+      setMessages((prev) => [...prev, {
+        type: "bot",
+        text: `${answer}${filterNote}`,
+        timestamp: new Date(),
+        isFilter: filters.length > 0,
+        filterCol: filters[0]?.column,
+      }]);
+    } catch (e) {
+      const msg = e?.response?.data?.message || e?.response?.data?.error || "AI chat request failed.";
+      setMessages((prev) => [...prev, { type: "bot", text: msg, timestamp: new Date() }]);
+    } finally {
+      setIsSending(false);
+    }
+  }, [input, sheetId, isSending, activeFilters, messages, onApplyFilter, onUpdateChart]);
 
-            case 'TOP': {
-                const n = parsed.limit || 5;
-                if (!column) return `Showing top ${n} rows (no numeric column specified).`;
+  const clearMessages = useCallback(() => {
+    setMessages([{
+      type: "bot",
+      text: "Chat reset. Ask another question about this spreadsheet.",
+      timestamp: new Date(),
+    }]);
+  }, []);
 
-                if (segmentBy) {
-                    const groups = {};
-                    result.forEach(r => {
-                        const key = String(r[segmentBy] || 'Unknown');
-                        const val = Number(String(r[column]).replace(/[$,]/g, '')) || 0;
-                        groups[key] = (groups[key] || 0) + val;
-                    });
-                    
-                    const sortedGroups = Object.entries(groups)
-                        .map(([label, val]) => ({ label, val }))
-                        .sort((a, b) => parsed.aggregation === 'min_group' ? a.val - b.val : b.val - a.val)
-                        .slice(0, n);
-                        
-                    const term = parsed.aggregation === 'min_group' ? 'Bottom' : 'Top';
-                    return `${term} ${n} ${segmentBy} by ${column}:\n` + sortedGroups.map((item, i) => 
-                        `${i + 1}. **${item.label}**: ${formatValue(item.val, column)}`
-                    ).join('\n');
-                } else {
-                    // Fallback: try to find a descriptive label column (prefer names/customers)
-                    let labelCol = hdrs.find(h => /(name|customer|client|product|title|company)/i.test(h));
-                    if (!labelCol) labelCol = hdrs.find(h => h !== column && !isNumericColumn(h, hdrs, sourceData) && !isDateColumn(h, hdrs, sourceData));
-                    if (!labelCol) labelCol = hdrs.find(h => h !== column);
-
-                    const sorted = [...result].sort((a, b) =>
-                        parsed.aggregation === 'min_group'
-                            ? (Number(String(a[column]).replace(/[$,]/g, '')) || 0) - (Number(String(b[column]).replace(/[$,]/g, '')) || 0)
-                            : (Number(String(b[column]).replace(/[$,]/g, '')) || 0) - (Number(String(a[column]).replace(/[$,]/g, '')) || 0)
-                    ).slice(0, n);
-                    
-                    const term = parsed.aggregation === 'min_group' ? 'Bottom' : 'Top';
-                    return `${term} ${n} by ${column}:\n` + sorted.map((r, i) => {
-                        const labelPrefix = labelCol && r[labelCol] ? `**${r[labelCol]}**: ` : '';
-                        return `${i + 1}. ${labelPrefix}${formatValue(Number(String(r[column]).replace(/[$,]/g, '')), column)}`;
-                    }).join('\n');
-                }
-            }
-
-            case 'UNIQUE': {
-                if (!column) return "Which column should I count unique values for?";
-                const unique = new Set(result.map(r => String(r[column])));
-                return `Unique values in ${column}: ${unique.size}`;
-            }
-
-            case 'NULL': {
-                if (!column) {
-                    const counts = hdrs.map(h => ({
-                        col: h,
-                        n: result.filter(r => r[h] == null || String(r[h]).trim() === '').length
-                    })).filter(x => x.n > 0);
-                    if (!counts.length) return "No empty cells found.";
-                    return "Empty cells per column:\n" + counts.map(x => `• ${x.col}: ${x.n}`).join('\n');
-                }
-                const nullCount = result.filter(r => r[column] == null || String(r[column]).trim() === '').length;
-                return `Empty/null values in ${column}: ${nullCount} of ${result.length} rows`;
-            }
-
-            case 'SORT':
-                return column
-                    ? `To sort by ${column}, click the "${column}" column header in the table.`
-                    : "To sort, click any column header in the table.";
-
-            case 'COMPARE':
-                return column
-                    ? `Comparison across ${column}: use the Trends or Two-Condition overlays in the Chart menu for visual comparison.`
-                    : "Use the Chart menu to compare data across dimensions.";
-
-            case 'FILTER':
-            case 'APPLY_FILTER':
-                if (filter && onApplyFilter) {
-                    onApplyFilter(filter.column, filter.value);
-                    return { text: `Applied filter: ${filter.column} contains "${filter.value}"`, isFilter: true, filterCol: filter.column };
-                }
-                return { text: "I couldn't apply that filter." };
-
-            case 'RESET_FILTER':
-                if (onApplyFilter) {
-                    if (column) {
-                        onApplyFilter(column, "");
-                        return `Cleared filter for ${column}`;
-                    }
-                    onApplyFilter("RESET_ALL");
-                    return "Cleared all filters. Showing all data.";
-                }
-                return "Cannot reset filters.";
-
-            case 'HELP':
-                return `**Here are some things you can ask me:**\n\n` +
-                    `**Math & Aggregation**\n` +
-                    `• "Total Net Income"\n` +
-                    `• "Average Revenue per Region"\n` +
-                    `• "Count rows"\n\n` +
-                    `**Filtering**\n` +
-                    `• "Filter by Region West"\n` +
-                    `• "Only show Cloud Hosting"\n` +
-                    `• "Clear filters"\n\n` +
-                    `**Top Performers**\n` +
-                    `• "Top 5 most profitable customers"\n` +
-                    `• "Worst 3 regions by revenue"\n\n` +
-                    `**Charts**\n` +
-                    `• "Draw a trend of Revenue"\n` +
-                    `• "Compare Profit by Segment"`;
-
-            case 'SWITCH_SHEET':
-                if (onSwitchSheet && myFiles?.length) {
-                    const q = filter?.value || column || '';
-                    const match = myFiles.find(f =>
-                        (f.filename || f.name || '').toLowerCase().includes(q.toLowerCase())
-                    );
-                    if (match) {
-                        onSwitchSheet(match.id);
-                        return `Switching to sheet: ${match.filename || match.name}`;
-                    }
-                    return `No sheet found matching "${q}". Available: ${myFiles.map(f => f.filename || f.name).join(', ')}`;
-                }
-                return "Cannot switch sheets from here.";
-
-            case 'LIST_SHEETS':
-                if (myFiles?.length) {
-                    return `Available sheets:\n` + myFiles.map((f, i) =>
-                        `${i + 1}. ${f.filename || f.name}${f.filename === activeFilename ? ' ← active' : ''}`
-                    ).join('\n');
-                }
-                return "No sheets available.";
-
-            case 'FOLLOW_UP':
-            case 'QUESTION':
-                return context.lastColumn
-                    ? `Let me try that with ${context.lastColumn}. Try a specific operation like "Sum of ${context.lastColumn}" or "Filter by ${context.lastColumn} = value".`
-                    : "Could you be more specific? For example: \"Sum of Revenue\" or \"Filter by Region = West\".";
-
-            case 'CHART': {
-                const colTypes = analyzeColumns(hdrs, sourceData);
-                const dateCols = hdrs.filter(h => colTypes[h] === 'date' || /date|month|year|period|time/i.test(h));
-                const numCols = hdrs.filter(h => colTypes[h] === 'number');
-
-                let dateColumn = null;
-                let valueColumn = null;
-                let groupBy = null;
-
-                // Classify columns the parser detected
-                if (column && colTypes[column] === 'date') dateColumn = column;
-                else if (column && colTypes[column] === 'number') valueColumn = column;
-
-                if (segmentBy && colTypes[segmentBy] === 'date' && !dateColumn) dateColumn = segmentBy;
-                else if (segmentBy && colTypes[segmentBy] === 'number' && !valueColumn) valueColumn = segmentBy;
-                else if (segmentBy) groupBy = segmentBy;
-
-                // Fallback to first available of each type
-                if (!dateColumn) dateColumn = dateCols[0] || null;
-                if (!valueColumn) valueColumn = numCols[0] || null;
-
-                if (!dateColumn && !valueColumn) {
-                    return `To draw a chart I need a date column and a numeric column.\n` +
-                        `Date columns available: ${dateCols.join(', ') || 'none found'}\n` +
-                        `Numeric columns available: ${numCols.join(', ') || 'none found'}\n\n` +
-                        `Try: "trend [date col] [value col]"`;
-                }
-                if (!valueColumn) {
-                    return `Which value should I plot?\nNumeric columns: ${numCols.join(', ')}\nTry: "trend ${dateColumn} [value col]"`;
-                }
-                if (!dateColumn) {
-                    return `Which date axis should I use?\nDate columns: ${dateCols.join(', ')}\nTry: "trend [date col] ${valueColumn}"`;
-                }
-
-                if (onUpdateChart) {
-                    onUpdateChart({ dateColumn, valueColumn, segmentBy: groupBy, aggregation: parsed.aggregation || 'sum' });
-                }
-                return `📈 Drawing trend chart: ${valueColumn} over ${dateColumn}${groupBy ? ` grouped by ${groupBy}` : ''}.`;
-            }
-
-            default:
-                return "I'm not sure how to do that yet. Try: Sum, Avg, Count, Max, Min, Filter, Top 5, Unique, or Trends.";
-        }
-    }, [context, onApplyFilter, onUpdateChart, onSwitchSheet, myFiles, activeFilename]);
-
-    const handleSend = async () => {
-        if (!input.trim()) return;
-
-        const userMsg = { type: 'user', text: input, timestamp: new Date() };
-        setMessages(prev => [...prev, userMsg]);
-        const currentInput = input;
-        setInput("");
-
-        // Small Talk
-        const smallTalk = ['hi', 'hello', 'hey', 'thanks', 'thank you', 'ok', 'great'];
-        if (smallTalk.includes(currentInput.toLowerCase().replace(/[!.?]/g, ''))) {
-            setTimeout(() => {
-                setMessages(prev => [...prev, { type: 'bot', text: '👋 Hello! How can I assist you with your data?', timestamp: new Date() }]);
-            }, 500);
-            return;
-        }
-
-        try {
-            // Execute queries against the filtered UI data view unless it is empty (then fallback to allData).
-            const sourceData = (data && data.length > 0) ? data : allData;
-            const parsed = parseQuery(currentInput, headers, data, allData, context);
-
-            // Update Context
-            if (parsed.column) setContext(prev => ({ ...prev, lastColumn: parsed.column }));
-            if (parsed.operation && parsed.operation !== 'UNKNOWN') setContext(prev => ({ ...prev, lastOperation: parsed.operation }));
-
-            const responseStrOrObj = executeCommand(parsed, sourceData, headers);
-            
-            const botMsg = { type: 'bot', timestamp: new Date() };
-            if (typeof responseStrOrObj === 'string') {
-                botMsg.text = responseStrOrObj;
-            } else {
-                botMsg.text = responseStrOrObj.text;
-                if (responseStrOrObj.isFilter) {
-                    botMsg.isFilter = true;
-                    botMsg.filterCol = responseStrOrObj.filterCol;
-                }
-            }
-
-            setMessages(prev => [...prev, botMsg]);
-
-        } catch (e) {
-            console.error(e);
-            setMessages(prev => [...prev, { type: 'bot', text: "Sorry, I encountered an error processing that.", timestamp: new Date() }]);
-        }
-    };
-
-    const clearMessages = () => {
-        setMessages([{
-            type: 'bot',
-            text: "Chat reset! How can I help you analyze your data?",
-            timestamp: new Date()
-        }]);
-        setContext({});
-    };
-
-    return {
-        messages,
-        input,
-        setInput,
-        isOpen,
-        setIsOpen,
-        isMinimized,
-        setIsMinimized,
-        handleSend,
-        messagesEndRef,
-        clearMessages
-    };
+  return {
+    messages,
+    input,
+    setInput,
+    isOpen,
+    setIsOpen,
+    isMinimized,
+    setIsMinimized,
+    handleSend,
+    messagesEndRef,
+    clearMessages,
+  };
 }

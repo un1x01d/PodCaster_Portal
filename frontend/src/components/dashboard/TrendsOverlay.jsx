@@ -40,6 +40,7 @@ export default function TrendsOverlay({
                 <div>
                     <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Granularity</label>
                     <select value={trendGranularity} onChange={e => setTrendGranularity(e.target.value)} className="border border-slate-300 bg-white p-2 rounded-lg text-sm h-10">
+                        <option value="quarter">Quarterly</option>
                         <option value="month">Monthly</option>
                         <option value="year">Yearly</option>
                         <option value="day">Daily</option>

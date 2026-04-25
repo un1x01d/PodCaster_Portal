@@ -2,6 +2,9 @@ import bcrypt from "bcrypt";
 import { randomInt } from "crypto";
 
 const SALT_ROUNDS = 10;
+const ALLOW_LEGACY_PLAINTEXT_PASSWORDS = process.env.ALLOW_LEGACY_PLAINTEXT_PASSWORDS
+    ? process.env.ALLOW_LEGACY_PLAINTEXT_PASSWORDS === "true"
+    : process.env.NODE_ENV !== "production";
 
 /**
  * Hash a password using bcrypt.
@@ -31,6 +34,9 @@ export async function verifyPassword(password, storedPassword) {
         const valid = await bcrypt.compare(password, storedPassword);
         return { valid, rehash: false };
     } else {
+        if (!ALLOW_LEGACY_PLAINTEXT_PASSWORDS) {
+            return { valid: false, rehash: false };
+        }
         // Plaintext fallback (Lazy Migration)
         if (password === storedPassword) {
             return { valid: true, rehash: true };
@@ -71,4 +77,3 @@ export function generateComplexPassword(length = 16) {
     }
     return arr.join('');
 }
-

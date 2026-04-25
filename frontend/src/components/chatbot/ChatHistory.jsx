@@ -8,14 +8,14 @@ export default function ChatHistory({ messages, onApplyFilter }) {
     }, [messages]);
 
     return (
-        <div className="flex-1 overflow-y-auto p-2.5 space-y-2.5 bg-slate-50/50">
+        <div className="flex-1 overflow-y-auto p-2 space-y-2 bg-slate-50/50">
             {messages.map((msg, i) => {
                 // Parse **bold** syntax into React elements
                 const parts = msg.text.split(/(\*\*.*?\*\*)/g);
                 
                 return (
                     <div key={i} className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}`}>
-                        <div className={`max-w-[90%] rounded-2xl px-3 py-2 text-xs leading-relaxed shadow-sm ${msg.type === 'user'
+                        <div className={`max-w-[90%] rounded-xl px-2.5 py-1.5 text-[11px] leading-snug shadow-sm ${msg.type === 'user'
                             ? 'bg-blue-600 text-white rounded-tr-sm'
                             : 'bg-white text-slate-600 border border-slate-200 rounded-tl-sm'
                             }`}>

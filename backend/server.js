@@ -6,11 +6,12 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import * as XLSX from "xlsx"; // Used in healthz
 
-import { initDb } from "./src/config/db.js";
+import { initDb, query as dbQuery } from "./src/config/db.js";
 import authRoutes from "./src/routes/authRoutes.js";
 import sheetRoutes from "./src/routes/sheetRoutes.js";
 import userRoutes from "./src/routes/userRoutes.js";
 import viewRoutes from "./src/routes/viewRoutes.js";
+import chatRoutes from "./src/routes/chatRoutes.js";
 
 const app = express();
 // Force restart
@@ -56,15 +57,30 @@ app.use("/auth", authRoutes); // /auth/login, /auth/me, /auth/change-password
 app.use("/", sheetRoutes); // /sheets, /upload
 app.use("/", userRoutes);  // /users, /groups, /folders, /permissions
 app.use("/", viewRoutes);  // /views
+app.use("/", chatRoutes);  // /chat/query
 
 // Health
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
+app.get("/readyz", async (_req, res) => {
+  try {
+    await dbQuery("SELECT 1", []);
+    res.json({ ok: true });
+  } catch {
+    res.status(503).json({ ok: false, error: "db_unavailable" });
+  }
+});
 
 // Global Error Handler
 app.use((err, req, res, next) => {
   console.error("Global error:", err);
   if (res.headersSent) {
     return next(err);
+  }
+  if (err?.message === "unsupported_file_type") {
+    return res.status(415).json({ error: "unsupported_file_type" });
+  }
+  if (err?.code === "LIMIT_FILE_SIZE") {
+    return res.status(413).json({ error: "file_too_large", maxMB: 100 });
   }
   const isDev = process.env.NODE_ENV !== "production";
   res.status(500).json({
@@ -76,7 +92,12 @@ app.use((err, req, res, next) => {
 });
 
 // Init & Start
-await initDb().catch((e) => console.error("DB init error", e));
+try {
+  await initDb();
+} catch (e) {
+  console.error("DB init error", e);
+  process.exit(1);
+}
 
 app.listen(PORT, () =>
   console.log(`✅ Backend running on :${PORT} • SheetJS:`, XLSX?.version || "unknown")

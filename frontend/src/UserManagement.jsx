@@ -46,10 +46,8 @@ export default function UserManagement({ token, user, sheetId }) {
   const [groupAllowedCols, setGroupAllowedCols] = useState(new Set());
   const [groupRowFilters, setGroupRowFilters] = useState([{ key: "", value: "" }]);
 
-  // group sheet selection
-  const [groupSheets, setGroupSheets] = useState([]);
+  // group sheet selection (shared with selectedUserSheetId in Overrides panel)
   const [allSheets, setAllSheets] = useState([]); // all sheets (active or inactive) for selection
-  const [selectedGroupSheetId, setSelectedGroupSheetId] = useState(null);
   const [groupSheetHeaders, setGroupSheetHeaders] = useState([]);
 
   // Templates (now scoped by group)
@@ -59,7 +57,7 @@ export default function UserManagement({ token, user, sheetId }) {
   // Folders
   const [folders, setFolders] = useState([]);
   const [newFolderName, setNewFolderName] = useState("");
-  const [folderGroupId, setFolderGroupId] = useState("");
+  const [folderGroupIds, setFolderGroupIds] = useState([]);
 
   const fetchFolders = async () => {
     try {
@@ -73,11 +71,14 @@ export default function UserManagement({ token, user, sheetId }) {
   const createFolder = async () => {
     if (!newFolderName.trim()) return;
     try {
-      await axios.post(`${API}/folders`, { name: newFolderName, groupId: folderGroupId || null }, {
+      await axios.post(`${API}/folders`, {
+        name: newFolderName,
+        groupIds: folderGroupIds.map((id) => Number(id))
+      }, {
         headers: { Authorization: `Bearer ${token}` },
       });
       setNewFolderName("");
-      setFolderGroupId("");
+      setFolderGroupIds([]);
       fetchFolders();
     } catch (e) {
       if (e.response && e.response.status === 409) {
@@ -200,21 +201,6 @@ export default function UserManagement({ token, user, sheetId }) {
     } catch (e) {
       console.error("fetchUserSheets failed", e);
       setUserSheets([]);
-    }
-  };
-
-  // list sheets for selected group
-  const fetchGroupSheets = async (gid) => {
-    if (!gid) { setGroupSheets([]); return; }
-    try {
-      const res = await axios.get(`${API}/groups/${gid}/sheets`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      // keep them as-is (server already sorts DESC by uploaded_at)
-      setGroupSheets((res.data || []).slice(0, 10)); // limit latest 10
-    } catch (e) {
-      console.error("fetchGroupSheets failed", e);
-      setGroupSheets([]);
     }
   };
 
@@ -341,9 +327,7 @@ export default function UserManagement({ token, user, sheetId }) {
   useEffect(() => {
     if (selectedGroupId) {
       fetchGroupMembers(selectedGroupId);
-      fetchGroupSheets(selectedGroupId);
       fetchGroupViews(selectedGroupId);
-      setSelectedGroupSheetId(null);
       setGroupAllowedCols(new Set());
       setGroupRowFilters([{ key: "", value: "" }]);
       setGroupSheetHeaders([]);
@@ -351,17 +335,17 @@ export default function UserManagement({ token, user, sheetId }) {
     }
   }, [selectedGroupId]);
 
-  // when selected sheet for the group changes, load headers + that group's perms
+  // group overrides use the SAME selected sheet as user overrides
   useEffect(() => {
-    if (!selectedGroupSheetId || !selectedGroupId) {
+    if (!selectedUserSheetId || !selectedGroupId) {
       setGroupSheetHeaders([]);
       setGroupAllowedCols(new Set());
       setGroupRowFilters([{ key: "", value: "" }]);
       return;
     }
-    fetchGroupSheetHeaders(selectedGroupSheetId);
-    loadGroupPermissions(selectedGroupId, selectedGroupSheetId);
-  }, [selectedGroupSheetId, selectedGroupId]);
+    fetchGroupSheetHeaders(selectedUserSheetId);
+    loadGroupPermissions(selectedGroupId, selectedUserSheetId);
+  }, [selectedUserSheetId, selectedGroupId]);
 
   const toggleUserAllowed = (h) => {
     setUserAllowedCols(prev => {
@@ -436,7 +420,12 @@ export default function UserManagement({ token, user, sheetId }) {
     });
     try {
       await axios.post(`${API}/permissions`, {
-        sheetId: selectedUserSheetId, userId: selectedUserId, allowed_columns, row_filters
+        sheetId: selectedUserSheetId,
+        userId: selectedUserId,
+        allowed: allowed_columns,
+        rowFilters: row_filters,
+        allowed_columns,
+        row_filters
       }, { headers: { Authorization: `Bearer ${token}` } });
       alert("User permissions saved");
     } catch (e) {
@@ -507,7 +496,7 @@ export default function UserManagement({ token, user, sheetId }) {
   };
 
   const saveGroupPermissions = async () => {
-    if (!selectedGroupId || !selectedGroupSheetId) {
+    if (!selectedGroupId || !selectedUserSheetId) {
       alert("Pick a group and a sheet first.");
       return;
     }
@@ -518,8 +507,10 @@ export default function UserManagement({ token, user, sheetId }) {
       if (f.key && f.value) row_filters[f.key] = f.value;
     });
     await axios.post(`${API}/group-permissions`, {
-      sheetId: selectedGroupSheetId,
+      sheetId: selectedUserSheetId,
       groupId: selectedGroupId,
+      allowed: allowed_columns,
+      rowFilters: row_filters,
       allowed_columns,
       row_filters
     }, { headers: { Authorization: `Bearer ${token}` } });
@@ -537,8 +528,6 @@ export default function UserManagement({ token, user, sheetId }) {
       if (Number(selectedGroupId) === Number(gid)) {
         setSelectedGroupId(null);
         setGroupMembers([]);
-        setGroupSheets([]);
-        setSelectedGroupSheetId(null);
         setGroupAllowedCols(new Set());
         setGroupRowFilters([{ key: "", value: "" }]);
         setGroupSheetHeaders([]);
@@ -665,7 +654,7 @@ export default function UserManagement({ token, user, sheetId }) {
 
   // Auto re-apply selected template after switching sheets (group scope)
   useEffect(() => {
-    if (!selectedGroupSheetId || !selectedTplGroup) return;
+    if (!selectedUserSheetId || !selectedTplGroup) return;
     const tpl = templates.find(t => t.id === selectedTplGroup);
     if (!tpl) return;
     const cols = (tpl.columns || []).filter(c => groupSheetHeaders.includes(c));
@@ -673,13 +662,24 @@ export default function UserManagement({ token, user, sheetId }) {
     // Convert template filters object to array
     const filterArray = Object.entries(tpl.row_filters || {}).map(([key, value]) => ({ key, value }));
     setGroupRowFilters(filterArray.length > 0 ? filterArray : [{ key: "", value: "" }]);
-  }, [selectedGroupSheetId, selectedTplGroup, groupSheetHeaders, templates]);
+  }, [selectedUserSheetId, selectedTplGroup, groupSheetHeaders, templates]);
 
   const userById = useMemo(() => {
     const m = new Map();
     users.forEach(u => m.set(u.id, u));
     return m;
   }, [users]);
+
+  const overrideSheetOptions = useMemo(() => {
+    const source = (allSheets && allSheets.length > 0) ? allSheets : userSheets;
+    const seen = new Set();
+    return source.filter((s) => {
+      const sid = String(s.id);
+      if (seen.has(sid)) return false;
+      seen.add(sid);
+      return true;
+    });
+  }, [allSheets, userSheets]);
 
 
 
@@ -705,19 +705,19 @@ export default function UserManagement({ token, user, sheetId }) {
     });
   }, [users]);
   return (
-    <div className="p-8 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-8 justify-center premium-gradient min-h-full overflow-auto">
+    <div className="p-8 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-8 justify-center bg-gradient-to-b from-slate-100 to-blue-50/60 min-h-full overflow-auto">
       {/* 1. USERS PANEL */}
-      <div className="glass rounded-[2rem] p-8 h-full flex flex-col animate-in fade-in slide-in-from-bottom-4 duration-500">
+      <div className="rounded-lg border border-slate-200 bg-white p-6 md:p-7 h-full flex flex-col shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-500">
         <div className="flex items-center justify-between mb-8 border-b border-slate-200/50 pb-6">
           <h3 className="font-extrabold text-2xl text-slate-900 flex items-center gap-3">
-            <span className="bg-indigo-600 text-white w-10 h-10 rounded-xl flex items-center justify-center text-xl shadow-lg shadow-indigo-100">👥</span>
+            <span className="bg-indigo-600 text-white w-10 h-10 rounded-md flex items-center justify-center text-xl shadow-sm">👥</span>
             Users
           </h3>
           <span className="bg-white/60 text-indigo-600 text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-full border border-indigo-100">{users.length} Total</span>
         </div>
 
         {/* Quick Add User */}
-        <div className="flex flex-col gap-4 mb-8 bg-white/40 p-6 rounded-2xl border border-white/60 shadow-sm">
+        <div className="flex flex-col gap-4 mb-8 bg-slate-50 p-4 rounded-md border border-slate-200">
           <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 ml-1">Quick Add User</label>
           <input
             className="input-premium"
@@ -742,7 +742,7 @@ export default function UserManagement({ token, user, sheetId }) {
               <option value="admin">Admin</option>
             </select>
             <button
-              className="btn-premium bg-indigo-600 hover:bg-indigo-700 text-white flex-1 py-2.5 shadow-lg shadow-indigo-100"
+              className="btn-premium bg-indigo-600 hover:bg-indigo-700 text-white flex-1 py-2.5 shadow-sm"
               onClick={addUser}
             >
               Add User
@@ -755,12 +755,12 @@ export default function UserManagement({ token, user, sheetId }) {
           {uniqueUsers.map((u) => (
             <div
               key={u.id}
-              className={`group flex items-center justify-between p-4 rounded-2xl border transition-all cursor-pointer ${
+              className={`group flex items-center justify-between p-4 rounded-md border transition-all cursor-pointer ${
                 selectedUserId === u.id
-                  ? "bg-indigo-600 border-indigo-600 text-white shadow-lg shadow-indigo-100 translate-x-1"
-                  : "bg-white/50 border-slate-200/60 hover:border-indigo-300 hover:bg-white hover:shadow-md"
+                  ? "bg-indigo-600 border-indigo-600 text-white shadow-sm translate-x-1"
+                  : "bg-white border-slate-200 hover:border-indigo-300 hover:bg-slate-50"
               }`}
-              onClick={() => setSelectedUserId(u.id)}
+              onClick={() => setSelectedUserId((prev) => (prev === u.id ? null : u.id))}
             >
               <div className="flex items-center gap-3">
                 <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm ${
@@ -803,16 +803,19 @@ export default function UserManagement({ token, user, sheetId }) {
       </div>
 
       {/* 2. GROUPS PANEL */}
-      <div className="glass rounded-[2rem] p-8 h-full flex flex-col animate-in fade-in slide-in-from-bottom-4 duration-500 delay-75">
+      <div className="rounded-lg border border-slate-200 bg-white p-6 md:p-7 h-full flex flex-col shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-500 delay-75">
         <div className="flex items-center justify-between mb-8 border-b border-slate-200/50 pb-6">
           <h3 className="font-extrabold text-2xl text-slate-900 flex items-center gap-3">
-            <span className="bg-emerald-600 text-white w-10 h-10 rounded-xl flex items-center justify-center text-xl shadow-lg shadow-emerald-100">🏢</span>
+            <span className="bg-emerald-600 text-white w-10 h-10 rounded-md flex items-center justify-center text-xl shadow-sm">🏢</span>
             Groups
           </h3>
           <span className="bg-white/60 text-emerald-600 text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-full border border-emerald-100">{groups.length} Total</span>
         </div>
+        <div className="text-[10px] uppercase tracking-widest font-bold text-emerald-500 mb-4">
+          Group User Management
+        </div>
 
-        <div className="flex gap-3 mb-8 bg-white/40 p-6 rounded-2xl border border-white/60 shadow-sm">
+        <div className="flex gap-3 mb-8 bg-slate-50 p-4 rounded-md border border-slate-200">
           <input
             className="input-premium flex-1"
             placeholder="New group name"
@@ -820,7 +823,7 @@ export default function UserManagement({ token, user, sheetId }) {
             onChange={e => setNewGroupName(e.target.value)}
           />
           <button
-            className="btn-premium bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2.5 shadow-lg shadow-emerald-100"
+            className="btn-premium bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2.5 shadow-sm"
             onClick={createGroup}
           >
             Create
@@ -831,12 +834,12 @@ export default function UserManagement({ token, user, sheetId }) {
           {groups.map(g => (
             <div
               key={g.id}
-              className={`group flex items-center justify-between p-4 rounded-2xl border transition-all cursor-pointer ${
+              className={`group flex items-center justify-between p-4 rounded-md border transition-all cursor-pointer ${
                 selectedGroupId === g.id
-                  ? "bg-emerald-600 border-emerald-600 text-white shadow-lg shadow-emerald-100 translate-x-1"
-                  : "bg-white/50 border-slate-200/60 hover:border-emerald-300 hover:bg-white hover:shadow-md"
+                  ? "bg-emerald-600 border-emerald-600 text-white shadow-sm translate-x-1"
+                  : "bg-white border-slate-200 hover:border-emerald-300 hover:bg-slate-50"
               }`}
-              onClick={() => setSelectedGroupId(g.id)}
+              onClick={() => setSelectedGroupId((prev) => (prev === g.id ? null : g.id))}
             >
               <div className="min-w-0">
                 <div className={`font-bold text-sm truncate max-w-[140px] ${selectedGroupId === g.id ? "text-white" : "text-slate-900"}`}>{g.name}</div>
@@ -860,7 +863,7 @@ export default function UserManagement({ token, user, sheetId }) {
 
         {/* Selected Group Settings */}
         {selectedGroupId && (
-          <div className="bg-white/40 p-6 rounded-2xl border border-white/60 shadow-sm animate-in fade-in zoom-in duration-300">
+          <div className="bg-slate-50 p-4 rounded-md border border-slate-200 animate-in fade-in zoom-in duration-300">
             <h4 className="font-bold text-xs text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
               Group Settings
@@ -913,7 +916,7 @@ export default function UserManagement({ token, user, sheetId }) {
 
               <div className="space-y-2 max-h-32 overflow-auto pr-1 custom-scrollbar">
                 {uniqueGroupMembers.map(m => (
-                  <div key={String(m.id)} className="group flex items-center justify-between p-3 rounded-xl bg-white/50 border border-slate-200/40 hover:bg-white transition-all">
+                  <div key={String(m.id)} className="group flex items-center justify-between p-3 rounded-md bg-white border border-slate-200 hover:bg-white transition-all">
                     <div className="flex items-center gap-2 overflow-hidden">
                       <div className="text-xs font-bold text-slate-700 truncate max-w-[120px]">{m.email}</div>
                       {m.is_admin && (
@@ -947,21 +950,22 @@ export default function UserManagement({ token, user, sheetId }) {
                 {!uniqueGroupMembers.length && <div className="text-[10px] text-slate-400 italic text-center p-2">No members yet</div>}
               </div>
             </div>
+
           </div>
         )}
       </div>
 
       {/* 3. FOLDERS PANEL */}
-      <div className="glass rounded-[2rem] p-8 h-full flex flex-col animate-in fade-in slide-in-from-bottom-4 duration-500 delay-150">
+      <div className="rounded-lg border border-slate-200 bg-white p-6 md:p-7 h-full flex flex-col shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-500 delay-150">
         <div className="flex items-center justify-between mb-8 border-b border-slate-200/50 pb-6">
           <h3 className="font-extrabold text-2xl text-slate-900 flex items-center gap-3">
-            <span className="bg-amber-600 text-white w-10 h-10 rounded-xl flex items-center justify-center text-xl shadow-lg shadow-amber-100">📁</span>
+            <span className="bg-amber-600 text-white w-10 h-10 rounded-md flex items-center justify-center text-xl shadow-sm">📁</span>
             Folders
           </h3>
           <span className="bg-white/60 text-amber-600 text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-full border border-amber-100">{folders.length} Total</span>
         </div>
 
-        <div className="flex flex-col gap-3 mb-8 bg-white/40 p-6 rounded-2xl border border-white/60 shadow-sm">
+        <div className="flex flex-col gap-3 mb-8 bg-slate-50 p-4 rounded-md border border-slate-200">
           <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 ml-1">New Folder</label>
           <input
             className="input-premium"
@@ -969,31 +973,41 @@ export default function UserManagement({ token, user, sheetId }) {
             value={newFolderName}
             onChange={(e) => setNewFolderName(e.target.value)}
           />
-          <div className="flex gap-2">
-            <select
-              className="input-premium py-2 flex-1"
-              value={folderGroupId}
-              onChange={(e) => setFolderGroupId(e.target.value)}
-            >
-              <option value="">(No Group)</option>
-              {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
-            </select>
-            <button
-              className="btn-premium bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 shadow-lg shadow-amber-100"
-              onClick={createFolder}
-            >
-              Create
-            </button>
+          <button
+            className="btn-premium bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 shadow-sm"
+            onClick={createFolder}
+          >
+            Create
+          </button>
+          <div className="border border-slate-200 rounded-md p-2 bg-white max-h-28 overflow-auto">
+            <div className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mb-1">Assign Groups (multiple)</div>
+            <div className="grid grid-cols-2 gap-2">
+              {groups.map((g) => (
+                <label key={g.id} className="flex items-center gap-2 text-xs text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={folderGroupIds.includes(String(g.id))}
+                    onChange={(e) => {
+                      const sid = String(g.id);
+                      setFolderGroupIds((prev) => e.target.checked ? [...prev, sid] : prev.filter((x) => x !== sid));
+                    }}
+                  />
+                  <span className="truncate">{g.name}</span>
+                </label>
+              ))}
+            </div>
           </div>
         </div>
 
         <div className="space-y-3 overflow-auto pr-2 custom-scrollbar flex-1">
-          {folders.filter(f => !selectedGroupId || f.group_id === selectedGroupId).map((f) => (
-            <div key={f.id} className="group flex items-center justify-between p-4 rounded-2xl bg-white/50 border border-slate-200/60 hover:border-amber-300 hover:bg-white hover:shadow-md transition-all">
+          {folders.filter(f => !selectedGroupId || (f.group_ids || []).includes(Number(selectedGroupId))).map((f) => (
+            <div key={f.id} className="group flex items-center justify-between p-4 rounded-md bg-white border border-slate-200 hover:border-amber-300 hover:bg-slate-50 transition-all">
               <div>
-                <div className="font-bold text-sm text-slate-900">{f.name}</div>
+                <div className="font-bold text-sm text-slate-900">{f.path || f.name}</div>
                 <div className="text-[10px] uppercase tracking-widest font-bold text-slate-400 mt-0.5">
-                  {f.group_id ? `Group: ${groups.find(g => g.id === f.group_id)?.name || f.group_id}` : "Global"}
+                  {(f.group_ids || []).length
+                    ? `Groups: ${(f.group_ids || []).map((gid) => groups.find(g => g.id === gid)?.name || gid).join(", ")}`
+                    : "Global"}
                 </div>
               </div>
               <button
@@ -1002,8 +1016,8 @@ export default function UserManagement({ token, user, sheetId }) {
               >🗑️</button>
             </div>
           ))}
-          {!folders.filter(f => !selectedGroupId || f.group_id === selectedGroupId).length && (
-            <div className="p-8 text-center bg-white/30 rounded-2xl border border-dashed border-slate-300">
+          {!folders.filter(f => !selectedGroupId || (f.group_ids || []).includes(Number(selectedGroupId))).length && (
+            <div className="p-8 text-center bg-white/30 rounded-md border border-dashed border-slate-300">
               <div className="text-3xl mb-2 opacity-30">📂</div>
               <div className="text-xs text-slate-400 font-medium">No folders found</div>
             </div>
@@ -1011,31 +1025,53 @@ export default function UserManagement({ token, user, sheetId }) {
         </div>
       </div>
 
-      {/* 4. USER OVERRIDE PERMISSIONS PANEL */}
-      <div className="glass rounded-[2rem] p-8 h-full flex flex-col animate-in fade-in slide-in-from-bottom-4 duration-500 delay-200">
+      {/* 4. OVERRIDES & PERMISSIONS PANEL */}
+      <div className="rounded-lg border border-slate-200 bg-white p-6 md:p-7 h-full flex flex-col shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-500 delay-200">
         <div className="flex items-center justify-between mb-8 border-b border-slate-200/50 pb-6">
           <h3 className="font-extrabold text-2xl text-slate-900 flex items-center gap-3">
-            <span className="bg-indigo-600 text-white w-10 h-10 rounded-xl flex items-center justify-center text-xl shadow-lg shadow-indigo-100">🔒</span>
-            User Overrides
+            <span className="bg-indigo-600 text-white w-10 h-10 rounded-md flex items-center justify-center text-xl shadow-sm">🔒</span>
+            Overrides & Permissions
           </h3>
-          <div className="text-[10px] font-bold uppercase tracking-widest text-indigo-400 text-right min-w-0">
-            {selectedUserId ? (
-              <span className="bg-white/60 px-3 py-1 rounded-full border border-indigo-100 truncate block max-w-[150px]">
-                {userById.get(selectedUserId)?.email}
+          <div className="text-[10px] font-bold uppercase tracking-widest text-indigo-400 text-right min-w-0 flex flex-col gap-1 items-end">
+            {selectedUserId && (
+              <span className="bg-white/60 px-3 py-1 rounded-full border border-indigo-100 truncate block max-w-[180px]">
+                User: {userById.get(selectedUserId)?.email}
               </span>
-            ) : (
-              <span className="text-slate-300 italic">Select user</span>
+            )}
+            {selectedGroupId && (
+              <span className="bg-white/60 px-3 py-1 rounded-full border border-emerald-100 text-emerald-600 truncate block max-w-[180px]">
+                Group: {groups.find(g => g.id === selectedGroupId)?.name || selectedGroupId}
+              </span>
+            )}
+            {!selectedUserId && !selectedGroupId && (
+              <span className="text-slate-300 italic">Select user and/or group</span>
             )}
           </div>
         </div>
 
-        {selectedUserId ? (
+        {(selectedUserId || selectedGroupId) ? (
           <div className="flex-1 flex flex-col min-h-0">
             {/* Sheet Selector */}
-            {/* Removed Sheet Selector as per user request */}
+            <div className="mb-4">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Spreadsheet</label>
+              <select
+                className="input-premium py-2 w-full mt-2"
+                value={selectedUserSheetId || ""}
+                onChange={(e) => setSelectedUserSheetId(e.target.value || null)}
+              >
+                <option value="">Select a spreadsheet…</option>
+                {overrideSheetOptions.map((s) => (
+                  <option key={s.id} value={s.id}>{trunc(s.filename, 80)}</option>
+                ))}
+              </select>
+              <div className="text-[10px] text-slate-400 mt-1">This sheet is shared by user/group overrides below.</div>
+            </div>
 
             {selectedUserSheetId ? (
               <div className="flex-1 flex flex-col gap-6 min-h-0 overflow-auto pr-2 custom-scrollbar">
+                {selectedUserId && (
+                  <>
+                    <div className="text-[10px] font-bold uppercase tracking-widest text-indigo-500">User Override</div>
                 {/* Column Permissions */}
                 <div>
                   <div className="flex items-center justify-between mb-3 border-b border-slate-200/30 pb-2">
@@ -1047,8 +1083,8 @@ export default function UserManagement({ token, user, sheetId }) {
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     {userSheetHeaders.map((h, i) => (
-                      <label key={i} className={`flex items-center gap-3 p-3 rounded-xl border transition-all cursor-pointer ${
-                        userAllowedCols.has(h) ? "bg-indigo-50 border-indigo-200 text-indigo-700 font-bold" : "bg-white/40 border-slate-200/40 text-slate-500 hover:bg-white"
+                      <label key={i} className={`flex items-center gap-3 p-3 rounded-md border transition-all cursor-pointer ${
+                        userAllowedCols.has(h) ? "bg-indigo-50 border-indigo-200 text-indigo-700 font-bold" : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50"
                       }`}>
                         <input
                           type="checkbox"
@@ -1063,7 +1099,7 @@ export default function UserManagement({ token, user, sheetId }) {
                 </div>
 
                 {/* Templates toolbar */}
-                <div className="bg-slate-900/5 p-4 rounded-xl border border-slate-900/10 space-y-3">
+                <div className="bg-slate-50 p-4 rounded-md border border-slate-200 space-y-3">
                   <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500 block">Template Management</label>
                   <div className="flex gap-2">
                     <input
@@ -1100,7 +1136,7 @@ export default function UserManagement({ token, user, sheetId }) {
                   <div className="flex items-center justify-between">
                     <h4 className="font-bold text-sm text-slate-700">Dynamic Row Filters</h4>
                     <button
-                      className="bg-indigo-600 text-white rounded-lg px-3 py-1 text-[10px] font-bold shadow-md shadow-indigo-100"
+                      className="bg-indigo-600 text-white rounded-lg px-3 py-1 text-[10px] font-bold shadow-sm"
                       onClick={() => setUserRowFilters([...userRowFilters, { key: "", value: "" }])}
                     >+ Add Rule</button>
                   </div>
@@ -1142,8 +1178,8 @@ export default function UserManagement({ token, user, sheetId }) {
                   <h4 className="font-bold text-sm text-slate-700 mb-4">View Permissions</h4>
                   <div className="grid grid-cols-2 gap-2">
                     {views.filter(v => String(v.sheet_id) === String(selectedUserSheetId)).map((v) => (
-                      <label key={v.id} className={`flex items-center gap-3 p-3 rounded-xl border transition-all cursor-pointer ${
-                        userViews.has(v.id) ? "bg-indigo-50 border-indigo-200 text-indigo-700 font-bold" : "bg-white/40 border-slate-200/40 text-slate-500 hover:bg-white"
+                      <label key={v.id} className={`flex items-center gap-3 p-3 rounded-md border transition-all cursor-pointer ${
+                        userViews.has(v.id) ? "bg-indigo-50 border-indigo-200 text-indigo-700 font-bold" : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50"
                       }`}>
                         <input
                           type="checkbox"
@@ -1207,17 +1243,181 @@ export default function UserManagement({ token, user, sheetId }) {
                 </div>
 
                 <button
-                  className="btn-premium bg-indigo-600 hover:bg-indigo-700 text-white w-full py-4 shadow-xl shadow-indigo-200 mt-4 mb-4 shrink-0"
+                  className="btn-premium bg-indigo-600 hover:bg-indigo-700 text-white w-full py-4 shadow-sm mt-4 mb-4 shrink-0"
                   onClick={saveUserPermissions}
                 >
                   Confirm & Apply Permissions
                 </button>
+                  </>
+                )}
+
+                {selectedGroupId && (
+                <div className="pt-6 border-t border-slate-200/40 space-y-4">
+                  <div className="text-[10px] font-bold uppercase tracking-widest text-emerald-600">Group Override (Same Spreadsheet)</div>
+
+                    <>
+                      <div className="flex items-center justify-between">
+                        <h4 className="font-bold text-sm text-slate-700">Group Column Permissions</h4>
+                        <button
+                          className="text-[10px] font-bold text-emerald-600 hover:underline"
+                          onClick={() => setGroupAllowedCols(new Set())}
+                        >
+                          Allow All
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        {groupSheetHeaders.map((h) => (
+                          <label key={h} className={`flex items-center gap-3 p-3 rounded-md border transition-all cursor-pointer ${
+                            groupAllowedCols.has(h) ? "bg-emerald-50 border-emerald-200 text-emerald-700 font-bold" : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50"
+                          }`}>
+                            <input
+                              type="checkbox"
+                              checked={groupAllowedCols.has(h)}
+                              onChange={() => toggleGroupAllowed(h)}
+                              className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 border-slate-300"
+                            />
+                            <span className="text-xs truncate">{h}</span>
+                          </label>
+                        ))}
+                      </div>
+
+                      <div className="bg-slate-50 p-4 rounded-md border border-slate-200 space-y-3">
+                        <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500 block">Template Management</label>
+                        <div className="flex gap-2">
+                          <input
+                            className="input-premium py-1.5 flex-1 bg-white"
+                            placeholder="Template name"
+                            value={newTplNameGroup}
+                            onChange={(e) => setNewTplNameGroup(e.target.value)}
+                          />
+                          <button
+                            className="btn-premium bg-slate-800 text-white px-3 py-1.5 shadow-sm"
+                            onClick={handleSaveTemplateFromGroup}
+                          >
+                            Save
+                          </button>
+                        </div>
+                        <div className="flex gap-2">
+                          <select
+                            className="input-premium py-1.5 flex-1 bg-white"
+                            value={selectedTplGroup}
+                            onChange={(e) => handleApplyTemplateToGroup(e.target.value)}
+                          >
+                            <option value="">Apply template…</option>
+                            {visibleGroupTemplates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                          </select>
+                          {selectedTplGroup && (
+                            <button
+                              className="p-2 rounded-lg bg-red-50 text-red-500 hover:bg-red-100 transition-colors"
+                              onClick={() => handleDeleteTemplate(selectedTplGroup)}
+                            >
+                              🗑️
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <h4 className="font-bold text-sm text-slate-700">Group Row Filters</h4>
+                          <button
+                            className="bg-emerald-600 text-white rounded-lg px-3 py-1 text-[10px] font-bold"
+                            onClick={() => setGroupRowFilters([...groupRowFilters, { key: "", value: "" }])}
+                          >
+                            + Add Rule
+                          </button>
+                        </div>
+                        <div className="space-y-2">
+                          {groupRowFilters.map((filter, idx) => (
+                            <div key={idx} className="flex items-center gap-2">
+                              <select
+                                className="input-premium py-1.5 flex-1"
+                                value={filter.key}
+                                onChange={(e) => {
+                                  const next = [...groupRowFilters];
+                                  next[idx].key = e.target.value;
+                                  setGroupRowFilters(next);
+                                }}
+                              >
+                                <option value="">Column…</option>
+                                {groupSheetHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                              </select>
+                              <input
+                                className="input-premium py-1.5 flex-1"
+                                placeholder="Value…"
+                                value={filter.value}
+                                onChange={(e) => {
+                                  const next = [...groupRowFilters];
+                                  next[idx].value = e.target.value;
+                                  setGroupRowFilters(next);
+                                }}
+                              />
+                              <button
+                                className="p-2 text-red-400 hover:text-red-600 font-bold"
+                                onClick={() => setGroupRowFilters(groupRowFilters.filter((_, i) => i !== idx))}
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="pt-4 border-t border-slate-200/30">
+                        <h4 className="font-bold text-sm text-slate-700 mb-3">Group View Permissions</h4>
+                        <div className="grid grid-cols-1 gap-2">
+                          {views.filter(v => String(v.sheet_id) === String(selectedUserSheetId)).map((v) => (
+                            <label key={v.id} className={`flex items-center gap-3 p-3 rounded-md border transition-all cursor-pointer ${
+                              groupViews.has(v.id) ? "bg-emerald-50 border-emerald-200 text-emerald-700 font-bold" : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50"
+                            }`}>
+                              <input
+                                type="checkbox"
+                                checked={groupViews.has(v.id)}
+                                onChange={async () => {
+                                  const next = new Set(groupViews);
+                                  try {
+                                    if (next.has(v.id)) {
+                                      await axios.delete(
+                                        `${API}/views/group-permissions/${v.id}/${selectedGroupId}`,
+                                        { headers: { Authorization: `Bearer ${token}` } }
+                                      );
+                                      next.delete(v.id);
+                                    } else {
+                                      await axios.post(
+                                        `${API}/views/group-permissions`,
+                                        { viewId: v.id, groupId: selectedGroupId },
+                                        { headers: { Authorization: `Bearer ${token}` } }
+                                      );
+                                      next.add(v.id);
+                                    }
+                                    setGroupViews(next);
+                                  } catch (e) {
+                                    alert(e.response?.data?.error || "Failed to update group view permission");
+                                  }
+                                }}
+                              />
+                              <span className="text-xs truncate">{v.name}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+
+                      <button
+                        className="btn-premium bg-emerald-600 hover:bg-emerald-700 text-white w-full py-3"
+                        onClick={saveGroupPermissions}
+                      >
+                        Save Group Permissions
+                      </button>
+                    </>
+                </div>
+                )}
               </div>
             ) : (
-              <div className="flex-1 flex items-center justify-center bg-white/30 rounded-3xl border border-dashed border-slate-300">
+              <div className="flex-1 flex items-center justify-center bg-white/30 rounded-lg border border-dashed border-slate-300">
                 <div className="text-center p-8">
                   <div className="text-4xl mb-4 opacity-20">🎯</div>
-                  <div className="text-slate-400 font-medium max-w-[200px] mx-auto">Select a spreadsheet to define individual override access</div>
+                  <div className="text-slate-400 font-medium max-w-[260px] mx-auto">Select a spreadsheet to configure user/group override permissions.</div>
                 </div>
               </div>
             )}
@@ -1226,8 +1426,8 @@ export default function UserManagement({ token, user, sheetId }) {
           <div className="flex-1 flex items-center justify-center">
             <div className="text-center p-12">
               <div className="text-6xl mb-6 opacity-10 animate-pulse">🔒</div>
-              <h4 className="text-slate-400 font-bold uppercase tracking-widest text-xs mb-2">User Permissions Override</h4>
-              <p className="text-slate-300 text-[10px] max-w-[180px] mx-auto">Select a user from the list to begin configuring their specific data access level</p>
+              <h4 className="text-slate-400 font-bold uppercase tracking-widest text-xs mb-2">No Override Target Selected</h4>
+              <p className="text-slate-300 text-[10px] max-w-[220px] mx-auto">Select a user and/or a group from the left panels to open override permissions.</p>
             </div>
           </div>
         )}

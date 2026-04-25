@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { Link } from 'react-router-dom';
 import SearchableSelect from '../common/SearchableSelect';
 
@@ -48,7 +48,7 @@ export default function DashboardHeader({
                         P
                     </div>
                     <h1 className="text-2xl font-black text-slate-900 tracking-tighter">
-                        PodCaster<span className="text-indigo-600">Portal</span>
+                        Data <span className="text-indigo-600">Insights</span> Portal
                     </h1>
                 </Link>
             </div>
@@ -71,17 +71,6 @@ export default function DashboardHeader({
 
             {/* Right: User Profile & Actions */}
             <div className="flex items-center justify-end gap-6">
-                {user.role === 'admin' && (
-                    <nav className="flex items-center gap-2">
-                        <Link 
-                            to="/users" 
-                            className="text-xs font-bold uppercase tracking-widest text-slate-500 hover:text-indigo-600 transition-colors px-4 py-2 rounded-xl hover:bg-white/50"
-                        >
-                            Settings
-                        </Link>
-                    </nav>
-                )}
-
                 <div className="h-8 w-px bg-slate-200/60 mx-1"></div>
 
                 <div className="flex items-center gap-4">

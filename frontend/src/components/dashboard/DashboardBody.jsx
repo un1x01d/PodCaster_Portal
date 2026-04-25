@@ -1,11 +1,10 @@
 import React, { useState, useRef, useMemo, forwardRef } from "react";
+import { useNavigate } from "react-router-dom";
 import { FixedSizeList as List } from "react-window";
 import AutoSizer from "react-virtualized-auto-sizer";
 import axios from "axios";
 
 import SearchableSelect from "../common/SearchableSelect";
-import ExportMenu from "./ExportMenu";
-import ChartMenu from "./ChartMenu";
 import ColumnFilterMenu from "./ColumnFilterMenu";
 import SheetTabBar from "./SheetTabBar";
 import PivotOverlay from "./PivotOverlay";
@@ -16,6 +15,7 @@ import EbitdaMenu from "./EbitdaMenu";
 import { renderMaybeDate, formatSmart } from "../../utils/formatting";
 
 export default function DashboardBody(props) {
+    const navigate = useNavigate();
     const {
         user,
         token,
@@ -103,6 +103,21 @@ export default function DashboardBody(props) {
     // Internal State for Folders (fetched here to ensure freshness)
     const [folders, setFolders] = useState([]);
     const [selectedFolderId, setSelectedFolderId] = useState("");
+    const [menuOpen, setMenuOpen] = useState(false);
+    const [expandedMenus, setExpandedMenus] = useState({
+        view: true,
+        data: false,
+        charts: false,
+        export: false,
+        admin: false,
+        danger: false
+    });
+
+    const toggleMenu = (key) => {
+        setExpandedMenus((prev) => ({ ...prev, [key]: !prev[key] }));
+    };
+
+    const activeView = views.find((v) => String(v.id) === String(selectedViewId));
 
     // Fetch folders on mount
     React.useEffect(() => {
@@ -112,11 +127,49 @@ export default function DashboardBody(props) {
             .catch(e => console.error("Fetch folders failed", e));
     }, [token, API]);
 
+    React.useEffect(() => {
+        if (!menuOpen) return undefined;
+        const onEsc = (e) => {
+            if (e.key === "Escape") setMenuOpen(false);
+        };
+        document.addEventListener("keydown", onEsc);
+        return () => document.removeEventListener("keydown", onEsc);
+    }, [menuOpen]);
+
+    React.useEffect(() => {
+        setMenuOpen(false);
+    }, [sheetId]);
+
     const folderOptions = React.useMemo(() => {
         return [{ value: "", label: "Folder (required)…" }].concat(
-            folders.map((f) => ({ value: String(f.id), label: f.name }))
+            folders.map((f) => ({ value: String(f.id), label: f.path || f.name }))
         );
     }, [folders]);
+
+    const viewOptions = React.useMemo(() => {
+        return [{ value: "", label: "Select a view…" }].concat(
+            views.map((v) => ({ value: v.id, label: v.name }))
+        );
+    }, [views]);
+
+    const deleteView = async (id) => {
+        if (!confirm("Delete this view?")) return;
+        try {
+            await axios.delete(`${API}/views/${id}`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const res = await axios.get(`${API}/views/${sheetId}`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            setViews(res.data || []);
+            if (String(selectedViewId) === String(id)) {
+                setSelectedViewId("");
+            }
+        } catch (e) {
+            console.error("Delete view failed:", e);
+            alert("Failed to delete view");
+        }
+    };
 
     // Calculate dynamic col widths based on header length
     const colWidths = React.useMemo(() => {
@@ -185,125 +238,252 @@ export default function DashboardBody(props) {
 
     // Admin or sheet selected: show normal dashboard
     return (
-        <div className="w-full h-full flex flex-col bg-slate-50 relative pointer-events-auto">
-            {/* Global Controls Bar */}
-            <div className="flex flex-wrap gap-4 p-5 bg-white/60 backdrop-blur-md border-b border-slate-200/50 items-center justify-center relative z-30">
-                {/* Upload (admin) */}
-                {user.role === "admin" && (
-                    <>
-                        <label className="flex items-center gap-3 cursor-pointer bg-white/80 border border-slate-200 hover:border-indigo-400 hover:bg-white text-slate-700 rounded-xl px-4 h-10 shadow-sm transition-all group">
-                            <input
-                                type="file"
-                                onChange={(e) => {
-                                    const f = e.target.files?.[0];
-                                    setFile(f || null);
-                                    setSelectedFileName(f?.name || "");
-                                    e.target.value = null;
-                                }}
-                                className="hidden"
-                            />
-                            <span className="text-xl group-hover:scale-110 transition-transform">📂</span>
-                            <span className="text-xs font-bold whitespace-nowrap max-w-[10rem] truncate text-slate-600">
-                                {selectedFileName || "Choose spreadsheet"}
-                            </span>
-                        </label>
-
-                        <SearchableSelect
-                            options={folderOptions}
-                            value={selectedFolderId}
-                            onChange={(e) => setSelectedFolderId(e.target.value)}
-                            placeholder="Select Folder…"
-                            className="ml-1"
-                            buttonClassName="input-premium py-0 h-10 min-w-[16rem] bg-white/80"
-                        />
-
-                        <button
-                            onClick={() => handleUpload(file, selectedFolderId)}
-                            disabled={!file || !selectedFolderId}
-                            className={`btn-premium h-10 px-6 ${!file || !selectedFolderId
-                                ? "bg-slate-100 text-slate-400 border-slate-200"
-                                : "bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg shadow-indigo-100"
-                                }`}
-                            title={!file ? "Choose a file" : !selectedFolderId ? "Select a folder" : "Upload & Load"}
-                        >
-                            Upload & Load
-                        </button>
-                    </>
-                )}
-
-                <button
-                    onClick={() => loadData(sheetId, user.role !== "admin" && selectedViewId)}
-                    className="btn-premium h-10 px-5 bg-white/80 border-slate-200 hover:bg-white text-slate-700 shadow-sm"
-                >
-                    Refresh
-                </button>
-
-                {user.role === "admin" && (
-                    <SearchableSelect
-                        options={[{ value: "", label: "Select a view…" }].concat(
-                            views.map((v) => ({ value: v.id, label: v.name }))
-                        )}
-                        value={selectedViewId}
-                        onChange={(e) => {
-                            const viewId = e.target.value;
-                            setSelectedViewId(viewId);
-                        }}
-                        onDelete={async (id) => {
-                            if (!confirm("Delete this view?")) return;
-                            try {
-                                await axios.delete(`${API}/views/${id}`, {
-                                    headers: { Authorization: `Bearer ${token}` }
-                                });
-                                const res = await axios.get(`${API}/views/${sheetId}`, {
-                                    headers: { Authorization: `Bearer ${token}` }
-                                });
-                                setViews(res.data || []);
-                                if (String(selectedViewId) === String(id)) {
-                                    setSelectedViewId("");
-                                }
-                            } catch (e) {
-                                console.error("Delete view failed:", e);
-                                alert("Failed to delete view");
-                            }
-                        }}
-                        placeholder="Saved Views…"
-                        className="ml-1"
-                        buttonClassName="input-premium py-0 h-10 min-w-[16rem] bg-white/80"
-                    />
-                )}
-
-                {user.role === "admin" && (
+        <div className="w-full h-full min-h-0 flex bg-slate-50 relative overflow-hidden pointer-events-auto">
+            <aside
+                id="dashboard-left-menu"
+                aria-label="Dashboard actions menu"
+                className={`left-side-menu h-full shrink-0 sticky top-0 self-start overflow-y-auto shadow-xl border-r border-blue-800 transition-all duration-200 ${menuOpen ? "w-[17rem] p-3" : "w-14 p-2"}`}
+            >
+                <div className={`flex items-center ${menuOpen ? "justify-between mb-3" : "justify-center mb-2"}`}>
+                    {menuOpen && <h2 className="left-menu-heading">Menu</h2>}
                     <button
-                        onClick={() => {
-                            const name = prompt("Enter a name for this view:");
-                            if (name) {
-                                setPendingViewName(name);
-                                setShowColumnSelector(true);
-                            }
-                        }}
-                        className="btn-premium h-10 px-6 bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg shadow-emerald-100"
+                        type="button"
+                        onClick={() => setMenuOpen((v) => !v)}
+                        className="left-menu-close"
+                        aria-label={menuOpen ? "Collapse menu" : "Expand menu"}
+                        aria-expanded={menuOpen}
+                        aria-controls="dashboard-left-menu-content"
                     >
-                        Save View
+                        {menuOpen ? "◀" : "☰"}
                     </button>
-                )}
-
-                <div className="flex gap-3 ml-0 md:ml-6 items-center">
-                    <EbitdaMenu
-                        headers={displayHeaders}
-                        onCalculate={appendCalculatedColumn}
-                    />
-                    <ExportMenu onCSV={exportCSV} onXLSX={exportXLSX} onPDF={exportPDF} />
-
-                    <ChartMenu
-                        pivotOn={pivotOn}
-                        setPivotOn={setPivotOn}
-                        twoOn={twoOn}
-                        setTwoOn={setTwoOn}
-                        trendsOn={trendsOn}
-                        setTrendsOn={setTrendsOn}
-                    />
                 </div>
-            </div>
+
+                {menuOpen && (
+                    <div id="dashboard-left-menu-content">
+                        <div className="left-menu-group">
+                            <button className="left-menu-section-toggle" onClick={() => toggleMenu("view")} aria-expanded={expandedMenus.view}>
+                                <span>View</span>
+                                <span>{expandedMenus.view ? "▾" : "▸"}</span>
+                            </button>
+                            {expandedMenus.view && (
+                                <div className="left-menu-submenu">
+                                    <button
+                                        type="button"
+                                        className="left-menu-action"
+                                        onClick={() => {
+                                            navigate("/");
+                                        }}
+                                    >
+                                        Dashboard Home
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="left-menu-action"
+                                        onClick={() => {
+                                            navigate("/workspace");
+                                        }}
+                                    >
+                                        Data Workspace
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="left-menu-action"
+                                        onClick={() => {
+                                            loadData(sheetId, user.role !== "admin" && selectedViewId);
+                                            setMenuOpen(false);
+                                        }}
+                                    >
+                                        Refresh Data
+                                    </button>
+                                    {user.role === "admin" && (
+                                        <details className="left-menu-disclosure">
+                                            <summary className="left-menu-summary">
+                                                Saved Views
+                                                <span className="left-menu-summary-meta">{activeView?.name || "None selected"}</span>
+                                            </summary>
+                                            <div className="left-menu-nested">
+                                                <SearchableSelect
+                                                    options={viewOptions}
+                                                    value={selectedViewId}
+                                                    onChange={(e) => {
+                                                        const viewId = e.target.value;
+                                                        setSelectedViewId(viewId);
+                                                    }}
+                                                    onDelete={deleteView}
+                                                    placeholder="Saved Views…"
+                                                    className="w-full"
+                                                    buttonClassName="w-full border border-blue-700 rounded-lg h-9 bg-blue-900 text-white font-bold px-3"
+                                                    panelWidth={320}
+                                                />
+                                                <button
+                                                    type="button"
+                                                    className="left-menu-action"
+                                                    onClick={() => {
+                                                        const name = prompt("Enter a name for this view:");
+                                                        if (name) {
+                                                            setPendingViewName(name);
+                                                            setShowColumnSelector(true);
+                                                        }
+                                                    }}
+                                                >
+                                                    Save View
+                                                </button>
+                                            </div>
+                                        </details>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="left-menu-group">
+                            <button className="left-menu-section-toggle" onClick={() => toggleMenu("data")} aria-expanded={expandedMenus.data}>
+                                <span>Data</span>
+                                <span>{expandedMenus.data ? "▾" : "▸"}</span>
+                            </button>
+                            {expandedMenus.data && (
+                                <div className="left-menu-submenu">
+                                    {user.role === "admin" && (
+                                        <details className="left-menu-disclosure">
+                                            <summary className="left-menu-summary">Upload & Import</summary>
+                                            <div className="left-menu-nested">
+                                                <label className="left-menu-file-picker">
+                                                    <input
+                                                        type="file"
+                                                        onChange={(e) => {
+                                                            const f = e.target.files?.[0];
+                                                            setFile(f || null);
+                                                            setSelectedFileName(f?.name || "");
+                                                            e.target.value = null;
+                                                        }}
+                                                        className="hidden"
+                                                    />
+                                                    <span>📂</span>
+                                                    <span className="truncate">{selectedFileName || "Choose spreadsheet"}</span>
+                                                </label>
+                                                <SearchableSelect
+                                                    options={folderOptions}
+                                                    value={selectedFolderId}
+                                                    onChange={(e) => setSelectedFolderId(e.target.value)}
+                                                    placeholder="Select Folder…"
+                                                    className="w-full"
+                                                    buttonClassName="w-full border border-blue-700 rounded-lg h-9 bg-blue-900 text-white font-bold px-3"
+                                                    panelWidth={320}
+                                                />
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        handleUpload(file, selectedFolderId);
+                                                    }}
+                                                    disabled={!file || !selectedFolderId}
+                                                    className={`left-menu-action ${!file || !selectedFolderId ? "left-menu-action-disabled" : ""}`}
+                                                    title={!file ? "Choose a file" : !selectedFolderId ? "Select a folder" : "Upload & Load"}
+                                                >
+                                                    Upload & Load
+                                                </button>
+                                            </div>
+                                        </details>
+                                    )}
+
+                                    <details className="left-menu-disclosure">
+                                        <summary className="left-menu-summary">EBITDA Calculator</summary>
+                                        <div className="left-menu-nested">
+                                            <EbitdaMenu
+                                                embedded
+                                                headers={displayHeaders}
+                                                onCalculate={appendCalculatedColumn}
+                                            />
+                                        </div>
+                                    </details>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="left-menu-group">
+                            <button className="left-menu-section-toggle" onClick={() => toggleMenu("charts")} aria-expanded={expandedMenus.charts}>
+                                <span>Chart / Table Config</span>
+                                <span>{expandedMenus.charts ? "▾" : "▸"}</span>
+                            </button>
+                            {expandedMenus.charts && (
+                                <div className="left-menu-submenu">
+                                    <button className="left-menu-action left-menu-toggle-row" onClick={() => setPivotOn((p) => !p)}>
+                                        <span>Pivot Table</span>
+                                        <span className="left-menu-state">{pivotOn ? "ON" : "OFF"}</span>
+                                    </button>
+                                    <button className="left-menu-action left-menu-toggle-row" onClick={() => setTwoOn((p) => !p)}>
+                                        <span>Two-Condition</span>
+                                        <span className="left-menu-state">{twoOn ? "ON" : "OFF"}</span>
+                                    </button>
+                                    <button className="left-menu-action left-menu-toggle-row" onClick={() => setTrendsOn((p) => !p)}>
+                                        <span>Trends</span>
+                                        <span className="left-menu-state">{trendsOn ? "ON" : "OFF"}</span>
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="left-menu-group">
+                            <button className="left-menu-section-toggle" onClick={() => toggleMenu("export")} aria-expanded={expandedMenus.export}>
+                                <span>Export</span>
+                                <span>{expandedMenus.export ? "▾" : "▸"}</span>
+                            </button>
+                            {expandedMenus.export && (
+                                <div className="left-menu-submenu">
+                                    <button className="left-menu-action" onClick={() => { exportCSV(); }}>Export CSV (.csv)</button>
+                                    <button className="left-menu-action" onClick={() => { exportXLSX(); }}>Export Excel (.xlsx)</button>
+                                    <button className="left-menu-action" onClick={() => { exportPDF(); }}>Export PDF (.pdf)</button>
+                                </div>
+                            )}
+                        </div>
+
+                        {user.role === "admin" && (
+                            <div className="left-menu-group">
+                                <button className="left-menu-section-toggle" onClick={() => toggleMenu("admin")} aria-expanded={expandedMenus.admin}>
+                                    <span>Admin</span>
+                                    <span>{expandedMenus.admin ? "▾" : "▸"}</span>
+                                </button>
+                                {expandedMenus.admin && (
+                                    <div className="left-menu-submenu">
+                                        <button
+                                            className="left-menu-action"
+                                            onClick={() => {
+                                                navigate("/users");
+                                            }}
+                                        >
+                                            User / Group / Permissions
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {user.role === "admin" && (
+                            <div className="left-menu-group left-menu-danger">
+                                <button className="left-menu-section-toggle" onClick={() => toggleMenu("danger")} aria-expanded={expandedMenus.danger}>
+                                    <span>Danger Zone</span>
+                                    <span>{expandedMenus.danger ? "▾" : "▸"}</span>
+                                </button>
+                                {expandedMenus.danger && (
+                                    <div className="left-menu-submenu">
+                                        <button
+                                            className="left-menu-action left-menu-danger-action"
+                                            disabled={!sheetId}
+                                            onClick={() => {
+                                                if (!sheetId) return;
+                                                if (!confirm("Delete the current sheet?")) return;
+                                                onDeleteSheet(sheetId);
+                                            }}
+                                        >
+                                            Delete Current Sheet
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                )}
+            </aside>
+
+            <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-y-auto">
 
             {/* Pivot Controls */}
             {pivotOn && (
@@ -348,7 +528,7 @@ export default function DashboardBody(props) {
             )}
 
             {/* Data Table */}
-            <div className="flex flex-col h-full bg-slate-50">
+            <div className="flex flex-col flex-1 min-h-0 bg-slate-50">
                 <div className="m-4 bg-white rounded-2xl shadow-2xl border border-gray-200 focus:ring-slate-100 relative z-0 flex-1 flex flex-col min-h-[500px] overflow-hidden">
                     {sortedData?.length > 0 ? (
                         <>
@@ -356,7 +536,7 @@ export default function DashboardBody(props) {
                                 {/* Filename display is now handled in Header mostly, but we can keep a breadcrumb here if needed. 
                                     Or just empty. Original had 'Loaded: ...'. Keeping minimal.
                                 */}
-                                <span>Loaded: <b className="text-slate-800">{props.activeFilename || "Sheet"}</b></span>
+                                <span>Dataset: <b className="text-slate-800">{props.activeFilename || "Current Sheet"}</b></span>
                             </div>
 
                             {/* Virtualized Table Container */}
@@ -381,7 +561,7 @@ export default function DashboardBody(props) {
                                                 if (!filterAnchorRefs.current) filterAnchorRefs.current = {};
                                                 filterAnchorRefs.current[h] = el;
                                             }}
-                                            className="relative border-r border-slate-200 px-3 py-1 text-[11px] text-left cursor-pointer group flex items-center justify-between hover:bg-slate-200 transition-colors bg-slate-100 text-slate-700 font-bold uppercase tracking-wide h-full"
+                                            className="table-pro-text relative border-r border-slate-200 px-3 py-1.5 text-[12px] text-left cursor-pointer group flex items-center justify-between hover:bg-slate-200 transition-colors bg-slate-100 text-slate-800 font-semibold h-full"
                                             onClick={(e) => {
                                                 if (openFilterCol === h) return;
                                                 const isFilterBtn = e.target.closest && e.target.closest(".filter-btn");
@@ -477,11 +657,11 @@ export default function DashboardBody(props) {
                                                                     <div
                                                                         key={h}
                                                                         style={{ width: colWidths[h] || 180, minWidth: colWidths[h] || 180 }}
-                                                                        className="border-r border-slate-200 px-3 text-xs text-slate-700 truncate h-full flex items-center whitespace-nowrap"
+                                                                    className="table-pro-text border-r border-slate-200 px-3 text-[12px] text-slate-800 truncate h-full flex items-center whitespace-nowrap"
                                                                         title={String(val)}
                                                                     >
                                                                         {typeof val === 'number'
-                                                                            ? <span className="font-mono text-slate-600">{formatSmart(val, h)}</span>
+                                                                            ? <span className="table-pro-number text-slate-900 font-medium">{formatSmart(val, h)}</span>
                                                                             : renderMaybeDate(h, val)
                                                                         }
                                                                     </div>
@@ -507,10 +687,11 @@ export default function DashboardBody(props) {
                         </>
                     ) : (
                         <div className="text-gray-600 text-center py-10">
-                            Use <b>Select Sheet</b> in the header to pick a file.
+                            Please select a sheet from the header to view dataset rows.
                         </div>
                     )}
                 </div>
+            </div>
             </div>
         </div>
     );

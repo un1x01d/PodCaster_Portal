@@ -42,9 +42,188 @@
     @apply w-full rounded-xl border border-slate-200 bg-white/50 px-4 py-2 text-sm 
            transition-all focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 outline-none;
   }
+
+  .table-pro-text {
+    font-family: "Segoe UI Variable Text", "Aptos", "SF Pro Text", "Segoe UI", Inter, "Helvetica Neue", Arial, sans-serif;
+    letter-spacing: 0.004em;
+    line-height: 1.35;
+    font-feature-settings: "kern" 1, "liga" 1, "tnum" 1;
+    font-variant-numeric: proportional-nums;
+  }
+
+  .table-pro-number {
+    font-family: "Segoe UI Variable Text", "Aptos", "SF Pro Text", "Segoe UI", Inter, "Helvetica Neue", Arial, sans-serif;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1, "kern" 1;
+  }
 }
 
 /* Ensure full-height layout */
 html, body, #root {
   height: 100%;
+}
+
+/* Left-side actions menu (scoped) */
+.left-side-menu {
+  background: #001f3f;
+  color: #ffffff;
+}
+
+.left-menu-heading {
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 0.9rem;
+  letter-spacing: 0.02em;
+}
+
+.left-menu-close {
+  color: #ffffff;
+  font-weight: 700;
+  border-radius: 0.5rem;
+  padding: 0.25rem 0.5rem;
+}
+
+.left-menu-close:hover,
+.left-menu-close:focus-visible {
+  background: rgba(255, 255, 255, 0.16);
+  outline: none;
+}
+
+.left-menu-group {
+  border-top: 1px solid rgba(255, 255, 255, 0.18);
+  padding-top: 0.55rem;
+  margin-top: 0.55rem;
+}
+
+.left-menu-section-toggle {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 0.82rem;
+  padding: 0.36rem 0.48rem;
+  border-radius: 0.6rem;
+}
+
+.left-menu-section-toggle:hover,
+.left-menu-section-toggle:focus-visible {
+  background: rgba(255, 255, 255, 0.16);
+  outline: none;
+}
+
+.left-menu-submenu {
+  margin-top: 0.28rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.left-menu-disclosure {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 0.65rem;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.left-menu-summary {
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 0.78rem;
+  list-style: none;
+  cursor: pointer;
+  padding: 0.45rem 0.55rem;
+}
+
+.left-menu-summary::-webkit-details-marker {
+  display: none;
+}
+
+.left-menu-summary-meta {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.62rem;
+  color: rgba(255, 255, 255, 0.82);
+  font-weight: 700;
+}
+
+.left-menu-nested {
+  padding: 0.45rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.left-menu-action {
+  width: 100%;
+  text-align: left;
+  border-radius: 0.6rem;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 0.76rem;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 0.4rem 0.52rem;
+}
+
+.left-menu-action:hover,
+.left-menu-action:focus-visible {
+  background: rgba(255, 255, 255, 0.2);
+  outline: none;
+}
+
+.left-menu-action-disabled,
+.left-menu-action:disabled {
+  opacity: 0.52;
+  cursor: not-allowed;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.left-menu-file-picker {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border-radius: 0.6rem;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 0.76rem;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 0.4rem 0.52rem;
+  cursor: pointer;
+}
+
+.left-menu-file-picker:hover,
+.left-menu-file-picker:focus-within {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.left-menu-toggle-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.left-menu-state {
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+  padding: 0.08rem 0.48rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.left-menu-danger {
+  border-top-color: rgba(248, 113, 113, 0.5);
+}
+
+.left-menu-danger-action {
+  border-color: rgba(252, 165, 165, 0.7);
+  background: rgba(127, 29, 29, 0.45);
+  color: #fee2e2;
+}
+
+.left-menu-danger-action:hover,
+.left-menu-danger-action:focus-visible {
+  background: rgba(153, 27, 27, 0.65);
 }

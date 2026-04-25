@@ -12,7 +12,7 @@ COPY frontend/package-lock.json ./package-lock.json
 
 # Faster installs (BuildKit cache), no audit/fund noise
 RUN --mount=type=cache,target=/root/.npm \
-    npm install
+    npm ci
 
 # Add source and build
 COPY frontend/. .
@@ -37,7 +37,9 @@ COPY --from=build /app/dist ./dist
 # Install 'serve' to host static files
 RUN npm i -g serve@14
 
+RUN chown -R node:node /app
+USER node
+
 EXPOSE ${PORT}
 # -s = single-page app fallback, -l = listen
 CMD ["serve", "-s", "dist", "-l", "5173"]
-

@@ -2,7 +2,7 @@
   "name": "admin-frontend",
   "version": "1.0.0",
   "private": true,
-  "description": "Vite + React UI for Podcaster Portal",
+  "description": "Vite + React UI for Data Insights Portal",
   "scripts": {
     "dev": "vite --host --port 5173",
     "build": "vite build",
@@ -10,12 +10,12 @@
     "start": "npm run preview"
   },
   "dependencies": {
-    "axios": "^1.7.7",
-    "jspdf": "^2.5.1",
-    "jspdf-autotable": "^3.8.3",
+    "axios": "^1.15.0",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.7",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^6.26.1",
+    "react-router-dom": "^6.30.2",
     "react-virtualized-auto-sizer": "^1.0.26",
     "react-window": "^1.8.10",
     "recharts": "^2.12.7",
@@ -32,6 +32,8 @@
     "node": ">=18.18"
   },
   "overrides": {
-    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+    "follow-redirects": "^1.15.12",
+    "lodash": "^4.17.24"
   }
 }

@@ -10,6 +10,17 @@ export default function SearchableSelect({
     disabled = false,
     buttonClassName = "bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white px-3 rounded-lg h-10 shadow-md flex items-center gap-2 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-indigo-200",
     panelWidth = 260,
+    labelClassName = "",
+    optionClassName = "",
+    optionTextClassName = "",
+    panelClassName = "",
+    searchInputClassName = "",
+    selectedOptionClassName = "bg-slate-100",
+    panelStyle = {},
+    optionStyle = {},
+    selectedOptionStyle = {},
+    optionTextStyle = {},
+    searchInputStyle = {},
 }) {
     const [open, setOpen] = useState(false);
     const [q, setQ] = useState("");
@@ -55,34 +66,37 @@ export default function SearchableSelect({
                     }`}
                 title={selected?.label || placeholder}
             >
-                <div className="truncate text-left flex-1 min-w-0 font-bold">{selected?.label || placeholder}</div>
+                <div className={`truncate text-left flex-1 min-w-0 font-bold ${labelClassName}`}>{selected?.label || placeholder}</div>
                 <span className="opacity-70 shrink-0">▾</span>
             </button>
 
             {open && !disabled && (
                 <div
                     ref={panelRef}
-                    className="absolute z-50 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg p-2 left-1/2 -translate-x-1/2"
-                    style={{ width: panelWidth }}
+                    className={`absolute z-50 mt-1 bg-white text-slate-800 border border-gray-200 rounded-lg shadow-lg p-2 left-1/2 -translate-x-1/2 ${panelClassName}`}
+                    style={{ width: panelWidth, ...panelStyle }}
                 >
                     <input
                         autoFocus
                         value={q}
                         onChange={(e) => setQ(e.target.value)}
                         placeholder="Type to search…"
-                        className="w-full border border-gray-200 rounded-md px-2 py-1 mb-2 focus:outline-none focus:ring focus:ring-slate-100 placeholder:text-gray-400 text-sm"
+                        className={`w-full border border-gray-200 rounded-md px-2 py-1 mb-2 focus:outline-none focus:ring focus:ring-slate-100 placeholder:text-gray-400 text-sm ${searchInputClassName}`}
+                        style={searchInputStyle}
                     />
                     <div className="max-h-56 overflow-auto custom-scrollbar">
                         {filtered.length ? (
                             filtered.map((o) => (
                                 <div
                                     key={String(o.value)}
-                                    className={`px-2 py-1.5 rounded-md flex items-center justify-between group cursor-pointer hover:bg-blue-50 ${String(o.value) === String(value) ? "bg-slate-100" : ""
-                                        }`}
+                                    className={`px-2 py-1.5 rounded-md flex items-center justify-between group cursor-pointer hover:bg-blue-50 ${optionClassName} ${String(o.value) === String(value) ? selectedOptionClassName : ""}
+                                        `}
                                     title={o.label}
+                                    style={String(o.value) === String(value) ? { ...optionStyle, ...selectedOptionStyle } : optionStyle}
                                 >
                                     <div
-                                        className="flex-1 break-words mr-2 text-sm font-bold"
+                                        className={`flex-1 min-w-0 truncate mr-2 text-sm font-bold text-slate-800 ${optionTextClassName}`}
+                                        style={optionTextStyle}
                                         onClick={() => {
                                             onChange({ target: { value: o.value } });
                                             setOpen(false);

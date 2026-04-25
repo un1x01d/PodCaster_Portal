@@ -8,44 +8,45 @@ import {
     setPermissions, getPermissions, setGroupPermissions, getGroupPermissions
 } from "../controllers/userController.js";
 import { auth } from "../middleware/auth.js";
+import { asyncHandler } from "../middleware/asyncHandler.js";
 
 const router = express.Router();
 router.use(auth);
 
 // Users
-router.get("/users", listUsers);
-router.get("/users/:id/groups", getUserGroups);
-router.post("/users", createUser);
-router.patch("/users/:id", updateUser);
-router.delete("/users/:id", deleteUser);
-router.put("/users/:userId/default-view", setDefaultView);
+router.get("/users", asyncHandler(listUsers));
+router.get("/users/:id/groups", asyncHandler(getUserGroups));
+router.post("/users", asyncHandler(createUser));
+router.patch("/users/:id", asyncHandler(updateUser));
+router.delete("/users/:id", asyncHandler(deleteUser));
+router.put("/users/:userId/default-view", asyncHandler(setDefaultView));
 
 // Groups
 router.use("/groups", (req, res, next) => {
     console.log(`[debug] Group request: ${req.method} ${req.url}`);
     next();
 });
-router.post("/groups/:id/users/:userId/admin", toggleGroupAdmin);
-router.get("/groups", listGroups);
-router.post("/groups", createGroup);
-router.patch("/groups/:id", updateGroup);
-router.delete("/groups/:id", deleteGroup);
-router.get("/groups/:id/members", getGroupMembers);
-router.post("/groups/:id/members", updateGroupMembers);
-router.get("/groups/:id/users", getGroupMembers); // Alias for frontend compatibility
-router.post("/groups/:id/users", addUserToGroup);
-router.delete("/groups/:id/users/:userId", removeUserFromGroup);
-router.get("/groups/:id/sheets", getGroupSheets);
+router.post("/groups/:id/users/:userId/admin", asyncHandler(toggleGroupAdmin));
+router.get("/groups", asyncHandler(listGroups));
+router.post("/groups", asyncHandler(createGroup));
+router.patch("/groups/:id", asyncHandler(updateGroup));
+router.delete("/groups/:id", asyncHandler(deleteGroup));
+router.get("/groups/:id/members", asyncHandler(getGroupMembers));
+router.post("/groups/:id/members", asyncHandler(updateGroupMembers));
+router.get("/groups/:id/users", asyncHandler(getGroupMembers)); // Alias for frontend compatibility
+router.post("/groups/:id/users", asyncHandler(addUserToGroup));
+router.delete("/groups/:id/users/:userId", asyncHandler(removeUserFromGroup));
+router.get("/groups/:id/sheets", asyncHandler(getGroupSheets));
 
 // Folders
-router.get("/folders", listFolders);
-router.post("/folders", createFolder);
-router.delete("/folders/:id", deleteFolder);
+router.get("/folders", asyncHandler(listFolders));
+router.post("/folders", asyncHandler(createFolder));
+router.delete("/folders/:id", asyncHandler(deleteFolder));
 
 // Permissions
-router.post("/permissions", setPermissions); // User perms
-router.get("/permissions", getPermissions);
-router.post("/group-permissions", setGroupPermissions);
-router.get("/group-permissions", getGroupPermissions);
+router.post("/permissions", asyncHandler(setPermissions)); // User perms
+router.get("/permissions", asyncHandler(getPermissions));
+router.post("/group-permissions", asyncHandler(setGroupPermissions));
+router.get("/group-permissions", asyncHandler(getGroupPermissions));
 
 export default router;

@@ -20,7 +20,9 @@ export default function SpreadsheetChatbot({
     allData,
     onUpdateChart,
     activeFilters = {},
+    mode = "floating",
 }) {
+    const inline = mode === "inline";
     const {
         messages,
         input,
@@ -33,8 +35,10 @@ export default function SpreadsheetChatbot({
         messagesEndRef,
         clearMessages,
     } = useChatbotLogic({
+        sheetId,
         data,
         headers,
+        activeFilters,
         allData,
         onApplyFilter,
         onUpdateChart,
@@ -43,7 +47,7 @@ export default function SpreadsheetChatbot({
         activeFilename,
     });
 
-    const [chatHeight, setChatHeight] = useState(320);
+    const [chatHeight, setChatHeight] = useState(460);
     const isResizing = useRef(false);
 
     useEffect(() => {
@@ -52,7 +56,7 @@ export default function SpreadsheetChatbot({
             // Calculate new height based on mouse Y position (window height - mouseY - bottom margin)
             let newHeight = window.innerHeight - e.clientY - 24; // 24 is roughly bottom-6 (1.5rem)
             // Constrain between reasonable min and max
-            newHeight = Math.max(250, Math.min(newHeight, window.innerHeight - 100));
+            newHeight = Math.max(340, Math.min(newHeight, window.innerHeight - 100));
             setChatHeight(newHeight);
         };
 
@@ -80,7 +84,34 @@ export default function SpreadsheetChatbot({
         document.body.style.userSelect = 'none'; // prevent text selection while dragging
     };
 
+    useEffect(() => {
+        if (!inline) return;
+        if (!isOpen) setIsOpen(true);
+        if (isMinimized) setIsMinimized(false);
+    }, [inline, isOpen, isMinimized, setIsOpen, setIsMinimized]);
+
     if (!data || data.length === 0) return null;
+
+    if (inline) {
+        return (
+            <section className="h-full min-h-[420px] flex flex-col rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+                <div className="flex-1 min-h-0 flex flex-col">
+                    <ChatHistory
+                        messages={messages}
+                        onApplyFilter={onApplyFilter}
+                    />
+                    <div className="border-t border-slate-200 bg-white">
+                        <ChatInput
+                            input={input}
+                            setInput={setInput}
+                            handleSend={handleSend}
+                            isOpen={true}
+                        />
+                    </div>
+                </div>
+            </section>
+        );
+    }
 
     return (
         <>
@@ -101,7 +132,7 @@ export default function SpreadsheetChatbot({
             {/* Chat Panel */}
             {isOpen && (
                 <div 
-                    className="fixed bottom-8 right-8 w-[24rem] glass rounded-[2.5rem] flex flex-col z-[60] shadow-2xl overflow-hidden animate-in slide-in-from-bottom-8 fade-in duration-500"
+                    className="fixed bottom-8 right-8 w-[20rem] glass rounded-[1.75rem] flex flex-col z-[60] shadow-2xl overflow-hidden animate-in slide-in-from-bottom-8 fade-in duration-500"
                     style={{ height: isMinimized ? 'auto' : `${chatHeight}px` }}
                 >
                     {/* Draggable Top Handle */}
@@ -116,22 +147,22 @@ export default function SpreadsheetChatbot({
 
                     {/* Header */}
                     <div
-                        className="bg-indigo-600 text-white px-6 py-5 flex justify-between items-center cursor-pointer select-none"
-                        onDoubleClick={() => setIsMinimized(!isMinimized)}
+                        className="bg-indigo-600 text-white px-4 py-3 flex justify-between items-center cursor-pointer select-none"
+                        onClick={() => setIsMinimized(!isMinimized)}
                     >
                         <div className="flex items-center gap-3">
-                            <div className="w-9 h-9 bg-white/20 rounded-xl flex items-center justify-center backdrop-blur-md border border-white/20">
-                                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            <div className="w-8 h-8 bg-white/20 rounded-lg flex items-center justify-center backdrop-blur-md border border-white/20">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                                     <path d="M12 2a10 10 0 1 0 10 10H12V2Z"></path>
                                     <path d="M12 12L2.1 11.9"></path>
                                     <path d="M12 2a10 10 0 0 1 10 10h-10V2Z"></path>
                                 </svg>
                             </div>
                             <div>
-                                <h3 className="font-bold text-sm tracking-tight leading-none mb-1">Data Assistant</h3>
+                                <h3 className="font-bold text-xs tracking-tight leading-none mb-1">Data Assistant</h3>
                                 <div className="flex items-center gap-1.5">
                                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                                    <span className="text-[10px] font-bold text-indigo-100 uppercase tracking-widest">Online</span>
+                                    <span className="text-[9px] font-bold text-indigo-100 uppercase tracking-widest">Online</span>
                                 </div>
                             </div>
                         </div>
@@ -165,7 +196,7 @@ export default function SpreadsheetChatbot({
                                 )}
                             </button>
                             <button
-                                onClick={() => setIsOpen(false)}
+                                onClick={(e) => { e.stopPropagation(); setIsOpen(false); }}
                                 className="w-8 h-8 rounded-lg bg-white/10 hover:bg-red-500/80 transition-all flex items-center justify-center"
                                 title="Close"
                             >

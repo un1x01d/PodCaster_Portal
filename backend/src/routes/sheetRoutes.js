@@ -1,5 +1,6 @@
 import express from "express";
 import multer from "multer";
+import path from "path";
 import {
     uploadSheet,
     getActiveSheet,
@@ -12,27 +13,47 @@ import {
     deleteSheet
 } from "../controllers/sheetController.js";
 import { auth } from "../middleware/auth.js";
+import { asyncHandler } from "../middleware/asyncHandler.js";
 
 const router = express.Router();
+const allowedExt = new Set([".xlsx", ".xls", ".csv"]);
+const allowedMime = new Set([
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel",
+    "text/csv",
+    "application/csv",
+    "application/octet-stream",
+]);
+
 const upload = multer({
     dest: "uploads/",
     limits: { fileSize: 100 * 1024 * 1024 },
+    fileFilter: (_req, file, cb) => {
+        const ext = path.extname(file.originalname || "").toLowerCase();
+        if (!allowedExt.has(ext)) {
+            return cb(new Error("unsupported_file_type"));
+        }
+        if (!allowedMime.has(file.mimetype)) {
+            return cb(new Error("unsupported_file_type"));
+        }
+        return cb(null, true);
+    },
 });
 
 // All routes here are protected
 router.use(auth);
 
-router.post("/upload", upload.single("file"), uploadSheet);
-router.get("/sheets/active", getActiveSheet);
-router.get("/my-sheets", listMySheets);
-router.get("/sheets/all", listAllSheets); // For admin
-router.get("/sheets/:id", getSheetDetails);
-router.patch("/sheets/:id", updateSheetDetails);
-router.get("/sheets/:id/tabs", getSheetTabs);
-router.get("/sheets/:id/data", getSheetData);
-router.delete("/sheets/:id", deleteSheet);
+router.post("/upload", upload.single("file"), asyncHandler(uploadSheet));
+router.get("/sheets/active", asyncHandler(getActiveSheet));
+router.get("/my-sheets", asyncHandler(listMySheets));
+router.get("/sheets/all", asyncHandler(listAllSheets)); // For admin
+router.get("/sheets/:id", asyncHandler(getSheetDetails));
+router.patch("/sheets/:id", asyncHandler(updateSheetDetails));
+router.get("/sheets/:id/tabs", asyncHandler(getSheetTabs));
+router.get("/sheets/:id/data", asyncHandler(getSheetData));
+router.delete("/sheets/:id", asyncHandler(deleteSheet));
 
 // Legacy/Compatibility alias for /sheets/list logic if needed, but listAllSheets covers it
-router.get("/sheets/list", listAllSheets);
+router.get("/sheets/list", asyncHandler(listAllSheets));
 
 export default router;

@@ -1,6 +1,10 @@
 import { query, getClient } from "../config/db.js";
 import { hashPassword, generateComplexPassword } from "../utils/security.js";
 
+const EXPOSE_TEMP_PASSWORDS = process.env.EXPOSE_TEMP_PASSWORDS
+    ? process.env.EXPOSE_TEMP_PASSWORDS === "true"
+    : process.env.NODE_ENV !== "production";
+
 async function getAdminGroups(userId) {
     const res = await query('SELECT group_id FROM user_groups WHERE user_id = $1 AND is_admin = TRUE', [userId]);
     return res.map(r => r.group_id);
@@ -61,15 +65,17 @@ export async function createUser(req, res) {
     }
     const { email, password, role } = req.body;
 
-    // Hash password for new user
-    const hashedFn = await hashPassword(password || "password123");
+    const temporaryPassword = password || generateComplexPassword(16);
+    const hashedFn = await hashPassword(temporaryPassword);
 
     try {
-        const r = await query(
+        const created = await query(
             "INSERT INTO users (email, password, role, password_reset_required) VALUES ($1, $2, $3, $4) RETURNING id, email, role",
             [email, hashedFn, role || "producer", true]
         );
-        res.json(r[0]);
+        const payload = { ...created[0] };
+        if (EXPOSE_TEMP_PASSWORDS) payload.newPassword = temporaryPassword;
+        res.json(payload);
     } catch (e) {
         if (String(e).includes("unique constraint")) return res.status(400).json({ error: "Email exists" });
         res.status(500).json({ error: "failed" });
@@ -100,7 +106,7 @@ export async function updateUser(req, res) {
             const newPassword = generateComplexPassword(16);
             const hashed = await hashPassword(newPassword);
             await query("UPDATE users SET password=$1, password_reset_required=TRUE WHERE id=$2", [hashed, id]);
-            return res.json({ success: true, newPassword });
+            return res.json(EXPOSE_TEMP_PASSWORDS ? { success: true, newPassword } : { success: true });
         }
 
         // Dynamic partial update
@@ -181,12 +187,19 @@ export async function setDefaultView(req, res) {
 // --- Groups ---
 
 export async function listGroups(req, res) {
-    if (req.user.role !== "admin") {
-        const adminGroups = await getAdminGroups(req.user.id);
-        if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
+    if (req.user.role === "admin") {
+        const groups = await query("SELECT * FROM groups ORDER BY id ASC");
+        return res.json(groups);
     }
-    const groups = await query("SELECT * FROM groups ORDER BY id ASC");
-    res.json(groups);
+
+    const adminGroups = await getAdminGroups(req.user.id);
+    if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
+
+    const groups = await query(
+        "SELECT * FROM groups WHERE id = ANY($1::int[]) ORDER BY id ASC",
+        [adminGroups]
+    );
+    return res.json(groups);
 }
 
 export async function createGroup(req, res) {
@@ -343,7 +356,11 @@ export async function getGroupSheets(req, res) {
          FROM sheets s
          LEFT JOIN folders f ON f.id = s.folder_id
          LEFT JOIN group_permissions gp ON gp.sheet_id = s.id AND gp.group_id = $1
-         WHERE (f.group_id = $1) OR (gp.group_id IS NOT NULL)
+         WHERE (
+            EXISTS (SELECT 1 FROM folder_groups fg WHERE fg.folder_id = f.id AND fg.group_id = $1)
+            OR f.group_id = $1 -- legacy compatibility
+            OR (gp.group_id IS NOT NULL)
+         )
          ORDER BY s.uploaded_at DESC`,
         [gid]
     );
@@ -353,23 +370,113 @@ export async function getGroupSheets(req, res) {
 // --- Folders ---
 
 export async function listFolders(req, res) {
-    if (req.user.role !== "admin") {
+    let rows;
+    if (req.user.role === "admin") {
+        rows = await query(`
+            SELECT
+              f.id,
+              f.name,
+              f.parent_id,
+              f.created_at,
+              f.group_id AS legacy_group_id,
+              COALESCE(
+                ARRAY_AGG(DISTINCT fg.group_id) FILTER (WHERE fg.group_id IS NOT NULL),
+                ARRAY[]::INT[]
+              ) AS group_ids
+            FROM folders f
+            LEFT JOIN folder_groups fg ON fg.folder_id = f.id
+            GROUP BY f.id, f.name, f.parent_id, f.created_at, f.group_id
+            ORDER BY f.name ASC
+        `);
+    } else {
         const adminGroups = await getAdminGroups(req.user.id);
         if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
+
+        rows = await query(`
+            SELECT
+              f.id,
+              f.name,
+              f.parent_id,
+              f.created_at,
+              f.group_id AS legacy_group_id,
+              COALESCE(
+                ARRAY_AGG(DISTINCT fg.group_id) FILTER (WHERE fg.group_id IS NOT NULL),
+                ARRAY[]::INT[]
+              ) AS group_ids
+            FROM folders f
+            LEFT JOIN folder_groups fg ON fg.folder_id = f.id
+            WHERE (
+              f.group_id = ANY($1::int[])
+              OR EXISTS (
+                SELECT 1
+                FROM folder_groups fg2
+                WHERE fg2.folder_id = f.id
+                  AND fg2.group_id = ANY($1::int[])
+              )
+            )
+            GROUP BY f.id, f.name, f.parent_id, f.created_at, f.group_id
+            ORDER BY f.name ASC
+        `, [adminGroups]);
     }
-    const rows = await query("SELECT * FROM folders ORDER BY name ASC");
-    res.json(rows);
+
+    const byId = new Map(rows.map(r => [r.id, r]));
+    const pathCache = new Map();
+    const buildPath = (folderId, seen = new Set()) => {
+      if (!folderId || !byId.has(folderId)) return "";
+      if (pathCache.has(folderId)) return pathCache.get(folderId);
+      if (seen.has(folderId)) return byId.get(folderId).name; // cycle guard
+      seen.add(folderId);
+      const f = byId.get(folderId);
+      const parentPath = f.parent_id ? buildPath(f.parent_id, seen) : "";
+      const p = parentPath ? `${parentPath} / ${f.name}` : f.name;
+      pathCache.set(folderId, p);
+      return p;
+    };
+
+    const normalized = rows.map((r) => {
+      const legacy = Number.isInteger(r.legacy_group_id) ? [r.legacy_group_id] : [];
+      const gids = Array.from(new Set([...(r.group_ids || []), ...legacy]));
+      return {
+        ...r,
+        group_ids: gids,
+        path: buildPath(r.id),
+      };
+    });
+
+    res.json(normalized);
 }
 
 export async function createFolder(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const { name, groupId } = req.body;
+    const { name, groupId, groupIds, parentId } = req.body;
     try {
-        const r = await query(
-            "INSERT INTO folders (name, group_id) VALUES ($1, $2) RETURNING *",
-            [name, groupId || null]
-        );
-        res.json(r[0]);
+        const normalizedGroupIds = Array.isArray(groupIds)
+          ? groupIds.map((g) => parseInt(g, 10)).filter((g) => Number.isInteger(g))
+          : (groupId ? [parseInt(groupId, 10)].filter((g) => Number.isInteger(g)) : []);
+        const parent = parentId ? parseInt(parentId, 10) : null;
+
+        const client = await getClient();
+        try {
+          await client.query("BEGIN");
+          const r = await client.query(
+            "INSERT INTO folders (name, group_id, parent_id) VALUES ($1, $2, $3) RETURNING *",
+            [name, normalizedGroupIds[0] || null, parent]
+          );
+          const folder = r.rows[0];
+          for (const gid of normalizedGroupIds) {
+            await client.query(
+              "INSERT INTO folder_groups (folder_id, group_id) VALUES ($1, $2) ON CONFLICT (folder_id, group_id) DO NOTHING",
+              [folder.id, gid]
+            );
+          }
+          await client.query("COMMIT");
+          res.json({ ...folder, group_ids: normalizedGroupIds });
+        } catch (e) {
+          await client.query("ROLLBACK");
+          throw e;
+        } finally {
+          client.release();
+        }
     } catch {
         res.status(400).json({ error: "failed" });
     }

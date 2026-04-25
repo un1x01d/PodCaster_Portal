@@ -1,6 +1,7 @@
 import jwt from "jsonwebtoken";
 
 const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "8h";
 
 if (!JWT_SECRET) {
     console.error("FATAL ERROR: JWT_SECRET is not defined.");
@@ -21,6 +22,7 @@ export function auth(req, res, next) {
 export function generateToken(user) {
     return jwt.sign(
         { id: user.id, email: user.email, role: user.role },
-        JWT_SECRET
+        JWT_SECRET,
+        { expiresIn: JWT_EXPIRES_IN }
     );
 }

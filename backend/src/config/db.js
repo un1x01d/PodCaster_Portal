@@ -60,10 +60,69 @@ export async function initDb() {
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL UNIQUE,
       group_id INT,
+      parent_id INT,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `);
+  await pool.query(`ALTER TABLE folders ADD COLUMN IF NOT EXISTS parent_id INT;`);
   await pool.query(`DROP INDEX IF EXISTS folders_group_unique;`);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE table_name='folders' AND constraint_name='folders_parent_fk'
+      ) THEN
+        ALTER TABLE folders
+          ADD CONSTRAINT folders_parent_fk
+          FOREIGN KEY (parent_id) REFERENCES folders(id) ON DELETE SET NULL;
+      END IF;
+    END $$;
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_folders_parent_id ON folders(parent_id);`);
+
+  // FOLDER_GROUPS (many-to-many folder <-> group)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS folder_groups (
+      id SERIAL PRIMARY KEY,
+      folder_id INT NOT NULL,
+      group_id INT NOT NULL,
+      UNIQUE(folder_id, group_id)
+    );
+  `);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE table_name='folder_groups' AND constraint_name='folder_groups_folder_fk'
+      ) THEN
+        ALTER TABLE folder_groups
+          ADD CONSTRAINT folder_groups_folder_fk
+          FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE CASCADE;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE table_name='folder_groups' AND constraint_name='folder_groups_group_fk'
+      ) THEN
+        ALTER TABLE folder_groups
+          ADD CONSTRAINT folder_groups_group_fk
+          FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE;
+      END IF;
+    END $$;
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_folder_groups_folder_id ON folder_groups(folder_id);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_folder_groups_group_id ON folder_groups(group_id);`);
+  await pool.query(`
+    INSERT INTO folder_groups (folder_id, group_id)
+    SELECT id, group_id
+    FROM folders
+    WHERE group_id IS NOT NULL
+    ON CONFLICT (folder_id, group_id) DO NOTHING;
+  `);
 
   // SHEETS
   await pool.query(`

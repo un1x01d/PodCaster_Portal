@@ -2,6 +2,29 @@ import * as XLSX from "xlsx";
 import path from "path";
 import fs from "fs";
 import { query, getClient } from "../config/db.js";
+import { parsePagination } from "../utils/pagination.js";
+
+const MAX_UPLOAD_SHEETS = Number.parseInt(
+    process.env.MAX_UPLOAD_SHEETS || (process.env.NODE_ENV === "production" ? "20" : "50"),
+    10
+);
+const MAX_UPLOAD_ROWS_PER_SHEET = Number.parseInt(
+    process.env.MAX_UPLOAD_ROWS_PER_SHEET || (process.env.NODE_ENV === "production" ? "50000" : "200000"),
+    10
+);
+const MAX_UPLOAD_TOTAL_ROWS = Number.parseInt(
+    process.env.MAX_UPLOAD_TOTAL_ROWS || (process.env.NODE_ENV === "production" ? "100000" : "500000"),
+    10
+);
+const MAX_UPLOAD_COLUMNS = Number.parseInt(
+    process.env.MAX_UPLOAD_COLUMNS || "500",
+    10
+);
+const MAX_SHEET_DATA_LIMIT = Number.parseInt(process.env.SHEET_DATA_MAX_LIMIT || "5000", 10);
+const SHEET_DATA_HARD_CAP = Number.parseInt(
+    process.env.SHEET_DATA_HARD_CAP || (process.env.NODE_ENV === "production" ? "20000" : "0"),
+    10
+);
 
 // Helper to determine active sheet versioning
 async function getVersionedFilename(client, folderId, originalName) {
@@ -42,7 +65,8 @@ export async function uploadSheet(req, res) {
         if (!req.file) return res.status(400).json({ error: "No file" });
 
         const originalName = req.file.originalname || "uploaded.xlsx";
-        const folderId = req.body?.folderId ? parseInt(req.body.folderId, 10) : null;
+        const rawFolderId = req.body?.folderId ?? req.body?.folder_id;
+        const folderId = rawFolderId ? parseInt(rawFolderId, 10) : null;
 
         console.log(`[upload] name=${originalName} mime=${req.file.mimetype} folderId=${folderId ?? "—"}`);
 
@@ -71,6 +95,12 @@ export async function uploadSheet(req, res) {
             console.error("No sheets in workbook");
             return res.status(400).json({ error: "no_sheets" });
         }
+        if (sheetNames.length > MAX_UPLOAD_SHEETS) {
+            return res.status(413).json({
+                error: "too_many_sheets",
+                maxSheets: MAX_UPLOAD_SHEETS
+            });
+        }
 
         const client = await getClient();
         try {
@@ -85,10 +115,15 @@ export async function uploadSheet(req, res) {
             let assignedFolderId = null;
             if (Number.isInteger(folderId)) {
                 const f = await client.query(`
-                    SELECT f.id, g.max_file_size_mb 
-                    FROM folders f 
-                    JOIN groups g ON g.id = f.group_id 
-                    WHERE f.id = $1 LIMIT 1
+                    SELECT
+                      f.id,
+                      COALESCE(MIN(g.max_file_size_mb), 100) AS max_file_size_mb
+                    FROM folders f
+                    LEFT JOIN folder_groups fg ON fg.folder_id = f.id
+                    LEFT JOIN groups g ON g.id = fg.group_id
+                    WHERE f.id = $1
+                    GROUP BY f.id
+                    LIMIT 1
                 `, [folderId]);
                 
                 if (f.rows.length) {
@@ -111,6 +146,13 @@ export async function uploadSheet(req, res) {
             // Get headers from FIRST tab
             const firstTabRows = XLSX.utils.sheet_to_json(wb.Sheets[sheetNames[0]], { defval: "" });
             const headers = Object.keys(firstTabRows[0] || {});
+            if (headers.length > MAX_UPLOAD_COLUMNS) {
+                await client.query('ROLLBACK');
+                return res.status(413).json({
+                    error: "too_many_columns",
+                    maxColumns: MAX_UPLOAD_COLUMNS
+                });
+            }
 
             // Insert Sheet Record
             await client.query(
@@ -123,6 +165,22 @@ export async function uploadSheet(req, res) {
             let totalRows = 0;
             for (const sn of sheetNames) {
                 const rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { defval: "" });
+                if (rows.length > MAX_UPLOAD_ROWS_PER_SHEET) {
+                    await client.query('ROLLBACK');
+                    return res.status(413).json({
+                        error: "too_many_rows_in_sheet",
+                        tab: sn,
+                        maxRowsPerSheet: MAX_UPLOAD_ROWS_PER_SHEET
+                    });
+                }
+                totalRows += rows.length;
+                if (totalRows > MAX_UPLOAD_TOTAL_ROWS) {
+                    await client.query('ROLLBACK');
+                    return res.status(413).json({
+                        error: "too_many_total_rows",
+                        maxTotalRows: MAX_UPLOAD_TOTAL_ROWS
+                    });
+                }
                 const CHUNK_SIZE = 1000;
                 for (let j = 0; j < rows.length; j += CHUNK_SIZE) {
                     const chunk = rows.slice(j, j + CHUNK_SIZE);
@@ -138,7 +196,6 @@ export async function uploadSheet(req, res) {
                     const sql = `INSERT INTO sheet_rows (sheet_id, row_index, row_data, tab_name) VALUES ${placeHolders.join(",")}`;
                     await client.query(sql, values);
                 }
-                totalRows += rows.length;
             }
 
             await client.query('COMMIT');
@@ -196,7 +253,15 @@ export async function listMySheets(req, res) {
          FROM sheets s
          LEFT JOIN folders f ON f.id = s.folder_id
          WHERE (
-             (f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $1))
+             (
+               EXISTS (
+                 SELECT 1
+                 FROM folder_groups fg
+                 JOIN user_groups ug ON ug.group_id = fg.group_id
+                 WHERE fg.folder_id = f.id AND ug.user_id = $1
+               )
+               OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $1) -- legacy compatibility
+             )
              OR
              (s.id IN (SELECT sheet_id FROM permissions WHERE user_id = $1))
              OR 
@@ -226,7 +291,15 @@ async function checkSheetAccess(sheetId, user) {
         `SELECT COUNT(s.id) FROM sheets s
          LEFT JOIN folders f ON f.id = s.folder_id
          WHERE s.id = $1 AND (
-             (f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2))
+             (
+               EXISTS (
+                 SELECT 1
+                 FROM folder_groups fg
+                 JOIN user_groups ug ON ug.group_id = fg.group_id
+                 WHERE fg.folder_id = f.id AND ug.user_id = $2
+               )
+               OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2) -- legacy compatibility
+             )
              OR
              (s.id IN (SELECT sheet_id FROM permissions WHERE user_id = $2))
              OR 
@@ -246,7 +319,19 @@ export async function getSheetDetails(req, res) {
     // Enforce allowed_columns on the headers array returned
     if (req.user.role !== "admin") {
         const folderAccess = await query(
-            `SELECT 1 FROM sheets s LEFT JOIN folders f ON f.id = s.folder_id WHERE s.id = $1 AND f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)`,
+            `SELECT 1
+             FROM sheets s
+             LEFT JOIN folders f ON f.id = s.folder_id
+             WHERE s.id = $1
+               AND (
+                 EXISTS (
+                   SELECT 1
+                   FROM folder_groups fg
+                   JOIN user_groups ug ON ug.group_id = fg.group_id
+                   WHERE fg.folder_id = f.id AND ug.user_id = $2
+                 )
+                 OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2) -- legacy compatibility
+               )`,
             [req.params.id, req.user.id]
         );
         if (folderAccess.length === 0) {
@@ -301,6 +386,10 @@ export async function getSheetData(req, res) {
     const { id } = req.params;
     const { tab } = req.query;
     const userId = req.user.id;
+    const pagination = parsePagination(req.query, { maxLimit: MAX_SHEET_DATA_LIMIT });
+    if (pagination.error) {
+        return res.status(400).json({ error: pagination.error });
+    }
 
     let validCols = [];
     let rowFiltersList = [];
@@ -308,7 +397,19 @@ export async function getSheetData(req, res) {
 
     if (req.user.role !== "admin") {
         const folderAccess = await query(
-            `SELECT 1 FROM sheets s LEFT JOIN folders f ON f.id = s.folder_id WHERE s.id = $1 AND f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)`,
+            `SELECT 1
+             FROM sheets s
+             LEFT JOIN folders f ON f.id = s.folder_id
+             WHERE s.id = $1
+               AND (
+                 EXISTS (
+                   SELECT 1
+                   FROM folder_groups fg
+                   JOIN user_groups ug ON ug.group_id = fg.group_id
+                   WHERE fg.folder_id = f.id AND ug.user_id = $2
+                 )
+                 OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2) -- legacy compatibility
+               )`,
             [id, userId]
         );
         if (folderAccess.length > 0) hasFullAccess = true;
@@ -361,6 +462,14 @@ export async function getSheetData(req, res) {
 
         sql += ` ORDER BY row_index ASC`;
 
+        if (hasFullAccess && pagination.hasPagination) {
+            sql += ` LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+            params.push(pagination.limit, pagination.offset);
+        } else if (hasFullAccess && !pagination.hasPagination && SHEET_DATA_HARD_CAP > 0) {
+            sql += ` LIMIT $${params.length + 1}`;
+            params.push(SHEET_DATA_HARD_CAP + 1);
+        }
+
         let rows = await query(sql, params);
 
         if (!hasFullAccess) {
@@ -399,6 +508,18 @@ export async function getSheetData(req, res) {
                 }
                 r.row_data = rowData;
                 return true;
+            });
+
+            if (pagination.hasPagination) {
+                rows = rows.slice(pagination.offset, pagination.offset + pagination.limit);
+            }
+        }
+
+        if (!pagination.hasPagination && SHEET_DATA_HARD_CAP > 0 && rows.length > SHEET_DATA_HARD_CAP) {
+            return res.status(413).json({
+                error: "result_too_large",
+                message: "Result set too large. Please request with ?limit=<n>&offset=<n>.",
+                maxRows: SHEET_DATA_HARD_CAP
             });
         }
 

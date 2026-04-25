@@ -7,7 +7,13 @@ export const parseQuery = (query, headers, data, allData, context = {}) => {
     ];
     let cleaned = query;
     for (const re of PREAMBLES) cleaned = cleaned.replace(re, '');
-    const q = cleaned.toLowerCase();
+    const q = cleaned.toLowerCase()
+        .replace(/\bfitler\b/g, 'filter')
+        .replace(/\bfliter\b/g, 'filter')
+        .replace(/\bfiltre\b/g, 'filter')
+        .replace(/\bfliter\b/g, 'filter')
+        .replace(/\bfitlers\b/g, 'filters')
+        .replace(/\bfliters\b/g, 'filters');
     const sourceData = (allData && allData.length > 0) ? allData : data;
     let operation = 'UNKNOWN'; // Default
     let aggregation = 'none';
@@ -18,6 +24,7 @@ export const parseQuery = (query, headers, data, allData, context = {}) => {
     const dateRanges = parseDateRanges(q);
     const dateRange = dateRanges.length > 0 ? dateRanges[0] : null;
     let segmentBy = null;
+    const sortedHeaders = [...headers].sort((a, b) => b.length - a.length);
 
     // Detect "by [column]" or "per [column]" for Segmentation / Grouping
     const segmentMatch = q.match(/\b(?:by|per)\s+([a-zA-Z0-9\s]+?)(?:\?$|$| in | for | at | on )/i);
@@ -30,7 +37,7 @@ export const parseQuery = (query, headers, data, allData, context = {}) => {
     }
 
     // Detect Implicit Segmentation (e.g. "Which Region is most profitable?")
-    const implicitSegmentMatch = q.match(/^(?:which|what)\s+([a-z0-9\s]+?)\s+(?:is|are|has|have|was|were)/i);
+    const implicitSegmentMatch = q.match(/^(?:which|what)\s+([a-z0-9\s]+?)\s+(?:is|are|has|have|had|was|were)/i);
     if (implicitSegmentMatch && !segmentBy) {
         const potentialSeg = implicitSegmentMatch[1].trim();
         const matchedSeg = headers.find(h => h.toLowerCase() === potentialSeg.toLowerCase() || h.toLowerCase().includes(potentialSeg.toLowerCase()));
@@ -90,8 +97,6 @@ export const parseQuery = (query, headers, data, allData, context = {}) => {
     // Identify Primary Column
     const candidates = [];
     if (operation !== 'RESET_FILTER' && operation !== 'SWITCH_SHEET' && operation !== 'LIST_SHEETS' && operation !== 'HELP') {
-        const sortedHeaders = [...headers].sort((a, b) => b.length - a.length);
-
         // 1. Direct Header Matches
         for (const h of sortedHeaders) {
             if (q.includes(h.toLowerCase())) {
@@ -165,7 +170,18 @@ export const parseQuery = (query, headers, data, allData, context = {}) => {
 
     // Filter Parsing Logic
     // Detect "for [value]" patterns, numeric comparisons, etc.
-    if (!filter) {
+    const filterIntentKeywords = /\b(filter|where|contains?|only|just|with|show\s+me|find)\b/i.test(q);
+    const shouldAttemptFilterParsing =
+        filterIntentKeywords || operation === 'FILTER' || operation === 'APPLY_FILTER' || operation === 'UNKNOWN' || operation === 'QUESTION';
+
+    if (!filter && shouldAttemptFilterParsing) {
+        const sanitizeFilterValue = (raw = "") => {
+            return String(raw)
+                .replace(/^['"`\s]+|['"`\s]+$/g, '')
+                .replace(/\b(?:and|or|using|please|thanks)\b.*$/i, '')
+                .trim();
+        };
+
         // ... (Simplified logic for brevity, reusing core patterns)
         // 1. "Column = Value"
         if (column) {
@@ -174,30 +190,65 @@ export const parseQuery = (query, headers, data, allData, context = {}) => {
             const regex = new RegExp(`(?:filter\\s+by\\s+)?${escCol}\\s*(?:=|is|:|in)\\s+(.+?)(?:$|\\s+(?:and|or|with|using))`, 'i');
             const match = q.match(regex);
             if (match) {
-                filter = { column: column, value: match[1].trim() };
+                filter = { column: column, value: sanitizeFilterValue(match[1]) };
                 operation = 'APPLY_FILTER';
             }
         }
 
+        // 1b. "filter by <column> <text>" or "<column> contains <text>" natural phrasing
+        if (!filter) {
+            for (const h of sortedHeaders) {
+                const escaped = h.toLowerCase().replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+                const patterns = [
+                    new RegExp(`(?:filter\\s+by|where|with|for|only|show)\\s+${escaped}\\s*(?:=|is|contains?|has|includes?|like|:)??\\s+(.+)$`, 'i'),
+                    new RegExp(`${escaped}\\s*(?:=|is|contains?|includes?|like|:)\\s+(.+)$`, 'i'),
+                    new RegExp(`\\b${escaped}\\b\\s+(.+)$`, 'i')
+                ];
+                let extracted = null;
+                for (const re of patterns) {
+                    const m = q.match(re);
+                    if (m && m[1]) {
+                        extracted = sanitizeFilterValue(m[1]);
+                        break;
+                    }
+                }
+                if (!extracted) continue;
+                if (/(highest|lowest|max(?:imum)?|min(?:imum)?|top|bottom|average|avg|sum|total|count|trend|chart|graph)/i.test(extracted)) {
+                    continue;
+                }
+                const matchCount = sourceData.filter(r => String(r?.[h] ?? '').toLowerCase().includes(extracted.toLowerCase())).length;
+                if (matchCount > 0 || extracted.length > 1) {
+                    filter = { column: h, value: extracted };
+                    operation = 'APPLY_FILTER';
+                    break;
+                }
+            }
+        }
+
         // 2. Implicit Categorical Value Search
-        if (!filter && !q.match(/^(?:what|how|list|switch|compare)/)) {
+        if (!filter && !q.match(/^(?:switch|compare|chart|plot|draw|help)/)) {
             // Remove the detected target column and any aggregation verbs to isolate the suspected "filter value"
             let leftover = q;
             if (column) leftover = leftover.replace(new RegExp(`\\b${column}\\b`, 'gi'), '');
             if (segmentBy) leftover = leftover.replace(new RegExp(`\\b${segmentBy}\\b`, 'gi'), '');
             // Strip structural words
-            leftover = leftover.replace(/\b(sum|total|average|avg|count|max|min|top|bottom|of|for|in|by|show|me|filter|only|just|get|find|match)\b/gi, '').replace(/\s+/g, ' ').trim();
+            leftover = leftover.replace(/\b(sum|total|average|avg|count|max|min|top|bottom|of|for|in|by|show|me|filter|filters|only|just|get|find|match)\b/gi, '').replace(/\s+/g, ' ').trim();
+            leftover = sanitizeFilterValue(leftover);
 
             if (leftover.length > 2) {
+                const candidates = [];
                 for (const h of headers) {
                     if (h === column || h === segmentBy) continue;
-                    
-                    // Does this leftover string exist inside any row for this column?
-                    if (sourceData.some(r => r[h] && String(r[h]).toLowerCase().includes(leftover))) {
-                        filter = { column: h, value: leftover };
-                        operation = 'APPLY_FILTER';
-                        break;
-                    }
+
+                    // Score by number of matching rows so we pick the most likely column.
+                    const count = sourceData.reduce((acc, r) =>
+                        acc + (String(r?.[h] ?? '').toLowerCase().includes(leftover.toLowerCase()) ? 1 : 0), 0);
+                    if (count > 0) candidates.push({ h, count });
+                }
+                candidates.sort((a, b) => b.count - a.count);
+                if (candidates.length) {
+                    filter = { column: candidates[0].h, value: leftover };
+                    operation = 'APPLY_FILTER';
                 }
             }
         }

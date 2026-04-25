@@ -10,6 +10,7 @@ import SpreadsheetChatbot from "./SpreadsheetChatbot";
 import ErrorBoundary from "./ErrorBoundary";
 import DashboardBody from "./components/dashboard/DashboardBody";
 import DashboardHeader from "./components/dashboard/DashboardHeader";
+import DashboardHome from "./components/dashboard/DashboardHome";
 import Modal from "./components/common/Modal";
 import ChangePasswordModal from "./components/common/ChangePasswordModal";
 
@@ -31,8 +32,39 @@ const fmtDateOnly = (v) => {
   return String(v).slice(0, 10);
 };
 
-const DATE_COL_HINTS = ["date", "uploaded", "created", "updated", "timestamp"];
+const DATE_COL_HINTS = ["date", "uploaded", "created", "updated", "timestamp", "quarter", "fiscal", "period", "month", "year"];
 const looksLikeDateColumn = (h = "") => DATE_COL_HINTS.some((k) => h.toLowerCase().includes(k));
+
+const parseTemporalValue = (raw) => {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const text = String(raw).trim();
+  if (!text) return null;
+
+  const asNum = Number(text);
+  if (!Number.isNaN(asNum) && asNum > 25569 && asNum < 60000) {
+    const d = new Date(Math.round((asNum - 25569) * 86400 * 1000));
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+
+  const direct = new Date(text);
+  if (!Number.isNaN(direct.getTime())) return direct;
+
+  const qYear = text.match(/^(?:FY\s*)?(\d{4})\s*[-/\s]?\s*Q([1-4])$/i);
+  if (qYear) {
+    const year = Number(qYear[1]);
+    const quarter = Number(qYear[2]);
+    return new Date(year, (quarter - 1) * 3, 1);
+  }
+
+  const yearQ = text.match(/^Q([1-4])\s*[-/\s]?\s*(?:FY\s*)?(\d{4})$/i);
+  if (yearQ) {
+    const quarter = Number(yearQ[1]);
+    const year = Number(yearQ[2]);
+    return new Date(year, (quarter - 1) * 3, 1);
+  }
+
+  return null;
+};
 
 const trunc = (str, n) => {
   if (!str) return "";
@@ -182,16 +214,8 @@ export default function App() {
     if (!sortedData || !trendsDateKey) return [];
     const s = new Set();
     sortedData.forEach(r => {
-      const val = r[trendsDateKey];
-      if (!val) return;
-      let y;
-      const asNum = Number(val);
-      if (!isNaN(asNum) && asNum > 25569 && asNum < 60000) {
-        y = new Date(Math.round((asNum - 25569) * 86400 * 1000)).getFullYear();
-      } else {
-        const dObj = new Date(val);
-        if (!isNaN(dObj.getTime())) y = dObj.getFullYear();
-      }
+      const dObj = parseTemporalValue(r[trendsDateKey]);
+      const y = dObj && !isNaN(dObj.getTime()) ? dObj.getFullYear() : null;
       if (y) s.add(y);
     });
     return Array.from(s).sort((a, b) => b - a);
@@ -307,17 +331,7 @@ export default function App() {
     let maxYear = 0;
 
     sortedData.forEach(r => {
-      let dateRaw = r[trendsDateKey];
-      if (!dateRaw) return;
-
-      let dObj = null;
-      const asNum = Number(dateRaw);
-      if (!isNaN(asNum) && asNum > 25569 && asNum < 60000) {
-        dObj = new Date(Math.round((asNum - 25569) * 86400 * 1000));
-      } else {
-        dObj = new Date(dateRaw);
-      }
-
+      const dObj = parseTemporalValue(r[trendsDateKey]);
       if (dObj && !isNaN(dObj.getTime())) {
         const y = dObj.getFullYear();
         if (y > maxYear) maxYear = y;
@@ -326,21 +340,13 @@ export default function App() {
 
     sortedData.forEach(r => {
       const val = parseNum(r[trendsValueKey]);
-      let dateRaw = r[trendsDateKey];
-      if (!dateRaw) return;
-
-      let dObj = null;
-      const asNum = Number(dateRaw);
-      if (!isNaN(asNum) && asNum > 25569 && asNum < 60000) {
-        dObj = new Date(Math.round((asNum - 25569) * 86400 * 1000));
-      } else {
-        dObj = new Date(dateRaw);
-      }
+      const dObj = parseTemporalValue(r[trendsDateKey]);
 
       if (dObj && !isNaN(dObj.getTime())) {
         const y = dObj.getFullYear();
         const m = String(dObj.getMonth() + 1).padStart(2, '0');
         const d = String(dObj.getDate()).padStart(2, '0');
+        const q = Math.floor(dObj.getMonth() / 3) + 1;
 
         let axisKey = null;
         let lineKey = "value";
@@ -351,9 +357,11 @@ export default function App() {
 
           lineKey = String(y);
           if (trendGranularity === 'day') axisKey = `${m}-${d}`;
+          else if (trendGranularity === 'quarter') axisKey = `Q${q}`;
           else axisKey = m;
         } else {
           if (trendGranularity === 'year') axisKey = String(y);
+          else if (trendGranularity === 'quarter') axisKey = `${y}-Q${q}`;
           else if (trendGranularity === 'month') axisKey = `${y}-${m}`;
           else axisKey = `${y}-${m}-${d}`;
         }
@@ -804,7 +812,133 @@ export default function App() {
                       <div className="mb-8 text-center">
                         <div className="bg-indigo-600 text-white w-16 h-16 rounded-2xl flex items-center justify-center text-3xl shadow-xl shadow-indigo-200 mx-auto mb-4">📊</div>
                         <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight">Welcome Back</h2>
-                        <p className="text-slate-500 mt-2">Sign in to manage your podcasts</p>
+                        <p className="text-slate-500 mt-2">Sign in to manage your data workspace</p>
+                      </div>
+                      <form onSubmit={handleLogin} className="flex flex-col gap-5">
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-bold uppercase tracking-wider text-slate-500 ml-1">Email Address</label>
+                          <input
+                            type="email"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                            placeholder="admin@example.com"
+                            className="input-premium"
+                            required
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-bold uppercase tracking-wider text-slate-500 ml-1">Password</label>
+                          <input
+                            type="password"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            placeholder="••••••••"
+                            className="input-premium"
+                            required
+                          />
+                        </div>
+                        <button
+                          type="submit"
+                          className="btn-premium bg-indigo-600 hover:bg-indigo-700 text-white w-full py-4 mt-4 shadow-xl shadow-indigo-200"
+                        >
+                          Sign In
+                        </button>
+                      </form>
+                    </div>
+                  </div>
+                ) : (
+                  <DashboardHome
+                    user={user}
+                    myFiles={myFiles}
+                    sheetId={sheetId}
+                    activeFilename={activeFilename}
+                    headers={headers}
+                    sortedData={sortedData}
+                    columnFilters={columnFilters}
+                    views={views}
+                    pivotOn={pivotOn}
+                    twoOn={twoOn}
+                    trendsOn={trendsOn}
+                    chatSection={sheetId ? (
+                      <SpreadsheetChatbot
+                        mode="inline"
+                        sheetId={sheetId}
+                        data={sortedData}
+                        allData={data}
+                        headers={headers}
+                        activeFilters={columnFilters}
+                        onApplyFilter={(col, val) => {
+                          if (col === "RESET_ALL") {
+                            setColumnFilters({});
+                            return;
+                          }
+                          if (!val) {
+                            setColumnFilters(prev => {
+                              const next = { ...prev };
+                              delete next[col];
+                              return next;
+                            });
+                          } else {
+                            setColumnFilters(prev => ({ ...prev, [col]: { type: 'contains', value: val } }));
+                          }
+                        }}
+                        onUpdateChart={(config) => {
+                          console.log("Chart Request:", config);
+                          setTrendsOn(false);
+                          setPivotOn(false);
+                          setTwoOn(false);
+                          const isTemporalColumn = (col = "") => looksLikeDateColumn(col);
+                          if (config.dateColumn && (!config.segmentBy || isTemporalColumn(config.segmentBy))) {
+                            setTrendsValueKey(config.valueColumn);
+                            setTrendsDateKey(config.dateColumn);
+                            setTrendGranularity(isTemporalColumn(config.dateColumn) && /quarter|fiscal/i.test(config.dateColumn) ? "quarter" : "month");
+                            setTrendsOn(true);
+                            setPendingViewName(`Trend of ${config.valueColumn}`);
+                            return;
+                          }
+                          if (!config.dateColumn && config.segmentBy && config.valueColumn && isTemporalColumn(config.segmentBy)) {
+                            setTrendsValueKey(config.valueColumn);
+                            setTrendsDateKey(config.segmentBy);
+                            setTrendGranularity(/quarter|fiscal/i.test(config.segmentBy) ? "quarter" : "month");
+                            setTrendsOn(true);
+                            setPendingViewName(`Trend of ${config.valueColumn}`);
+                            return;
+                          }
+                          if (config.segmentBy && config.valueColumn) {
+                            setPivotRowKey(config.segmentBy);
+                            setPivotValKey(config.valueColumn);
+                            setPivotColKey(null);
+                            setPivotAgg(config.aggregation === 'avg' ? 'Average' : 'Sum');
+                            setPivotOn(true);
+                            setPendingViewName(`${config.valueColumn} by ${config.segmentBy}`);
+                            return;
+                          }
+                          if (config.valueColumn) {
+                            const dateCol = headers.find(h => h.toLowerCase().includes('date') || h.toLowerCase().includes('time') || h.toLowerCase().includes('year'));
+                            if (dateCol) {
+                              setTrendsValueKey(config.valueColumn);
+                              setTrendsDateKey(dateCol);
+                              setTrendsOn(true);
+                              setPendingViewName(`Trend of ${config.valueColumn}`);
+                            }
+                          }
+                        }}
+                      />
+                    ) : null}
+                  />
+                )}
+
+              </ErrorBoundary>
+            } />
+            <Route path="/workspace" element={
+              <ErrorBoundary>
+                {!user ? (
+                  <div className="min-h-screen flex items-center justify-center p-6">
+                    <div className="glass rounded-3xl p-10 w-full max-w-md animate-in fade-in zoom-in duration-500">
+                      <div className="mb-8 text-center">
+                        <div className="bg-indigo-600 text-white w-16 h-16 rounded-2xl flex items-center justify-center text-3xl shadow-xl shadow-indigo-200 mx-auto mb-4">📊</div>
+                        <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight">Welcome Back</h2>
+                        <p className="text-slate-500 mt-2">Sign in to manage your data workspace</p>
                       </div>
                       <form onSubmit={handleLogin} className="flex flex-col gap-5">
                         <div className="space-y-1.5">
@@ -841,7 +975,6 @@ export default function App() {
                 ) : (
                   <>
                     <DashboardBody
-                      // Pass ALL props
                       user={user} token={token} API={API}
                       sheetId={sheetId} activeFilename={activeFilename}
                       file={file} setFile={setFile}
@@ -852,17 +985,14 @@ export default function App() {
                       views={views} setViews={setViews}
                       setPendingViewName={setPendingViewName}
                       setShowColumnSelector={setShowColumnSelector}
-
                       sortedData={sortedData}
                       headers={headers}
                       displayHeaders={displayHeaders}
                       onDeleteSheet={deleteSheet}
-
                       openFilterCol={openFilterCol} setOpenFilterCol={setOpenFilterCol}
                       columnFilters={columnFilters} setColumnFilters={setColumnFilters}
                       sortConfig={sortConfig} requestSort={requestSort}
                       uniqueValuesByColumn={uniqueValuesByColumn}
-
                       pivotOn={pivotOn} setPivotOn={setPivotOn}
                       pivotRowKey={pivotRowKey} setPivotRowKey={setPivotRowKey}
                       pivotColKey={pivotColKey} setPivotColKey={setPivotColKey}
@@ -871,13 +1001,11 @@ export default function App() {
                       pivotRows={pivotRows} pivotHeaders={pivotHeaders}
                       pivotSeriesKeys={pivotSeriesKeys} pieData={pieData}
                       exportPivotPDF={exportPivotPDF} resetPivot={resetPivot} pivotChartRef={pivotChartRef}
-
                       twoOn={twoOn} setTwoOn={setTwoOn}
                       condCol1={condCol1} setCondCol1={setCondCol1}
                       condCol2={condCol2} setCondCol2={setCondCol2}
                       valueCol={valueCol} setValueCol={setValueCol}
                       summaryData={summaryData} resetSummary={resetSummary}
-
                       trendsOn={trendsOn} setTrendsOn={setTrendsOn}
                       trendsDateKey={trendsDateKey} setTrendsDateKey={setTrendsDateKey}
                       trendsValueKey={trendsValueKey} setTrendsValueKey={setTrendsValueKey}
@@ -886,29 +1014,21 @@ export default function App() {
                       yearsBack={yearsBack}
                       setYearsBack={setYearsBack}
                       trendsData={trendsData}
-                      // NEW Props for Comparison
                       trendYearOptions={trendYearOptions}
                       compareYears={compareYears}
                       setCompareYears={setCompareYears}
-                      maxYear={trendYearOptions[0]} // First option is usually max year since sorted descending
-
+                      maxYear={trendYearOptions[0]}
                       exportCSV={exportCSV} exportXLSX={exportXLSX} exportPDF={exportPDF}
-
                       tableContainerRef={tableContainerRef}
                       filterAnchorRefs={filterAnchorRefs}
                       filterBtnRefs={filterBtnRefs}
-
                       myFiles={myFiles} loadStored={(id) => { loadData(id); fetchTabs(id); }}
-
                       tabs={tabs}
                       activeTab={activeTab}
                       onTabChange={handleTabChange}
-
                       hasRequiredColumns={hasRequiredColumns}
                       appendCalculatedColumn={appendCalculatedColumn}
                     />
-
-                    {/* Chatbot Overlay */}
                     {sheetId && (
                       <SpreadsheetChatbot
                         sheetId={sheetId}
@@ -922,49 +1042,46 @@ export default function App() {
                             return;
                           }
                           if (!val) {
-                            // RESET_FILTER: clear this column's filter
                             setColumnFilters(prev => {
                               const next = { ...prev };
                               delete next[col];
                               return next;
                             });
                           } else {
-                            // APPLY_FILTER: store as contains-filter so partial matches work
-                            // e.g. "2021" should match "2021-03-01", not require exact equality
                             setColumnFilters(prev => ({ ...prev, [col]: { type: 'contains', value: val } }));
                           }
                         }}
                         onUpdateChart={(config) => {
                           console.log("Chart Request:", config);
-
-                          // 1. Reset current views
                           setTrendsOn(false);
                           setPivotOn(false);
                           setTwoOn(false);
-
-                          // 2. Handle Trends (Date-based line chart)
-                          // Heuristic: If date column exists and no explicit segmentation (or time-based segmentation)
-                          if (config.dateColumn && (!config.segmentBy || looksLikeDateColumn(config.segmentBy))) {
+                          const isTemporalColumn = (col = "") => looksLikeDateColumn(col);
+                          if (config.dateColumn && (!config.segmentBy || isTemporalColumn(config.segmentBy))) {
                             setTrendsValueKey(config.valueColumn);
                             setTrendsDateKey(config.dateColumn);
+                            setTrendGranularity(isTemporalColumn(config.dateColumn) && /quarter|fiscal/i.test(config.dateColumn) ? "quarter" : "month");
                             setTrendsOn(true);
                             setPendingViewName(`Trend of ${config.valueColumn}`);
                             return;
                           }
-
-                          // 3. Handle Segmentation (Bar/Pie via Pivot or Two-Condition)
+                          if (!config.dateColumn && config.segmentBy && config.valueColumn && isTemporalColumn(config.segmentBy)) {
+                            setTrendsValueKey(config.valueColumn);
+                            setTrendsDateKey(config.segmentBy);
+                            setTrendGranularity(/quarter|fiscal/i.test(config.segmentBy) ? "quarter" : "month");
+                            setTrendsOn(true);
+                            setPendingViewName(`Trend of ${config.valueColumn}`);
+                            return;
+                          }
                           if (config.segmentBy && config.valueColumn) {
-                            // Use Pivot for robust aggregation
-                            setPivotRowKey(config.segmentBy); // Group by
-                            setPivotValKey(config.valueColumn); // Value
-                            setPivotColKey(null); // Simple 1-dim grouping
+                            setPivotRowKey(config.segmentBy);
+                            setPivotValKey(config.valueColumn);
+                            setPivotColKey(null);
                             setPivotAgg(config.aggregation === 'avg' ? 'Average' : 'Sum');
                             setPivotOn(true);
                             setPendingViewName(`${config.valueColumn} by ${config.segmentBy}`);
                             return;
                           }
-
-                          // 4. Fallback: If just a value column is asked for charting without time?
                           if (config.valueColumn) {
                             const dateCol = headers.find(h => h.toLowerCase().includes('date') || h.toLowerCase().includes('time') || h.toLowerCase().includes('year'));
                             if (dateCol) {
@@ -979,7 +1096,6 @@ export default function App() {
                     )}
                   </>
                 )}
-
               </ErrorBoundary>
             } />
             <Route path="/users" element={
