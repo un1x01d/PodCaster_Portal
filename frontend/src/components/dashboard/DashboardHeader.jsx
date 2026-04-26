@@ -43,12 +43,27 @@ export default function DashboardHeader({
         if (!str) return "";
         return str.length > n ? str.substring(0, n - 1) + "..." : str;
     };
+    const shortVisualName = (name) => {
+        const clean = String(name || "").trim().replace(/\.[^/.]+$/, "").replace(/\s+/g, "_");
+        if (!clean) return "Sheet";
+        const parts = clean.split(/[\s._-]+/).filter(Boolean);
+        if (parts.length >= 2) {
+            const candidate = `${parts[0].slice(0, 4)}_${parts[1].slice(0, 3)}`.trim();
+            return candidate.slice(0, 8);
+        }
+        if (clean.length <= 8) return clean;
+        return clean.slice(0, 8);
+    };
 
     const fileOptions = (myFiles || []).map(f => {
-        // Simple name clean up
-        const name = f.filename.replace(/\.[^/.]+$/, ""); // Remove extension
+        const baseName = String(f.display_name || "").trim() || String(f.filename || "").trim();
+        const name = String(f.display_name || "").trim() ? baseName : shortVisualName(baseName);
         const truncatedName = trunc(name, 200);
-        const date = new Date(f.uploaded_at).toLocaleString(isDashboardRoute ? effectiveLocale : undefined);
+        const dateObj = new Date(f.uploaded_at);
+        const mm = String(dateObj.getMonth() + 1).padStart(2, "0");
+        const dd = String(dateObj.getDate()).padStart(2, "0");
+        const yyyy = String(dateObj.getFullYear());
+        const date = `${mm}-${dd}-${yyyy}`;
         return {
             value: String(f.id),
             label: `${truncatedName} (${date})`
@@ -65,39 +80,38 @@ export default function DashboardHeader({
     }
 
     return (
-        <header className="glass border-b border-slate-200/50 px-8 py-4 grid grid-cols-[1fr_auto_1fr] items-center sticky top-0 z-50 shadow-sm backdrop-blur-xl">
+        <header className="glass border-b border-slate-200/50 px-8 py-2 grid grid-cols-[1fr_auto_1fr] items-center sticky top-0 z-50 shadow-sm backdrop-blur-xl">
             {/* Left: Logo Link */}
             <div className="flex justify-start">
                 <Link to="/" className="inline-flex items-center">
                     <img
                         src="/assets/tform-logo.png"
                         alt="Logo"
-                        className="h-12 w-auto max-w-[420px] object-contain"
+                        className="h-[104px] w-auto max-w-[780px] object-contain"
                     />
                 </Link>
             </div>
 
-            {/* Center: Sheet Switcher */}
-            <div className="w-[32rem] max-w-full">
-                <div className="relative group">
-                    <SearchableSelect
-                        options={startOptions.concat(fileOptions)}
-                        value={currentValue}
-                        onChange={(e) => onSwitchSheet(e.target.value)}
-                        onDelete={user?.role === 'admin' ? onDeleteSheet : null}
-                        placeholder={ui.searchSpreadsheets}
-                        className="w-full"
-                        buttonClassName="w-full input-premium bg-white/60 hover:bg-white rounded-full h-11 px-6 shadow-sm group-hover:shadow-md"
-                        panelWidth={700}
-                    />
-                </div>
-            </div>
+            {/* Center: spacer */}
+            <div />
 
             {/* Right: User Profile & Actions */}
             <div className="flex items-center justify-end gap-6">
                 <div className="h-8 w-px bg-slate-200/60 mx-1"></div>
 
                 <div className="flex items-center gap-3">
+                    <div className="w-[22rem] max-w-[35vw] min-w-[14rem]">
+                        <SearchableSelect
+                            options={startOptions.concat(fileOptions)}
+                            value={currentValue}
+                            onChange={(e) => onSwitchSheet(e.target.value)}
+                            onDelete={user?.role === 'admin' ? onDeleteSheet : null}
+                            placeholder={ui.searchSpreadsheets}
+                            className="w-full"
+                            buttonClassName="w-full h-10 px-4 rounded-xl border border-slate-200 bg-white/70 text-slate-700 shadow-sm hover:bg-white"
+                            panelWidth={520}
+                        />
+                    </div>
                     {isDashboardRoute && setLocale && (
                         <div className="relative" ref={languageMenuRef}>
                             <button

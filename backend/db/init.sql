@@ -19,10 +19,13 @@ CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
 CREATE TABLE IF NOT EXISTS sheets (
   id          SERIAL PRIMARY KEY,
   filename    VARCHAR(255) NOT NULL,  -- original uploaded filename
+  display_name VARCHAR(255),
   headers     JSONB NOT NULL,         -- normalized header list
   uploaded_at TIMESTAMP DEFAULT NOW(),
   active      BOOLEAN DEFAULT FALSE
 );
+
+ALTER TABLE sheets ADD COLUMN IF NOT EXISTS display_name VARCHAR(255);
 
 CREATE INDEX IF NOT EXISTS idx_sheets_filename ON sheets (filename);
 CREATE INDEX IF NOT EXISTS idx_sheets_active ON sheets (active);
@@ -54,4 +57,3 @@ ON CONFLICT (email) DO NOTHING;
 -- ('producer1@example.com', '$2b$10$kPq2Nyp7E8QYy2sk6Y1teOQ7YF/4r0hYQ8N.XiS3I/4J0Y2PvjRae', 'producer'),
 -- ('client1@example.com',   '$2b$10$kPq2Nyp7E8QYy2sk6Y1teOQ7YF/4r0hYQ8N.XiS3I/4J0Y2PvjRae', 'client')
 -- ON CONFLICT (email) DO NOTHING;
-

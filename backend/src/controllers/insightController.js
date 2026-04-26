@@ -1116,7 +1116,6 @@ export async function getInsights(req, res) {
     const translatedCards = await translateDashboardCards({
       locale,
       cards: cached.cards || [],
-      preserveTerms: (loaded.headers || []).map((h) => String(h || "")).filter(Boolean).slice(0, 80),
       context: "insight-cards",
     });
     return res.json({
@@ -1148,7 +1147,6 @@ export async function getInsights(req, res) {
   const translatedCards = await translateDashboardCards({
     locale,
     cards: payload.cards || [],
-    preserveTerms: (loaded.headers || []).map((h) => String(h || "")).filter(Boolean).slice(0, 80),
     context: "insight-cards",
   });
   return res.json({

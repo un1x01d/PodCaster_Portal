@@ -313,7 +313,6 @@ export default function InsightFeed({
   const [available, setAvailable] = React.useState({ dateColumns: [], metricColumns: [] });
   const [showSettings, setShowSettings] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
-  const [oilCard, setOilCard] = React.useState(null);
   const autoChartKeyRef = React.useRef("");
 
   const loadInsights = React.useCallback(async () => {
@@ -340,21 +339,6 @@ export default function InsightFeed({
   React.useEffect(() => {
     loadInsights();
   }, [loadInsights]);
-
-  const loadOilCard = React.useCallback(async () => {
-    try {
-      const res = await api.get("/insights/market/oil", { params: { locale } });
-      if (res?.data?.card) setOilCard(res.data.card);
-    } catch (_) {
-      // keep prior oil card on transient errors
-    }
-  }, [locale]);
-
-  React.useEffect(() => {
-    loadOilCard();
-    const id = window.setInterval(loadOilCard, 10_000);
-    return () => window.clearInterval(id);
-  }, [loadOilCard]);
 
   React.useEffect(() => {
     if (!sheetId || !Array.isArray(cards) || cards.length === 0) return;
@@ -394,11 +378,9 @@ export default function InsightFeed({
   };
 
   const displayCards = React.useMemo(() => {
-    if (!Array.isArray(cards) || cards.length === 0) return oilCard ? [oilCard] : [];
-    if (!oilCard) return cards;
-    const withoutDriver = cards.filter((c) => c?.type !== "driver_breakdown");
-    return [oilCard, ...withoutDriver];
-  }, [cards, oilCard]);
+    if (!Array.isArray(cards) || cards.length === 0) return [];
+    return cards;
+  }, [cards]);
 
   return (
     <section className={`rounded-md border border-slate-200 bg-white shadow-sm ${className}`}>

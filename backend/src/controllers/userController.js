@@ -352,7 +352,7 @@ export async function getGroupSheets(req, res) {
         if (!adminGroups.includes(gid)) return res.status(403).json({ error: "Forbidden" });
     }
     const rows = await query(
-        `SELECT DISTINCT s.id, s.filename, s.uploaded_at, s.folder_id, f.name AS folder_name
+        `SELECT DISTINCT s.id, s.filename, s.display_name, s.uploaded_at, s.folder_id, f.name AS folder_name
          FROM sheets s
          LEFT JOIN folders f ON f.id = s.folder_id
          LEFT JOIN group_permissions gp ON gp.sheet_id = s.id AND gp.group_id = $1

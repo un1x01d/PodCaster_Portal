@@ -101,6 +101,7 @@ export default function App() {
 
   const [file, setFile] = useState(null);
   const [selectedFileName, setSelectedFileName] = useState("");
+  const [uploadDisplayName, setUploadDisplayName] = useState("");
 
   // My files (sheet selection)
   const [myFiles, setMyFiles] = useState([]);
@@ -591,11 +592,12 @@ export default function App() {
     loadData(sheetId, true, tabName);
   };
 
-  const handleUpload = async (uploadFile, folderId) => {
-    if (!uploadFile || !folderId) return;
+  const handleUpload = async (uploadFile, folderId, displayName) => {
+    if (!uploadFile || !folderId || !String(displayName || "").trim()) return;
     const formData = new FormData();
     formData.append("file", uploadFile);
     formData.append("folder_id", folderId);
+    formData.append("display_name", String(displayName).trim());
 
     try {
       const res = await axios.post(`${API}/upload`, formData, {
@@ -607,8 +609,10 @@ export default function App() {
       alert("Uploaded!");
       if (res.data.sheetId) {
         setSheetId(res.data.sheetId);
-        setActiveFilename(res.data.filename);
-        localStorage.setItem("activeFilename", res.data.filename);
+        const activeName = res.data.display_name || res.data.filename;
+        setActiveFilename(activeName);
+        localStorage.setItem("activeFilename", activeName);
+        setUploadDisplayName("");
         if (res.data.tabs && res.data.tabs.length > 0) {
           setTabs(res.data.tabs);
           setActiveTab(res.data.tabs[0]);
@@ -907,8 +911,9 @@ export default function App() {
     if (!newSheetId) return;
     const f = myFiles.find(file => String(file.id) === String(newSheetId));
     if (f) {
-      setActiveFilename(f.filename);
-      localStorage.setItem("activeFilename", f.filename);
+      const activeName = f.display_name || f.filename;
+      setActiveFilename(activeName);
+      localStorage.setItem("activeFilename", activeName);
       localStorage.removeItem("activeTab"); // Clear tab on sheet switch to prevent cross-sheet contamination
       setActiveTab("");
     }
@@ -1085,6 +1090,7 @@ export default function App() {
                       sheetId={sheetId} activeFilename={activeFilename}
                       file={file} setFile={setFile}
                       selectedFileName={selectedFileName} setSelectedFileName={setSelectedFileName}
+                      uploadDisplayName={uploadDisplayName} setUploadDisplayName={setUploadDisplayName}
                       handleUpload={handleUpload}
                       loadData={loadData}
                       selectedViewId={selectedViewId} setSelectedViewId={setSelectedViewId}

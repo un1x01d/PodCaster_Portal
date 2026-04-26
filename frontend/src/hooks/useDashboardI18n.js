@@ -3,7 +3,7 @@ import api from "../api";
 
 const DASHBOARD_COPY_CACHE = new Map();
 const DASHBOARD_COPY_IN_FLIGHT = new Map();
-const DASHBOARD_COPY_STORAGE_PREFIX = "dashboardCopy:";
+const DASHBOARD_COPY_STORAGE_PREFIX = "dashboardCopy:v2:";
 
 export const DASHBOARD_COPY_EN = {
   portalTitle: "Data Insights Portal",
@@ -38,6 +38,7 @@ export const DASHBOARD_COPY_EN = {
   latestPeriodValue: "Latest Period Value",
   topCategoryValue: "Top Category Value",
   topCategoryShare: "Top Category Share",
+  pinnedMetrics: "Pinned Metrics",
   noCategory: "No category",
   insightFeed: "Insight Feed",
   automaticInsights: "Automatic trends, drivers, and anomalies",

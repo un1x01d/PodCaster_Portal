@@ -1,6 +1,7 @@
 import React from "react";
 import { Link } from "react-router-dom";
-import { DASHBOARD_COPY_EN, formatTemplate } from "../../hooks/useDashboardI18n";
+import { DASHBOARD_COPY_EN, formatTemplate, normalizeDashboardLocale, isDashboardEnglish } from "../../hooks/useDashboardI18n";
+import api from "../../api";
 import {
   ResponsiveContainer,
   ComposedChart,
@@ -39,7 +40,7 @@ function metricValue(value, locale) {
 
 function pct(value) {
   if (!Number.isFinite(value)) return "0%";
-  return `${value.toFixed(1)}%`;
+  return `${value.toFixed(2)}%`;
 }
 
 function formatMoneyIfLarge(value, locale) {
@@ -56,36 +57,55 @@ function formatCompactCurrency(value, locale) {
   if (!Number.isFinite(value)) return "$0";
   const abs = Math.abs(value);
   const sign = value < 0 ? "-" : "";
-  if (abs >= 1_000_000_000) return `${sign}$${(abs / 1_000_000_000).toFixed(1)}B`;
-  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
-  if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(1)}K`;
-  return `${sign}$${Math.round(abs).toLocaleString("en-US")}`;
+  if (abs >= 1_000_000_000) return `${sign}$${(abs / 1_000_000_000).toFixed(2)}B`;
+  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(2)}M`;
+  if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(2)}K`;
+  return `${sign}$${abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 function formatSparkValue(value, type, locale) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return "0";
-  if (type === "percent") return `${numeric.toFixed(1)}%`;
+  if (type === "percent") return `${numeric.toFixed(2)}%`;
   if (type === "count") return Math.round(numeric).toLocaleString(locale);
   return formatMoneyIfLarge(numeric, locale);
 }
 
+function formatPinnedDisplayValue(raw) {
+  const text = String(raw ?? "").trim();
+  if (!text) return "";
+  const numeric = Number(text.replace(/,/g, ""));
+  if (!Number.isFinite(numeric)) return text;
+  return numeric.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function formatMMDDYYYY(dateLike) {
+  const d = dateLike instanceof Date ? dateLike : new Date(dateLike);
+  if (Number.isNaN(d.getTime())) return "";
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const yyyy = String(d.getFullYear());
+  return `${mm}-${dd}-${yyyy}`;
+}
+
 function formatPeriodAsDateRange(period, locale) {
   if (typeof period !== "string") return String(period || "");
-  const fmt = new Intl.DateTimeFormat(locale, { month: "short", day: "numeric", year: "numeric" });
   if (/^\d{1,2}$/.test(period)) {
     const month = Number(period);
     if (month >= 1 && month <= 12) {
       const y = new Date().getFullYear();
       const start = new Date(y, month - 1, 1);
       const end = new Date(y, month, 0);
-      return `${fmt.format(start)} - ${fmt.format(end)}`;
+      return `${formatMMDDYYYY(start)} - ${formatMMDDYYYY(end)}`;
     }
   }
   if (/^\d{4}-\d{2}-\d{2}$/.test(period)) {
     const [y, m, d] = period.split("-").map((v) => Number(v));
     if (!y || !m || !d) return period;
-    const sameDay = fmt.format(new Date(y, m - 1, d));
+    const sameDay = formatMMDDYYYY(new Date(y, m - 1, d));
     return `${sameDay} - ${sameDay}`;
   }
   if (!/^\d{4}-\d{2}$/.test(period)) return String(period || "");
@@ -93,7 +113,7 @@ function formatPeriodAsDateRange(period, locale) {
   if (!y || !m || m < 1 || m > 12) return period;
   const start = new Date(y, m - 1, 1);
   const end = new Date(y, m, 0);
-  return `${fmt.format(start)} - ${fmt.format(end)}`;
+  return `${formatMMDDYYYY(start)} - ${formatMMDDYYYY(end)}`;
 }
 
 function formatPeriodForTooltip(period, locale) {
@@ -102,41 +122,40 @@ function formatPeriodForTooltip(period, locale) {
     const month = Number(period);
     if (month >= 1 && month <= 12) {
       const y = new Date().getFullYear();
-      return new Intl.DateTimeFormat(locale, { month: "short", year: "numeric" }).format(new Date(y, month - 1, 1));
+      return formatMMDDYYYY(new Date(y, month - 1, 1));
     }
   }
   if (/^\d{4}-\d{2}$/.test(period)) {
     const [y, m] = period.split("-").map((v) => Number(v));
     if (!y || !m || m < 1 || m > 12) return period;
-    return new Intl.DateTimeFormat(locale, { month: "short", year: "numeric" }).format(new Date(y, m - 1, 1));
+    return formatMMDDYYYY(new Date(y, m - 1, 1));
   }
   if (/^\d{4}-\d{2}-\d{2}$/.test(period)) {
     const [y, m, d] = period.split("-").map((v) => Number(v));
     if (!y || !m || !d) return period;
-    return new Intl.DateTimeFormat(locale, { month: "short", day: "numeric", year: "numeric" }).format(new Date(y, m - 1, d));
+    return formatMMDDYYYY(new Date(y, m - 1, d));
   }
   return String(period || "");
 }
 
 function formatPeriodAsExactDate(period, locale) {
-  const fmt = new Intl.DateTimeFormat(locale, { month: "long", day: "numeric", year: "numeric" });
   if (typeof period !== "string") return String(period || "");
   if (/^\d{4}$/.test(period)) {
-    return fmt.format(new Date(Number(period), 0, 1));
+    return formatMMDDYYYY(new Date(Number(period), 0, 1));
   }
   if (/^\d{1,2}$/.test(period)) {
     const month = Number(period);
-    if (month >= 1 && month <= 12) return fmt.format(new Date(new Date().getFullYear(), month - 1, 1));
+    if (month >= 1 && month <= 12) return formatMMDDYYYY(new Date(new Date().getFullYear(), month - 1, 1));
   }
   if (/^\d{4}-\d{2}$/.test(period)) {
     const [y, m] = period.split("-").map((v) => Number(v));
     if (!y || !m || m < 1 || m > 12) return period;
-    return fmt.format(new Date(y, m - 1, 1));
+    return formatMMDDYYYY(new Date(y, m - 1, 1));
   }
   if (/^\d{4}-\d{2}-\d{2}$/.test(period)) {
     const [y, m, d] = period.split("-").map((v) => Number(v));
     if (!y || !m || !d) return period;
-    return fmt.format(new Date(y, m - 1, d));
+    return formatMMDDYYYY(new Date(y, m - 1, d));
   }
   return String(period || "");
 }
@@ -154,7 +173,7 @@ function toBucketKey(d, granularity) {
 }
 
 function formatDateDisplay(date, locale) {
-  return new Intl.DateTimeFormat(locale, { month: "short", day: "numeric", year: "numeric" }).format(date);
+  return formatMMDDYYYY(date);
 }
 
 function periodKeyToBounds(key) {
@@ -312,8 +331,41 @@ export default function DashboardHome({
   copy = DASHBOARD_COPY_EN,
 }) {
   const ui = copy || DASHBOARD_COPY_EN;
+  const PINNED_METRICS_KEY = "dashboardPinnedMetricsV1";
+  const PINNED_AI_CACHE_MS = 60 * 60 * 1000;
+  const KPI_OVERRIDES_KEY = "dashboardKpiOverridesV1";
+  const EMPTY_PINNED_ITEM = { title: "Value", value: "", description: "", pinned: false };
+  const ensurePinnedItems = (items) => {
+    const source = Array.isArray(items) ? items : [];
+    const out = [];
+    for (let i = 0; i < 4; i += 1) {
+      const row = source[i] || {};
+      out.push({
+        title: String(row.title ?? EMPTY_PINNED_ITEM.title),
+        value: String(row.value ?? ""),
+        description: String(row.description ?? ""),
+        pinned: !!row.pinned,
+      });
+    }
+    return out;
+  };
   const [rangeDraft, setRangeDraft] = React.useState(null);
   const [appliedRange, setAppliedRange] = React.useState(null);
+  const [pinnedInput, setPinnedInput] = React.useState({ items: ensurePinnedItems([]) });
+  const [pinnedConfig, setPinnedConfig] = React.useState(null);
+  const [queryOpen, setQueryOpen] = React.useState(false);
+  const [pinnedLoaded, setPinnedLoaded] = React.useState(false);
+  const [kpiOverrides, setKpiOverrides] = React.useState({});
+  const [kpiEditorOpen, setKpiEditorOpen] = React.useState({});
+  const [kpiOverridesLoaded, setKpiOverridesLoaded] = React.useState(false);
+  const autoSubmitKeyRef = React.useRef("");
+  const pinnedTitleTranslateInFlightRef = React.useRef(new Set());
+  const pinnedTitleTranslateCooldownRef = React.useRef(new Map());
+  const pinnedConfigRef = React.useRef(null);
+
+  React.useEffect(() => {
+    pinnedConfigRef.current = pinnedConfig;
+  }, [pinnedConfig]);
 
   const activeFilterCount = Object.entries(columnFilters).filter(([, v]) => {
     if (!v) return false;
@@ -330,6 +382,427 @@ export default function DashboardHome({
   const revenueMetricCol = revenueCol || metricCol;
   const incomeMetricCol = incomeCol || profitCol;
   const canDeriveExpense = !expenseCol && !!revenueMetricCol && !!incomeMetricCol;
+  const sheetStructureSignature = React.useMemo(
+    () => headers.map((h) => String(h || "").trim().toLowerCase()).join("|"),
+    [headers]
+  );
+
+  React.useEffect(() => {
+    try {
+      const raw = localStorage.getItem(PINNED_METRICS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object") {
+          let bySignature = {};
+          if (parsed.bySignature && typeof parsed.bySignature === "object") {
+            bySignature = parsed.bySignature;
+          } else if (parsed.signature && Array.isArray(parsed.items)) {
+            // Backward compatibility: migrate legacy single-config payload.
+            bySignature[String(parsed.signature)] = {
+              items: ensurePinnedItems(parsed.items),
+              updatedAt: parsed.updatedAt || new Date().toISOString(),
+            };
+          }
+          const current = bySignature[sheetStructureSignature];
+          if (current) {
+            const currentConfig = {
+              signature: sheetStructureSignature,
+              items: ensurePinnedItems(current.items),
+              updatedAt: current.updatedAt || new Date().toISOString(),
+              aiPromptedAt: current.aiPromptedAt || null,
+              knownSheetIds: Array.isArray(current.knownSheetIds) ? current.knownSheetIds.map((x) => String(x)) : [],
+              titleTranslations: current.titleTranslations && typeof current.titleTranslations === "object" ? current.titleTranslations : {},
+            };
+            setPinnedConfig(currentConfig);
+            setPinnedInput({ items: ensurePinnedItems(current.items) });
+          } else {
+            setPinnedConfig(null);
+            setPinnedInput({ items: ensurePinnedItems([]) });
+          }
+        }
+      }
+    } catch (_) {
+      // ignore localStorage parse errors
+    } finally {
+      setPinnedLoaded(true);
+    }
+  }, [sheetStructureSignature]);
+
+  const canShowPinnedValues = React.useMemo(() => {
+    if (!pinnedConfig || pinnedConfig.signature !== sheetStructureSignature) return false;
+    const items = ensurePinnedItems(pinnedConfig.items);
+    return items.some((item) => String(item.value || "").trim() || String(item.description || "").trim());
+  }, [pinnedConfig, sheetStructureSignature]);
+
+  const canEditTickets = React.useMemo(() => {
+    if (!user) return false;
+    if (String(user.role || "").toLowerCase() === "admin") return true;
+    return Boolean(
+      user.is_group_admin === true
+      || user.group_admin === true
+      || user.is_admin === true
+    );
+  }, [user]);
+
+  const persistPinnedConfig = React.useCallback((itemsOverride = null) => {
+    if (!sheetStructureSignature) return;
+    const items = ensurePinnedItems(itemsOverride || []);
+    const currentPinned = pinnedConfigRef.current;
+    let aiPromptedAt = currentPinned?.signature === sheetStructureSignature ? (currentPinned.aiPromptedAt || null) : null;
+    let knownSheetIds = currentPinned?.signature === sheetStructureSignature
+      ? (Array.isArray(currentPinned.knownSheetIds) ? currentPinned.knownSheetIds.map((x) => String(x)) : [])
+      : [];
+    let titleTranslations = currentPinned?.signature === sheetStructureSignature && currentPinned?.titleTranslations && typeof currentPinned.titleTranslations === "object"
+      ? currentPinned.titleTranslations
+      : {};
+    const current = {
+      signature: sheetStructureSignature,
+      items,
+      updatedAt: new Date().toISOString(),
+      aiPromptedAt,
+      knownSheetIds,
+      titleTranslations,
+    };
+    try {
+      const raw = localStorage.getItem(PINNED_METRICS_KEY);
+      let bySignature = {};
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.bySignature && typeof parsed.bySignature === "object") {
+          bySignature = parsed.bySignature;
+        } else if (parsed?.signature && Array.isArray(parsed.items)) {
+          bySignature[String(parsed.signature)] = {
+            items: ensurePinnedItems(parsed.items),
+            updatedAt: parsed.updatedAt || new Date().toISOString(),
+          };
+        }
+      }
+      const existing = bySignature[sheetStructureSignature];
+      // Preserve cached AI metadata during refresh/bootstrap writes.
+      if (!aiPromptedAt && existing?.aiPromptedAt) aiPromptedAt = existing.aiPromptedAt;
+      if ((!Array.isArray(knownSheetIds) || knownSheetIds.length === 0) && Array.isArray(existing?.knownSheetIds)) {
+        knownSheetIds = existing.knownSheetIds.map((x) => String(x));
+      }
+      if ((!titleTranslations || typeof titleTranslations !== "object" || Object.keys(titleTranslations).length === 0)
+          && existing?.titleTranslations && typeof existing.titleTranslations === "object") {
+        titleTranslations = existing.titleTranslations;
+      }
+      current.aiPromptedAt = aiPromptedAt || null;
+      current.knownSheetIds = Array.isArray(knownSheetIds) ? knownSheetIds : [];
+      current.titleTranslations = titleTranslations && typeof titleTranslations === "object" ? titleTranslations : {};
+      bySignature[sheetStructureSignature] = {
+        items,
+        updatedAt: current.updatedAt,
+        aiPromptedAt: current.aiPromptedAt,
+        knownSheetIds: current.knownSheetIds,
+        titleTranslations: current.titleTranslations,
+      };
+      const payload = { version: 2, bySignature };
+      localStorage.setItem(PINNED_METRICS_KEY, JSON.stringify(payload));
+    } catch (_) {
+      // ignore storage failures
+    }
+    setPinnedConfig(current);
+  }, [sheetStructureSignature]);
+
+  const markPinnedAiPrompted = React.useCallback((promptedAtIso, knownSheetIds = []) => {
+    if (!sheetStructureSignature) return;
+    const iso = promptedAtIso || new Date().toISOString();
+    const normalizedSheetIds = Array.isArray(knownSheetIds) ? knownSheetIds.map((x) => String(x)) : [];
+    setPinnedConfig((prev) => {
+      if (!prev || prev.signature !== sheetStructureSignature) return prev;
+      const next = { ...prev, aiPromptedAt: iso, knownSheetIds: normalizedSheetIds };
+      try {
+        const raw = localStorage.getItem(PINNED_METRICS_KEY);
+        let bySignature = {};
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed?.bySignature && typeof parsed.bySignature === "object") {
+            bySignature = parsed.bySignature;
+          } else if (parsed?.signature && Array.isArray(parsed.items)) {
+            bySignature[String(parsed.signature)] = {
+              items: ensurePinnedItems(parsed.items),
+              updatedAt: parsed.updatedAt || new Date().toISOString(),
+            };
+          }
+        }
+        const existing = bySignature[sheetStructureSignature] || {};
+        bySignature[sheetStructureSignature] = {
+          ...existing,
+          items: ensurePinnedItems(existing.items || prev.items),
+          updatedAt: existing.updatedAt || prev.updatedAt || new Date().toISOString(),
+          aiPromptedAt: iso,
+          knownSheetIds: normalizedSheetIds,
+        };
+        localStorage.setItem(PINNED_METRICS_KEY, JSON.stringify({ version: 2, bySignature }));
+      } catch (_) {
+        // ignore storage failures
+      }
+      return next;
+    });
+  }, [sheetStructureSignature]);
+
+  const upsertPinnedTitleTranslations = React.useCallback((localeKey, translationsByIndex) => {
+    if (!sheetStructureSignature || !localeKey || !translationsByIndex || typeof translationsByIndex !== "object") return;
+    setPinnedConfig((prev) => {
+      if (!prev || prev.signature !== sheetStructureSignature) return prev;
+      const existingByLocale = prev.titleTranslations && typeof prev.titleTranslations === "object" ? prev.titleTranslations : {};
+      const nextLocale = {
+        ...(existingByLocale[localeKey] && typeof existingByLocale[localeKey] === "object" ? existingByLocale[localeKey] : {}),
+      };
+      Object.entries(translationsByIndex).forEach(([idx, entry]) => {
+        if (!entry || typeof entry !== "object") return;
+        nextLocale[String(idx)] = {
+          sourceTitle: String(entry.sourceTitle || ""),
+          translatedTitle: String(entry.translatedTitle || ""),
+          updatedAt: entry.updatedAt || new Date().toISOString(),
+        };
+      });
+      const next = {
+        ...prev,
+        titleTranslations: {
+          ...existingByLocale,
+          [localeKey]: nextLocale,
+        },
+      };
+      try {
+        const raw = localStorage.getItem(PINNED_METRICS_KEY);
+        let bySignature = {};
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed?.bySignature && typeof parsed.bySignature === "object") {
+            bySignature = parsed.bySignature;
+          } else if (parsed?.signature && Array.isArray(parsed.items)) {
+            bySignature[String(parsed.signature)] = {
+              items: ensurePinnedItems(parsed.items),
+              updatedAt: parsed.updatedAt || new Date().toISOString(),
+            };
+          }
+        }
+        const existing = bySignature[sheetStructureSignature] || {};
+        bySignature[sheetStructureSignature] = {
+          ...existing,
+          items: ensurePinnedItems(existing.items || prev.items),
+          updatedAt: existing.updatedAt || prev.updatedAt || new Date().toISOString(),
+          aiPromptedAt: existing.aiPromptedAt || prev.aiPromptedAt || null,
+          knownSheetIds: Array.isArray(existing.knownSheetIds) ? existing.knownSheetIds : (Array.isArray(prev.knownSheetIds) ? prev.knownSheetIds : []),
+          titleTranslations: next.titleTranslations,
+        };
+        localStorage.setItem(PINNED_METRICS_KEY, JSON.stringify({ version: 2, bySignature }));
+      } catch (_) {
+        // ignore storage failures
+      }
+      return next;
+    });
+  }, [sheetStructureSignature]);
+
+  React.useEffect(() => {
+    if (!pinnedLoaded || !sheetStructureSignature) return;
+    persistPinnedConfig(pinnedInput.items);
+  }, [pinnedInput.items, persistPinnedConfig, pinnedLoaded, sheetStructureSignature]);
+
+  React.useEffect(() => {
+    if (!sheetStructureSignature) return;
+    setKpiOverridesLoaded(false);
+    try {
+      const raw = localStorage.getItem(KPI_OVERRIDES_KEY);
+      if (!raw) {
+        setKpiOverrides({});
+        setKpiOverridesLoaded(true);
+        return;
+      }
+      const parsed = JSON.parse(raw);
+      const bySignature = parsed?.bySignature && typeof parsed.bySignature === "object" ? parsed.bySignature : {};
+      const current = bySignature[sheetStructureSignature];
+      setKpiOverrides(current && typeof current === "object" ? current : {});
+      setKpiOverridesLoaded(true);
+    } catch (_) {
+      setKpiOverrides({});
+      setKpiOverridesLoaded(true);
+    }
+  }, [sheetStructureSignature]);
+
+  React.useEffect(() => {
+    if (!sheetStructureSignature || !kpiOverridesLoaded) return;
+    try {
+      const raw = localStorage.getItem(KPI_OVERRIDES_KEY);
+      let bySignature = {};
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.bySignature && typeof parsed.bySignature === "object") {
+          bySignature = parsed.bySignature;
+        }
+      }
+      bySignature[sheetStructureSignature] = kpiOverrides;
+      localStorage.setItem(KPI_OVERRIDES_KEY, JSON.stringify({ version: 1, bySignature }));
+    } catch (_) {
+      // ignore storage failures
+    }
+  }, [sheetStructureSignature, kpiOverrides, kpiOverridesLoaded]);
+
+  const normalizedLocale = React.useMemo(() => normalizeDashboardLocale(locale), [locale]);
+  const pinnedTitleDisplayMap = React.useMemo(() => {
+    const map = {};
+    if (isDashboardEnglish(normalizedLocale)) return map;
+    const localeTranslations = pinnedConfig?.titleTranslations?.[normalizedLocale];
+    if (!localeTranslations || typeof localeTranslations !== "object") return map;
+    const items = ensurePinnedItems(pinnedInput.items);
+    items.forEach((item, index) => {
+      const cached = localeTranslations[String(index)];
+      const source = String(item.title || "");
+      if (!cached || String(cached.sourceTitle || "") !== source) return;
+      const translated = String(cached.translatedTitle || "").trim();
+      if (translated.toLowerCase() === source.trim().toLowerCase()) return;
+      if (!translated) return;
+      map[index] = translated;
+    });
+    return map;
+  }, [pinnedConfig, pinnedInput.items, normalizedLocale]);
+
+  React.useEffect(() => {
+    if (!sheetStructureSignature || !pinnedLoaded || !pinnedConfig || pinnedConfig.signature !== sheetStructureSignature) return undefined;
+    if (isDashboardEnglish(normalizedLocale)) return undefined;
+    const items = ensurePinnedItems(pinnedInput.items);
+    const localeTranslations = pinnedConfig?.titleTranslations?.[normalizedLocale];
+    const missing = [];
+    const nowMs = Date.now();
+    items.forEach((item, index) => {
+      if (!item.pinned) return;
+      const sourceTitle = String(item.title || "").trim();
+      if (!sourceTitle) return;
+      const cached = localeTranslations?.[String(index)];
+      const cachedSource = String(cached?.sourceTitle || "");
+      const cachedValue = String(cached?.translatedTitle || "").trim();
+      const looksUntranslated = cachedValue && cachedValue.toLowerCase() === sourceTitle.toLowerCase();
+      if (cachedSource === sourceTitle && cachedValue && !looksUntranslated) return;
+      const requestKey = `${sheetStructureSignature}:${normalizedLocale}:${index}:${sourceTitle}`;
+      if (pinnedTitleTranslateInFlightRef.current.has(requestKey)) return;
+      const cooldownUntil = Number(pinnedTitleTranslateCooldownRef.current.get(requestKey) || 0);
+      if (cooldownUntil > nowMs) return;
+      missing.push({ index, sourceTitle, requestKey });
+    });
+    if (!missing.length) return undefined;
+    let cancelled = false;
+    missing.forEach((entry) => {
+      pinnedTitleTranslateInFlightRef.current.add(entry.requestKey);
+    });
+    api.post("/dashboard/translate", {
+      locale: normalizedLocale,
+      items: missing.map((entry) => ({ key: `pinned_${entry.index}`, text: entry.sourceTitle })),
+    })
+      .then((res) => {
+        if (cancelled) return;
+        const translations = res?.data?.translations || {};
+        const next = {};
+        missing.forEach((entry) => {
+          const translated = String(translations[`pinned_${entry.index}`] || "").trim();
+          if (!translated) {
+            // Retry later; do not cache source text as "translated".
+            pinnedTitleTranslateCooldownRef.current.set(entry.requestKey, Date.now() + 30 * 1000);
+            return;
+          }
+          pinnedTitleTranslateCooldownRef.current.delete(entry.requestKey);
+          next[String(entry.index)] = {
+            sourceTitle: entry.sourceTitle,
+            translatedTitle: translated,
+            updatedAt: new Date().toISOString(),
+          };
+        });
+        if (Object.keys(next).length) {
+          upsertPinnedTitleTranslations(normalizedLocale, next);
+        }
+      })
+      .catch(() => {
+        // leave original titles if translation fails
+      })
+      .finally(() => {
+        missing.forEach((entry) => {
+          pinnedTitleTranslateInFlightRef.current.delete(entry.requestKey);
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sheetStructureSignature, pinnedLoaded, pinnedConfig, pinnedInput.items, normalizedLocale, upsertPinnedTitleTranslations]);
+
+  React.useEffect(() => {
+    const onChatResponse = (event) => {
+      const detail = event?.detail || {};
+      if (!detail?.sheetId || String(detail.sheetId) !== String(sheetId)) return;
+      const answer = String(detail.answer || "").trim();
+      if (!answer) return;
+      const ticketId = String(detail?.meta?.ticketId || "").trim();
+      if (ticketId) {
+        const numericOnly = answer.replace(/[^0-9.,-]/g, "").trim();
+        const parsed = Number(String(numericOnly || answer).replace(/,/g, ""));
+        if (!Number.isFinite(parsed)) return;
+        setKpiOverrides((prev) => ({
+          ...prev,
+          [ticketId]: {
+            ...(prev?.[ticketId] || {}),
+            aiValue: String(parsed),
+            aiUpdatedAt: new Date().toISOString(),
+          },
+        }));
+        return;
+      }
+      const numericOnly = answer.replace(/[^0-9.,-]/g, "").trim();
+      const nextValue = numericOnly || answer;
+      const index = Number(detail?.meta?.index);
+      if (!Number.isInteger(index) || index < 0 || index > 3) return;
+      setPinnedInput((prev) => {
+        const items = ensurePinnedItems(prev.items);
+        items[index] = { ...items[index], value: nextValue };
+        persistPinnedConfig(items);
+        return { ...prev, items };
+      });
+    };
+    window.addEventListener("dashboard:chat-response", onChatResponse);
+    return () => window.removeEventListener("dashboard:chat-response", onChatResponse);
+  }, [sheetId, sheetStructureSignature, persistPinnedConfig]);
+
+  const submitPinnedPromptToAI = React.useCallback((index, descriptionOverride = "") => {
+    if (!Number.isInteger(index) || index < 0 || index > 3) return;
+    const items = ensurePinnedItems(pinnedInput.items);
+    const description = String(descriptionOverride || items[index]?.description || "").trim();
+    const message = [
+      description ? `Request: ${description}` : "",
+      "Return only the final value as digits (numbers only, optional decimal separator). No words."
+    ]
+      .filter(Boolean)
+      .join("\n");
+    if (!message || !sheetId) return;
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("dashboard:submit-chat", {
+        detail: {
+          sheetId,
+          message,
+          meta: { index, silent: true },
+        },
+      }));
+    }
+  }, [pinnedInput, sheetId]);
+
+  const submitTicketPromptToAI = React.useCallback((cardId, queryText = "") => {
+    const id = String(cardId || "").trim();
+    const query = String(queryText || "").trim();
+    if (!id || !query || !sheetId) return;
+    const message = [
+      `Request: ${query}`,
+      "Return only the final value as digits (numbers only, optional decimal separator). No words.",
+    ].join("\n");
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("dashboard:submit-chat", {
+        detail: {
+          sheetId,
+          message,
+          meta: { ticketId: id, silent: true },
+        },
+      }));
+    }
+  }, [sheetId]);
+
+  // Auto AI refresh is intentionally disabled: pinned values update only on manual "Submit to AI".
 
   const dailyTrendData = React.useMemo(() => {
     if (!metricCol || !dateCol) return [];
@@ -712,8 +1185,19 @@ export default function DashboardHome({
     return `${formatDateDisplay(minDate, locale)} ${ui.to} ${formatDateDisplay(maxDate, locale)}`;
   }, [effectiveRows, dateCol, locale, ui.to]);
 
+  const availableSheetDates = React.useMemo(() => {
+    if (!dateCol) return [];
+    const keys = new Set();
+    sortedData.forEach((r) => {
+      const d = parseDate(r?.[dateCol]);
+      if (!d) return;
+      keys.add(toDateKey(d));
+    });
+    return Array.from(keys).sort((a, b) => a.localeCompare(b));
+  }, [sortedData, dateCol]);
+
   const cards = [
-    { id: "metricTotal", label: metricCol ? `${metricCol} ${ui.total}` : ui.total, value: metricCol ? metricSum : 0, sparkline: metricSeries, color: "#2563eb", sparklineType: "currency" },
+    { id: "pinnedMetrics", label: ui.pinnedMetrics || "Pinned Metrics", value: 0, sparkline: [], color: "#2563eb", sparklineType: "currency" },
     { id: "metricAvg", label: metricCol ? `${metricCol} ${ui.average}` : ui.primaryMetricAverage, value: metricCol ? metricAvg : 0, sparkline: metricSeries, color: "#2563eb", sparklineType: "currency" },
     {
       id: "incomeTotal",
@@ -746,6 +1230,76 @@ export default function DashboardHome({
     { id: "topShare", label: ui.topCategoryShare, value: pct(topCategoryShare), sparkline: topCategoryShareSeries, color: "#0369a1", sparklineType: "percent" },
   ];
 
+  const applyKpiOverride = React.useCallback((card) => {
+    if (!card || card.id === "pinnedMetrics") return card;
+    const override = kpiOverrides?.[card.id];
+    if (!override || typeof override !== "object") return card;
+    const labelOverride = String(override.label || "").trim();
+    const column = String(override.column || "").trim();
+    const agg = String(override.agg || "").toLowerCase();
+    const from = String(override.from || "").trim();
+    const to = String(override.to || "").trim();
+
+    let rows = effectiveRows;
+    if (dateCol && (from || to)) {
+      const fromDate = from ? parseDate(from) : null;
+      const toDate = to ? parseDate(to) : null;
+      rows = effectiveRows.filter((r) => {
+        const d = parseDate(r?.[dateCol]);
+        if (!d) return false;
+        if (fromDate && d < fromDate) return false;
+        if (toDate && d > toDate) return false;
+        return true;
+      });
+    }
+
+    const manualOverride = !!override?.manualOverride;
+    const aiParsed = Number(String(override?.aiValue ?? "").replace(/,/g, ""));
+    const forcedValue = manualOverride && Number.isFinite(aiParsed) ? aiParsed : null;
+
+    if (!column || !headers.includes(column)) {
+      return {
+        ...card,
+        label: labelOverride || card.label,
+        value: forcedValue !== null ? forcedValue : card.value,
+      };
+    }
+
+    let nextValue = 0;
+    if (agg === "count") {
+      nextValue = rows.reduce((acc, r) => {
+        const raw = r?.[column];
+        return raw === null || raw === undefined || String(raw).trim() === "" ? acc : acc + 1;
+      }, 0);
+    } else {
+      const nums = rows.map((r) => parseNumber(r?.[column])).filter((v) => v !== null);
+      if (agg === "avg") {
+        nextValue = nums.length ? nums.reduce((acc, n) => acc + n, 0) / nums.length : 0;
+      } else {
+        nextValue = nums.reduce((acc, n) => acc + n, 0);
+      }
+    }
+
+    return {
+      ...card,
+      label: labelOverride || card.label,
+      value: forcedValue !== null ? forcedValue : (Number.isFinite(nextValue) ? nextValue : 0),
+      sparkline: dateCol ? buildSeriesFromRows(rows, dateCol, (r) => {
+        if (agg === "count") {
+          const raw = r?.[column];
+          return raw === null || raw === undefined || String(raw).trim() === "" ? 0 : 1;
+        }
+        return parseNumber(r?.[column]);
+      }, sparklineGranularity) : card.sparkline,
+      sparklineType: agg === "count" ? "count" : "currency",
+    };
+  }, [kpiOverrides, effectiveRows, dateCol, headers, sparklineGranularity]);
+
+  const cardsWithOverrides = React.useMemo(
+    () => cards.map((card) => applyKpiOverride(card)),
+    [cards, applyKpiOverride]
+  );
+
   return (
     <div className="p-5 md:p-7 bg-gradient-to-b from-slate-100 to-blue-50/60">
       <div className="rounded-lg p-5 md:p-7 border border-slate-200 bg-white shadow-sm">
@@ -761,14 +1315,14 @@ export default function DashboardHome({
           <div className="flex gap-3">
             <Link
               to="/workspace"
-              className="btn-premium bg-blue-700 hover:bg-blue-800 text-white px-5"
+              className="inline-flex items-center justify-center rounded-md border border-blue-800 bg-blue-700 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-blue-800 focus:outline-none focus:ring-2 focus:ring-blue-300"
             >
               {ui.openWorkspace}
             </Link>
             {user?.role === "admin" && (
               <Link
                 to="/users"
-                className="btn-premium bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 px-5"
+                className="inline-flex items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition-colors hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-200"
               >
                 {ui.adminPanel}
               </Link>
@@ -778,14 +1332,251 @@ export default function DashboardHome({
 
         <div className={`mt-6 grid grid-cols-1 ${chatSection ? "2xl:grid-cols-[minmax(0,1fr)_22rem]" : ""} gap-3`}>
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-            {cards.map((card) => (
+            {cardsWithOverrides.map((card) => (
               <div
-                key={card.label}
-                className="rounded-md border border-slate-200 bg-white p-4 shadow-sm"
+                key={card.id}
+                className={`rounded-md border border-slate-200 bg-white shadow-sm ${card.id === "pinnedMetrics" ? "h-[160px] p-2.5 overflow-hidden" : (kpiEditorOpen[card.id] ? "p-3" : "h-[160px] p-3 overflow-hidden")}`}
               >
-                <div className="text-[11px] font-bold uppercase tracking-wider text-slate-700">
-                  {card.label}
+                {card.id === "pinnedMetrics" ? (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <div className="text-[11px] font-bold uppercase tracking-wider text-slate-700">{ui.pinnedMetrics || "Pinned Metrics"}</div>
+                      {canEditTickets && (
+                        <button
+                          type="button"
+                          onClick={() => setQueryOpen((v) => !v)}
+                          className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-slate-300 bg-white text-[13px] font-bold text-slate-700 hover:bg-slate-50"
+                          title={queryOpen ? "Close pinned editor" : "Edit pinned metrics"}
+                          aria-label={queryOpen ? "Close pinned editor" : "Edit pinned metrics"}
+                        >
+                          ✓
+                        </button>
+                      )}
+                    </div>
+                    {!canShowPinnedValues && pinnedConfig?.signature && pinnedConfig.signature !== sheetStructureSignature && (
+                      <div className="mt-1 text-[10px] font-semibold text-amber-700">
+                        Sheet structure changed. Values hidden until this structure is pinned again.
+                      </div>
+                    )}
+                    <div className="mt-1">
+                      <div className="grid grid-cols-2 gap-1">
+                        {ensurePinnedItems(pinnedInput.items).map((item, idx) => (
+                          <div key={`pinned-value-${idx}`} className="rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5">
+                            <div className="text-[11px] font-semibold tracking-wide text-slate-700 truncate">
+                              {String(pinnedTitleDisplayMap[idx] || item.title || `Value ${idx + 1}`)}
+                            </div>
+                            <div className="mt-1 rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] font-semibold text-slate-900">
+                              {formatPinnedDisplayValue(item.value) || "—"}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    {!queryOpen && <div className="mt-2 h-12" />}
+                    {canEditTickets && queryOpen && (
+                      <>
+                        <div className="mt-2 rounded-md border border-slate-200 bg-slate-50/70 p-1.5 space-y-1.5">
+                          {ensurePinnedItems(pinnedInput.items).map((item, idx) => (
+                            <div key={`pinned-edit-${idx}`} className="rounded-md border border-slate-200 bg-white p-1.5">
+                              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-600">{`Metric ${idx + 1}`}</div>
+                              <label className="mt-1 inline-flex items-center gap-1.5 text-[10px] font-semibold text-slate-700">
+                                <input
+                                  type="checkbox"
+                                  checked={!!item.pinned}
+                                  onChange={(e) => {
+                                    const next = ensurePinnedItems(pinnedInput.items);
+                                    next[idx] = { ...next[idx], pinned: e.target.checked };
+                                    setPinnedInput((prev) => ({ ...prev, items: next }));
+                                  }}
+                                  className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
+                                />
+                                <span>Pinned</span>
+                              </label>
+                              <input
+                                type="text"
+                                value={item.title}
+                                onChange={(e) => {
+                                  const next = ensurePinnedItems(pinnedInput.items);
+                                  next[idx] = { ...next[idx], title: e.target.value };
+                                  setPinnedInput((prev) => ({ ...prev, items: next }));
+                                }}
+                                placeholder={`Title ${idx + 1}`}
+                                className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-[13px] font-semibold text-slate-900"
+                              />
+                              <textarea
+                                value={item.description}
+                                onChange={(e) => {
+                                  const next = ensurePinnedItems(pinnedInput.items);
+                                  next[idx] = { ...next[idx], description: e.target.value };
+                                  setPinnedInput((prev) => ({ ...prev, items: next }));
+                                }}
+                                placeholder="AI query/description for this value..."
+                                className="mt-1 h-12 w-full resize-none rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-900"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => submitPinnedPromptToAI(idx)}
+                                disabled={!String(item.description || "").trim()}
+                                className={`mt-1 w-full rounded-md border px-2 py-1 text-[11px] font-semibold ${
+                                  !String(item.description || "").trim()
+                                    ? "border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed"
+                                    : "border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                                }`}
+                              >
+                                Submit to AI
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </>
+                ) : (
+                  <>
+                <div className="flex items-center justify-between">
+                  <div className="text-[11px] font-bold uppercase tracking-wider text-slate-700 truncate" title={card.label}>
+                    {card.label}
+                  </div>
+                  {canEditTickets && (
+                    <button
+                      type="button"
+                      onClick={() => setKpiEditorOpen((prev) => ({ ...prev, [card.id]: !prev?.[card.id] }))}
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-slate-300 bg-white text-[12px] font-bold text-slate-700 hover:bg-slate-50"
+                      title={kpiEditorOpen[card.id] ? "Close ticket editor" : "Edit ticket"}
+                      aria-label={kpiEditorOpen[card.id] ? "Close ticket editor" : "Edit ticket"}
+                    >
+                      ✎
+                    </button>
+                  )}
                 </div>
+                {canEditTickets && kpiEditorOpen[card.id] && (
+                  <div className="mt-1 rounded-md border border-slate-200 bg-slate-50 p-2">
+                    <input
+                      type="text"
+                      value={String(kpiOverrides?.[card.id]?.label || "")}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        setKpiOverrides((prev) => ({
+                          ...prev,
+                          [card.id]: { ...(prev?.[card.id] || {}), label: value },
+                        }));
+                      }}
+                      placeholder="Ticket name"
+                      className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-900"
+                    />
+                    <div className="mt-1 grid grid-cols-2 gap-1">
+                      <select
+                        value={String(kpiOverrides?.[card.id]?.column || "")}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          setKpiOverrides((prev) => ({
+                            ...prev,
+                            [card.id]: { ...(prev?.[card.id] || {}), column: value },
+                          }));
+                        }}
+                        className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-900"
+                      >
+                        <option value="">Column…</option>
+                        {headers.map((h) => (
+                          <option key={`kpi-col-${card.id}-${h}`} value={h}>{h}</option>
+                        ))}
+                      </select>
+                      <select
+                        value={String(kpiOverrides?.[card.id]?.agg || "sum")}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          setKpiOverrides((prev) => ({
+                            ...prev,
+                            [card.id]: { ...(prev?.[card.id] || {}), agg: value },
+                          }));
+                        }}
+                        className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-900"
+                      >
+                        <option value="sum">Sum</option>
+                        <option value="avg">Avg</option>
+                        <option value="count">Count</option>
+                      </select>
+                    </div>
+                    <div className="mt-1 grid grid-cols-2 gap-1">
+                      <select
+                        value={String(kpiOverrides?.[card.id]?.from || "")}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          setKpiOverrides((prev) => ({
+                            ...prev,
+                            [card.id]: { ...(prev?.[card.id] || {}), from: value },
+                          }));
+                        }}
+                        className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-900"
+                      >
+                        <option value="">From: All time</option>
+                        {availableSheetDates.map((d) => (
+                          <option key={`kpi-from-${card.id}-${d}`} value={d}>{d}</option>
+                        ))}
+                      </select>
+                      <select
+                        value={String(kpiOverrides?.[card.id]?.to || "")}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          setKpiOverrides((prev) => ({
+                            ...prev,
+                            [card.id]: { ...(prev?.[card.id] || {}), to: value },
+                          }));
+                        }}
+                        className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-900"
+                      >
+                        <option value="">To: All time</option>
+                        {availableSheetDates.map((d) => (
+                          <option key={`kpi-to-${card.id}-${d}`} value={d}>{d}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="mt-1 grid grid-cols-2 gap-1">
+                      <input
+                        type="text"
+                        value={String(kpiOverrides?.[card.id]?.aiQuery || "")}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          setKpiOverrides((prev) => ({
+                            ...prev,
+                            [card.id]: { ...(prev?.[card.id] || {}), aiQuery: value },
+                          }));
+                        }}
+                        placeholder="AI query for this ticket..."
+                        className="col-span-2 rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-900"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => submitTicketPromptToAI(card.id, kpiOverrides?.[card.id]?.aiQuery || "")}
+                        disabled={!String(kpiOverrides?.[card.id]?.aiQuery || "").trim()}
+                        className={`col-span-2 rounded-md border px-2 py-1 text-[11px] font-semibold ${
+                          !String(kpiOverrides?.[card.id]?.aiQuery || "").trim()
+                            ? "border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed"
+                            : "border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                        }`}
+                      >
+                        Get Value from AI
+                      </button>
+                    </div>
+                    <div className="mt-1 grid grid-cols-2 gap-1 items-center">
+                      <label className="col-span-2 inline-flex items-center gap-1.5 text-[10px] font-semibold text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={!!kpiOverrides?.[card.id]?.manualOverride}
+                          onChange={(e) => {
+                            const value = e.target.checked;
+                            setKpiOverrides((prev) => ({
+                              ...prev,
+                              [card.id]: { ...(prev?.[card.id] || {}), manualOverride: value },
+                            }));
+                          }}
+                          className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
+                        />
+                        <span>AI override calculated value</span>
+                      </label>
+                    </div>
+                  </div>
+                )}
                 {card.subtitle && (
                   <div className="mt-0.5 text-[11px] font-semibold text-slate-800 truncate" title={card.subtitle}>
                     {card.subtitle}
@@ -796,11 +1587,11 @@ export default function DashboardHome({
                     {kpiDateRangeText}
                   </div>
                 )}
-                <div className="mt-1.5 text-2xl font-semibold text-slate-900">
+                <div className="mt-1 text-[1.35rem] font-semibold text-slate-900">
                   {typeof card.value === "number" ? formatMoneyIfLarge(card.value, locale) : metricValue(card.value, locale)}
                 </div>
-                {card.sparkline?.length > 1 && (
-                  <div className="mt-2 h-12">
+                {card.sparkline?.length > 1 ? (
+                  <div className="mt-1.5 h-11">
                     <ResponsiveContainer width="100%" height="100%">
                       <AreaChart data={card.sparkline}>
                       <Tooltip
@@ -846,12 +1637,14 @@ export default function DashboardHome({
                       </AreaChart>
                     </ResponsiveContainer>
                   </div>
+                ) : <div className="mt-1.5 h-11" />}
+                  </>
                 )}
               </div>
             ))}
           </div>
         {chatSection && (
-          <div className="rounded-md border border-slate-200 bg-white p-2 shadow-sm h-[520px] max-h-[60vh] overflow-hidden">
+          <div className="rounded-md border border-slate-200 bg-white p-2 shadow-sm h-[360px] max-h-[42vh] overflow-hidden">
             <div className="h-full min-h-0">{chatSection}</div>
           </div>
         )}

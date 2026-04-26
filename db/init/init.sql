@@ -15,8 +15,11 @@ CREATE TABLE IF NOT EXISTS sheets (
   uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   headers JSONB NOT NULL DEFAULT '[]'::jsonb,         -- safe default
   filename TEXT,
+  display_name TEXT,
   active BOOLEAN NOT NULL DEFAULT FALSE               -- used by backend
 );
+
+ALTER TABLE sheets ADD COLUMN IF NOT EXISTS display_name TEXT;
 
 -- At most one active sheet at a time
 CREATE UNIQUE INDEX IF NOT EXISTS sheets_one_active_true_idx
@@ -61,4 +64,3 @@ END $$;
 INSERT INTO users (email, password, role)
 VALUES ('admin@example.com', 'admin123', 'admin')
 ON CONFLICT (email) DO NOTHING;
-

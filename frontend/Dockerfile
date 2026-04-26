@@ -12,7 +12,7 @@ COPY frontend/package-lock.json ./package-lock.json
 
 # Faster installs (BuildKit cache), no audit/fund noise
 RUN --mount=type=cache,target=/root/.npm \
-    npm ci
+    sh -c 'if [ -s package-lock.json ] && node -e "const fs=require(\"fs\");const p=JSON.parse(fs.readFileSync(\"package-lock.json\",\"utf8\"));if(!p||!p.lockfileVersion) process.exit(1);"; then npm ci; else echo "No valid package-lock.json; falling back to npm install"; npm install --no-audit --no-fund; fi'
 
 # Add source and build
 COPY frontend/. .

@@ -101,9 +101,11 @@ function formatValue(v, locale = "en", col = "", forSpeech = false) {
   try {
     const abs = Math.abs(v);
     const sign = v < 0 ? "-" : "";
-    const num = Number.isInteger(abs)
-      ? abs.toLocaleString("en-US", { useGrouping: !forSpeech })
-      : abs.toLocaleString("en-US", { useGrouping: !forSpeech, maximumFractionDigits: 20 });
+    const num = abs.toLocaleString("en-US", {
+      useGrouping: !forSpeech,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
     const pfx = isCurrency ? "$" : "";
     const sfx = (isPercent && !isCurrency) ? "%" : "";
     return `${sign}${pfx}${num}${sfx}`;
@@ -278,6 +280,41 @@ function enforceCommaThousands(answer = "") {
   });
 }
 
+function normalizeDatesAndRemoveTime(answer = "") {
+  let text = String(answer || "");
+  // Remove common time/timezone fragments.
+  text = text
+    .replace(/\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?\b/gi, "")
+    .replace(/\b(?:UTC|GMT)\s*[+-]?\d{0,2}:?\d{0,2}\b/gi, "")
+    .replace(/\b(?:EST|EDT|PST|PDT|CST|CDT|MST|MDT)\b/gi, "")
+    .replace(/\s{2,}/g, " ");
+
+  // YYYY-MM-DD -> MM-DD-YYYY
+  text = text.replace(/\b(\d{4})-(\d{2})-(\d{2})\b/g, (_, y, m, d) => `${m}-${d}-${y}`);
+  // YYYY/MM/DD -> MM-DD-YYYY
+  text = text.replace(/\b(\d{4})\/(\d{2})\/(\d{2})\b/g, (_, y, m, d) => `${m}-${d}-${y}`);
+  // MM/DD/YYYY or DD/MM/YYYY -> MM-DD-YYYY (assume first token is month by product rule)
+  text = text.replace(/\b(\d{2})\/(\d{2})\/(\d{4})\b/g, (_, m, d, y) => `${m}-${d}-${y}`);
+
+  return text.replace(/\s{2,}/g, " ").trim();
+}
+
+function enforceTwoDecimals(answer = "") {
+  const text = String(answer || "");
+  // Format standalone numeric tokens (including currency/percent) to 2 decimals.
+  return text.replace(/([$-]?\d[\d,]*)(\.\d+)?(%?)/g, (raw, intPart, decPart, suffix) => {
+    // Skip 4-digit years and parts of dates like 04-26-2026.
+    const compact = String(intPart).replace(/[$,]/g, "");
+    if (/^\d{4}$/.test(compact) && !decPart && !suffix) return raw;
+    const n = Number(String(intPart).replace(/[$,]/g, "") + (decPart || ""));
+    if (!Number.isFinite(n)) return raw;
+    const sign = n < 0 ? "-" : "";
+    const abs = Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const currency = String(intPart).includes("$") ? "$" : "";
+    return `${sign}${currency}${abs}${suffix || ""}`;
+  });
+}
+
 function stripApproximationWords(answer = "") {
   return String(answer || "")
     .replace(/\b(approximately|approx\.?|about)\b/gi, "")
@@ -347,13 +384,14 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
     "Return ONLY valid JSON.",
     "Language: Always provide 'answer' in the requested output_locale, regardless of the user's message language.",
     "Internal Logic: Map user terms to available_columns for operations, but keep final explanation in output_locale.",
-    "Date handling: When referencing spreadsheet dates, preserve the detected column date syntax exactly (do not convert to another format).",
+    "Date handling: Always output dates as MM-DD-YYYY.",
+    "Date handling: Never include time values or timezone references.",
     "Quarter handling: Interpret Q1/Q2/Q3/Q4 as quarter periods.",
     "Quarter handling: Also interpret localized quarter aliases as Q1..Q4 (e.g., квартал 1/2/3/4, 1 квартал, I/II/III/IV квартал).",
     "Language rule for quarter wording: use the English word 'quarter' only in English output.",
     "Language rule for quarter wording: in Russian use 'квартал', in Ukrainian use 'квартал/кварталу' as grammatically appropriate.",
     "Number formatting: Use grouped numbers with thousands separators in the final answer (example: 12,345.67).",
-    "Rounding rule: Do not round numeric values. Keep all available precision from the source data.",
+    "Rounding rule: Always present numeric calculation results with exactly 2 decimal places.",
     "Do not describe numeric values as approximate.",
     "Do not shorten values into compact forms like K/M/B unless user explicitly asks.",
     "Use only numeric values that can be derived from the provided spreadsheet rows.",
@@ -517,7 +555,9 @@ export async function chatQuery(req, res) {
     }
   }
   answer = stripApproximationWords(answer);
+  answer = normalizeDatesAndRemoveTime(answer);
   answer = enforceCommaThousands(answer);
+  answer = enforceTwoDecimals(answer);
 
   const isReset = ai?.operation === "reset" || /reset|clear|all records/i.test(ai?.answer || "");
   const uiFilters = (ai?.operation === "filter" || ai?.operation === "apply_filter") ? aiFilters : [];

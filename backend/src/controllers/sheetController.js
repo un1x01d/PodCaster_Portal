@@ -57,6 +57,11 @@ function normalizeSheetRow(row) {
     return out;
 }
 
+function sanitizeDisplayName(value) {
+    const text = String(value || "").trim().replace(/\s+/g, "_");
+    return text.slice(0, 120);
+}
+
 // Helper to determine active sheet versioning
 async function getVersionedFilename(client, folderId, originalName) {
     if (!folderId) return originalName; // No versioning in root? Or just basic? adhering to original logic which only checked folder
@@ -96,8 +101,10 @@ export async function uploadSheet(req, res) {
         if (!req.file) return res.status(400).json({ error: "No file" });
 
         const originalName = req.file.originalname || "uploaded.xlsx";
+        const displayName = sanitizeDisplayName(req.body?.display_name);
         const rawFolderId = req.body?.folderId ?? req.body?.folder_id;
         const folderId = rawFolderId ? parseInt(rawFolderId, 10) : null;
+        if (!displayName) return res.status(400).json({ error: "display_name_required" });
 
         console.log(`[upload] name=${originalName} mime=${req.file.mimetype} folderId=${folderId ?? "—"}`);
 
@@ -194,9 +201,9 @@ export async function uploadSheet(req, res) {
 
             // Insert Sheet Record
             await client.query(
-                `INSERT INTO sheets (id, headers, active, filename, folder_id, stored_path, tab_name, tabs) 
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-                [sheetId, JSON.stringify(headers), true, versionedFilename, assignedFolderId, null, sheetNames[0], JSON.stringify(sheetNames)]
+                `INSERT INTO sheets (id, headers, active, filename, display_name, folder_id, stored_path, tab_name, tabs) 
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+                [sheetId, JSON.stringify(headers), true, versionedFilename, displayName, assignedFolderId, null, sheetNames[0], JSON.stringify(sheetNames)]
             );
 
             // Insert Rows
@@ -243,6 +250,7 @@ export async function uploadSheet(req, res) {
                 rows: totalRows,
                 active: true,
                 filename: versionedFilename,
+                display_name: displayName,
                 folderId: assignedFolderId,
                 tabs: sheetNames
             });
@@ -268,16 +276,22 @@ export async function uploadSheet(req, res) {
 }
 
 export async function getActiveSheet(req, res) {
-    const s = await query("SELECT id, headers, filename, totals_column FROM sheets WHERE active = TRUE LIMIT 1", []);
+    const s = await query("SELECT id, headers, filename, display_name, totals_column FROM sheets WHERE active = TRUE LIMIT 1", []);
     if (!s.length) return res.json(null);
-    res.json({ sheetId: s[0].id, headers: s[0].headers, filename: s[0].filename, totals_column: s[0].totals_column || null });
+    res.json({
+        sheetId: s[0].id,
+        headers: s[0].headers,
+        filename: s[0].filename,
+        display_name: s[0].display_name || null,
+        totals_column: s[0].totals_column || null
+    });
 }
 
 export async function listMySheets(req, res) {
     const userId = req.user.id;
     if (req.user.role === "admin") {
         const rows = await query(
-            `SELECT s.id, s.filename, s.uploaded_at, s.folder_id, f.name AS folder_name, s.active
+            `SELECT s.id, s.filename, s.display_name, s.uploaded_at, s.folder_id, f.name AS folder_name, s.active
              FROM sheets s
              LEFT JOIN folders f ON f.id = s.folder_id
              ORDER BY s.uploaded_at DESC`,
@@ -287,7 +301,7 @@ export async function listMySheets(req, res) {
     }
 
     const rows = await query(
-        `SELECT DISTINCT s.id, s.filename, s.uploaded_at, s.folder_id, f.name AS folder_name, s.active
+        `SELECT DISTINCT s.id, s.filename, s.display_name, s.uploaded_at, s.folder_id, f.name AS folder_name, s.active
          FROM sheets s
          LEFT JOIN folders f ON f.id = s.folder_id
          WHERE (
@@ -314,7 +328,7 @@ export async function listMySheets(req, res) {
 export async function listAllSheets(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     const rows = await query(
-        `SELECT s.id, s.filename, s.uploaded_at, s.folder_id, f.name AS folder_name, s.active
+        `SELECT s.id, s.filename, s.display_name, s.uploaded_at, s.folder_id, f.name AS folder_name, s.active
          FROM sheets s
          LEFT JOIN folders f ON f.id = s.folder_id
          ORDER BY s.uploaded_at DESC`,
@@ -351,7 +365,7 @@ async function checkSheetAccess(sheetId, user) {
 export async function getSheetDetails(req, res) {
     const hasAccess = await checkSheetAccess(req.params.id, req.user);
     if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
-    const s = await query("SELECT id, headers, active, filename, totals_column FROM sheets WHERE id=$1", [req.params.id]);
+    const s = await query("SELECT id, headers, active, filename, display_name, totals_column FROM sheets WHERE id=$1", [req.params.id]);
     if (!s.length) return res.status(404).json({ error: "not_found" });
 
     // Enforce allowed_columns on the headers array returned

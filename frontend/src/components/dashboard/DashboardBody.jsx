@@ -26,6 +26,8 @@ export default function DashboardBody(props) {
         setFile,
         selectedFileName,
         setSelectedFileName,
+        uploadDisplayName,
+        setUploadDisplayName,
 
         handleUpload,
         loadData,
@@ -363,17 +365,39 @@ export default function DashboardBody(props) {
                                                     onChange={(e) => setSelectedFolderId(e.target.value)}
                                                     placeholder="Select Folder…"
                                                     className="w-full"
-                                                    buttonClassName="w-full border border-blue-700 rounded-lg h-9 bg-blue-900 text-white font-bold px-3"
-                                                    panelWidth={320}
+                                                    buttonClassName="left-menu-action !font-medium !text-[0.74rem]"
+                                                    labelClassName="!font-medium tracking-normal"
+                                                    panelClassName="!rounded-md !border-slate-200 !shadow-xl"
+                                                    optionClassName="!rounded-sm hover:!bg-slate-50"
+                                                    optionTextClassName="!font-medium !text-[0.78rem]"
+                                                    searchInputClassName="!text-[0.78rem] !font-medium"
+                                                    panelWidth={210}
+                                                />
+                                                <input
+                                                    type="text"
+                                                    value={uploadDisplayName}
+                                                    onChange={(e) => setUploadDisplayName(e.target.value.replace(/\s+/g, "_"))}
+                                                    placeholder="Display_name (required)"
+                                                    className="left-menu-action"
+                                                    maxLength={120}
+                                                    required
                                                 />
                                                 <button
                                                     type="button"
                                                     onClick={() => {
-                                                        handleUpload(file, selectedFolderId);
+                                                        handleUpload(file, selectedFolderId, uploadDisplayName);
                                                     }}
-                                                    disabled={!file || !selectedFolderId}
-                                                    className={`left-menu-action ${!file || !selectedFolderId ? "left-menu-action-disabled" : ""}`}
-                                                    title={!file ? "Choose a file" : !selectedFolderId ? "Select a folder" : "Upload & Load"}
+                                                    disabled={!file || !selectedFolderId || !String(uploadDisplayName || "").trim()}
+                                                    className={`left-menu-action ${!file || !selectedFolderId || !String(uploadDisplayName || "").trim() ? "left-menu-action-disabled" : ""}`}
+                                                    title={
+                                                        !file
+                                                            ? "Choose a file"
+                                                            : !selectedFolderId
+                                                                ? "Select a folder"
+                                                                : !String(uploadDisplayName || "").trim()
+                                                                    ? "Enter a display name"
+                                                                    : "Upload & Load"
+                                                    }
                                                 >
                                                     Upload & Load
                                                 </button>

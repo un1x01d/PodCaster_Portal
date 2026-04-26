@@ -1,6 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import api from "../api";
 
+const CHAT_TRANSLATE_CACHE = new Map();
+const CHAT_TRANSLATE_IN_FLIGHT = new Map();
+
 function serializeActiveFilters(activeFilters = {}) {
   if (!activeFilters || typeof activeFilters !== "object") return {};
   const out = {};
@@ -138,6 +141,8 @@ export function useChatbotLogic({
     if (prevLocaleRef.current === locale) return;
     prevLocaleRef.current = locale;
     if (!Array.isArray(messages) || !messages.length) return;
+    const normalizedLocale = String(locale || "").toLowerCase();
+    if (!normalizedLocale || normalizedLocale.startsWith("en")) return;
 
     let cancelled = false;
     const items = messages
@@ -148,19 +153,44 @@ export function useChatbotLogic({
       .filter((item) => item.text);
 
     if (!items.length) return undefined;
+    const requestKey = `${normalizedLocale}|${items.map((item) => `${item.key}:${item.text}`).join("||")}`;
+    const applyTranslations = (translations) => {
+      if (cancelled) return;
+      setMessages((prev) => prev.map((m, idx) => ({
+        ...m,
+        text: translations[`m_${idx}`] || m.text,
+      })));
+    };
 
-    api.post("/dashboard/translate", { locale, items })
+    const cached = CHAT_TRANSLATE_CACHE.get(requestKey);
+    if (cached && typeof cached === "object") {
+      applyTranslations(cached);
+      return undefined;
+    }
+
+    const inFlight = CHAT_TRANSLATE_IN_FLIGHT.get(requestKey);
+    if (inFlight) {
+      inFlight.then((translations) => applyTranslations(translations || {}));
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const request = api.post("/dashboard/translate", { locale: normalizedLocale, items })
       .then((res) => {
-        if (cancelled) return;
         const translations = res?.data?.translations || {};
-        setMessages((prev) => prev.map((m, idx) => ({
-          ...m,
-          text: translations[`m_${idx}`] || m.text,
-        })));
+        CHAT_TRANSLATE_CACHE.set(requestKey, translations);
+        return translations;
       })
       .catch(() => {
         // no-op: keep existing text if translation fails
+        return {};
+      })
+      .finally(() => {
+        CHAT_TRANSLATE_IN_FLIGHT.delete(requestKey);
       });
+    CHAT_TRANSLATE_IN_FLIGHT.set(requestKey, request);
+    request.then((translations) => applyTranslations(translations || {}));
 
     return () => {
       cancelled = true;
@@ -189,14 +219,13 @@ export function useChatbotLogic({
     }
   }, [copy.chatResetMessage, sheetId, activeTab]);
 
-  const handleSend = useCallback(async () => {
-    const q = input.trim();
+  const sendMessage = useCallback(async (rawMessage, meta = null) => {
+    const q = String(rawMessage || "").trim();
     if (!q || !sheetId || isSending) return;
     const clearCommand = /^(clear chat|reset chat|очистить чат|очисти чат|скинь чат|сбросить чат|clear)$/i.test(q);
     if (clearCommand) {
       clearMessages();
       if (onApplyFilter) onApplyFilter("RESET_ALL");
-      setInput("");
       return;
     }
 
@@ -248,13 +277,72 @@ export function useChatbotLogic({
         isFilter: filters.length > 0,
         filterCol: filters[0]?.column,
       }]);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("dashboard:chat-response", {
+          detail: {
+            sheetId,
+            answer,
+            meta,
+          },
+        }));
+      }
     } catch (e) {
       const msg = e?.response?.data?.message || e?.response?.data?.error || copy.chatRequestFailed || "AI chat request failed.";
       setMessages((prev) => [...prev, { type: "bot", text: msg, timestamp: new Date() }]);
     } finally {
       setIsSending(false);
     }
-  }, [input, sheetId, activeTab, isSending, activeFilters, messages, onApplyFilter, onUpdateChart, locale, copy.appliedFilters, copy.chatRequestFailed, clearMessages]);
+  }, [sheetId, activeTab, isSending, activeFilters, messages, onApplyFilter, onUpdateChart, locale, copy.appliedFilters, copy.chatRequestFailed, clearMessages]);
+
+  const handleSend = useCallback(async () => {
+    const q = input.trim();
+    if (!q) return;
+    setInput("");
+    await sendMessage(q);
+  }, [input, sendMessage]);
+
+  useEffect(() => {
+    const onExternalSubmit = (event) => {
+      const payload = event?.detail || {};
+      if (!payload?.sheetId || String(payload.sheetId) !== String(sheetId)) return;
+      const message = String(payload?.message || "").trim();
+      if (!message) return;
+      const meta = payload?.meta || null;
+      if (meta?.silent) {
+        (async () => {
+          try {
+            const res = await api.post("/chat/query", {
+              sheetId,
+              activeTab: activeTab || null,
+              message,
+              activeFilters: serializeActiveFilters(activeFilters),
+              conversationHistory: buildConversationHistory(messages),
+              locale,
+            });
+            const result = res?.data || {};
+            const answer = typeof result.answer === "string" && result.answer.trim()
+              ? result.answer
+              : "";
+            if (typeof window !== "undefined") {
+              window.dispatchEvent(new CustomEvent("dashboard:chat-response", {
+                detail: {
+                  sheetId,
+                  answer,
+                  meta,
+                },
+              }));
+            }
+          } catch (_) {
+            // Silent pinned-metric calls should not alter chat UI on errors.
+          }
+        })();
+        return;
+      }
+      sendMessage(message, meta);
+    };
+    window.addEventListener("dashboard:submit-chat", onExternalSubmit);
+    return () => window.removeEventListener("dashboard:submit-chat", onExternalSubmit);
+  }, [sheetId, sendMessage, activeTab, activeFilters, messages, locale]);
 
   return {
     messages,
