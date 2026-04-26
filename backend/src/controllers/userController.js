@@ -35,7 +35,12 @@ export async function listUsers(req, res) {
     const isGlobalAdmin = req.user.role === "admin";
     try {
         if (isGlobalAdmin) {
-            const users = await query("SELECT id, email, role, default_view_id FROM users ORDER BY id ASC");
+            const users = await query(
+                `SELECT id, email, role, default_view_id,
+                        CASE WHEN password IS NULL THEN 'google' ELSE 'manual' END AS auth_provider
+                 FROM users
+                 ORDER BY id ASC`
+            );
             return res.json(users);
         } else {
             const adminGroups = await getAdminGroups(req.user.id);
@@ -43,7 +48,8 @@ export async function listUsers(req, res) {
             
             // Return users who share ANY handled group with the admin
             const users = await query(`
-                SELECT DISTINCT u.id, u.email, u.role, u.default_view_id 
+                SELECT DISTINCT u.id, u.email, u.role, u.default_view_id,
+                                CASE WHEN u.password IS NULL THEN 'google' ELSE 'manual' END AS auth_provider
                 FROM users u
                 JOIN user_groups ug ON u.id = ug.user_id
                 WHERE ug.group_id = ANY($1::int[])
@@ -71,7 +77,7 @@ export async function createUser(req, res) {
     try {
         const created = await query(
             "INSERT INTO users (email, password, role, password_reset_required) VALUES ($1, $2, $3, $4) RETURNING id, email, role",
-            [email, hashedFn, role || "producer", true]
+            [email, hashedFn, role || "user", true]
         );
         const payload = { ...created[0] };
         if (EXPOSE_TEMP_PASSWORDS) payload.newPassword = temporaryPassword;
@@ -184,6 +190,86 @@ export async function setDefaultView(req, res) {
     res.json({ success: true });
 }
 
+export async function getGoogleIntegrationSetting(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const rows = await query("SELECT value FROM app_settings WHERE key = 'google_integration' LIMIT 1", []);
+    const enabled = rows.length ? !!rows[0]?.value?.enabled : true;
+    res.json({ enabled });
+}
+
+export async function setGoogleIntegrationSetting(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const enabled = !!req.body?.enabled;
+    await query(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ('google_integration', $1::jsonb, CURRENT_TIMESTAMP)
+         ON CONFLICT (key)
+         DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+        [JSON.stringify({ enabled })]
+    );
+    res.json({ success: true, enabled });
+}
+
+function maskIfPresent(value) {
+    return String(value || "").trim() ? "***" : "";
+}
+
+export async function getGoogleOauthSetting(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const rows = await query("SELECT value FROM app_settings WHERE key = 'google_oauth' LIMIT 1", []);
+    const cfg = rows[0]?.value || {};
+    const clientId = String(cfg.clientId || "");
+    const clientSecret = String(cfg.clientSecret || "");
+    const redirectUri = String(cfg.redirectUri || "");
+    const frontendUrl = String(cfg.frontendUrl || "");
+
+    res.json({
+        hasClientId: !!clientId,
+        hasClientSecret: !!clientSecret,
+        clientIdMasked: maskIfPresent(clientId),
+        clientSecretMasked: maskIfPresent(clientSecret),
+        redirectUri,
+        frontendUrl,
+    });
+}
+
+export async function setGoogleOauthSetting(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+
+    const rows = await query("SELECT value FROM app_settings WHERE key = 'google_oauth' LIMIT 1", []);
+    const current = rows[0]?.value || {};
+
+    const incomingClientIdRaw = typeof req.body?.clientId === "string" ? req.body.clientId.trim() : undefined;
+    const incomingClientSecretRaw = typeof req.body?.clientSecret === "string" ? req.body.clientSecret.trim() : undefined;
+    const incomingRedirectRaw = typeof req.body?.redirectUri === "string" ? req.body.redirectUri.trim() : undefined;
+    const incomingFrontendRaw = typeof req.body?.frontendUrl === "string" ? req.body.frontendUrl.trim() : undefined;
+
+    const next = {
+        clientId: (incomingClientIdRaw && incomingClientIdRaw !== "***") ? incomingClientIdRaw : String(current.clientId || ""),
+        clientSecret: (incomingClientSecretRaw && incomingClientSecretRaw !== "***") ? incomingClientSecretRaw : String(current.clientSecret || ""),
+        redirectUri: incomingRedirectRaw !== undefined ? incomingRedirectRaw : String(current.redirectUri || ""),
+        frontendUrl: incomingFrontendRaw !== undefined ? incomingFrontendRaw : String(current.frontendUrl || ""),
+    };
+
+    await query(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ('google_oauth', $1::jsonb, CURRENT_TIMESTAMP)
+         ON CONFLICT (key)
+         DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+        [JSON.stringify(next)]
+    );
+
+    res.json({
+        success: true,
+        hasClientId: !!next.clientId,
+        hasClientSecret: !!next.clientSecret,
+        clientIdMasked: maskIfPresent(next.clientId),
+        clientSecretMasked: maskIfPresent(next.clientSecret),
+        redirectUri: next.redirectUri,
+        frontendUrl: next.frontendUrl,
+    });
+}
+
 // --- Groups ---
 
 export async function listGroups(req, res) {
@@ -262,7 +348,8 @@ export async function getGroupMembers(req, res) {
         if (!adminGroups.includes(gid)) return res.status(403).json({ error: "Forbidden" });
     }
     const rows = await query(
-        `SELECT u.id, u.email, u.role, ug.is_admin
+        `SELECT u.id, u.email, u.role, ug.is_admin,
+                CASE WHEN u.password IS NULL THEN 'google' ELSE 'manual' END AS auth_provider
          FROM user_groups ug
          JOIN users u ON u.id = ug.user_id
          WHERE ug.group_id=$1
@@ -329,11 +416,15 @@ export async function removeUserFromGroup(req, res) {
 }
 
 export async function toggleGroupAdmin(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     const { id: gid, userId } = req.params;
     const { isAdmin } = req.body;
-    
+
     try {
+        if (req.user.role !== "admin") {
+            const adminGroups = await getAdminGroups(req.user.id);
+            if (!adminGroups.includes(Number(gid))) return res.status(403).json({ error: "Forbidden" });
+        }
+
         await query(
             "UPDATE user_groups SET is_admin = $1 WHERE group_id = $2 AND user_id = $3",
             [!!isAdmin, gid, userId]

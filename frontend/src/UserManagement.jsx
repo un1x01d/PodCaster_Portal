@@ -24,7 +24,24 @@ function saveTemplates(arr) {
 export default function UserManagement({ token, user, sheetId }) {
   const trunc = (s, n) => (s && s.length > n ? s.slice(0, n) + "..." : s);
   const [users, setUsers] = useState([]);
-  const [newUser, setNewUser] = useState({ email: "", password: "", role: "producer" });
+  const [newUser, setNewUser] = useState({ email: "", password: "", role: "user" });
+  const [googleIntegrationEnabled, setGoogleIntegrationEnabled] = useState(true);
+  const [googleIntegrationSaving, setGoogleIntegrationSaving] = useState(false);
+  const [googleOauthMeta, setGoogleOauthMeta] = useState({
+    hasClientId: false,
+    hasClientSecret: false,
+    clientIdMasked: "",
+    clientSecretMasked: "",
+    redirectUri: "",
+    frontendUrl: "",
+  });
+  const [googleOauthForm, setGoogleOauthForm] = useState({
+    clientId: "",
+    clientSecret: "",
+    redirectUri: "",
+    frontendUrl: "",
+  });
+  const [googleOauthSaving, setGoogleOauthSaving] = useState(false);
 
   // user-level permissions UI (select a sheet from user's groups)
   const [selectedUserId, setSelectedUserId] = useState(null);
@@ -149,6 +166,96 @@ export default function UserManagement({ token, user, sheetId }) {
     }
   };
 
+  const fetchGoogleIntegrationSetting = async () => {
+    if (user?.role !== "admin") return;
+    try {
+      const res = await axios.get(`${API}/admin/settings/google-integration`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setGoogleIntegrationEnabled(!!res?.data?.enabled);
+    } catch (e) {
+      console.error("fetchGoogleIntegrationSetting failed", e);
+    }
+  };
+
+  const toggleGoogleIntegration = async () => {
+    if (user?.role !== "admin" || googleIntegrationSaving) return;
+    const nextEnabled = !googleIntegrationEnabled;
+    setGoogleIntegrationSaving(true);
+    try {
+      await axios.patch(`${API}/admin/settings/google-integration`, { enabled: nextEnabled }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setGoogleIntegrationEnabled(nextEnabled);
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to update Google integration");
+    } finally {
+      setGoogleIntegrationSaving(false);
+    }
+  };
+
+  const fetchGoogleOauthSetting = async () => {
+    if (user?.role !== "admin") return;
+    try {
+      const res = await axios.get(`${API}/admin/settings/google-oauth`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || {};
+      setGoogleOauthMeta({
+        hasClientId: !!data.hasClientId,
+        hasClientSecret: !!data.hasClientSecret,
+        clientIdMasked: data.clientIdMasked || "",
+        clientSecretMasked: data.clientSecretMasked || "",
+        redirectUri: data.redirectUri || "",
+        frontendUrl: data.frontendUrl || "",
+      });
+      setGoogleOauthForm((prev) => ({
+        ...prev,
+        clientId: "",
+        clientSecret: "",
+        redirectUri: data.redirectUri || "",
+        frontendUrl: data.frontendUrl || "",
+      }));
+    } catch (e) {
+      console.error("fetchGoogleOauthSetting failed", e);
+    }
+  };
+
+  const saveGoogleOauthSetting = async () => {
+    if (user?.role !== "admin" || googleOauthSaving) return;
+    setGoogleOauthSaving(true);
+    try {
+      const payload = {
+        clientId: googleOauthForm.clientId || "***",
+        clientSecret: googleOauthForm.clientSecret || "***",
+        redirectUri: googleOauthForm.redirectUri || "",
+        frontendUrl: googleOauthForm.frontendUrl || "",
+      };
+      const res = await axios.patch(`${API}/admin/settings/google-oauth`, payload, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || {};
+      setGoogleOauthMeta({
+        hasClientId: !!data.hasClientId,
+        hasClientSecret: !!data.hasClientSecret,
+        clientIdMasked: data.clientIdMasked || "",
+        clientSecretMasked: data.clientSecretMasked || "",
+        redirectUri: data.redirectUri || "",
+        frontendUrl: data.frontendUrl || "",
+      });
+      setGoogleOauthForm((prev) => ({
+        ...prev,
+        clientId: "",
+        clientSecret: "",
+      }));
+      alert("Google OAuth settings updated");
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to update Google OAuth settings");
+    } finally {
+      setGoogleOauthSaving(false);
+    }
+  };
+
   const fetchGroupMembers = async (gid) => {
     if (!gid) return setGroupMembers([]);
     try {
@@ -266,6 +373,8 @@ export default function UserManagement({ token, user, sheetId }) {
       fetchGroups();
       fetchAllViews();
       fetchAllSheets(); // load on mount
+      fetchGoogleIntegrationSetting();
+      fetchGoogleOauthSetting();
     }
   }, [token]);
 
@@ -370,7 +479,7 @@ export default function UserManagement({ token, user, sheetId }) {
       await axios.post(`${API}/users`, newUser, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      setNewUser({ email: "", password: "", role: "producer" });
+      setNewUser({ email: "", password: "", role: "user" });
       fetchUsers();
     } catch (e) {
       alert(e.response?.data?.error || "Failed to create user");
@@ -704,6 +813,18 @@ export default function UserManagement({ token, user, sheetId }) {
       return true;
     });
   }, [users]);
+
+  const authBadgeClass = (provider) => (
+    provider === "google"
+      ? "bg-blue-50 text-blue-700 border-blue-200"
+      : "bg-slate-50 text-slate-600 border-slate-200"
+  );
+
+  const canManageGroupAdmins = useMemo(() => {
+    if (user?.role === "admin") return true;
+    return uniqueGroupMembers.some((m) => Number(m.id) === Number(user?.id) && !!m.is_admin);
+  }, [user, uniqueGroupMembers]);
+
   return (
     <div className="p-8 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-8 justify-center bg-gradient-to-b from-slate-100 to-blue-50/60 min-h-full overflow-auto">
       {/* 1. USERS PANEL */}
@@ -719,6 +840,64 @@ export default function UserManagement({ token, user, sheetId }) {
         {/* Quick Add User */}
         <div className="flex flex-col gap-4 mb-8 bg-slate-50 p-4 rounded-md border border-slate-200">
           <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 ml-1">Quick Add User</label>
+          {user?.role === "admin" && (
+            <>
+              <button
+                type="button"
+                onClick={toggleGoogleIntegration}
+                disabled={googleIntegrationSaving}
+                className={`w-full flex items-center justify-between px-3 py-2 rounded-md border text-xs font-bold uppercase tracking-wider transition-colors ${
+                  googleIntegrationEnabled
+                    ? "bg-blue-50 border-blue-200 text-blue-700"
+                    : "bg-slate-100 border-slate-200 text-slate-600"
+                } ${googleIntegrationSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                title="Enable or disable Google SSO integration"
+              >
+                <span>Google Sign-In</span>
+                <span>{googleIntegrationEnabled ? "Enabled" : "Disabled"}</span>
+              </button>
+              <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+                <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Google OAuth Config</div>
+                <input
+                  type="password"
+                  className="input-premium"
+                  placeholder={googleOauthMeta.hasClientId ? "***" : "Google Client ID"}
+                  value={googleOauthForm.clientId}
+                  onChange={(e) => setGoogleOauthForm((prev) => ({ ...prev, clientId: e.target.value }))}
+                  autoComplete="new-password"
+                />
+                <input
+                  type="password"
+                  className="input-premium"
+                  placeholder={googleOauthMeta.hasClientSecret ? "***" : "Google Client Secret"}
+                  value={googleOauthForm.clientSecret}
+                  onChange={(e) => setGoogleOauthForm((prev) => ({ ...prev, clientSecret: e.target.value }))}
+                  autoComplete="new-password"
+                />
+                <input
+                  className="input-premium"
+                  placeholder="Redirect URI"
+                  value={googleOauthForm.redirectUri}
+                  onChange={(e) => setGoogleOauthForm((prev) => ({ ...prev, redirectUri: e.target.value }))}
+                />
+                <input
+                  className="input-premium"
+                  placeholder="Frontend URL"
+                  value={googleOauthForm.frontendUrl}
+                  onChange={(e) => setGoogleOauthForm((prev) => ({ ...prev, frontendUrl: e.target.value }))}
+                />
+                <button
+                  type="button"
+                  onClick={saveGoogleOauthSetting}
+                  disabled={googleOauthSaving}
+                  className={`btn-premium bg-slate-800 text-white w-full py-2 ${googleOauthSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                >
+                  {googleOauthSaving ? "Saving..." : "Save Google OAuth"}
+                </button>
+                <div className="text-[10px] text-slate-400">Client ID/Secret are masked and never returned in plain text.</div>
+              </div>
+            </>
+          )}
           <input
             className="input-premium"
             placeholder="Email address"
@@ -738,7 +917,7 @@ export default function UserManagement({ token, user, sheetId }) {
               value={newUser.role}
               onChange={e => setNewUser({ ...newUser, role: e.target.value })}
             >
-              <option value="producer">Producer</option>
+              <option value="user">User</option>
               <option value="admin">Admin</option>
             </select>
             <button
@@ -770,24 +949,31 @@ export default function UserManagement({ token, user, sheetId }) {
                 </div>
                 <div className="min-w-0">
                   <div className={`font-bold text-sm truncate max-w-[100px] ${selectedUserId === u.id ? "text-white" : "text-slate-900"}`}>{u.email}</div>
-                  <div className={`text-[10px] font-bold uppercase tracking-widest mt-0.5 ${selectedUserId === u.id ? "text-indigo-100" : "text-slate-400"}`}>
-                    {u.role}
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <div className={`text-[10px] font-bold uppercase tracking-widest ${selectedUserId === u.id ? "text-indigo-100" : "text-slate-400"}`}>
+                      {u.role}
+                    </div>
+                    <div className={`text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded border ${selectedUserId === u.id ? "bg-white/20 text-white border-white/20" : authBadgeClass(u.auth_provider)}`}>
+                      {u.auth_provider === "google" ? "Google" : "Manual"}
+                    </div>
                   </div>
                 </div>
               </div>
               <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                <button
-                  className={`p-2 rounded-lg transition-colors ${
-                    selectedUserId === u.id ? "hover:bg-white/20 text-white" : "hover:bg-slate-100 text-slate-400 hover:text-indigo-600"
-                  }`}
-                  title="Reset Password"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (window.confirm("Are you sure you want to reset this user's password?")) {
-                      resetPassword(u.id);
-                    }
-                  }}
-                >🔄</button>
+                {u.auth_provider !== "google" && (
+                  <button
+                    className={`p-2 rounded-lg transition-colors ${
+                      selectedUserId === u.id ? "hover:bg-white/20 text-white" : "hover:bg-slate-100 text-slate-400 hover:text-indigo-600"
+                    }`}
+                    title="Reset Password"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (window.confirm("Are you sure you want to reset this user's password?")) {
+                        resetPassword(u.id);
+                      }
+                    }}
+                  >🔄</button>
+                )}
                 <button
                   className={`p-2 rounded-lg transition-colors ${
                     selectedUserId === u.id ? "hover:bg-white/20 text-white" : "hover:bg-red-50 text-slate-400 hover:text-red-500"
@@ -856,7 +1042,11 @@ export default function UserManagement({ token, user, sheetId }) {
                   <option value="">Select user…</option>
                   {uniqueUsers
                     .filter(u => !uniqueGroupMembers.some(m => String(m.id) === String(u.id)))
-                    .map(u => <option key={String(u.id)} value={u.id}>{u.email}</option>)
+                    .map(u => (
+                      <option key={String(u.id)} value={u.id}>
+                        {u.email} ({u.auth_provider === "google" ? "Google" : "Manual"})
+                      </option>
+                    ))
                   }
                 </select>
                 <button
@@ -872,12 +1062,15 @@ export default function UserManagement({ token, user, sheetId }) {
                   <div key={String(m.id)} className="group flex items-center justify-between p-3 rounded-md bg-white border border-slate-200 hover:bg-white transition-all">
                     <div className="flex items-center gap-2 overflow-hidden">
                       <div className="text-xs font-bold text-slate-700 truncate max-w-[120px]">{m.email}</div>
+                      <div className={`text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border ${authBadgeClass(m.auth_provider)}`}>
+                        {m.auth_provider === "google" ? "Google" : "Manual"}
+                      </div>
                       {m.is_admin && (
                         <div className="text-[8px] font-black text-amber-500 uppercase tracking-widest bg-amber-50 px-1.5 py-0.5 rounded-md border border-amber-100">Admin</div>
                       )}
                     </div>
                     <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      {user?.role === "admin" && (
+                      {canManageGroupAdmins && (
                         <button
                           onClick={() => toggleGroupAdmin(m.id, m.is_admin)}
                           className={`p-1.5 rounded-lg transition-all ${

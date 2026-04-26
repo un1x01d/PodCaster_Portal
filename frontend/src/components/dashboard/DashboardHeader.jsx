@@ -100,7 +100,7 @@ export default function DashboardHeader({
                 <div className="h-8 w-px bg-slate-200/60 mx-1"></div>
 
                 <div className="flex items-center gap-3">
-                    <div className="w-[22rem] max-w-[35vw] min-w-[14rem]">
+                    <div className="w-[48ch] max-w-[48ch] min-w-[48ch]">
                         <SearchableSelect
                             options={startOptions.concat(fileOptions)}
                             value={currentValue}
@@ -108,8 +108,13 @@ export default function DashboardHeader({
                             onDelete={user?.role === 'admin' ? onDeleteSheet : null}
                             placeholder={ui.searchSpreadsheets}
                             className="w-full"
-                            buttonClassName="w-full h-10 px-4 rounded-xl border border-slate-200 bg-white/70 text-slate-700 shadow-sm hover:bg-white"
-                            panelWidth={520}
+                            buttonClassName="w-full h-8 px-3 rounded-md border border-slate-300 bg-slate-100 text-slate-700 text-[0.72rem] font-normal shadow-sm hover:bg-slate-200"
+                            labelClassName="!text-[0.72rem] !font-normal"
+                            panelClassName="!rounded-md !border-slate-300 !bg-slate-100 !shadow-md"
+                            optionClassName="!rounded-none !px-2 !py-1.5 hover:!bg-slate-200"
+                            optionTextClassName="!text-[0.7rem] !font-normal !text-slate-700"
+                            searchInputClassName="!text-[0.7rem] !font-normal !border-slate-300 !bg-slate-50 !text-slate-700"
+                            panelWidth={"48ch"}
                         />
                     </div>
                     {isDashboardRoute && setLocale && (

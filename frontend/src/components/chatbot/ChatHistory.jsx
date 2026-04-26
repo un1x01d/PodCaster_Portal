@@ -367,7 +367,11 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
     };
 
     return (
-        <div ref={containerRef} className="flex-1 overflow-y-auto p-2 space-y-2 bg-slate-50/50 min-h-0">
+        <div
+            ref={containerRef}
+            className="flex-1 overflow-y-auto p-2 space-y-2 bg-slate-50/50 min-h-0"
+            style={{ fontFamily: "'IBM Plex Sans', 'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" }}
+        >
             {messages.map((msg, i) => {
                 const isSpeaking = speakingIndex === i;
                 return (
@@ -387,7 +391,7 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
                                     )}
                                 </button>
                             )}
-                            <div className="whitespace-pre-wrap font-medium">{msg.text}</div>
+                            <div className="whitespace-pre-wrap font-semibold tracking-[0.01em]">{msg.text}</div>
                         </div>
                     </div>
                 );

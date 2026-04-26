@@ -276,7 +276,32 @@ export async function uploadSheet(req, res) {
 }
 
 export async function getActiveSheet(req, res) {
-    const s = await query("SELECT id, headers, filename, display_name, totals_column FROM sheets WHERE active = TRUE LIMIT 1", []);
+    let s = [];
+    if (req.user.role === "admin") {
+        s = await query("SELECT id, headers, filename, display_name, totals_column FROM sheets WHERE active = TRUE LIMIT 1", []);
+    } else {
+        s = await query(
+            `SELECT DISTINCT s.id, s.headers, s.filename, s.display_name, s.totals_column
+             FROM sheets s
+             LEFT JOIN folders f ON f.id = s.folder_id
+             WHERE s.active = TRUE
+               AND (
+                 (
+                   EXISTS (
+                     SELECT 1
+                     FROM folder_groups fg
+                     JOIN user_groups ug ON ug.group_id = fg.group_id
+                     WHERE fg.folder_id = f.id AND ug.user_id = $1
+                   )
+                   OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $1)
+                 )
+                 OR (s.id IN (SELECT sheet_id FROM permissions WHERE user_id = $1))
+                 OR (s.id IN (SELECT sheet_id FROM group_permissions WHERE group_id IN (SELECT group_id FROM user_groups WHERE user_id = $1)))
+               )
+             LIMIT 1`,
+            [req.user.id]
+        );
+    }
     if (!s.length) return res.json(null);
     res.json({
         sheetId: s[0].id,

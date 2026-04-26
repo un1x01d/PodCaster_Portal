@@ -75,7 +75,7 @@ export default function UsersPanel({
                         onChange={e => setNewUser({ ...newUser, role: e.target.value })}
                         disabled={user?.role !== "admin"}
                     >
-                        <option value="producer">Producer</option>
+                        <option value="user">User</option>
                         <option value="admin">Admin</option>
                     </select>
                     <button

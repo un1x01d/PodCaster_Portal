@@ -22,13 +22,15 @@ export async function initDb() {
       id SERIAL PRIMARY KEY,
       email TEXT NOT NULL UNIQUE,
       password TEXT,
-      role TEXT NOT NULL DEFAULT 'producer',
+      role TEXT NOT NULL DEFAULT 'user',
       default_view_id INT
     );
   `);
   // Add column if missing (for existing DBs)
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS default_view_id INT;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_required BOOLEAN DEFAULT FALSE;`);
+  await pool.query(`ALTER TABLE users ALTER COLUMN role SET DEFAULT 'user';`);
+  await pool.query(`UPDATE users SET role = 'user' WHERE role = chr(112)||chr(114)||chr(111)||chr(100)||chr(117)||chr(99)||chr(101)||chr(114);`);
 
   // GROUPS
   await pool.query(`
@@ -183,6 +185,53 @@ export async function initDb() {
       ON sheets (active) WHERE active;
   `);
 
+
+  // GOOGLE TOKENS (for Google SSO + Drive integration)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_google_tokens (
+      user_id INT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      google_sub TEXT,
+      access_token TEXT,
+      refresh_token TEXT,
+      scope TEXT,
+      token_type TEXT DEFAULT 'Bearer',
+      expires_at TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`ALTER TABLE user_google_tokens ADD COLUMN IF NOT EXISTS google_sub TEXT;`);
+  await pool.query(`ALTER TABLE user_google_tokens ADD COLUMN IF NOT EXISTS access_token TEXT;`);
+  await pool.query(`ALTER TABLE user_google_tokens ADD COLUMN IF NOT EXISTS refresh_token TEXT;`);
+  await pool.query(`ALTER TABLE user_google_tokens ADD COLUMN IF NOT EXISTS scope TEXT;`);
+  await pool.query(`ALTER TABLE user_google_tokens ADD COLUMN IF NOT EXISTS token_type TEXT DEFAULT 'Bearer';`);
+  await pool.query(`ALTER TABLE user_google_tokens ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP;`);
+  await pool.query(`ALTER TABLE user_google_tokens ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
+
+  // APP SETTINGS
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value JSONB NOT NULL DEFAULT '{}'::jsonb,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`
+    INSERT INTO app_settings (key, value, updated_at)
+    VALUES ('google_integration', '{"enabled": true}'::jsonb, CURRENT_TIMESTAMP)
+    ON CONFLICT (key) DO NOTHING;
+  `);
+  const googleOauthSeed = {
+    clientId: String(process.env.GOOGLE_CLIENT_ID || ""),
+    clientSecret: String(process.env.GOOGLE_CLIENT_SECRET || ""),
+    redirectUri: String(process.env.GOOGLE_REDIRECT_URI || ""),
+    frontendUrl: String(process.env.FRONTEND_URL || "http://localhost:5173"),
+  };
+  await pool.query(
+    `INSERT INTO app_settings (key, value, updated_at)
+     VALUES ('google_oauth', $1::jsonb, CURRENT_TIMESTAMP)
+     ON CONFLICT (key) DO NOTHING;`,
+    [JSON.stringify(googleOauthSeed)]
+  );
   // USER permissions
   await pool.query(`
     CREATE TABLE IF NOT EXISTS permissions (

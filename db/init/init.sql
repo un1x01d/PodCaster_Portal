@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS users (
   id SERIAL PRIMARY KEY,
   email TEXT NOT NULL UNIQUE,
   password TEXT,            -- plain for now; switch to hash later
-  role TEXT NOT NULL DEFAULT 'producer'
+  role TEXT NOT NULL DEFAULT 'user'
 );
 
 -- helpful index for lookups by email (unique already, but keep explicit)

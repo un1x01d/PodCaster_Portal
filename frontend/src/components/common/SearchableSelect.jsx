@@ -10,6 +10,8 @@ export default function SearchableSelect({
     disabled = false,
     buttonClassName = "bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white px-3 rounded-lg h-10 shadow-md flex items-center gap-2 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-indigo-200",
     panelWidth = "100%",
+    panelMinWidth = "100%",
+    panelMaxWidth = undefined,
     labelClassName = "",
     optionClassName = "",
     optionTextClassName = "",
@@ -31,6 +33,7 @@ export default function SearchableSelect({
     const filtered = q
         ? options.filter((o) => o.label.toLowerCase().includes(q.toLowerCase()))
         : options;
+    const resolvedPanelWidth = panelMaxWidth ? "max-content" : panelWidth;
 
     useEffect(() => {
         function onDocClick(e) {
@@ -56,7 +59,7 @@ export default function SearchableSelect({
     }, [open]);
 
     return (
-        <div className={`relative inline-block ${className}`}>
+        <div className={`relative inline-flex align-top ${className}`}>
             <button
                 ref={btnRef}
                 type="button"
@@ -65,8 +68,9 @@ export default function SearchableSelect({
                 className={`${buttonClassName} flex items-center justify-between gap-2 ${disabled ? "bg-gray-100 cursor-not-allowed text-gray-400" : ""
                     }`}
                 title={selected?.label || placeholder}
+                style={{ maxWidth: "100%" }}
             >
-                <div className={`truncate text-left flex-1 min-w-0 font-bold ${labelClassName}`}>{selected?.label || placeholder}</div>
+                <div className={`truncate text-left flex-1 min-w-0 ${labelClassName}`} style={{ maxWidth: "100%" }}>{selected?.label || placeholder}</div>
                 <span className="opacity-70 shrink-0">▾</span>
             </button>
 
@@ -74,7 +78,7 @@ export default function SearchableSelect({
                 <div
                     ref={panelRef}
                     className={`absolute z-50 mt-1 bg-white text-slate-800 border border-gray-200 rounded-lg shadow-lg p-2 left-0 ${panelClassName}`}
-                    style={{ width: panelWidth, minWidth: '100%', ...panelStyle }}
+                    style={{ width: resolvedPanelWidth, minWidth: panelMinWidth, maxWidth: panelMaxWidth, ...panelStyle }}
                 >
                     <input
                         autoFocus
@@ -95,7 +99,7 @@ export default function SearchableSelect({
                                     style={String(o.value) === String(value) ? { ...optionStyle, ...selectedOptionStyle } : optionStyle}
                                 >
                                     <div
-                                        className={`flex-1 min-w-0 truncate mr-2 text-sm font-bold text-slate-800 ${optionTextClassName}`}
+                                        className={`flex-1 min-w-0 truncate mr-2 text-sm text-slate-800 ${optionTextClassName}`}
                                         style={optionTextStyle}
                                         onClick={() => {
                                             onChange({ target: { value: o.value } });

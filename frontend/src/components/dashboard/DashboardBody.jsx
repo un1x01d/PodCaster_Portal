@@ -30,6 +30,7 @@ export default function DashboardBody(props) {
         setUploadDisplayName,
 
         handleUpload,
+        handleGoogleDriveImport,
         loadData,
         selectedViewId,
         setSelectedViewId,
@@ -120,6 +121,9 @@ export default function DashboardBody(props) {
         danger: false
     });
     const [insightsOn, setInsightsOn] = useState(false);
+    const [driveFiles, setDriveFiles] = useState([]);
+    const [driveLoading, setDriveLoading] = useState(false);
+    const [selectedDriveFileId, setSelectedDriveFileId] = useState("");
 
     const toggleMenu = (key) => {
         setExpandedMenus((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -154,6 +158,24 @@ export default function DashboardBody(props) {
         );
     }, [folders]);
 
+    const driveFileOptions = React.useMemo(() => {
+        return [{ value: "", label: "Google Drive file…" }].concat(
+            driveFiles.map((f) => ({
+                value: String(f.id),
+                label: f?.name || f?.id || "Unnamed file",
+            }))
+        );
+    }, [driveFiles]);
+
+    const driveDropdownWidthCh = React.useMemo(() => {
+        const labels = driveFileOptions
+            .map((o) => String(o?.label || ""))
+            .filter(Boolean);
+        const longest = labels.length ? Math.max(...labels.map((s) => s.length)) : 14;
+        // tighter bounds to keep dropdown compact
+        return Math.max(10, Math.min(longest + 1, 16));
+    }, [driveFileOptions]);
+
     const viewOptions = React.useMemo(() => {
         return [{ value: "", label: "Select a view…" }].concat(
             views.map((v) => ({ value: v.id, label: v.name }))
@@ -176,6 +198,21 @@ export default function DashboardBody(props) {
         } catch (e) {
             console.error("Delete view failed:", e);
             alert("Failed to delete view");
+        }
+    };
+
+    const fetchGoogleDriveFiles = async () => {
+        setDriveLoading(true);
+        try {
+            const res = await axios.get(`${API}/google/drive/files`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            setDriveFiles(Array.isArray(res?.data?.files) ? res.data.files : []);
+        } catch (e) {
+            console.error("Fetch Google Drive files failed:", e);
+            alert(e?.response?.data?.error || "Failed to fetch Google Drive files");
+        } finally {
+            setDriveLoading(false);
         }
     };
 
@@ -400,6 +437,61 @@ export default function DashboardBody(props) {
                                                     }
                                                 >
                                                     Upload & Load
+                                                </button>
+                                                <div className="left-menu-divider" />
+                                                <button
+                                                    type="button"
+                                                    onClick={fetchGoogleDriveFiles}
+                                                    className="left-menu-action"
+                                                    disabled={driveLoading}
+                                                >
+                                                    {driveLoading ? "Loading Drive Files..." : "Browse Google Drive"}
+                                                </button>
+                                                <SearchableSelect
+                                                    options={driveFileOptions}
+                                                    value={selectedDriveFileId}
+                                                    onChange={(e) => setSelectedDriveFileId(e.target.value)}
+                                                    placeholder="Select Google Drive file…"
+                                                    className="inline-flex w-auto max-w-[180px]"
+                                                    buttonClassName="w-auto max-w-[180px] h-8 px-2.5 rounded-md border border-slate-200 bg-white text-slate-700 text-[0.72rem] font-normal hover:border-slate-300 hover:bg-slate-50 transition-colors"
+                                                    labelClassName="!font-normal tracking-normal !text-slate-700 !text-[0.72rem]"
+                                                    panelClassName="!rounded-md !border-slate-300 !shadow-md !bg-slate-100 overflow-hidden"
+                                                    optionClassName="!rounded-none !px-2 !py-1.5 !bg-transparent hover:!bg-slate-200"
+                                                    optionTextClassName="!font-normal !text-[0.7rem] !text-slate-700 !truncate !block"
+                                                    searchInputClassName="!text-[0.7rem] !font-normal !border-slate-300 !bg-slate-50 !text-slate-700"
+                                                    panelWidth={`${driveDropdownWidthCh}ch`}
+                                                    panelMinWidth={`${driveDropdownWidthCh}ch`}
+                                                    panelMaxWidth={`${driveDropdownWidthCh}ch`}
+                                                    panelStyle={{ fontFamily: "'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" }}
+                                                    optionTextStyle={{ fontFamily: "'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif", letterSpacing: "0.005em" }}
+                                                    searchInputStyle={{ fontFamily: "'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif", letterSpacing: "0.005em" }}
+                                                />
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        const selectedDriveFile = driveFiles.find((f) => String(f.id) === String(selectedDriveFileId));
+                                                        if (!selectedDriveFile) return;
+                                                        handleGoogleDriveImport({
+                                                            fileId: selectedDriveFile.id,
+                                                            name: selectedDriveFile.name,
+                                                            mimeType: selectedDriveFile.mimeType,
+                                                            folderId: selectedFolderId,
+                                                            displayName: uploadDisplayName,
+                                                        });
+                                                    }}
+                                                    disabled={!selectedDriveFileId || !selectedFolderId || !String(uploadDisplayName || "").trim()}
+                                                    className={`left-menu-action ${!selectedDriveFileId || !selectedFolderId || !String(uploadDisplayName || "").trim() ? "left-menu-action-disabled" : ""}`}
+                                                    title={
+                                                        !selectedDriveFileId
+                                                            ? "Select a Google Drive file"
+                                                            : !selectedFolderId
+                                                                ? "Select a folder"
+                                                                : !String(uploadDisplayName || "").trim()
+                                                                    ? "Enter a display name"
+                                                                    : "Import selected Google Drive file"
+                                                    }
+                                                >
+                                                    Import from Google Drive
                                                 </button>
                                             </div>
                                         </details>

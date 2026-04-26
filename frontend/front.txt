@@ -1141,11 +1141,11 @@ export default function UserManagement({ token, onClose, headers }) {
   const [newUser, setNewUser] = useState({
     email: "",
     password: "",
-    role: "producer",
+    role: "user",
   });
 
   const [selected, setSelected] = useState(null);
-  const [editRole, setEditRole] = useState("producer");
+  const [editRole, setEditRole] = useState("user");
   const [editPassword, setEditPassword] = useState("");
 
   // permissions-ish (simple)
@@ -1171,7 +1171,7 @@ export default function UserManagement({ token, onClose, headers }) {
     if (!selected) return;
     const u = users.find((x) => x.id === selected);
     if (!u) return;
-    setEditRole(u.role || "producer");
+    setEditRole(u.role || "user");
 
     // hydrate filters & allowed cols
     const f = u.filters || {};
@@ -1188,7 +1188,7 @@ export default function UserManagement({ token, onClose, headers }) {
       { ...newUser, filters: {}, allowed_columns: [] },
       auth
     );
-    setNewUser({ email: "", password: "", role: "producer" });
+    setNewUser({ email: "", password: "", role: "user" });
     await load();
     alert("✅ User created");
   };
@@ -1275,7 +1275,7 @@ export default function UserManagement({ token, onClose, headers }) {
             value={newUser.role}
             onChange={(e) => setNewUser((s) => ({ ...s, role: e.target.value }))}
           >
-            <option value="producer">producer</option>
+            <option value="user">user</option>
             <option value="admin">admin</option>
             <option value="client">client</option>
             <option value="lawyer">lawyer</option>
@@ -1377,7 +1377,7 @@ export default function UserManagement({ token, onClose, headers }) {
                 value={editRole}
                 onChange={(e) => setEditRole(e.target.value)}
               >
-                <option value="producer">producer</option>
+                <option value="user">user</option>
                 <option value="admin">admin</option>
                 <option value="client">client</option>
                 <option value="lawyer">lawyer</option>

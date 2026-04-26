@@ -11,11 +11,14 @@ export default function ChatInput({ input, setInput, handleSend, isOpen, copy = 
     }, [isOpen]);
 
     return (
-        <div className="p-1.5 bg-white border-t border-slate-100">
+        <div
+            className="p-1.5 bg-white border-t border-slate-100"
+            style={{ fontFamily: "'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" }}
+        >
             <div className="flex gap-1.5">
                 <input
                     ref={inputRef}
-                    className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition-all placeholder-slate-400 text-slate-700 font-medium"
+                    className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-[10px] focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition-all placeholder-slate-400 text-slate-700 font-normal tracking-[0.01em]"
                     placeholder={copy.askQuestion || "Ask a question..."}
                     value={input}
                     onChange={(e) => setInput(e.target.value)}

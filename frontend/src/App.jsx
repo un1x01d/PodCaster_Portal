@@ -84,6 +84,7 @@ export default function App() {
   const [token, setToken] = useState(localStorage.getItem("token") || "");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [googleEnabled, setGoogleEnabled] = useState(true);
   const dashboardI18n = useDashboardI18n({ enabled: !!user });
 
   const [sheetId, setSheetId] = useState(() => localStorage.getItem("sheetId") || null);
@@ -528,6 +529,25 @@ export default function App() {
     }
   };
 
+  const handleGoogleLogin = async () => {
+    if (!googleEnabled) {
+      alert("Google sign-in is disabled.");
+      return;
+    }
+    try {
+      const res = await axios.get(`${API}/auth/google/url`);
+      const url = String(res?.data?.url || "").trim();
+      if (!url) {
+        alert("Google login is not configured.");
+        return;
+      }
+      window.location.href = url;
+    } catch (err) {
+      console.error("google login url failed:", err);
+      alert("Google login is not configured.");
+    }
+  };
+
   const loadData = async (sid = sheetId, preserveFilters = false, tabName = null) => {
     if (!sid) return;
     try {
@@ -628,6 +648,45 @@ export default function App() {
     } catch (e) {
       console.error(e);
       alert("Upload failed");
+    }
+  };
+
+  const handleGoogleDriveImport = async ({ fileId, name, mimeType, folderId, displayName }) => {
+    if (!fileId || !folderId || !String(displayName || "").trim()) return;
+    try {
+      const res = await axios.post(
+        `${API}/google/drive/import`,
+        {
+          fileId,
+          name,
+          mimeType,
+          folder_id: folderId,
+          display_name: String(displayName).trim(),
+        },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      alert("Imported from Google Drive!");
+      if (res.data?.sheetId) {
+        setSheetId(res.data.sheetId);
+        const activeName = res.data.display_name || res.data.filename;
+        setActiveFilename(activeName);
+        localStorage.setItem("activeFilename", activeName);
+        setUploadDisplayName("");
+        if (res.data.tabs && res.data.tabs.length > 0) {
+          setTabs(res.data.tabs);
+          setActiveTab(res.data.tabs[0]);
+          localStorage.setItem("activeTab", res.data.tabs[0]);
+        }
+        loadData(res.data.sheetId);
+        if (token) {
+          axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } })
+            .then(r => setMyFiles(r.data || []));
+        }
+      }
+    } catch (e) {
+      console.error(e);
+      alert(e.response?.data?.error || "Google Drive import failed");
     }
   };
 
@@ -790,6 +849,39 @@ export default function App() {
     });
     doc.save(`${activeFilename || "export"}.pdf`);
   };
+
+  useEffect(() => {
+    axios.get(`${API}/auth/google/status`)
+      .then((r) => setGoogleEnabled(r?.data?.enabled !== false))
+      .catch(() => setGoogleEnabled(true));
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const googleToken = params.get("google_token");
+    const googleError = params.get("google_error");
+    if (googleToken) {
+      localStorage.setItem("token", googleToken);
+      setToken(googleToken);
+      params.delete("google_token");
+      params.delete("google_error");
+      const next = params.toString();
+      const nextUrl = `${window.location.pathname}${next ? `?${next}` : ""}${window.location.hash || ""}`;
+      window.history.replaceState({}, document.title, nextUrl);
+      return;
+    }
+    if (googleError) {
+      const msg = googleError === "admin_manual_login_required"
+        ? "Admin accounts must sign in with local credentials."
+        : "Google sign-in failed.";
+      params.delete("google_token");
+      params.delete("google_error");
+      const next = params.toString();
+      const nextUrl = `${window.location.pathname}${next ? `?${next}` : ""}${window.location.hash || ""}`;
+      window.history.replaceState({}, document.title, nextUrl);
+      alert(msg);
+    }
+  }, []);
 
   useEffect(() => {
     if (token) {
@@ -992,6 +1084,14 @@ export default function App() {
                         >
                           Sign In
                         </button>
+                        <button
+                          type="button"
+                          onClick={handleGoogleLogin}
+                          disabled={!googleEnabled}
+                          className={`btn-premium bg-white text-slate-800 border border-slate-300 w-full py-4 shadow-sm ${googleEnabled ? "hover:bg-slate-50" : "opacity-50 cursor-not-allowed"}`}
+                        >
+                          {googleEnabled ? "Continue with Google" : "Google Sign-In Disabled"}
+                        </button>
                       </form>
                     </div>
                   </div>
@@ -1080,6 +1180,14 @@ export default function App() {
                         >
                           Sign In
                         </button>
+                        <button
+                          type="button"
+                          onClick={handleGoogleLogin}
+                          disabled={!googleEnabled}
+                          className={`btn-premium bg-white text-slate-800 border border-slate-300 w-full py-4 shadow-sm ${googleEnabled ? "hover:bg-slate-50" : "opacity-50 cursor-not-allowed"}`}
+                        >
+                          {googleEnabled ? "Continue with Google" : "Google Sign-In Disabled"}
+                        </button>
                       </form>
                     </div>
                   </div>
@@ -1092,6 +1200,7 @@ export default function App() {
                       selectedFileName={selectedFileName} setSelectedFileName={setSelectedFileName}
                       uploadDisplayName={uploadDisplayName} setUploadDisplayName={setUploadDisplayName}
                       handleUpload={handleUpload}
+                      handleGoogleDriveImport={handleGoogleDriveImport}
                       loadData={loadData}
                       selectedViewId={selectedViewId} setSelectedViewId={setSelectedViewId}
                       views={views} setViews={setViews}

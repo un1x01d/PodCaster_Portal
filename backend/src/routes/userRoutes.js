@@ -1,6 +1,8 @@
 import express from "express";
 import {
     listUsers, createUser, updateUser, deleteUser, setDefaultView,
+    getGoogleIntegrationSetting, setGoogleIntegrationSetting,
+    getGoogleOauthSetting, setGoogleOauthSetting,
     getUserGroups,
     listGroups, createGroup, updateGroup, deleteGroup, getGroupMembers, updateGroupMembers, getGroupSheets,
     addUserToGroup, removeUserFromGroup, toggleGroupAdmin,
@@ -20,6 +22,10 @@ router.post("/users", asyncHandler(createUser));
 router.patch("/users/:id", asyncHandler(updateUser));
 router.delete("/users/:id", asyncHandler(deleteUser));
 router.put("/users/:userId/default-view", asyncHandler(setDefaultView));
+router.get("/admin/settings/google-integration", asyncHandler(getGoogleIntegrationSetting));
+router.patch("/admin/settings/google-integration", asyncHandler(setGoogleIntegrationSetting));
+router.get("/admin/settings/google-oauth", asyncHandler(getGoogleOauthSetting));
+router.patch("/admin/settings/google-oauth", asyncHandler(setGoogleOauthSetting));
 
 // Groups
 router.use("/groups", (req, res, next) => {

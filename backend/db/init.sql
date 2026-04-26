@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS users (
   id              SERIAL PRIMARY KEY,
   email           VARCHAR(255) UNIQUE NOT NULL,
   password_hash   TEXT NOT NULL,               -- bcrypt hash
-  role            VARCHAR(50) NOT NULL DEFAULT 'producer',  -- admin | producer | client | etc.
+  role            VARCHAR(50) NOT NULL DEFAULT 'user',  -- admin | user | client | etc.
   allowed_columns JSONB DEFAULT '[]'::jsonb,   -- optional column allow-list per user
   row_filters     JSONB DEFAULT '{}'::jsonb,   -- optional row-level filters per user
   assigned_sheet  VARCHAR(255),                -- default sheet filename or label
@@ -54,6 +54,6 @@ ON CONFLICT (email) DO NOTHING;
 
 -- === OPTIONAL SAMPLE USERS (commented out) ===
 -- INSERT INTO users (email, password_hash, role) VALUES
--- ('producer1@example.com', '$2b$10$kPq2Nyp7E8QYy2sk6Y1teOQ7YF/4r0hYQ8N.XiS3I/4J0Y2PvjRae', 'producer'),
+-- ('user1@example.com', '$2b$10$kPq2Nyp7E8QYy2sk6Y1teOQ7YF/4r0hYQ8N.XiS3I/4J0Y2PvjRae', 'user'),
 -- ('client1@example.com',   '$2b$10$kPq2Nyp7E8QYy2sk6Y1teOQ7YF/4r0hYQ8N.XiS3I/4J0Y2PvjRae', 'client')
 -- ON CONFLICT (email) DO NOTHING;
