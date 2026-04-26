@@ -377,6 +377,9 @@ export default function DashboardHome({
     aiOverride: false,
   });
   const autoSubmitKeyRef = React.useRef("");
+  const [topCardsOrder, setTopCardsOrder] = React.useState([]);
+  const [dragCardId, setDragCardId] = React.useState("");
+  const [dropCardId, setDropCardId] = React.useState("");
   const pinnedTitleTranslateInFlightRef = React.useRef(new Set());
   const pinnedTitleTranslateCooldownRef = React.useRef(new Map());
   const pinnedConfigRef = React.useRef(null);
@@ -1477,6 +1480,27 @@ export default function DashboardHome({
     [cards, applyKpiOverride]
   );
 
+  React.useEffect(() => {
+    const ids = cardsWithOverrides.map((c) => c.id);
+    setTopCardsOrder((prev) => {
+      if (!Array.isArray(prev) || prev.length === 0) return ids;
+      const kept = prev.filter((id) => ids.includes(id));
+      const appended = ids.filter((id) => !kept.includes(id));
+      const next = [...kept, ...appended];
+      return next.length ? next : ids;
+    });
+  }, [cardsWithOverrides]);
+
+  const orderedCardsWithOverrides = React.useMemo(() => {
+    const order = Array.isArray(topCardsOrder) && topCardsOrder.length
+      ? topCardsOrder
+      : cardsWithOverrides.map((c) => c.id);
+    const byId = new Map(cardsWithOverrides.map((c) => [c.id, c]));
+    const ordered = order.map((id) => byId.get(id)).filter(Boolean);
+    const missing = cardsWithOverrides.filter((c) => !order.includes(c.id));
+    return [...ordered, ...missing];
+  }, [cardsWithOverrides, topCardsOrder]);
+
   return (
     <div className="p-5 md:p-7 bg-gradient-to-b from-slate-100 to-blue-50/60">
       <div className="rounded-lg p-5 md:p-7 border border-slate-200 bg-white shadow-sm">
@@ -1509,14 +1533,58 @@ export default function DashboardHome({
 
         <div className={`mt-6 grid grid-cols-1 ${chatSection ? "2xl:grid-cols-[minmax(0,1fr)_22rem]" : ""} gap-3`}>
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-            {cardsWithOverrides.map((card) => (
+            {orderedCardsWithOverrides.map((card) => (
               <div
                 key={card.id}
+                draggable
+                onDragStart={(e) => {
+                  setDragCardId(card.id);
+                  setDropCardId("");
+                  e.dataTransfer.effectAllowed = "move";
+                  e.dataTransfer.setData("text/plain", card.id);
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "move";
+                }}
+                onDragEnter={(e) => {
+                  e.preventDefault();
+                  if (!dragCardId || dragCardId === card.id) return;
+                  setDropCardId(card.id);
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const sourceId = dragCardId || e.dataTransfer.getData("text/plain");
+                  const targetId = card.id;
+                  if (!sourceId || !targetId || sourceId === targetId) {
+                    setDragCardId("");
+                    setDropCardId("");
+                    return;
+                  }
+                  setTopCardsOrder((prev) => {
+                    const current = Array.isArray(prev) && prev.length
+                      ? [...prev]
+                      : orderedCardsWithOverrides.map((c) => c.id);
+                    const sourceIdx = current.indexOf(sourceId);
+                    const targetIdx = current.indexOf(targetId);
+                    if (sourceIdx < 0 || targetIdx < 0) return current;
+                    const tmp = current[sourceIdx];
+                    current[sourceIdx] = current[targetIdx];
+                    current[targetIdx] = tmp;
+                    return current;
+                  });
+                  setDragCardId("");
+                  setDropCardId("");
+                }}
+                onDragEnd={() => {
+                  setDragCardId("");
+                  setDropCardId("");
+                }}
                 className={`rounded-md border border-slate-200 bg-white shadow-sm ${
                   card.id === "pinnedMetrics"
                     ? (queryOpen ? "p-2.5" : "h-[160px] p-2.5 overflow-hidden")
                     : (kpiEditorOpen[card.id] ? "p-3" : "h-[160px] p-3 overflow-hidden")
-                }`}
+                } ${dragCardId === card.id ? "opacity-70 ring-2 ring-blue-300" : ""} ${dropCardId === card.id ? "ring-2 ring-slate-300" : ""}`}
               >
                 {card.id === "pinnedMetrics" ? (
                   <>
