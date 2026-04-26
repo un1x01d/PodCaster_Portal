@@ -3,6 +3,8 @@ const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "25000", 10);
 const TRANSLATION_CACHE = new Map();
 const TRANSLATION_IN_FLIGHT = new Map();
+const TRANSLATION_CACHE_TTL_MS = Number.parseInt(process.env.TRANSLATION_CACHE_TTL_MS || `${60 * 60 * 1000}`, 10);
+const TRANSLATION_CACHE_MAX_ENTRIES = Number.parseInt(process.env.TRANSLATION_CACHE_MAX_ENTRIES || "500", 10);
 
 const LANGUAGE_LABELS = {
   en: "English",
@@ -126,6 +128,25 @@ function makeCacheKey(locale, items, context) {
   });
 }
 
+function getCachedTranslation(cacheKey) {
+  const found = TRANSLATION_CACHE.get(cacheKey);
+  if (!found) return null;
+  if (Date.now() > Number(found.expiresAt || 0)) {
+    TRANSLATION_CACHE.delete(cacheKey);
+    return null;
+  }
+  return found.value;
+}
+
+function setCachedTranslation(cacheKey, value) {
+  TRANSLATION_CACHE.set(cacheKey, { value, expiresAt: Date.now() + TRANSLATION_CACHE_TTL_MS });
+  while (TRANSLATION_CACHE.size > TRANSLATION_CACHE_MAX_ENTRIES) {
+    const oldest = TRANSLATION_CACHE.keys().next().value;
+    if (!oldest) break;
+    TRANSLATION_CACHE.delete(oldest);
+  }
+}
+
 async function callOpenAITranslation({ locale, items, context }) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!Array.isArray(items)) return [];
@@ -134,7 +155,7 @@ async function callOpenAITranslation({ locale, items, context }) {
   }
 
   const cacheKey = makeCacheKey(locale, items, context);
-  const cached = TRANSLATION_CACHE.get(cacheKey);
+  const cached = getCachedTranslation(cacheKey);
   if (cached) return cached.map((item) => ({ ...item }));
   const inFlight = TRANSLATION_IN_FLIGHT.get(cacheKey);
   if (inFlight) return inFlight.then((result) => result.map((item) => ({ ...item })));
@@ -219,7 +240,7 @@ async function callOpenAITranslation({ locale, items, context }) {
       key: item.key,
       text: restoreTerms(translated.get(item.key) || item.text, item.placeholders),
     }));
-    TRANSLATION_CACHE.set(cacheKey, result);
+    setCachedTranslation(cacheKey, result);
     return result;
   })();
 

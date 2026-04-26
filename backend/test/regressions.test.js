@@ -27,10 +27,10 @@ test("dropbox oauth state expires", async () => {
   assert.equal(userId, null);
 });
 
-test("sheet upload role guard allows admin and group_admin only", async () => {
+test("sheet upload role guard allows only explicit admin role", async () => {
   const mod = await import(`../src/controllers/sheetController.js?t=${Date.now()}`);
   assert.equal(mod.canUploadSheetsByRole("admin"), true);
-  assert.equal(mod.canUploadSheetsByRole("group_admin"), true);
+  assert.equal(mod.canUploadSheetsByRole("group_admin"), false);
   assert.equal(mod.canUploadSheetsByRole("user"), false);
   assert.equal(mod.canUploadSheetsByRole(""), false);
 });

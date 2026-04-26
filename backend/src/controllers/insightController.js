@@ -7,6 +7,8 @@ const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "25000", 10);
 const INSIGHT_CACHE = new Map();
+const INSIGHT_CACHE_TTL_MS = Number.parseInt(process.env.INSIGHT_CACHE_TTL_MS || `${10 * 60 * 1000}`, 10);
+const INSIGHT_CACHE_MAX_ENTRIES = Number.parseInt(process.env.INSIGHT_CACHE_MAX_ENTRIES || "200", 10);
 const OIL_PRICE_TTL_MS = 10_000;
 let OIL_PRICE_CACHE = null;
 const OIL_PRICE_HISTORY = [];
@@ -16,6 +18,25 @@ const OIL_METRIC_HISTORY = {
   surcharge: [],
   linehaul: [],
 };
+
+function getInsightCacheEntry(cacheKey) {
+  const found = INSIGHT_CACHE.get(cacheKey);
+  if (!found) return null;
+  if (Date.now() > Number(found.expiresAt || 0)) {
+    INSIGHT_CACHE.delete(cacheKey);
+    return null;
+  }
+  return found.payload;
+}
+
+function setInsightCacheEntry(cacheKey, payload) {
+  INSIGHT_CACHE.set(cacheKey, { payload, expiresAt: Date.now() + INSIGHT_CACHE_TTL_MS });
+  while (INSIGHT_CACHE.size > INSIGHT_CACHE_MAX_ENTRIES) {
+    const oldest = INSIGHT_CACHE.keys().next().value;
+    if (!oldest) break;
+    INSIGHT_CACHE.delete(oldest);
+  }
+}
 
 function upsertDailyMetricPoint(history, dateKey, value, maxPoints = 14) {
   if (!Array.isArray(history) || !Number.isFinite(value) || !dateKey) return;
@@ -559,6 +580,27 @@ async function loadAccessibleRows(sheetId, user) {
   }
   let rows = allRows.map((r) => (typeof r.row_data === "string" ? JSON.parse(r.row_data) : r.row_data));
   if (user.role === "admin") return { headers, rows, tooLarge: false, forbidden: false };
+
+  const folderAccess = await query(
+    `SELECT 1
+     FROM sheets s
+     LEFT JOIN folders f ON f.id = s.folder_id
+     WHERE s.id = $1
+       AND (
+         EXISTS (
+           SELECT 1
+           FROM folder_groups fg
+           JOIN user_groups ug ON ug.group_id = fg.group_id
+           WHERE fg.folder_id = f.id AND ug.user_id = $2
+         )
+         OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)
+       )
+     LIMIT 1`,
+    [sheetId, user.id]
+  );
+  if (folderAccess.length > 0) {
+    return { headers, rows, tooLarge: false, forbidden: false };
+  }
 
   const userPerms = await query(
     `SELECT allowed_columns, row_filters FROM permissions WHERE user_id = $2 AND sheet_id = $1`,
@@ -1108,7 +1150,7 @@ export async function getInsights(req, res) {
     headers: loaded.headers || [],
     rows: loaded.rows || [],
   });
-  const cached = INSIGHT_CACHE.get(cacheKey);
+  const cached = getInsightCacheEntry(cacheKey);
   if (cached) {
     if (isEnglishLocale(locale)) {
       return res.json(cached);
@@ -1140,7 +1182,7 @@ export async function getInsights(req, res) {
       context,
     },
   };
-  INSIGHT_CACHE.set(cacheKey, payload);
+  setInsightCacheEntry(cacheKey, payload);
   if (isEnglishLocale(locale)) {
     return res.json(payload);
   }

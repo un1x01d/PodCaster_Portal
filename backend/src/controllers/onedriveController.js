@@ -11,6 +11,7 @@ const MS_TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token
 const MS_GRAPH_BASE = "https://graph.microsoft.com/v1.0";
 const SUPPORTED_EXTS = [".csv", ".xls", ".xlsx"];
 const OAUTH_STATE_TTL_MS = 5 * 60 * 1000;
+const PROVIDER_TIMEOUT_MS = Number.parseInt(process.env.PROVIDER_FETCH_TIMEOUT_MS || "15000", 10);
 
 function base64UrlEncode(value) {
   return Buffer.from(value, "utf8").toString("base64url");
@@ -20,29 +21,25 @@ function base64UrlDecode(value) {
   return Buffer.from(value, "base64url").toString("utf8");
 }
 
-function getStateSecret() {
-  return "podcaster-portal-onedrive-oauth-state-v1";
-}
-
 function signState(payloadB64, secret) {
   return createHmac("sha256", secret).update(payloadB64).digest("base64url");
 }
 
-function createOauthState(userId, now = Date.now()) {
+function createOauthState(userId, secret, now = Date.now()) {
   const uid = Number(userId);
   if (!Number.isInteger(uid) || uid <= 0) throw new Error("invalid_user_id");
   const payload = { uid, exp: now + OAUTH_STATE_TTL_MS };
   const payloadB64 = base64UrlEncode(JSON.stringify(payload));
-  const signature = signState(payloadB64, getStateSecret());
+  const signature = signState(payloadB64, secret);
   return `${payloadB64}.${signature}`;
 }
 
-function verifyOauthState(state, now = Date.now()) {
+function verifyOauthState(state, secret, now = Date.now()) {
   const raw = String(state || "").trim();
   if (!raw || !raw.includes(".")) return null;
   const [payloadB64, signature] = raw.split(".");
   if (!payloadB64 || !signature) return null;
-  const expected = signState(payloadB64, getStateSecret());
+  const expected = signState(payloadB64, secret);
   const sigBuf = Buffer.from(signature);
   const expectedBuf = Buffer.from(expected);
   if (sigBuf.length !== expectedBuf.length || !timingSafeEqual(sigBuf, expectedBuf)) return null;
@@ -62,6 +59,16 @@ function verifyOauthState(state, now = Date.now()) {
 function isSupportedSpreadsheetName(name) {
   const lower = String(name || "").toLowerCase();
   return SUPPORTED_EXTS.some((ext) => lower.endsWith(ext));
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = PROVIDER_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function isIntegrationEnabled() {
@@ -128,7 +135,7 @@ async function refreshAccessToken(cfg, refreshToken) {
     grant_type: "refresh_token",
     redirect_uri: cfg.redirectUri,
   });
-  const res = await fetch(MS_TOKEN_URL, {
+  const res = await fetchWithTimeout(MS_TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
@@ -157,7 +164,7 @@ async function getValidAccessTokenForUser(cfg, userId) {
 }
 
 async function fetchDriveMetadata(accessToken) {
-  const res = await fetch(`${MS_GRAPH_BASE}/me/drive`, {
+  const res = await fetchWithTimeout(`${MS_GRAPH_BASE}/me/drive`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!res.ok) {
@@ -183,7 +190,7 @@ export async function getOneDriveStatus(_req, res) {
 export async function getOneDriveAuthUrl(req, res) {
   try {
     const cfg = await requireConfig();
-    const state = createOauthState(req.user?.id);
+    const state = createOauthState(req.user?.id, cfg.clientSecret);
     const params = new URLSearchParams({
       client_id: cfg.clientId,
       redirect_uri: cfg.redirectUri,
@@ -204,7 +211,7 @@ export async function oneDriveCallback(req, res) {
     const code = String(req.query?.code || "").trim();
     const state = String(req.query?.state || "").trim();
     if (!code || !state) return res.redirect(`${cfg.frontendUrl}/workspace?onedrive_error=missing_code`);
-    const userId = verifyOauthState(state);
+    const userId = verifyOauthState(state, cfg.clientSecret);
     if (!userId) return res.redirect(`${cfg.frontendUrl}/workspace?onedrive_error=invalid_state`);
 
     const body = new URLSearchParams({
@@ -215,7 +222,7 @@ export async function oneDriveCallback(req, res) {
       code,
       scope: "offline_access User.Read Files.Read",
     });
-    const tokenRes = await fetch(MS_TOKEN_URL, {
+    const tokenRes = await fetchWithTimeout(MS_TOKEN_URL, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body,
@@ -245,7 +252,7 @@ export async function listOneDriveFiles(req, res) {
     const route = itemId === "root"
       ? `${MS_GRAPH_BASE}/me/drive/root/children?$top=200&$select=id,name,file,folder,size,lastModifiedDateTime,webUrl,parentReference`
       : `${MS_GRAPH_BASE}/me/drive/items/${encodeURIComponent(itemId)}/children?$top=200&$select=id,name,file,folder,size,lastModifiedDateTime,webUrl,parentReference`;
-    const resp = await fetch(route, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const resp = await fetchWithTimeout(route, { headers: { Authorization: `Bearer ${accessToken}` } });
     if (!resp.ok) {
       const txt = await resp.text();
       throw new Error(`onedrive_list_failed: ${txt.slice(0, 300)}`);
@@ -291,7 +298,7 @@ export async function importOneDriveFile(req, res) {
     if (!isSupportedSpreadsheetName(fileName)) return res.status(415).json({ error: "unsupported_file_type" });
 
     const accessToken = await getValidAccessTokenForUser(cfg, req.user.id);
-    const downloadResp = await fetch(`${MS_GRAPH_BASE}/me/drive/items/${encodeURIComponent(itemId)}/content`, {
+    const downloadResp = await fetchWithTimeout(`${MS_GRAPH_BASE}/me/drive/items/${encodeURIComponent(itemId)}/content`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     if (!downloadResp.ok) {

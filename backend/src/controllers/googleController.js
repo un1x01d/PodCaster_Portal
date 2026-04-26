@@ -1,15 +1,83 @@
 import { query } from "../config/db.js";
-import { generateToken } from "../middleware/auth.js";
+import { generateToken, setAuthCookie } from "../middleware/auth.js";
 import { uploadSheet } from "./sheetController.js";
 import fs from "fs";
 import path from "path";
 import { tmpdir } from "os";
+import { createHmac, randomBytes, timingSafeEqual } from "crypto";
 import { decryptSettingValue } from "../utils/settingsCrypto.js";
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
 const GOOGLE_DRIVE_FILES_URL = "https://www.googleapis.com/drive/v3/files";
 const GOOGLE_DRIVE_EXPORT_BASE = "https://www.googleapis.com/drive/v3/files";
+const GOOGLE_OAUTH_STATE_TTL_MS = 5 * 60 * 1000;
+const PROVIDER_TIMEOUT_MS = Number.parseInt(process.env.PROVIDER_FETCH_TIMEOUT_MS || "15000", 10);
+const GOOGLE_LOGIN_CODE_TTL_MS = 60 * 1000;
+const GOOGLE_LOGIN_CODES = new Map();
+
+function signGoogleState(payloadB64, secret) {
+  return createHmac("sha256", secret).update(payloadB64).digest("base64url");
+}
+
+function createGoogleOauthState(secret, now = Date.now()) {
+  const payload = {
+    exp: now + GOOGLE_OAUTH_STATE_TTL_MS,
+    nonce: randomBytes(12).toString("base64url"),
+  };
+  const payloadB64 = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  const signature = signGoogleState(payloadB64, secret);
+  return `${payloadB64}.${signature}`;
+}
+
+function verifyGoogleOauthState(state, secret, now = Date.now()) {
+  const raw = String(state || "").trim();
+  if (!raw || !raw.includes(".")) return false;
+  const [payloadB64, signature] = raw.split(".");
+  if (!payloadB64 || !signature) return false;
+  const expected = signGoogleState(payloadB64, secret);
+  const sigBuf = Buffer.from(signature);
+  const expectedBuf = Buffer.from(expected);
+  if (sigBuf.length !== expectedBuf.length || !timingSafeEqual(sigBuf, expectedBuf)) return false;
+  try {
+    const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf8"));
+    return Number(payload?.exp || 0) > now;
+  } catch {
+    return false;
+  }
+}
+
+function parseCookieValue(cookieHeader, name) {
+  const source = String(cookieHeader || "");
+  const parts = source.split(";").map((v) => v.trim());
+  const prefix = `${name}=`;
+  const hit = parts.find((p) => p.startsWith(prefix));
+  if (!hit) return "";
+  return decodeURIComponent(hit.slice(prefix.length));
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = PROVIDER_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function issueGoogleLoginCode(user) {
+  const code = randomBytes(24).toString("base64url");
+  const token = generateToken(user);
+  GOOGLE_LOGIN_CODES.set(code, { token, exp: Date.now() + GOOGLE_LOGIN_CODE_TTL_MS });
+  if (GOOGLE_LOGIN_CODES.size > 1000) {
+    const now = Date.now();
+    for (const [k, v] of GOOGLE_LOGIN_CODES.entries()) {
+      if (!v || Number(v.exp || 0) <= now) GOOGLE_LOGIN_CODES.delete(k);
+    }
+  }
+  return code;
+}
 
 function extFromMimeType(mimeType) {
   if (mimeType === "text/csv") return ".csv";
@@ -20,7 +88,7 @@ function extFromMimeType(mimeType) {
 async function downloadGoogleDriveFile(accessToken, fileId, mimeType) {
   if (mimeType === "application/vnd.google-apps.spreadsheet") {
     const exportUrl = `${GOOGLE_DRIVE_EXPORT_BASE}/${encodeURIComponent(fileId)}/export?mimeType=${encodeURIComponent("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}`;
-    const resp = await fetch(exportUrl, {
+    const resp = await fetchWithTimeout(exportUrl, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     if (!resp.ok) {
@@ -36,7 +104,7 @@ async function downloadGoogleDriveFile(accessToken, fileId, mimeType) {
   }
 
   const mediaUrl = `${GOOGLE_DRIVE_EXPORT_BASE}/${encodeURIComponent(fileId)}?alt=media`;
-  const resp = await fetch(mediaUrl, {
+  const resp = await fetchWithTimeout(mediaUrl, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!resp.ok) {
@@ -89,7 +157,7 @@ export async function getGoogleStatus(_req, res) {
   return res.json({ enabled });
 }
 
-function buildGoogleAuthUrl(cfg) {
+function buildGoogleAuthUrl(cfg, state) {
   const params = new URLSearchParams({
     client_id: cfg.clientId,
     redirect_uri: cfg.redirectUri,
@@ -102,6 +170,7 @@ function buildGoogleAuthUrl(cfg) {
       "profile",
       "https://www.googleapis.com/auth/drive.readonly",
     ].join(" "),
+    state,
   });
   return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
 }
@@ -114,7 +183,7 @@ async function exchangeCodeForTokens(cfg, code) {
     redirect_uri: cfg.redirectUri,
     grant_type: "authorization_code",
   });
-  const res = await fetch(GOOGLE_TOKEN_URL, {
+  const res = await fetchWithTimeout(GOOGLE_TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
@@ -133,7 +202,7 @@ async function refreshAccessToken(cfg, refreshToken) {
     refresh_token: refreshToken,
     grant_type: "refresh_token",
   });
-  const res = await fetch(GOOGLE_TOKEN_URL, {
+  const res = await fetchWithTimeout(GOOGLE_TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
@@ -146,7 +215,7 @@ async function refreshAccessToken(cfg, refreshToken) {
 }
 
 async function fetchGoogleUser(accessToken) {
-  const res = await fetch(GOOGLE_USERINFO_URL, {
+  const res = await fetchWithTimeout(GOOGLE_USERINFO_URL, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!res.ok) {
@@ -235,7 +304,18 @@ async function isGroupAdminUser(userId) {
 export async function getGoogleLoginUrl(_req, res) {
   try {
     const cfg = await requireGoogleConfig();
-    return res.json({ url: buildGoogleAuthUrl(cfg) });
+    const state = createGoogleOauthState(cfg.clientSecret);
+    const secure = _req.secure || String(_req.headers["x-forwarded-proto"] || "").toLowerCase() === "https";
+    const cookie = [
+      `google_oauth_state=${encodeURIComponent(state)}`,
+      "Path=/",
+      "HttpOnly",
+      "SameSite=Lax",
+      secure ? "Secure" : null,
+      `Max-Age=${Math.floor(GOOGLE_OAUTH_STATE_TTL_MS / 1000)}`,
+    ].filter(Boolean).join("; ");
+    res.setHeader("Set-Cookie", cookie);
+    return res.json({ url: buildGoogleAuthUrl(cfg, state) });
   } catch (e) {
     return res.status(400).json({ error: e?.message || "google_oauth_not_configured" });
   }
@@ -245,8 +325,16 @@ export async function googleCallback(req, res) {
   try {
     const cfg = await requireGoogleConfig();
     const code = String(req.query?.code || "").trim();
+    const state = String(req.query?.state || "").trim();
+    const cookieState = parseCookieValue(req.headers?.cookie, "google_oauth_state");
+    const stateBuf = Buffer.from(state);
+    const cookieBuf = Buffer.from(cookieState);
+    const stateMatchesCookie = !!state && !!cookieState && stateBuf.length === cookieBuf.length && timingSafeEqual(stateBuf, cookieBuf);
     if (!code) {
       return res.redirect(`${cfg.frontendUrl}/?google_error=missing_code`);
+    }
+    if (!stateMatchesCookie || !verifyGoogleOauthState(state, cfg.clientSecret)) {
+      return res.redirect(`${cfg.frontendUrl}/?google_error=invalid_state`);
     }
 
     const tokens = await exchangeCodeForTokens(cfg, code);
@@ -258,14 +346,26 @@ export async function googleCallback(req, res) {
       google_sub: googleUser?.sub || null,
     });
 
-    const token = generateToken(appUser);
-    return res.redirect(`${cfg.frontendUrl}/?google_token=${encodeURIComponent(token)}`);
+    const loginCode = issueGoogleLoginCode(appUser);
+    return res.redirect(`${cfg.frontendUrl}/?google_code=${encodeURIComponent(loginCode)}`);
   } catch (e) {
     console.error("google callback failed:", e?.message || e);
     const code = e?.message === "admin_manual_login_required" ? "admin_manual_login_required" : "oauth_failed";
     const cfg = await getGoogleOauthConfig();
     return res.redirect(`${cfg.frontendUrl || "http://localhost:5173"}/?google_error=${encodeURIComponent(code)}`);
   }
+}
+
+export async function exchangeGoogleCode(req, res) {
+  const code = String(req.body?.code || "").trim();
+  if (!code) return res.status(400).json({ error: "google_code_required" });
+  const entry = GOOGLE_LOGIN_CODES.get(code);
+  GOOGLE_LOGIN_CODES.delete(code);
+  if (!entry || Number(entry.exp || 0) <= Date.now()) {
+    return res.status(400).json({ error: "google_code_invalid_or_expired" });
+  }
+  setAuthCookie(req, res, entry.token);
+  return res.json({ token: entry.token });
 }
 
 export async function listGoogleDriveFiles(req, res) {
@@ -289,7 +389,7 @@ export async function listGoogleDriveFiles(req, res) {
       q,
     });
 
-    const resp = await fetch(`${GOOGLE_DRIVE_FILES_URL}?${params.toString()}`, {
+    const resp = await fetchWithTimeout(`${GOOGLE_DRIVE_FILES_URL}?${params.toString()}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     if (!resp.ok) {

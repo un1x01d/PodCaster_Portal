@@ -5,6 +5,42 @@ import { decryptSettingValue, encryptSettingValue } from "../utils/settingsCrypt
 const EXPOSE_TEMP_PASSWORDS = process.env.EXPOSE_TEMP_PASSWORDS
     ? process.env.EXPOSE_TEMP_PASSWORDS === "true"
     : process.env.NODE_ENV !== "production";
+const ALLOWED_ROLES = new Set(["admin", "user"]);
+const HEAVY_LIST_CACHE = new Map();
+const HEAVY_LIST_CACHE_TTL_MS = Number.parseInt(process.env.HEAVY_LIST_CACHE_TTL_MS || "20000", 10);
+const HEAVY_LIST_CACHE_MAX = Number.parseInt(process.env.HEAVY_LIST_CACHE_MAX || "200", 10);
+
+function normalizeRole(value, fallback = "user") {
+    const normalized = String(value || fallback).trim().toLowerCase();
+    return ALLOWED_ROLES.has(normalized) ? normalized : null;
+}
+
+function normalizeEmail(email) {
+    return String(email || "").trim().toLowerCase();
+}
+
+function getHeavyListCache(key) {
+    const found = HEAVY_LIST_CACHE.get(key);
+    if (!found) return null;
+    if (Date.now() > Number(found.expiresAt || 0)) {
+        HEAVY_LIST_CACHE.delete(key);
+        return null;
+    }
+    return found.value;
+}
+
+function setHeavyListCache(key, value) {
+    HEAVY_LIST_CACHE.set(key, { value, expiresAt: Date.now() + HEAVY_LIST_CACHE_TTL_MS });
+    while (HEAVY_LIST_CACHE.size > HEAVY_LIST_CACHE_MAX) {
+        const oldest = HEAVY_LIST_CACHE.keys().next().value;
+        if (!oldest) break;
+        HEAVY_LIST_CACHE.delete(oldest);
+    }
+}
+
+function clearHeavyListCache() {
+    HEAVY_LIST_CACHE.clear();
+}
 
 async function getAdminGroups(userId) {
     const res = await query('SELECT group_id FROM user_groups WHERE user_id = $1 AND is_admin = TRUE', [userId]);
@@ -65,13 +101,15 @@ export async function listUsers(req, res) {
 
 export async function createUser(req, res) {
     const isGlobalAdmin = req.user.role === "admin";
+    const desiredRole = normalizeRole(req.body?.role, "user");
+    if (!desiredRole) return res.status(400).json({ error: "invalid_role" });
     if (!isGlobalAdmin) {
         const adminGroups = await getAdminGroups(req.user.id);
         if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
-        if (req.body.role === "admin") return res.status(403).json({ error: "Forbidden" });
+        if (desiredRole !== "user") return res.status(403).json({ error: "Forbidden" });
     }
     const { email, password, role, firstName, lastName, company } = req.body;
-    const emailText = String(email || "").trim();
+    const emailText = normalizeEmail(email);
     const firstNameText = String(firstName || "").trim();
     const lastNameText = String(lastName || "").trim();
     const companyText = String(company || "").trim();
@@ -85,7 +123,7 @@ export async function createUser(req, res) {
     try {
         const created = await query(
             "INSERT INTO users (email, password, role, first_name, last_name, company, password_reset_required) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, email, role, first_name, last_name, company",
-            [emailText, hashedFn, role || "user", firstNameText, lastNameText, companyText, true]
+            [emailText, hashedFn, desiredRole, firstNameText, lastNameText, companyText, true]
         );
         const payload = { ...created[0] };
         if (EXPOSE_TEMP_PASSWORDS) payload.newPassword = temporaryPassword;
@@ -101,10 +139,12 @@ export async function updateUser(req, res) {
     const { email, password, role, reset, firstName, lastName, company } = req.body;
     
     const isGlobalAdmin = req.user.role === "admin";
+    const desiredRole = role !== undefined ? normalizeRole(role, "user") : undefined;
+    if (role !== undefined && !desiredRole) return res.status(400).json({ error: "invalid_role" });
     if (!isGlobalAdmin) {
         const adminGroups = await getAdminGroups(req.user.id);
         if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
-        if (role === "admin") return res.status(403).json({ error: "Forbidden" });
+        if (desiredRole !== undefined && desiredRole !== "user") return res.status(403).json({ error: "Forbidden" });
 
         const target = await query("SELECT role FROM users WHERE id=$1", [id]);
         if (!target.length) return res.status(404).json({ error: "not_found" });
@@ -131,11 +171,11 @@ export async function updateUser(req, res) {
         if (email !== undefined) {
             if (!String(email || "").trim()) return res.status(400).json({ error: "email_required" });
             fields.push(`email=$${idx++}`);
-            values.push(String(email).trim());
+            values.push(normalizeEmail(email));
         }
         if (role !== undefined) {
             fields.push(`role=$${idx++}`);
-            values.push(role);
+            values.push(desiredRole);
         }
         if (firstName !== undefined) {
             if (!String(firstName || "").trim()) return res.status(400).json({ error: "first_name_required" });
@@ -443,6 +483,9 @@ export async function setOneDriveOauthSetting(req, res) {
 
 export async function listGroups(req, res) {
     if (req.user.role === "admin") {
+        const cacheKey = "listGroups:admin";
+        const cached = getHeavyListCache(cacheKey);
+        if (cached) return res.json(cached);
         const groups = await query(
             `WITH group_folders AS (
                SELECT DISTINCT fg.group_id, fg.folder_id
@@ -474,11 +517,15 @@ export async function listGroups(req, res) {
              LEFT JOIN group_usage gu ON gu.group_id = g.id
              ORDER BY g.id ASC`
         );
+        setHeavyListCache(cacheKey, groups);
         return res.json(groups);
     }
 
     const adminGroups = await getAdminGroups(req.user.id);
     if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
+    const cacheKey = `listGroups:user:${req.user.id}:${[...adminGroups].sort((a, b) => a - b).join(",")}`;
+    const cached = getHeavyListCache(cacheKey);
+    if (cached) return res.json(cached);
 
     const groups = await query(
         `WITH group_folders AS (
@@ -515,6 +562,7 @@ export async function listGroups(req, res) {
          ORDER BY g.id ASC`,
         [adminGroups]
     );
+    setHeavyListCache(cacheKey, groups);
     return res.json(groups);
 }
 
@@ -526,6 +574,7 @@ export async function createGroup(req, res) {
             "INSERT INTO groups (name, max_file_size_mb, max_total_storage_mb) VALUES ($1, $2, $3) RETURNING *",
             [name, maxFileSizeMb || 100, maxTotalStorageMb || 10240]
         );
+        clearHeavyListCache();
         res.json(r[0]);
     } catch (e) {
         if (String(e).includes("unique")) return res.status(400).json({ error: "Name exists" });
@@ -543,6 +592,7 @@ export async function updateGroup(req, res) {
             [name, maxFileSizeMb, maxTotalStorageMb, id]
         );
         if (!r.length) return res.status(404).json({ error: "not_found" });
+        clearHeavyListCache();
         res.json(r[0]);
     } catch (e) {
         if (String(e).includes("unique")) return res.status(400).json({ error: "Name exists" });
@@ -566,7 +616,7 @@ export async function deleteGroup(req, res) {
         
         const r = await query("DELETE FROM groups WHERE id = $1 RETURNING *", [id]);
         if (!r.length) return res.status(404).json({ error: "not_found" });
-        
+        clearHeavyListCache();
         res.json({ success: true });
     } catch (e) {
         console.error("deleteGroup error:", e);
@@ -616,6 +666,7 @@ export async function updateGroupMembers(req, res) {
             );
         }
         await client.query("COMMIT");
+        clearHeavyListCache();
         res.json({ success: true });
     } catch (e) {
         await client.query("ROLLBACK");
@@ -634,6 +685,7 @@ export async function addUserToGroup(req, res) {
     }
     const { userId } = req.body;
     await query("INSERT INTO user_groups (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [gid, userId]);
+    clearHeavyListCache();
     res.json({ success: true });
 }
 
@@ -645,6 +697,7 @@ export async function removeUserFromGroup(req, res) {
     }
     const { userId } = req.params;
     await query("DELETE FROM user_groups WHERE group_id=$1 AND user_id=$2", [gid, userId]);
+    clearHeavyListCache();
     res.json({ success: true });
 }
 
@@ -662,6 +715,7 @@ export async function toggleGroupAdmin(req, res) {
             "UPDATE user_groups SET is_admin = $1 WHERE group_id = $2 AND user_id = $3",
             [!!isAdmin, gid, userId]
         );
+        clearHeavyListCache();
         res.json({ success: true });
     } catch (e) {
         console.error("toggleGroupAdmin error:", e);
@@ -694,8 +748,13 @@ export async function getGroupSheets(req, res) {
 // --- Folders ---
 
 export async function listFolders(req, res) {
+    const userId = Number(req.user?.id || 0);
+    const role = String(req.user?.role || "");
+    let cacheKey = `listFolders:${role}:${userId}`;
     let rows;
     if (req.user.role === "admin") {
+        const cached = getHeavyListCache(cacheKey);
+        if (cached) return res.json(cached);
         rows = await query(`
             WITH folder_usage AS (
               SELECT
@@ -732,6 +791,9 @@ export async function listFolders(req, res) {
     } else {
         const adminGroups = await getAdminGroups(req.user.id);
         if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
+        cacheKey = `listFolders:${role}:${userId}:${[...adminGroups].sort((a, b) => a - b).join(",")}`;
+        const cached = getHeavyListCache(cacheKey);
+        if (cached) return res.json(cached);
 
         rows = await query(`
             WITH folder_usage AS (
@@ -801,6 +863,7 @@ export async function listFolders(req, res) {
       };
     });
 
+    setHeavyListCache(cacheKey, normalized);
     res.json(normalized);
 }
 
@@ -831,6 +894,7 @@ export async function createFolder(req, res) {
             );
           }
           await client.query("COMMIT");
+          clearHeavyListCache();
           res.json({ ...folder, group_ids: normalizedGroupIds });
         } catch (e) {
           await client.query("ROLLBACK");
@@ -879,6 +943,7 @@ export async function updateFolder(req, res) {
             );
           }
           await client.query("COMMIT");
+          clearHeavyListCache();
           return res.json({ ...updatedRows.rows[0], group_ids: normalizedGroupIds });
         } catch (e) {
           await client.query("ROLLBACK");
@@ -894,6 +959,7 @@ export async function updateFolder(req, res) {
 export async function deleteFolder(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     await query("DELETE FROM folders WHERE id=$1", [req.params.id]);
+    clearHeavyListCache();
     res.json({ success: true });
 }
 

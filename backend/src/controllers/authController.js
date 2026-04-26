@@ -1,6 +1,10 @@
 import { query } from "../config/db.js";
 import { hashPassword, verifyPassword } from "../utils/security.js";
-import { generateToken } from "../middleware/auth.js";
+import { clearAuthCookie, generateToken, setAuthCookie } from "../middleware/auth.js";
+
+function normalizeEmail(email) {
+    return String(email || "").trim().toLowerCase();
+}
 
 async function resolveGroupAdminFlags(userId) {
     const rows = await query(
@@ -17,9 +21,11 @@ async function resolveGroupAdminFlags(userId) {
 export async function login(req, res) {
     const { email, password } = req.body || {};
     if (!email || !password) return res.status(400).json({ error: "Missing credentials" });
+    const normalizedEmail = normalizeEmail(email);
+    if (!normalizedEmail) return res.status(400).json({ error: "Missing credentials" });
 
     try {
-        const rows = await query("SELECT * FROM users WHERE email=$1", [email]);
+        const rows = await query("SELECT * FROM users WHERE LOWER(email)=LOWER($1)", [normalizedEmail]);
         if (!rows.length) return res.status(401).json({ error: "Invalid credentials" });
 
         const user = rows[0];
@@ -35,6 +41,7 @@ export async function login(req, res) {
         }
 
         const token = generateToken(user);
+        setAuthCookie(req, res, token);
         const groupFlags = await resolveGroupAdminFlags(user.id);
         res.json({
             token,
@@ -92,5 +99,10 @@ export async function changePassword(req, res) {
 
     const hashed = await hashPassword(newPassword);
     await query("UPDATE users SET password=$1, password_reset_required=FALSE WHERE id=$2", [hashed, req.user.id]);
+    res.json({ success: true });
+}
+
+export async function logout(req, res) {
+    clearAuthCookie(req, res);
     res.json({ success: true });
 }

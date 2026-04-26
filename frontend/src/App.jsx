@@ -20,6 +20,7 @@ import { looksLikeDateColumn } from "./utils/dateColumns";
 import "./index.css";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
+axios.defaults.withCredentials = true;
 
 /* ---- Date helpers (force YYYY-MM-DD) ---- */
 const ISO_START_RE = /^\d{4}-\d{2}-\d{2}/;
@@ -81,7 +82,7 @@ const trunc = (str, n) => {
 
 export default function App() {
   const [user, setUser] = useState(null);
-  const [token, setToken] = useState(localStorage.getItem("token") || "");
+  const [token, setToken] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [googleEnabled, setGoogleEnabled] = useState(true);
@@ -525,8 +526,7 @@ export default function App() {
     e.preventDefault();
     try {
       const res = await axios.post(`${API}/auth/login`, { email, password });
-      setToken(res.data.token);
-      localStorage.setItem("token", res.data.token);
+      setToken("cookie");
       setUser(res.data.user);
     } catch (err) {
       alert("Login failed");
@@ -553,7 +553,7 @@ export default function App() {
   };
 
   const handleDropboxConnect = async () => {
-    if (!token) {
+    if (!user) {
       alert("Sign in first.");
       return;
     }
@@ -578,7 +578,7 @@ export default function App() {
   };
 
   const handleOneDriveConnect = async () => {
-    if (!token) {
+    if (!user) {
       alert("Sign in first.");
       return;
     }
@@ -1049,12 +1049,19 @@ export default function App() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const googleToken = params.get("google_token");
+    const googleCode = params.get("google_code");
     const googleError = params.get("google_error");
-    if (googleToken) {
-      localStorage.setItem("token", googleToken);
-      setToken(googleToken);
-      params.delete("google_token");
+    if (googleCode) {
+      axios.post(`${API}/auth/google/exchange`, { code: googleCode })
+        .then((resp) => {
+          const exchangedToken = String(resp?.data?.token || "").trim();
+          if (!exchangedToken) throw new Error("google_exchange_missing_token");
+          setToken("cookie");
+        })
+        .catch(() => {
+          alert("Google sign-in failed.");
+        });
+      params.delete("google_code");
       params.delete("google_error");
       const next = params.toString();
       const nextUrl = `${window.location.pathname}${next ? `?${next}` : ""}${window.location.hash || ""}`;
@@ -1065,7 +1072,7 @@ export default function App() {
       const msg = googleError === "admin_manual_login_required"
         ? "Admin accounts must sign in with local credentials."
         : "Google sign-in failed.";
-      params.delete("google_token");
+      params.delete("google_code");
       params.delete("google_error");
       const next = params.toString();
       const nextUrl = `${window.location.pathname}${next ? `?${next}` : ""}${window.location.hash || ""}`;
@@ -1115,27 +1122,27 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (token) {
-      axios.get(`${API}/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
-        .then(r => {
-          setUser(r.data);
-          const savedSheetId = localStorage.getItem("sheetId");
-          const savedTab = localStorage.getItem("activeTab");
-          if (savedSheetId && savedSheetId !== "null") {
-            hydrateSheetContext(savedSheetId, {
-              preferredTab: savedTab || null,
-              preserveFilters: false,
-              preferCache: true,
-            });
-          }
-        })
-        .catch(() => { setToken(""); setUser(null); });
+    axios.get(`${API}/auth/me`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+      .then(r => {
+        setUser(r.data);
+        setToken((prev) => prev || "cookie");
+        const savedSheetId = localStorage.getItem("sheetId");
+        const savedTab = localStorage.getItem("activeTab");
+        if (savedSheetId && savedSheetId !== "null") {
+          hydrateSheetContext(savedSheetId, {
+            preferredTab: savedTab || null,
+            preserveFilters: false,
+            preferCache: true,
+          });
+        }
+      })
+      .catch(() => { setToken(""); setUser(null); setMyFiles([]); });
 
-      // Fetch myFiles for the header dropdown
-      axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } })
-        .then(r => setMyFiles(r.data || []))
-        .catch(e => console.error("Fetch files failed", e));
-    }
+    axios.get(`${API}/my-sheets`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+      .then(r => setMyFiles(r.data || []))
+      .catch(e => {
+        if (user) console.error("Fetch files failed", e);
+      });
   }, [token]);
 
   // Helpers
@@ -1220,7 +1227,7 @@ export default function App() {
 
   // Handlers for DashboardHeader
   const handleLogout = () => {
-    localStorage.removeItem("token");
+    axios.post(`${API}/auth/logout`).catch(() => {});
     localStorage.removeItem("sheetId");
     localStorage.removeItem("activeFilename");
     localStorage.removeItem("activeTab");

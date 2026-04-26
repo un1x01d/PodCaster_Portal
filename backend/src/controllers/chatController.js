@@ -433,18 +433,34 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
     }
   };
 
-  const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: OPENAI_MODEL,
-      temperature: 0.1,
-      response_format: { type: "json_object" },
-      messages: [{ role: "system", content: system }, { role: "user", content: JSON.stringify(userPrompt) }]
-    })
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
+  let resp;
+  try {
+    resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: OPENAI_MODEL,
+        temperature: 0.1,
+        response_format: { type: "json_object" },
+        messages: [{ role: "system", content: system }, { role: "user", content: JSON.stringify(userPrompt) }]
+      }),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`openai_request_failed:${text.slice(0, 300)}`);
+  }
   const json = await resp.json();
-  return JSON.parse(json.choices[0].message.content);
+  const content = json?.choices?.[0]?.message?.content;
+  if (!content || typeof content !== "string") {
+    throw new Error("openai_invalid_response");
+  }
+  return JSON.parse(content);
 }
 
 function normalizeToken(value = "") {
@@ -560,6 +576,7 @@ export async function chatQuery(req, res) {
   if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
 
   const loaded = await loadAccessibleRows(sheetId, req.user, null);
+  if (loaded?.forbidden) return res.status(403).json({ error: "Forbidden" });
   const rawTabNames = Array.isArray(loaded?.tabs) ? loaded.tabs : [];
   const tabDatasets = buildTabDatasets(loaded.rows || [], loaded.headers || [], rawTabNames);
   const tabNames = Object.keys(tabDatasets);
@@ -690,6 +707,7 @@ export async function checkSheetAccess(sheetId, user) {
 
 async function loadAccessibleRows(sheetId, user, activeTab = null) {
   const sheet = await query("SELECT headers, tabs, tab_name FROM sheets WHERE id = $1", [sheetId]);
+  if (!sheet.length) return { headers: [], tabs: [], rows: [], forbidden: true };
   const rows = activeTab
     ? await query(
         "SELECT row_data, tab_name FROM sheet_rows WHERE sheet_id = $1 AND tab_name = $2 ORDER BY row_index ASC",
@@ -709,12 +727,93 @@ async function loadAccessibleRows(sheetId, user, activeTab = null) {
     headers = row0 && typeof row0 === "object" ? Object.keys(row0) : [];
   }
 
+  if (user.role === "admin") {
+    return {
+      headers,
+      tabs: Array.isArray(sheet[0]?.tabs) ? sheet[0].tabs : (sheet[0]?.tab_name ? [sheet[0].tab_name] : []),
+      rows: rows.map((r) => {
+        const data = (typeof r.row_data === "string" ? JSON.parse(r.row_data) : r.row_data) || {};
+        return { ...data, __tab_name: r.tab_name || null };
+      }),
+      forbidden: false,
+    };
+  }
+
+  const folderAccess = await query(
+    `SELECT 1
+     FROM sheets s
+     LEFT JOIN folders f ON f.id = s.folder_id
+     WHERE s.id = $1
+       AND (
+         EXISTS (
+           SELECT 1
+           FROM folder_groups fg
+           JOIN user_groups ug ON ug.group_id = fg.group_id
+           WHERE fg.folder_id = f.id AND ug.user_id = $2
+         )
+         OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)
+       )
+     LIMIT 1`,
+    [sheetId, user.id]
+  );
+  const hasFullAccess = folderAccess.length > 0;
+
+  let validCols = [];
+  let rowFiltersList = [];
+  if (!hasFullAccess) {
+    const userPerms = await query(
+      "SELECT allowed_columns, row_filters FROM permissions WHERE user_id = $2 AND sheet_id = $1",
+      [sheetId, user.id]
+    );
+    const groupPerms = await query(
+      `SELECT gp.allowed_columns, gp.row_filters
+       FROM group_permissions gp
+       JOIN user_groups ug ON ug.group_id = gp.group_id
+       WHERE ug.user_id = $2 AND gp.sheet_id = $1`,
+      [sheetId, user.id]
+    );
+    const allPerms = [...userPerms, ...groupPerms];
+    if (!allPerms.length) return { headers: [], tabs: [], rows: [], forbidden: true };
+
+    const validSet = new Set();
+    allPerms.forEach((p) => {
+      const cols = typeof p.allowed_columns === "string" ? JSON.parse(p.allowed_columns) : (p.allowed_columns || []);
+      cols.forEach((c) => validSet.add(c));
+      const filters = typeof p.row_filters === "string" ? JSON.parse(p.row_filters) : (p.row_filters || {});
+      rowFiltersList.push(filters);
+    });
+    validCols = Array.from(validSet);
+    if (!validCols.length) return { headers: [], tabs: [], rows: [], forbidden: true };
+  }
+
+  let mappedRows = rows.map((r) => {
+    const data = (typeof r.row_data === "string" ? JSON.parse(r.row_data) : r.row_data) || {};
+    return { ...data, __tab_name: r.tab_name || null };
+  });
+
+  if (!hasFullAccess) {
+    mappedRows = mappedRows
+      .filter((rowData) => {
+        for (const filters of rowFiltersList) {
+          const keys = Object.keys(filters || {});
+          if (!keys.length) return true;
+          const match = keys.every((k) => String(rowData?.[k]) === String(filters[k]));
+          if (match) return true;
+        }
+        return false;
+      })
+      .map((rowData) => {
+        const stripped = { __tab_name: rowData.__tab_name || null };
+        validCols.forEach((c) => { stripped[c] = rowData?.[c]; });
+        return stripped;
+      });
+    headers = headers.filter((h) => validCols.includes(h));
+  }
+
   return {
     headers,
     tabs: Array.isArray(sheet[0]?.tabs) ? sheet[0].tabs : (sheet[0]?.tab_name ? [sheet[0].tab_name] : []),
-    rows: rows.map((r) => {
-      const data = (typeof r.row_data === "string" ? JSON.parse(r.row_data) : r.row_data) || {};
-      return { ...data, __tab_name: r.tab_name || null };
-    }),
+    rows: mappedRows,
+    forbidden: false,
   };
 }

@@ -1,5 +1,6 @@
 import express from "express";
 import { auth } from "../middleware/auth.js";
+import { aiRateLimit } from "../middleware/rateLimit.js";
 import { translateDashboardCopy } from "../controllers/localeController.js";
 
 const router = express.Router();
@@ -9,7 +10,6 @@ function asyncHandler(fn) {
 }
 
 router.use(auth);
-router.post("/dashboard/translate", asyncHandler(translateDashboardCopy));
+router.post("/dashboard/translate", aiRateLimit, asyncHandler(translateDashboardCopy));
 
 export default router;
-

@@ -40,10 +40,6 @@ router.get("/admin/settings/onedrive-oauth", asyncHandler(getOneDriveOauthSettin
 router.patch("/admin/settings/onedrive-oauth", asyncHandler(setOneDriveOauthSetting));
 
 // Groups
-router.use("/groups", (req, res, next) => {
-    console.log(`[debug] Group request: ${req.method} ${req.url}`);
-    next();
-});
 router.post("/groups/:id/users/:userId/admin", asyncHandler(toggleGroupAdmin));
 router.get("/groups", asyncHandler(listGroups));
 router.post("/groups", asyncHandler(createGroup));

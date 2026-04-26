@@ -62,9 +62,66 @@ function sanitizeDisplayName(value) {
     return text.slice(0, 120);
 }
 
+function buildRowFilterWhereClause(rowFiltersList = [], startParamIndex = 1) {
+    const normalized = Array.isArray(rowFiltersList) ? rowFiltersList : [];
+    const hasAllowAll = normalized.some((f) => !f || Object.keys(f).length === 0);
+    if (hasAllowAll) return { sql: "", params: [] };
+
+    const groups = [];
+    const params = [];
+    let paramIdx = startParamIndex;
+    normalized.forEach((filters) => {
+        const entries = Object.entries(filters || {}).filter(([k]) => !!k);
+        if (!entries.length) return;
+        const predicates = entries.map(([k, v]) => {
+            params.push(k);
+            params.push(String(v));
+            const sql = `(row_data->>${paramIdx}) = $${paramIdx + 1}`;
+            paramIdx += 2;
+            return sql;
+        });
+        if (predicates.length) groups.push(`(${predicates.join(" AND ")})`);
+    });
+    if (!groups.length) return { sql: " AND 1 = 0", params };
+    return { sql: ` AND (${groups.join(" OR ")})`, params };
+}
+
 export function canUploadSheetsByRole(role) {
     const normalized = String(role || "").toLowerCase();
-    return normalized === "admin" || normalized === "group_admin";
+    return normalized === "admin";
+}
+
+async function isGroupAdminUser(userId) {
+    const rows = await query(
+        "SELECT COUNT(*)::int AS c FROM user_groups WHERE user_id = $1 AND is_admin = TRUE",
+        [userId]
+    );
+    return Number(rows?.[0]?.c || 0) > 0;
+}
+
+async function canWriteToFolder(client, user, folderId) {
+    if (!Number.isInteger(folderId)) return true;
+    const role = String(user?.role || "").toLowerCase();
+    if (role === "admin") return true;
+    const userId = Number(user?.id || 0);
+    if (!Number.isInteger(userId) || userId <= 0) return false;
+    const res = await client.query(
+        `SELECT 1
+         FROM folders f
+         LEFT JOIN folder_groups fg ON fg.folder_id = f.id
+         WHERE f.id = $1
+           AND (
+             EXISTS (
+               SELECT 1
+               FROM user_groups ug
+               WHERE ug.user_id = $2 AND ug.is_admin = TRUE
+                 AND (ug.group_id = fg.group_id OR ug.group_id = f.group_id)
+             )
+           )
+         LIMIT 1`,
+        [folderId, userId]
+    );
+    return res.rows.length > 0;
 }
 
 // Helper to determine active sheet versioning
@@ -102,7 +159,9 @@ async function getVersionedFilename(client, folderId, originalName) {
 
 export async function uploadSheet(req, res) {
     try {
-        if (!canUploadSheetsByRole(req.user?.role)) return res.status(403).json({ error: "Forbidden" });
+        const isAdminRole = canUploadSheetsByRole(req.user?.role);
+        const isGroupAdmin = req.user?.id ? await isGroupAdminUser(req.user.id) : false;
+        if (!isAdminRole && !isGroupAdmin) return res.status(403).json({ error: "Forbidden" });
         if (!req.file) return res.status(400).json({ error: "No file" });
 
         const originalName = req.file.originalname || "uploaded.xlsx";
@@ -164,6 +223,11 @@ export async function uploadSheet(req, res) {
             // Folder Resolution & Group Limit Check
             let assignedFolderId = null;
             if (Number.isInteger(folderId)) {
+                const canWrite = await canWriteToFolder(client, req.user, folderId);
+                if (!canWrite) {
+                    await client.query('ROLLBACK');
+                    return res.status(403).json({ error: "Forbidden", message: "You do not have write access to this folder." });
+                }
                 const f = await client.query(`
                     SELECT
                       f.id,
@@ -542,12 +606,18 @@ export async function getSheetData(req, res) {
             params.push(tab);
         }
 
+        if (!hasFullAccess) {
+            const filterClause = buildRowFilterWhereClause(rowFiltersList, params.length + 1);
+            sql += filterClause.sql;
+            params.push(...filterClause.params);
+        }
+
         sql += ` ORDER BY row_index ASC`;
 
-        if (hasFullAccess && pagination.hasPagination) {
+        if (pagination.hasPagination) {
             sql += ` LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
             params.push(pagination.limit, pagination.offset);
-        } else if (hasFullAccess && !pagination.hasPagination && SHEET_DATA_HARD_CAP > 0) {
+        } else if (!pagination.hasPagination && SHEET_DATA_HARD_CAP > 0) {
             sql += ` LIMIT $${params.length + 1}`;
             params.push(SHEET_DATA_HARD_CAP + 1);
         }
@@ -556,29 +626,7 @@ export async function getSheetData(req, res) {
 
         if (!hasFullAccess) {
             rows = rows.filter(r => {
-                let rowData = typeof r.row_data === 'string' ? JSON.parse(r.row_data) : r.row_data;
-
-                let rowAllowed = false;
-                for (const filters of rowFiltersList) {
-                    const keys = Object.keys(filters);
-                    if (keys.length === 0) {
-                        rowAllowed = true;
-                        break;
-                    }
-                    let match = true;
-                    for (const key of keys) {
-                        if (String(rowData[key]) !== String(filters[key])) {
-                            match = false;
-                            break;
-                        }
-                    }
-                    if (match) {
-                        rowAllowed = true;
-                        break;
-                    }
-                }
-                if (!rowAllowed) return false;
-
+                const rowData = typeof r.row_data === 'string' ? JSON.parse(r.row_data) : r.row_data;
                 if (validCols.length > 0) {
                     Object.keys(rowData).forEach(k => {
                         if (!validCols.includes(k)) {
@@ -591,10 +639,6 @@ export async function getSheetData(req, res) {
                 r.row_data = rowData;
                 return true;
             });
-
-            if (pagination.hasPagination) {
-                rows = rows.slice(pagination.offset, pagination.offset + pagination.limit);
-            }
         }
 
         if (!pagination.hasPagination && SHEET_DATA_HARD_CAP > 0 && rows.length > SHEET_DATA_HARD_CAP) {

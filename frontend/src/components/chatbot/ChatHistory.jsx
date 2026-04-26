@@ -244,7 +244,6 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
         window._stopPlayback = false;
         window._audioQueue = [];
         window._audioAbortControllers = [];
-        const token = window.localStorage.getItem("token");
         const controller = new AbortController();
         window._audioAbortControllers.push(controller);
 
@@ -252,10 +251,10 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
-                ...(token ? { Authorization: `Bearer ${token}` } : {}),
             },
             body: JSON.stringify({ text, locale }),
             signal: controller.signal,
+            credentials: "include",
         });
         if (!response.ok) throw new Error(`audio_stream_failed_${response.status}`);
         if (!response.body) throw new Error("audio_stream_missing_body");

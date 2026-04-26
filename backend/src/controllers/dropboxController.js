@@ -13,6 +13,7 @@ const DROPBOX_LIST_FOLDER_URL = "https://api.dropboxapi.com/2/files/list_folder"
 const DROPBOX_DOWNLOAD_URL = "https://content.dropboxapi.com/2/files/download";
 const SUPPORTED_EXTS = [".csv", ".xls", ".xlsx"];
 const DROPBOX_OAUTH_STATE_TTL_MS = 5 * 60 * 1000;
+const PROVIDER_TIMEOUT_MS = Number.parseInt(process.env.PROVIDER_FETCH_TIMEOUT_MS || "15000", 10);
 
 function base64UrlEncode(value) {
   return Buffer.from(value, "utf8").toString("base64url");
@@ -68,6 +69,16 @@ export function verifyDropboxOauthState(state, now = Date.now()) {
 function isSupportedSpreadsheetName(name) {
   const lower = String(name || "").toLowerCase();
   return SUPPORTED_EXTS.some((ext) => lower.endsWith(ext));
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = PROVIDER_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function isDropboxIntegrationEnabled() {
@@ -135,7 +146,7 @@ async function refreshAccessToken(cfg, refreshToken) {
     client_id: cfg.clientId,
     client_secret: cfg.clientSecret,
   });
-  const res = await fetch(DROPBOX_TOKEN_URL, {
+  const res = await fetchWithTimeout(DROPBOX_TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
@@ -169,7 +180,7 @@ async function getValidAccessTokenForUser(cfg, userId) {
 }
 
 async function fetchDropboxAccount(accessToken) {
-  const res = await fetch(DROPBOX_ACCOUNT_URL, {
+  const res = await fetchWithTimeout(DROPBOX_ACCOUNT_URL, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -236,7 +247,7 @@ export async function dropboxCallback(req, res) {
       client_secret: cfg.clientSecret,
       redirect_uri: cfg.redirectUri,
     });
-    const tokenRes = await fetch(DROPBOX_TOKEN_URL, {
+    const tokenRes = await fetchWithTimeout(DROPBOX_TOKEN_URL, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body,
@@ -276,7 +287,7 @@ export async function listDropboxFiles(req, res) {
       include_non_downloadable_files: false,
     };
 
-    const resp = await fetch(DROPBOX_LIST_FOLDER_URL, {
+    const resp = await fetchWithTimeout(DROPBOX_LIST_FOLDER_URL, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -336,7 +347,7 @@ export async function importDropboxFile(req, res) {
     if (!isSupportedSpreadsheetName(fileName)) return res.status(415).json({ error: "unsupported_file_type" });
 
     const accessToken = await getValidAccessTokenForUser(cfg, req.user.id);
-    const downloadResp = await fetch(DROPBOX_DOWNLOAD_URL, {
+    const downloadResp = await fetchWithTimeout(DROPBOX_DOWNLOAD_URL, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,
