@@ -1,4 +1,5 @@
 import pg from "pg";
+import { encryptSettingValue } from "../utils/settingsCrypto.js";
 const { Pool } = pg;
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -249,6 +250,27 @@ export async function initDb() {
   await pool.query(`ALTER TABLE user_dropbox_tokens ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP;`);
   await pool.query(`ALTER TABLE user_dropbox_tokens ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
 
+  // ONEDRIVE TOKENS (for OneDrive import integration)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_onedrive_tokens (
+      user_id INT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      drive_id TEXT,
+      access_token TEXT,
+      refresh_token TEXT,
+      scope TEXT,
+      token_type TEXT DEFAULT 'Bearer',
+      expires_at TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`ALTER TABLE user_onedrive_tokens ADD COLUMN IF NOT EXISTS drive_id TEXT;`);
+  await pool.query(`ALTER TABLE user_onedrive_tokens ADD COLUMN IF NOT EXISTS access_token TEXT;`);
+  await pool.query(`ALTER TABLE user_onedrive_tokens ADD COLUMN IF NOT EXISTS refresh_token TEXT;`);
+  await pool.query(`ALTER TABLE user_onedrive_tokens ADD COLUMN IF NOT EXISTS scope TEXT;`);
+  await pool.query(`ALTER TABLE user_onedrive_tokens ADD COLUMN IF NOT EXISTS token_type TEXT DEFAULT 'Bearer';`);
+  await pool.query(`ALTER TABLE user_onedrive_tokens ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP;`);
+  await pool.query(`ALTER TABLE user_onedrive_tokens ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
+
   // APP SETTINGS
   await pool.query(`
     CREATE TABLE IF NOT EXISTS app_settings (
@@ -267,11 +289,16 @@ export async function initDb() {
     VALUES ('dropbox_integration', '{"enabled": true}'::jsonb, CURRENT_TIMESTAMP)
     ON CONFLICT (key) DO NOTHING;
   `);
+  await pool.query(`
+    INSERT INTO app_settings (key, value, updated_at)
+    VALUES ('onedrive_integration', '{"enabled": true}'::jsonb, CURRENT_TIMESTAMP)
+    ON CONFLICT (key) DO NOTHING;
+  `);
   const googleOauthSeed = {
-    clientId: String(process.env.GOOGLE_CLIENT_ID || ""),
-    clientSecret: String(process.env.GOOGLE_CLIENT_SECRET || ""),
-    redirectUri: String(process.env.GOOGLE_REDIRECT_URI || ""),
-    frontendUrl: String(process.env.FRONTEND_URL || "http://localhost:5173"),
+    clientId: encryptSettingValue(""),
+    clientSecret: encryptSettingValue(""),
+    redirectUri: "",
+    frontendUrl: "http://localhost:5173",
   };
   await pool.query(
     `INSERT INTO app_settings (key, value, updated_at)
@@ -280,8 +307,8 @@ export async function initDb() {
     [JSON.stringify(googleOauthSeed)]
   );
   const dropboxOauthSeed = {
-    clientId: "",
-    clientSecret: "",
+    clientId: encryptSettingValue(""),
+    clientSecret: encryptSettingValue(""),
     redirectUri: "",
     frontendUrl: "http://localhost:5173",
   };
@@ -290,6 +317,18 @@ export async function initDb() {
      VALUES ('dropbox_oauth', $1::jsonb, CURRENT_TIMESTAMP)
      ON CONFLICT (key) DO NOTHING;`,
     [JSON.stringify(dropboxOauthSeed)]
+  );
+  const oneDriveOauthSeed = {
+    clientId: encryptSettingValue(""),
+    clientSecret: encryptSettingValue(""),
+    redirectUri: "",
+    frontendUrl: "http://localhost:5173",
+  };
+  await pool.query(
+    `INSERT INTO app_settings (key, value, updated_at)
+     VALUES ('onedrive_oauth', $1::jsonb, CURRENT_TIMESTAMP)
+     ON CONFLICT (key) DO NOTHING;`,
+    [JSON.stringify(oneDriveOauthSeed)]
   );
   // USER permissions
   await pool.query(`

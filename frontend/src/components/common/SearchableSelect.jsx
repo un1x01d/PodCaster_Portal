@@ -8,7 +8,7 @@ export default function SearchableSelect({
     placeholder = "Select…",
     className = "",
     disabled = false,
-    buttonClassName = "bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white px-3 rounded-lg h-10 shadow-md flex items-center gap-2 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-indigo-200",
+    buttonClassName = "flex items-center justify-between w-full border border-slate-300 bg-white px-2.5 py-1 rounded-md text-xs transition-colors shadow-sm h-8 hover:border-slate-400 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-200",
     panelWidth = "100%",
     panelMinWidth = "100%",
     panelMaxWidth = undefined,
@@ -77,7 +77,7 @@ export default function SearchableSelect({
             {open && !disabled && (
                 <div
                     ref={panelRef}
-                    className={`absolute z-50 mt-1 bg-white text-slate-800 border border-gray-200 rounded-lg shadow-lg p-2 left-0 ${panelClassName}`}
+                    className={`absolute z-50 mt-1 bg-white text-slate-800 border border-gray-200 rounded-lg shadow-lg p-1.5 left-0 ${panelClassName}`}
                     style={{ width: resolvedPanelWidth, minWidth: panelMinWidth, maxWidth: panelMaxWidth, ...panelStyle }}
                 >
                     <input
@@ -85,7 +85,7 @@ export default function SearchableSelect({
                         value={q}
                         onChange={(e) => setQ(e.target.value)}
                         placeholder="Type to search…"
-                        className={`w-full border border-gray-200 rounded-md px-2 py-1 mb-2 focus:outline-none focus:ring focus:ring-slate-100 placeholder:text-gray-400 text-sm ${searchInputClassName}`}
+                        className={`w-full border border-gray-200 rounded-md px-2 py-1 mb-1.5 focus:outline-none focus:ring focus:ring-slate-100 placeholder:text-gray-400 text-xs ${searchInputClassName}`}
                         style={searchInputStyle}
                     />
                     <div className="max-h-56 overflow-auto custom-scrollbar">
@@ -93,13 +93,13 @@ export default function SearchableSelect({
                             filtered.map((o) => (
                                 <div
                                     key={String(o.value)}
-                                    className={`px-2 py-1.5 rounded-md flex items-center justify-between group cursor-pointer hover:bg-blue-50 ${optionClassName} ${String(o.value) === String(value) ? selectedOptionClassName : ""}
+                                    className={`px-2 py-1 rounded-md flex items-center justify-between group cursor-pointer hover:bg-blue-50 ${optionClassName} ${String(o.value) === String(value) ? selectedOptionClassName : ""}
                                         `}
                                     title={o.label}
                                     style={String(o.value) === String(value) ? { ...optionStyle, ...selectedOptionStyle } : optionStyle}
                                 >
                                     <div
-                                        className={`flex-1 min-w-0 truncate mr-2 text-sm text-slate-800 ${optionTextClassName}`}
+                                        className={`flex-1 min-w-0 truncate mr-2 text-xs text-slate-800 ${optionTextClassName}`}
                                         style={optionTextStyle}
                                         onClick={() => {
                                             onChange({ target: { value: o.value } });
@@ -124,7 +124,7 @@ export default function SearchableSelect({
                                 </div>
                             ))
                         ) : (
-                            <div className="text-gray-500 text-sm px-2 py-1">No matches</div>
+                            <div className="text-gray-500 text-xs px-2 py-1">No matches</div>
                         )}
                     </div>
                 </div>

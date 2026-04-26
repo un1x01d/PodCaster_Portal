@@ -92,6 +92,15 @@
   min-height: 30px;
 }
 
+/* Group members row action buttons must stay compact despite admin-wide button defaults */
+.admin-compact .gm-action-btn {
+  min-height: 14px !important;
+  height: 14px !important;
+  padding: 0 4px !important;
+  font-size: 9px !important;
+  line-height: 1 !important;
+}
+
 /* Ensure full-height layout */
 html, body, #root {
   height: 100%;
@@ -111,15 +120,25 @@ html, body, #root {
 }
 
 .left-menu-close {
-  color: #ffffff;
+  color: #e2e8f0;
   font-weight: 700;
-  border-radius: 0.5rem;
-  padding: 0.25rem 0.5rem;
+  width: 1.7rem;
+  height: 1.7rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.4rem;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(15, 23, 42, 0.35);
+  font-size: 0.72rem;
+  line-height: 1;
+  padding: 0;
 }
 
 .left-menu-close:hover,
 .left-menu-close:focus-visible {
-  background: rgba(255, 255, 255, 0.16);
+  background: rgba(148, 163, 184, 0.22);
+  border-color: rgba(255, 255, 255, 0.34);
   outline: none;
 }
 
@@ -260,4 +279,40 @@ html, body, #root {
 .left-menu-danger-action:hover,
 .left-menu-danger-action:focus-visible {
   background: rgba(153, 27, 27, 0.65);
+}
+
+/* Workspace typography consistency */
+.workspace-shell button,
+.workspace-shell input,
+.workspace-shell select,
+.workspace-shell summary,
+.workspace-shell .left-menu-action,
+.workspace-shell .left-menu-file-picker {
+  font-family: "Segoe UI Variable Text", "Aptos", "SF Pro Text", "Segoe UI", Inter, "Helvetica Neue", Arial, sans-serif;
+  font-weight: 700;
+}
+
+.workspace-shell select,
+.workspace-shell .left-menu-nested select,
+.workspace-shell .left-menu-nested .input-premium {
+  font-size: 0.72rem;
+  min-height: 1.95rem;
+  padding-top: 0.28rem;
+  padding-bottom: 0.28rem;
+  text-align: left;
+}
+
+.workspace-shell select option {
+  font-family: "Segoe UI Variable Text", "Aptos", "SF Pro Text", "Segoe UI", Inter, "Helvetica Neue", Arial, sans-serif;
+  font-weight: 700;
+  font-size: 0.72rem;
+  text-align: left;
+}
+
+.workspace-shell .left-menu-nested [role="listbox"],
+.workspace-shell .left-menu-nested [role="option"],
+.workspace-shell .left-menu-nested .custom-scrollbar {
+  font-family: "Segoe UI Variable Text", "Aptos", "SF Pro Text", "Segoe UI", Inter, "Helvetica Neue", Arial, sans-serif;
+  font-weight: 700;
+  font-size: 0.72rem;
 }

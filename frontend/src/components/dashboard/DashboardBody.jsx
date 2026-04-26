@@ -34,6 +34,9 @@ export default function DashboardBody(props) {
         handleDropboxImport,
         handleDropboxConnect,
         dropboxEnabled,
+        handleOneDriveImport,
+        handleOneDriveConnect,
+        oneDriveEnabled,
         loadData,
         selectedViewId,
         setSelectedViewId,
@@ -134,6 +137,11 @@ export default function DashboardBody(props) {
     const [dropboxLoading, setDropboxLoading] = useState(false);
     const [dropboxBreadcrumbs, setDropboxBreadcrumbs] = useState([{ path: "", name: "Dropbox" }]);
     const [selectedDropboxFile, setSelectedDropboxFile] = useState(null);
+    const [oneDrivePickerOpen, setOneDrivePickerOpen] = useState(false);
+    const [oneDriveEntries, setOneDriveEntries] = useState([]);
+    const [oneDriveLoading, setOneDriveLoading] = useState(false);
+    const [oneDriveBreadcrumbs, setOneDriveBreadcrumbs] = useState([{ id: "root", name: "OneDrive" }]);
+    const [selectedOneDriveFile, setSelectedOneDriveFile] = useState(null);
 
     const toggleMenu = (key) => {
         setExpandedMenus((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -283,6 +291,45 @@ export default function DashboardBody(props) {
         setSelectedDropboxFile(null);
     }, []);
 
+    const fetchOneDriveEntries = React.useCallback(async (nextItemId = "root", nextBreadcrumbs = null) => {
+        setOneDriveLoading(true);
+        try {
+            const res = await axios.get(`${API}/onedrive/files`, {
+                headers: { Authorization: `Bearer ${token}` },
+                params: { itemId: nextItemId },
+            });
+            const raw = Array.isArray(res?.data?.entries) ? res.data.entries : [];
+            const normalized = raw
+                .map((entry) => ({ ...entry, id: String(entry.id || "") }))
+                .filter((entry) => entry.id);
+            setOneDriveEntries(normalized);
+            setOneDriveBreadcrumbs(Array.isArray(nextBreadcrumbs) && nextBreadcrumbs.length ? nextBreadcrumbs : [{ id: "root", name: "OneDrive" }]);
+        } catch (e) {
+            const errCode = String(e?.response?.data?.error || "");
+            if (errCode === "onedrive_not_connected") {
+                if (confirm("OneDrive is not connected for this user yet. Connect now?")) {
+                    handleOneDriveConnect?.();
+                }
+                return;
+            }
+            console.error("Fetch OneDrive entries failed:", e);
+            alert(e?.response?.data?.error || "Failed to fetch OneDrive files");
+        } finally {
+            setOneDriveLoading(false);
+        }
+    }, [API, token, handleOneDriveConnect]);
+
+    const openOneDrivePicker = React.useCallback(() => {
+        setSelectedOneDriveFile(null);
+        setOneDrivePickerOpen(true);
+        fetchOneDriveEntries("root", [{ id: "root", name: "OneDrive" }]);
+    }, [fetchOneDriveEntries]);
+
+    const closeOneDrivePicker = React.useCallback(() => {
+        setOneDrivePickerOpen(false);
+        setSelectedOneDriveFile(null);
+    }, []);
+
     // Calculate dynamic col widths based on header length
     const colWidths = React.useMemo(() => {
         const widths = {};
@@ -350,7 +397,7 @@ export default function DashboardBody(props) {
 
     // Admin or sheet selected: show normal dashboard
     return (
-        <div className="w-full h-full min-h-0 flex bg-slate-50 relative overflow-hidden pointer-events-auto">
+        <div className="workspace-shell w-full h-full min-h-0 flex bg-slate-50 relative overflow-hidden pointer-events-auto">
             <aside
                 id="dashboard-left-menu"
                 aria-label="Dashboard actions menu"
@@ -415,7 +462,6 @@ export default function DashboardBody(props) {
                                                     onDelete={deleteView}
                                                     placeholder="Saved Views…"
                                                     className="w-full"
-                                                    buttonClassName="w-full border border-blue-700 rounded-lg h-9 bg-blue-900 text-white font-bold px-3"
                                                     panelWidth={320}
                                                 />
                                                 <button
@@ -471,12 +517,10 @@ export default function DashboardBody(props) {
                                                             onChange={(e) => setSelectedFolderId(e.target.value)}
                                                             placeholder="Select Folder…"
                                                             className="w-full"
-                                                            buttonClassName="left-menu-action !font-medium !text-[0.74rem]"
-                                                            labelClassName="!font-medium tracking-normal"
                                                             panelClassName="!rounded-md !border-slate-200 !shadow-xl"
                                                             optionClassName="!rounded-sm hover:!bg-slate-50"
-                                                            optionTextClassName="!font-medium !text-[0.78rem]"
-                                                            searchInputClassName="!text-[0.78rem] !font-medium"
+                                                            optionTextClassName="!font-bold !text-[0.78rem]"
+                                                            searchInputClassName="!text-[0.78rem] !font-bold"
                                                             panelWidth={210}
                                                         />
                                                         <input
@@ -534,6 +578,15 @@ export default function DashboardBody(props) {
                                                         <path fill="#0061FF" d="M6 2 0 6l6 4 6-4-6-4Zm12 0-6 4 6 4 6-4-6-4ZM6 10l-6 4 6 4 6-4-6-4Zm12 0-6 4 6 4 6-4-6-4ZM12 14l-6 4 6 4 6-4-6-4Z" />
                                                     </svg>
                                                     <span>Import from Dropbox</span>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={openOneDrivePicker}
+                                                    disabled={!oneDriveEnabled}
+                                                    className={`left-menu-action inline-flex items-center gap-2 ${oneDriveEnabled ? "" : "left-menu-action-disabled"}`}
+                                                >
+                                                    <img src="https://upload.wikimedia.org/wikipedia/commons/e/e7/Microsoft_OneDrive_Icon_%282025_-_present%29.svg" alt="OneDrive" className="h-3.5 w-3.5 shrink-0" />
+                                                    <span>Import from OneDrive</span>
                                                 </button>
                                             </div>
                                         </details>
@@ -861,6 +914,109 @@ export default function DashboardBody(props) {
                     </div>
                 </div>
             )}
+            {oneDrivePickerOpen && (
+                <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-900/35 p-4">
+                    <div className="w-full max-w-2xl rounded-xl border border-slate-300 bg-white shadow-2xl">
+                        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+                            <div>
+                                <h3 className="text-sm font-semibold text-slate-900">Import from OneDrive</h3>
+                                <p className="text-[11px] font-medium text-slate-500">Supported files: CSV, XLS, XLSX</p>
+                            </div>
+                            <button type="button" onClick={closeOneDrivePicker} className="rounded-md border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                                Close
+                            </button>
+                        </div>
+                        <div className="border-b border-slate-200 px-4 py-2 text-xs text-slate-600">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                                {oneDriveBreadcrumbs.map((crumb, idx) => (
+                                    <button
+                                        key={`${crumb.id}-${idx}`}
+                                        type="button"
+                                        className={`rounded px-1.5 py-0.5 font-semibold ${idx === oneDriveBreadcrumbs.length - 1 ? "bg-slate-200 text-slate-800" : "text-slate-600 hover:bg-slate-100"}`}
+                                        onClick={() => {
+                                            const nextCrumbs = oneDriveBreadcrumbs.slice(0, idx + 1);
+                                            const target = nextCrumbs[nextCrumbs.length - 1];
+                                            fetchOneDriveEntries(target.id, nextCrumbs);
+                                            setSelectedOneDriveFile(null);
+                                        }}
+                                    >
+                                        {crumb.name}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        <div className="max-h-[380px] overflow-y-auto p-2">
+                            {oneDriveLoading ? (
+                                <div className="px-3 py-6 text-center text-sm font-semibold text-slate-500">Loading…</div>
+                            ) : oneDriveEntries.length ? (
+                                <div className="space-y-1">
+                                    {oneDriveEntries.map((entry) => {
+                                        const isFolder = !!entry.isFolder;
+                                        const selected = selectedOneDriveFile?.id && selectedOneDriveFile.id === entry.id;
+                                        return (
+                                            <button
+                                                key={entry.id}
+                                                type="button"
+                                                onClick={() => {
+                                                    if (isFolder) {
+                                                        const nextCrumbs = oneDriveBreadcrumbs.concat([{ id: entry.id, name: entry.name || "Folder" }]);
+                                                        setSelectedOneDriveFile(null);
+                                                        fetchOneDriveEntries(entry.id, nextCrumbs);
+                                                        return;
+                                                    }
+                                                    setSelectedOneDriveFile(entry);
+                                                }}
+                                                className={`flex w-full items-center justify-between rounded-md border px-3 py-2 text-left ${selected ? "border-blue-400 bg-blue-50" : "border-slate-200 bg-white hover:bg-slate-50"}`}
+                                            >
+                                                <span className="truncate text-sm font-medium text-slate-800">
+                                                    {isFolder ? "📁 " : "📄 "}
+                                                    {entry.name || "Unnamed"}
+                                                </span>
+                                                <span className="ml-3 shrink-0 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                                                    {isFolder ? "Folder" : "File"}
+                                                </span>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            ) : (
+                                <div className="px-3 py-6 text-center text-sm font-semibold text-slate-500">No supported files in this folder.</div>
+                            )}
+                        </div>
+                        <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-4 py-3">
+                            <button type="button" onClick={closeOneDrivePicker} className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                disabled={!selectedOneDriveFile || !selectedFolderId || !String(uploadDisplayName || "").trim()}
+                                onClick={() => {
+                                    if (!selectedOneDriveFile) return;
+                                    handleOneDriveImport({
+                                        itemId: selectedOneDriveFile.id,
+                                        name: selectedOneDriveFile.name,
+                                        folderId: selectedFolderId,
+                                        displayName: uploadDisplayName,
+                                    });
+                                    closeOneDrivePicker();
+                                }}
+                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedOneDriveFile || !selectedFolderId || !String(uploadDisplayName || "").trim() ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
+                                title={
+                                    !selectedFolderId
+                                        ? "Select a destination folder first"
+                                        : !String(uploadDisplayName || "").trim()
+                                            ? "Enter a display name"
+                                            : !selectedOneDriveFile
+                                                ? "Select a OneDrive file"
+                                                : "Import selected file"
+                                }
+                            >
+                                Import selected file
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-y-auto">
 
@@ -874,6 +1030,9 @@ export default function DashboardBody(props) {
                     pivotAgg={pivotAgg} setPivotAgg={setPivotAgg}
                     resetPivot={resetPivot}
                     displayHeaders={displayHeaders}
+                    tabs={tabs}
+                    activeTab={activeTab}
+                    onTabChange={onTabChange}
                     pieData={pieData}
                     pivotRows={pivotRows}
                     pivotHeaders={pivotHeaders}
@@ -886,6 +1045,9 @@ export default function DashboardBody(props) {
                     setTrendsOn={setTrendsOn}
                     trendsDateKey={trendsDateKey} setTrendsDateKey={setTrendsDateKey}
                     headers={displayHeaders}
+                    tabs={tabs}
+                    activeTab={activeTab}
+                    onTabChange={onTabChange}
                     trendsValueKey={trendsValueKey} setTrendsValueKey={setTrendsValueKey}
                     trendGranularity={trendGranularity} setTrendGranularity={setTrendGranularity}
                     compareYears={compareYears} setCompareYears={setCompareYears}
@@ -900,6 +1062,9 @@ export default function DashboardBody(props) {
                     setTwoOn={setTwoOn}
                     condCol1={condCol1} setCondCol1={setCondCol1}
                     headers={displayHeaders}
+                    tabs={tabs}
+                    activeTab={activeTab}
+                    onTabChange={onTabChange}
                     condCol2={condCol2} setCondCol2={setCondCol2}
                     valueCol={valueCol} setValueCol={setValueCol}
                     summaryData={summaryData}

@@ -4,6 +4,7 @@ import { uploadSheet } from "./sheetController.js";
 import fs from "fs";
 import path from "path";
 import { tmpdir } from "os";
+import { decryptSettingValue } from "../utils/settingsCrypto.js";
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
@@ -64,8 +65,8 @@ async function getGoogleOauthConfig() {
   const rows = await query("SELECT value FROM app_settings WHERE key = 'google_oauth' LIMIT 1", []);
   const v = rows[0]?.value || {};
   return {
-    clientId: String(v.clientId || "").trim(),
-    clientSecret: String(v.clientSecret || "").trim(),
+    clientId: decryptSettingValue(String(v.clientId || "")).trim(),
+    clientSecret: decryptSettingValue(String(v.clientSecret || "")).trim(),
     redirectUri: String(v.redirectUri || "").trim(),
     frontendUrl: String(v.frontendUrl || process.env.FRONTEND_URL || "http://localhost:5173").trim(),
   };

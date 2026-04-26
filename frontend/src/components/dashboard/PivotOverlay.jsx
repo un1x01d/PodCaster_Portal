@@ -14,6 +14,9 @@ export default function PivotOverlay({
     pivotAgg, setPivotAgg,
     resetPivot,
     displayHeaders,
+    tabs = [],
+    activeTab = "",
+    onTabChange,
     pieData,
     pivotRows,
     pivotHeaders
@@ -26,19 +29,31 @@ export default function PivotOverlay({
                     <button onClick={() => setPivotOn(false)} className="text-gray-400 hover:text-gray-600">✕ Close</button>
                 </div>
                 <div className="flex flex-wrap items-end gap-3">
+                    {Array.isArray(tabs) && tabs.length > 0 && (
+                        <div className="flex items-center gap-2">
+                            <span className="text-xs font-bold uppercase tracking-wider text-gray-500">Tab</span>
+                            <select
+                                value={activeTab || tabs[0] || ""}
+                                onChange={(e) => onTabChange && onTabChange(e.target.value)}
+                                className="border border-slate-300 bg-white px-2.5 py-1 rounded-md text-xs font-bold min-w-[12rem] h-8"
+                            >
+                                {tabs.map((t) => <option key={t} value={t}>{t}</option>)}
+                            </select>
+                        </div>
+                    )}
                     <SearchableSelect
                         options={[{ value: "", label: "Row key…" }, ...displayHeaders.map((h) => ({ value: h, label: h }))]}
                         value={pivotRowKey}
                         onChange={(e) => setPivotRowKey(e.target.value)}
                         placeholder="Row key…"
-                        buttonClassName="border border-slate-200 px-2 rounded-lg min-w-[14rem] bg-white h-8 text-xs"
+                        buttonClassName="border border-slate-300 px-2.5 rounded-md min-w-[14rem] bg-white h-8 text-xs font-bold hover:border-slate-400 hover:bg-slate-50"
                     />
                     <SearchableSelect
                         options={[{ value: "", label: "Dynamic header…" }, ...displayHeaders.map((h) => ({ value: h, label: h }))]}
                         value={pivotColKey}
                         onChange={(e) => setPivotColKey(e.target.value)}
                         placeholder="Dynamic header…"
-                        buttonClassName="border border-slate-200 px-2 rounded-lg min-w-[14rem] bg-white h-8 text-xs"
+                        buttonClassName="border border-slate-300 px-2.5 rounded-md min-w-[14rem] bg-white h-8 text-xs font-bold hover:border-slate-400 hover:bg-slate-50"
                     />
                     <SearchableSelect
                         options={[
@@ -49,7 +64,7 @@ export default function PivotOverlay({
                         onChange={(e) => setPivotValKey(e.target.value)}
                         placeholder={pivotAgg === "count" ? "— (count)" : "Value…"}
                         disabled={pivotAgg === "count"}
-                        buttonClassName="border border-slate-200 px-2 rounded-lg min-w-[14rem] bg-white h-8 text-xs"
+                        buttonClassName="border border-slate-300 px-2.5 rounded-md min-w-[14rem] bg-white h-8 text-xs font-bold hover:border-slate-400 hover:bg-slate-50"
                     />
                     <SearchableSelect
                         options={[
@@ -61,10 +76,10 @@ export default function PivotOverlay({
                         onChange={(e) => setPivotAgg(e.target.value)}
                         placeholder="Aggregation…"
                         panelWidth={180}
-                        buttonClassName="border border-slate-200 px-2 rounded-lg min-w-[10rem] bg-white h-8 text-xs"
+                        buttonClassName="border border-slate-300 px-2.5 rounded-md min-w-[10rem] bg-white h-8 text-xs font-bold hover:border-slate-400 hover:bg-slate-50"
                     />
                     <div className="flex gap-2 ml-auto">
-                        <button onClick={resetPivot} className="px-3 bg-white border border-slate-200 rounded-lg h-8 hover:bg-gray-50 text-xs font-semibold whitespace-nowrap">Reset</button>
+                        <button onClick={resetPivot} className="px-2.5 bg-white border border-slate-300 rounded-md h-8 hover:bg-slate-50 text-xs font-bold whitespace-nowrap">Reset</button>
                     </div>
                 </div>
 

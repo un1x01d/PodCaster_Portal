@@ -59,6 +59,23 @@ export default function UserManagement({ token, user, sheetId }) {
     frontendUrl: "",
   });
   const [dropboxOauthSaving, setDropboxOauthSaving] = useState(false);
+  const [oneDriveIntegrationEnabled, setOneDriveIntegrationEnabled] = useState(true);
+  const [oneDriveIntegrationSaving, setOneDriveIntegrationSaving] = useState(false);
+  const [oneDriveOauthMeta, setOneDriveOauthMeta] = useState({
+    hasClientId: false,
+    hasClientSecret: false,
+    clientIdMasked: "",
+    clientSecretMasked: "",
+    redirectUri: "",
+    frontendUrl: "",
+  });
+  const [oneDriveOauthForm, setOneDriveOauthForm] = useState({
+    clientId: "",
+    clientSecret: "",
+    redirectUri: "",
+    frontendUrl: "",
+  });
+  const [oneDriveOauthSaving, setOneDriveOauthSaving] = useState(false);
 
   // user-level permissions UI (select a sheet from user's groups)
   const [selectedUserId, setSelectedUserId] = useState(null);
@@ -184,6 +201,7 @@ export default function UserManagement({ token, user, sheetId }) {
   const [editingFolderMaxTotalSizeMb, setEditingFolderMaxTotalSizeMb] = useState("1024");
   const [editingUserId, setEditingUserId] = useState(null);
   const [editingUserForm, setEditingUserForm] = useState({ firstName: "", lastName: "", company: "", email: "" });
+  const [deleteUserId, setDeleteUserId] = useState("");
 
   const fetchAllSheets = async () => {
     try {
@@ -399,6 +417,96 @@ export default function UserManagement({ token, user, sheetId }) {
     }
   };
 
+  const fetchOneDriveIntegrationSetting = async () => {
+    if (user?.role !== "admin") return;
+    try {
+      const res = await axios.get(`${API}/admin/settings/onedrive-integration`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setOneDriveIntegrationEnabled(!!res?.data?.enabled);
+    } catch (e) {
+      console.error("fetchOneDriveIntegrationSetting failed", e);
+    }
+  };
+
+  const toggleOneDriveIntegration = async () => {
+    if (user?.role !== "admin" || oneDriveIntegrationSaving) return;
+    const nextEnabled = !oneDriveIntegrationEnabled;
+    setOneDriveIntegrationSaving(true);
+    try {
+      await axios.patch(`${API}/admin/settings/onedrive-integration`, { enabled: nextEnabled }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setOneDriveIntegrationEnabled(nextEnabled);
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to update OneDrive integration");
+    } finally {
+      setOneDriveIntegrationSaving(false);
+    }
+  };
+
+  const fetchOneDriveOauthSetting = async () => {
+    if (user?.role !== "admin") return;
+    try {
+      const res = await axios.get(`${API}/admin/settings/onedrive-oauth`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || {};
+      setOneDriveOauthMeta({
+        hasClientId: !!data.hasClientId,
+        hasClientSecret: !!data.hasClientSecret,
+        clientIdMasked: data.clientIdMasked || "",
+        clientSecretMasked: data.clientSecretMasked || "",
+        redirectUri: data.redirectUri || "",
+        frontendUrl: data.frontendUrl || "",
+      });
+      setOneDriveOauthForm((prev) => ({
+        ...prev,
+        clientId: "",
+        clientSecret: "",
+        redirectUri: data.redirectUri || "",
+        frontendUrl: data.frontendUrl || "",
+      }));
+    } catch (e) {
+      console.error("fetchOneDriveOauthSetting failed", e);
+    }
+  };
+
+  const saveOneDriveOauthSetting = async () => {
+    if (user?.role !== "admin" || oneDriveOauthSaving) return;
+    setOneDriveOauthSaving(true);
+    try {
+      const payload = {
+        clientId: oneDriveOauthForm.clientId || "***",
+        clientSecret: oneDriveOauthForm.clientSecret || "***",
+        redirectUri: oneDriveOauthForm.redirectUri || "",
+        frontendUrl: oneDriveOauthForm.frontendUrl || "",
+      };
+      const res = await axios.patch(`${API}/admin/settings/onedrive-oauth`, payload, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || {};
+      setOneDriveOauthMeta({
+        hasClientId: !!data.hasClientId,
+        hasClientSecret: !!data.hasClientSecret,
+        clientIdMasked: data.clientIdMasked || "",
+        clientSecretMasked: data.clientSecretMasked || "",
+        redirectUri: data.redirectUri || "",
+        frontendUrl: data.frontendUrl || "",
+      });
+      setOneDriveOauthForm((prev) => ({
+        ...prev,
+        clientId: "",
+        clientSecret: "",
+      }));
+      alert("OneDrive OAuth settings updated");
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to update OneDrive OAuth settings");
+    } finally {
+      setOneDriveOauthSaving(false);
+    }
+  };
+
   const fetchGroupMembers = async (gid) => {
     if (!gid) return setGroupMembers([]);
     try {
@@ -520,6 +628,8 @@ export default function UserManagement({ token, user, sheetId }) {
       fetchGoogleOauthSetting();
       fetchDropboxIntegrationSetting();
       fetchDropboxOauthSetting();
+      fetchOneDriveIntegrationSetting();
+      fetchOneDriveOauthSetting();
     }
   }, [token]);
 
@@ -833,6 +943,7 @@ export default function UserManagement({ token, user, sheetId }) {
 
   const removeUserFromGroup = async (uid) => {
     if (!selectedGroupId) return;
+    if (!window.confirm("Remove this user from the selected group?")) return;
     try {
       await axios.delete(`${API}/groups/${selectedGroupId}/users/${uid}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -1226,6 +1337,36 @@ export default function UserManagement({ token, user, sheetId }) {
           </div>
         </div>
 
+        {/* Delete User */}
+        <div className="flex flex-col gap-2 mb-4 bg-rose-50 p-3 rounded-md border border-rose-200">
+          <label className="text-[10px] font-semibold uppercase tracking-wide text-rose-600 ml-1">Delete User</label>
+          <div className="flex items-center gap-2">
+            <select
+              className="input-premium py-1.5 text-[11px] font-semibold flex-1"
+              value={deleteUserId}
+              onChange={(e) => setDeleteUserId(e.target.value)}
+            >
+              <option value="">Select user…</option>
+              {uniqueUsers.map((u) => (
+                <option key={String(u.id)} value={u.id}>
+                  {displayNameForUser(u)} ({u.email})
+                </option>
+              ))}
+            </select>
+            <button
+              className="btn-premium bg-rose-600 hover:bg-rose-700 text-white px-3 py-1.5"
+              onClick={() => {
+                if (!deleteUserId) return;
+                deleteUser(deleteUserId);
+                setDeleteUserId("");
+              }}
+              disabled={!deleteUserId}
+            >
+              Delete
+            </button>
+          </div>
+        </div>
+
         <div className="text-[11px] text-slate-500 mb-3">
           User listing and membership are managed under Group Management below.
         </div>
@@ -1258,7 +1399,7 @@ export default function UserManagement({ token, user, sheetId }) {
               </div>
               <div className="flex gap-2 mb-2">
                 <select
-                  className="input-premium py-2 flex-1"
+                  className="input-premium py-1.5 text-[11px] font-semibold flex-1"
                   value={groupAddUserId}
                   onChange={(e) => setGroupAddUserId(e.target.value)}
                 >
@@ -1267,65 +1408,70 @@ export default function UserManagement({ token, user, sheetId }) {
                     .filter((u) => !uniqueGroupMembers.some((m) => String(m.id) === String(u.id)))
                     .map((u) => (
                       <option key={String(u.id)} value={u.id}>
-                        {u.email}
+                        {u.email} ({u.auth_provider === "google" ? "Google" : "Local"})
                       </option>
                     ))}
                 </select>
-                <button className="btn-premium bg-slate-800 text-white px-3 py-2" onClick={addUserToGroup}>Add</button>
+                <button className="btn-premium bg-slate-800 text-white px-2.5 py-1.5 text-[11px] font-semibold" onClick={addUserToGroup}>Add</button>
               </div>
               <div className="space-y-1.5 max-h-36 overflow-auto pr-1 custom-scrollbar">
-                {uniqueGroupMembers.map((m) => (
-                  <div
-                    key={String(m.id)}
-                    className={`flex items-center justify-between p-2 rounded-md border cursor-pointer ${Number(selectedUserId) === Number(m.id) ? "border-indigo-400 bg-indigo-50" : "border-slate-200"}`}
-                    onClick={() => setSelectedUserId((prev) => (Number(prev) === Number(m.id) ? null : Number(m.id)))}
-                  >
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="text-xs text-slate-700 truncate">{m.email}</span>
-                      {m.is_admin && <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded border border-amber-200 text-amber-600 bg-amber-50">Admin</span>}
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <button
-                        className="px-2 py-1 text-[10px] rounded-md border border-slate-300 text-slate-600 hover:bg-slate-100"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          const full = uniqueUsers.find((u) => Number(u.id) === Number(m.id)) || m;
-                          beginEditUser(full);
-                        }}
-                      >
-                        Edit
-                      </button>
-                      {canManageGroupAdmins && (
+                {uniqueGroupMembers.map((m) => {
+                  const full = uniqueUsers.find((u) => Number(u.id) === Number(m.id)) || m;
+                  return (
+                    <div
+                      key={String(m.id)}
+                      className={`flex items-center justify-between p-1.5 rounded-md border cursor-pointer ${Number(selectedUserId) === Number(m.id) ? "border-indigo-400 bg-indigo-50" : "border-slate-200"}`}
+                      onClick={() => setSelectedUserId((prev) => (Number(prev) === Number(m.id) ? null : Number(m.id)))}
+                    >
+                    <div className="flex items-center gap-2 min-w-0 flex-1 pr-3">
+                        <span className="text-[11px] font-semibold text-slate-700 truncate">{displayNameForUser(full)}</span>
+                        <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded border ${authBadgeClass(m.auth_provider)}`}>
+                          {m.auth_provider === "google" ? "Google" : "Local"}
+                        </span>
+                        {m.is_admin && <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded border border-emerald-200 text-emerald-700 bg-emerald-50">Admin</span>}
+                      </div>
+                      <div className="flex items-center gap-0.5 shrink-0">
                         <button
-                          className="px-2 py-1 text-[10px] rounded-md border border-slate-300 text-slate-600 hover:bg-slate-100"
-                          onClick={(e) => { e.stopPropagation(); toggleGroupAdmin(m.id, m.is_admin); }}
+                          className="gm-action-btn h-[14px] min-w-[28px] px-1 leading-none text-[5px] font-semibold rounded-sm border border-slate-300 text-slate-600 hover:bg-slate-100"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            beginEditUser(full);
+                          }}
                         >
-                          {m.is_admin ? "Unadmin" : "Admin"}
+                          Edit
                         </button>
-                      )}
-                      <button
-                        className="px-2 py-1 text-[10px] rounded-md border border-red-200 text-red-600 hover:bg-red-50"
-                        onClick={(e) => { e.stopPropagation(); removeUserFromGroup(m.id); }}
-                      >
-                        Delete
-                      </button>
+                        {canManageGroupAdmins && (
+                          <button
+                            className="gm-action-btn h-[14px] min-w-[34px] px-1 leading-none text-[5px] font-semibold rounded-sm border border-slate-300 text-slate-600 hover:bg-slate-100"
+                            onClick={(e) => { e.stopPropagation(); toggleGroupAdmin(m.id, m.is_admin); }}
+                          >
+                            {m.is_admin ? "Unadmin" : "Admin"}
+                          </button>
+                        )}
+                        <button
+                          className="gm-action-btn h-[14px] min-w-[30px] px-1 leading-none text-[5px] font-semibold rounded-sm border border-red-200 text-red-600 hover:bg-red-50"
+                          onClick={(e) => { e.stopPropagation(); removeUserFromGroup(m.id); }}
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
                 {!uniqueGroupMembers.length && <div className="text-[10px] text-slate-400 italic">No users in this group.</div>}
               </div>
               {editingUserId && (
                 <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3 space-y-2">
                   <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500">Edit Selected User</div>
                   <div className="grid grid-cols-2 gap-2">
-                    <input className="input-premium" placeholder="First name" value={editingUserForm.firstName} onChange={(e) => setEditingUserForm((p) => ({ ...p, firstName: e.target.value }))} />
-                    <input className="input-premium" placeholder="Last name" value={editingUserForm.lastName} onChange={(e) => setEditingUserForm((p) => ({ ...p, lastName: e.target.value }))} />
+                    <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="First name" value={editingUserForm.firstName} onChange={(e) => setEditingUserForm((p) => ({ ...p, firstName: e.target.value }))} />
+                    <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="Last name" value={editingUserForm.lastName} onChange={(e) => setEditingUserForm((p) => ({ ...p, lastName: e.target.value }))} />
                   </div>
-                  <input className="input-premium" placeholder="Company" value={editingUserForm.company} onChange={(e) => setEditingUserForm((p) => ({ ...p, company: e.target.value }))} />
-                  <input className="input-premium" placeholder="Email" value={editingUserForm.email} onChange={(e) => setEditingUserForm((p) => ({ ...p, email: e.target.value }))} />
+                  <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="Company" value={editingUserForm.company} onChange={(e) => setEditingUserForm((p) => ({ ...p, company: e.target.value }))} />
+                  <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="Email" value={editingUserForm.email} onChange={(e) => setEditingUserForm((p) => ({ ...p, email: e.target.value }))} />
                   <div className="flex justify-end gap-2">
-                    <button className="px-3 py-1.5 text-xs rounded-md border border-slate-300 text-slate-600 hover:bg-slate-100" onClick={cancelEditUser}>Cancel</button>
-                    <button className="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-800" onClick={() => saveEditUser(editingUserId)}>Save</button>
+                    <button className="px-2.5 py-1 text-[10px] font-semibold rounded-md border border-slate-300 text-slate-600 hover:bg-slate-100" onClick={cancelEditUser}>Cancel</button>
+                    <button className="px-2.5 py-1 text-[10px] font-semibold rounded-md bg-slate-900 text-white hover:bg-slate-800" onClick={() => saveEditUser(editingUserId)}>Save</button>
                   </div>
                 </div>
               )}
@@ -1423,7 +1569,7 @@ export default function UserManagement({ token, user, sheetId }) {
                     .filter(u => !uniqueGroupMembers.some(m => String(m.id) === String(u.id)))
                     .map(u => (
                       <option key={String(u.id)} value={u.id}>
-                        {u.email} ({u.auth_provider === "google" ? "Google" : "Manual"})
+                        {u.email} ({u.auth_provider === "google" ? "Google" : "Local"})
                       </option>
                     ))
                   }
@@ -1541,8 +1687,8 @@ export default function UserManagement({ token, user, sheetId }) {
         <>
         {user?.role === "admin" && (
           <div className="mb-4 rounded-md border border-slate-200 bg-slate-50 p-4 space-y-3">
-            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Google Drive & Dropbox Authentication</div>
-            <button type="button" onClick={toggleGoogleIntegration} disabled={googleIntegrationSaving} className={`w-full flex items-center justify-between px-3 py-2 rounded-md border text-xs font-bold uppercase tracking-wider transition-colors ${googleIntegrationEnabled ? "bg-blue-50 border-blue-200 text-blue-700" : "bg-slate-100 border-slate-200 text-slate-600"} ${googleIntegrationSaving ? "opacity-60 cursor-not-allowed" : ""}`} title="Enable or disable Google SSO integration"><span>Google Sign-In</span><span>{googleIntegrationEnabled ? "Enabled" : "Disabled"}</span></button>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Cloud Storage</div>
+            <button type="button" onClick={toggleGoogleIntegration} disabled={googleIntegrationSaving} className={`w-full flex items-center justify-between px-3 py-2 rounded-md border text-xs font-bold uppercase tracking-wider transition-colors ${googleIntegrationEnabled ? "bg-blue-50 border-blue-200 text-blue-700" : "bg-slate-100 border-slate-200 text-slate-600"} ${googleIntegrationSaving ? "opacity-60 cursor-not-allowed" : ""}`} title="Enable or disable Google SSO integration"><span className="inline-flex items-center gap-2"><img src="https://upload.wikimedia.org/wikipedia/commons/1/12/Google_Drive_icon_%282020%29.svg" alt="Google Drive" className="h-3.5 w-3.5" /><span>Google Sign-In</span></span><span>{googleIntegrationEnabled ? "Enabled" : "Disabled"}</span></button>
             {googleIntegrationEnabled && (
               <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
                 <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Google OAuth Configuration</div>
@@ -1553,7 +1699,7 @@ export default function UserManagement({ token, user, sheetId }) {
                 <button type="button" onClick={saveGoogleOauthSetting} disabled={googleOauthSaving} className={`btn-premium bg-slate-800 text-white w-full py-2 ${googleOauthSaving ? "opacity-60 cursor-not-allowed" : ""}`}>{googleOauthSaving ? "Saving..." : "Save Google OAuth"}</button>
               </div>
             )}
-            <button type="button" onClick={toggleDropboxIntegration} disabled={dropboxIntegrationSaving} className={`w-full flex items-center justify-between px-3 py-2 rounded-md border text-xs font-bold uppercase tracking-wider transition-colors ${dropboxIntegrationEnabled ? "bg-blue-50 border-blue-200 text-blue-700" : "bg-slate-100 border-slate-200 text-slate-600"} ${dropboxIntegrationSaving ? "opacity-60 cursor-not-allowed" : ""}`} title="Enable or disable Dropbox integration"><span>Dropbox Integration</span><span>{dropboxIntegrationEnabled ? "Enabled" : "Disabled"}</span></button>
+            <button type="button" onClick={toggleDropboxIntegration} disabled={dropboxIntegrationSaving} className={`w-full flex items-center justify-between px-3 py-2 rounded-md border text-xs font-bold uppercase tracking-wider transition-colors ${dropboxIntegrationEnabled ? "bg-blue-50 border-blue-200 text-blue-700" : "bg-slate-100 border-slate-200 text-slate-600"} ${dropboxIntegrationSaving ? "opacity-60 cursor-not-allowed" : ""}`} title="Enable or disable Dropbox integration"><span className="inline-flex items-center gap-2"><img src="https://upload.wikimedia.org/wikipedia/commons/7/78/Dropbox_Icon.svg" alt="Dropbox" className="h-3.5 w-3.5" /><span>Dropbox Integration</span></span><span>{dropboxIntegrationEnabled ? "Enabled" : "Disabled"}</span></button>
             {dropboxIntegrationEnabled && (
               <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
                 <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Dropbox OAuth Configuration</div>
@@ -1562,6 +1708,23 @@ export default function UserManagement({ token, user, sheetId }) {
                 <input className="input-premium" placeholder="Redirect URI" value={dropboxOauthForm.redirectUri} onChange={(e) => setDropboxOauthForm((prev) => ({ ...prev, redirectUri: e.target.value }))} />
                 <input className="input-premium" placeholder="Frontend URL" value={dropboxOauthForm.frontendUrl} onChange={(e) => setDropboxOauthForm((prev) => ({ ...prev, frontendUrl: e.target.value }))} />
                 <button type="button" onClick={saveDropboxOauthSetting} disabled={dropboxOauthSaving} className={`btn-premium bg-slate-800 text-white w-full py-2 ${dropboxOauthSaving ? "opacity-60 cursor-not-allowed" : ""}`}>{dropboxOauthSaving ? "Saving..." : "Save Dropbox OAuth"}</button>
+              </div>
+            )}
+            <button type="button" onClick={toggleOneDriveIntegration} disabled={oneDriveIntegrationSaving} className={`w-full flex items-center justify-between px-3 py-2 rounded-md border text-xs font-bold uppercase tracking-wider transition-colors ${oneDriveIntegrationEnabled ? "bg-blue-50 border-blue-200 text-blue-700" : "bg-slate-100 border-slate-200 text-slate-600"} ${oneDriveIntegrationSaving ? "opacity-60 cursor-not-allowed" : ""}`} title="Enable or disable OneDrive integration"><span className="inline-flex items-center gap-2"><img src="https://upload.wikimedia.org/wikipedia/commons/e/e7/Microsoft_OneDrive_Icon_%282025_-_present%29.svg" alt="OneDrive" className="h-3.5 w-3.5" /><span>OneDrive Integration</span></span><span>{oneDriveIntegrationEnabled ? "Enabled" : "Disabled"}</span></button>
+            {oneDriveIntegrationEnabled && (
+              <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">OneDrive OAuth Configuration</div>
+                <input type="password" className="input-premium" placeholder={oneDriveOauthMeta.hasClientId ? "***" : "Microsoft Application (Client) ID"} value={oneDriveOauthForm.clientId} onChange={(e) => setOneDriveOauthForm((prev) => ({ ...prev, clientId: e.target.value }))} autoComplete="new-password" />
+                <input type="password" className="input-premium" placeholder={oneDriveOauthMeta.hasClientSecret ? "***" : "Microsoft Client Secret"} value={oneDriveOauthForm.clientSecret} onChange={(e) => setOneDriveOauthForm((prev) => ({ ...prev, clientSecret: e.target.value }))} autoComplete="new-password" />
+                <input className="input-premium" placeholder="Redirect URI" value={oneDriveOauthForm.redirectUri} onChange={(e) => setOneDriveOauthForm((prev) => ({ ...prev, redirectUri: e.target.value }))} />
+                <input className="input-premium" placeholder="Frontend URL" value={oneDriveOauthForm.frontendUrl} onChange={(e) => setOneDriveOauthForm((prev) => ({ ...prev, frontendUrl: e.target.value }))} />
+                <button type="button" onClick={saveOneDriveOauthSetting} disabled={oneDriveOauthSaving} className={`btn-premium bg-slate-800 text-white w-full py-2 ${oneDriveOauthSaving ? "opacity-60 cursor-not-allowed" : ""}`}>{oneDriveOauthSaving ? "Saving..." : "Save OneDrive OAuth"}</button>
+                <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600 space-y-1">
+                  <div className="font-semibold text-slate-700">Setup help</div>
+                  <a className="block text-blue-700 hover:underline" href="https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app" target="_blank" rel="noreferrer">Register app in Microsoft Entra ID</a>
+                  <a className="block text-blue-700 hover:underline" href="https://learn.microsoft.com/en-us/graph/permissions-reference#filesread" target="_blank" rel="noreferrer">Required Microsoft Graph scopes: `Files.Read`, `User.Read`, `offline_access`</a>
+                  <a className="block text-blue-700 hover:underline" href="https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow" target="_blank" rel="noreferrer">Authorization code flow guide</a>
+                </div>
               </div>
             )}
           </div>
@@ -1605,7 +1768,7 @@ export default function UserManagement({ token, user, sheetId }) {
               >
                 <option value="">Select owner user…</option>
                 {uniqueUsers.map((u) => (
-                  <option key={u.id} value={u.id}>{u.email}</option>
+                  <option key={u.id} value={u.id}>{u.email} ({u.auth_provider === "google" ? "Google" : "Local"})</option>
                 ))}
               </select>
             )}

@@ -7,6 +7,9 @@ export default function TwoConditionOverlay({
     setTwoOn,
     condCol1, setCondCol1,
     headers,
+    tabs = [],
+    activeTab = "",
+    onTabChange,
     condCol2, setCondCol2,
     valueCol, setValueCol,
     summaryData
@@ -18,9 +21,21 @@ export default function TwoConditionOverlay({
                 <button onClick={() => setTwoOn(false)} className="text-gray-400 hover:text-gray-600 transition-colors">✕ Close</button>
             </div>
             <div className="flex gap-4 mb-6 items-end flex-wrap">
+                {Array.isArray(tabs) && tabs.length > 0 && (
+                    <div>
+                        <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Tab</label>
+                        <select
+                            value={activeTab || tabs[0] || ""}
+                            onChange={(e) => onTabChange && onTabChange(e.target.value)}
+                            className="border border-slate-300 bg-white px-2.5 py-1 rounded-md text-xs font-bold min-w-[180px] h-8"
+                        >
+                            {tabs.map((t) => <option key={t} value={t}>{t}</option>)}
+                        </select>
+                    </div>
+                )}
                 <div>
                     <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Condition 1 (Filter Context)</label>
-                    <select value={condCol1 || ""} onChange={e => setCondCol1(e.target.value)} className="border border-slate-300 bg-white p-2 rounded-lg text-sm min-w-[200px] h-10">
+                    <select value={condCol1 || ""} onChange={e => setCondCol1(e.target.value)} className="border border-slate-300 bg-white px-2.5 py-1 rounded-md text-xs font-bold min-w-[180px] h-8">
                         <option value="">(Any)</option>
                         {headers.map(h => <option key={h}>{h}</option>)}
                     </select>
@@ -28,7 +43,7 @@ export default function TwoConditionOverlay({
                 <div className="pb-3 text-gray-400 font-bold">+</div>
                 <div>
                     <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Condition 2 (Group By)</label>
-                    <select value={condCol2 || ""} onChange={e => setCondCol2(e.target.value)} className="border border-slate-300 bg-white p-2 rounded-lg text-sm min-w-[200px] h-10">
+                    <select value={condCol2 || ""} onChange={e => setCondCol2(e.target.value)} className="border border-slate-300 bg-white px-2.5 py-1 rounded-md text-xs font-bold min-w-[180px] h-8">
                         <option value="">(None)</option>
                         {headers.map(h => <option key={h}>{h}</option>)}
                     </select>
@@ -36,7 +51,7 @@ export default function TwoConditionOverlay({
                 <div className="pb-3 text-gray-400 font-bold">→</div>
                 <div>
                     <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Value to Sum</label>
-                    <select value={valueCol || ""} onChange={e => setValueCol(e.target.value)} className="border border-slate-300 bg-white p-2 rounded-lg text-sm min-w-[200px] h-10">
+                    <select value={valueCol || ""} onChange={e => setValueCol(e.target.value)} className="border border-slate-300 bg-white px-2.5 py-1 rounded-md text-xs font-bold min-w-[180px] h-8">
                         <option value="">Select...</option>
                         {headers.map(h => <option key={h}>{h}</option>)}
                     </select>

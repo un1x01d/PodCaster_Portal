@@ -16,6 +16,7 @@ import insightRoutes from "./src/routes/insightRoutes.js";
 import localeRoutes from "./src/routes/localeRoutes.js";
 import googleRoutes from "./src/routes/googleRoutes.js";
 import dropboxRoutes from "./src/routes/dropboxRoutes.js";
+import oneDriveRoutes from "./src/routes/oneDriveRoutes.js";
 
 const app = express();
 // Force restart
@@ -68,6 +69,7 @@ app.use("/", insightRoutes); // /insights/:sheetId
 app.use("/", localeRoutes); // /dashboard/translate
 app.use("/", googleRoutes); // /auth/google/*, /google/drive/files
 app.use("/", dropboxRoutes); // /auth/dropbox/*, /dropbox/files
+app.use("/", oneDriveRoutes); // /auth/onedrive/*, /onedrive/files
 
 // Health
 app.get("/healthz", (_req, res) => res.json({ ok: true }));

@@ -1,5 +1,6 @@
 import { query, getClient } from "../config/db.js";
 import { hashPassword, generateComplexPassword } from "../utils/security.js";
+import { decryptSettingValue, encryptSettingValue } from "../utils/settingsCrypto.js";
 
 const EXPOSE_TEMP_PASSWORDS = process.env.EXPOSE_TEMP_PASSWORDS
     ? process.env.EXPOSE_TEMP_PASSWORDS === "true"
@@ -237,10 +238,37 @@ function maskIfPresent(value) {
     return String(value || "").trim() ? "***" : "";
 }
 
+function decryptOauthConfig(raw) {
+    const cfg = raw && typeof raw === "object" ? raw : {};
+    return {
+        clientId: decryptSettingValue(String(cfg.clientId || "")),
+        clientSecret: decryptSettingValue(String(cfg.clientSecret || "")),
+        redirectUri: String(cfg.redirectUri || ""),
+        frontendUrl: String(cfg.frontendUrl || ""),
+    };
+}
+
+function normalizeOauthConfigForSave(current, body) {
+    const incomingClientIdRaw = typeof body?.clientId === "string" ? body.clientId.trim() : undefined;
+    const incomingClientSecretRaw = typeof body?.clientSecret === "string" ? body.clientSecret.trim() : undefined;
+    const incomingRedirectRaw = typeof body?.redirectUri === "string" ? body.redirectUri.trim() : undefined;
+    const incomingFrontendRaw = typeof body?.frontendUrl === "string" ? body.frontendUrl.trim() : undefined;
+
+    const nextClientId = (incomingClientIdRaw && incomingClientIdRaw !== "***") ? incomingClientIdRaw : String(current.clientId || "");
+    const nextClientSecret = (incomingClientSecretRaw && incomingClientSecretRaw !== "***") ? incomingClientSecretRaw : String(current.clientSecret || "");
+
+    return {
+        clientId: encryptSettingValue(nextClientId),
+        clientSecret: encryptSettingValue(nextClientSecret),
+        redirectUri: incomingRedirectRaw !== undefined ? incomingRedirectRaw : String(current.redirectUri || ""),
+        frontendUrl: incomingFrontendRaw !== undefined ? incomingFrontendRaw : String(current.frontendUrl || ""),
+    };
+}
+
 export async function getGoogleOauthSetting(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     const rows = await query("SELECT value FROM app_settings WHERE key = 'google_oauth' LIMIT 1", []);
-    const cfg = rows[0]?.value || {};
+    const cfg = decryptOauthConfig(rows[0]?.value || {});
     const clientId = String(cfg.clientId || "");
     const clientSecret = String(cfg.clientSecret || "");
     const redirectUri = String(cfg.redirectUri || "");
@@ -260,19 +288,8 @@ export async function setGoogleOauthSetting(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
 
     const rows = await query("SELECT value FROM app_settings WHERE key = 'google_oauth' LIMIT 1", []);
-    const current = rows[0]?.value || {};
-
-    const incomingClientIdRaw = typeof req.body?.clientId === "string" ? req.body.clientId.trim() : undefined;
-    const incomingClientSecretRaw = typeof req.body?.clientSecret === "string" ? req.body.clientSecret.trim() : undefined;
-    const incomingRedirectRaw = typeof req.body?.redirectUri === "string" ? req.body.redirectUri.trim() : undefined;
-    const incomingFrontendRaw = typeof req.body?.frontendUrl === "string" ? req.body.frontendUrl.trim() : undefined;
-
-    const next = {
-        clientId: (incomingClientIdRaw && incomingClientIdRaw !== "***") ? incomingClientIdRaw : String(current.clientId || ""),
-        clientSecret: (incomingClientSecretRaw && incomingClientSecretRaw !== "***") ? incomingClientSecretRaw : String(current.clientSecret || ""),
-        redirectUri: incomingRedirectRaw !== undefined ? incomingRedirectRaw : String(current.redirectUri || ""),
-        frontendUrl: incomingFrontendRaw !== undefined ? incomingFrontendRaw : String(current.frontendUrl || ""),
-    };
+    const current = decryptOauthConfig(rows[0]?.value || {});
+    const next = normalizeOauthConfigForSave(current, req.body);
 
     await query(
         `INSERT INTO app_settings (key, value, updated_at)
@@ -284,10 +301,10 @@ export async function setGoogleOauthSetting(req, res) {
 
     res.json({
         success: true,
-        hasClientId: !!next.clientId,
-        hasClientSecret: !!next.clientSecret,
-        clientIdMasked: maskIfPresent(next.clientId),
-        clientSecretMasked: maskIfPresent(next.clientSecret),
+        hasClientId: !!decryptSettingValue(next.clientId),
+        hasClientSecret: !!decryptSettingValue(next.clientSecret),
+        clientIdMasked: maskIfPresent(decryptSettingValue(next.clientId)),
+        clientSecretMasked: maskIfPresent(decryptSettingValue(next.clientSecret)),
         redirectUri: next.redirectUri,
         frontendUrl: next.frontendUrl,
     });
@@ -316,7 +333,7 @@ export async function setDropboxIntegrationSetting(req, res) {
 export async function getDropboxOauthSetting(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     const rows = await query("SELECT value FROM app_settings WHERE key = 'dropbox_oauth' LIMIT 1", []);
-    const cfg = rows[0]?.value || {};
+    const cfg = decryptOauthConfig(rows[0]?.value || {});
     const clientId = String(cfg.clientId || "");
     const clientSecret = String(cfg.clientSecret || "");
     const redirectUri = String(cfg.redirectUri || "");
@@ -336,19 +353,8 @@ export async function setDropboxOauthSetting(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
 
     const rows = await query("SELECT value FROM app_settings WHERE key = 'dropbox_oauth' LIMIT 1", []);
-    const current = rows[0]?.value || {};
-
-    const incomingClientIdRaw = typeof req.body?.clientId === "string" ? req.body.clientId.trim() : undefined;
-    const incomingClientSecretRaw = typeof req.body?.clientSecret === "string" ? req.body.clientSecret.trim() : undefined;
-    const incomingRedirectRaw = typeof req.body?.redirectUri === "string" ? req.body.redirectUri.trim() : undefined;
-    const incomingFrontendRaw = typeof req.body?.frontendUrl === "string" ? req.body.frontendUrl.trim() : undefined;
-
-    const next = {
-        clientId: (incomingClientIdRaw && incomingClientIdRaw !== "***") ? incomingClientIdRaw : String(current.clientId || ""),
-        clientSecret: (incomingClientSecretRaw && incomingClientSecretRaw !== "***") ? incomingClientSecretRaw : String(current.clientSecret || ""),
-        redirectUri: incomingRedirectRaw !== undefined ? incomingRedirectRaw : String(current.redirectUri || ""),
-        frontendUrl: incomingFrontendRaw !== undefined ? incomingFrontendRaw : String(current.frontendUrl || ""),
-    };
+    const current = decryptOauthConfig(rows[0]?.value || {});
+    const next = normalizeOauthConfigForSave(current, req.body);
 
     await query(
         `INSERT INTO app_settings (key, value, updated_at)
@@ -360,10 +366,74 @@ export async function setDropboxOauthSetting(req, res) {
 
     res.json({
         success: true,
-        hasClientId: !!next.clientId,
-        hasClientSecret: !!next.clientSecret,
-        clientIdMasked: maskIfPresent(next.clientId),
-        clientSecretMasked: maskIfPresent(next.clientSecret),
+        hasClientId: !!decryptSettingValue(next.clientId),
+        hasClientSecret: !!decryptSettingValue(next.clientSecret),
+        clientIdMasked: maskIfPresent(decryptSettingValue(next.clientId)),
+        clientSecretMasked: maskIfPresent(decryptSettingValue(next.clientSecret)),
+        redirectUri: next.redirectUri,
+        frontendUrl: next.frontendUrl,
+    });
+}
+
+export async function getOneDriveIntegrationSetting(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const rows = await query("SELECT value FROM app_settings WHERE key = 'onedrive_integration' LIMIT 1", []);
+    const enabled = rows.length ? !!rows[0]?.value?.enabled : true;
+    res.json({ enabled });
+}
+
+export async function setOneDriveIntegrationSetting(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const enabled = !!req.body?.enabled;
+    await query(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ('onedrive_integration', $1::jsonb, CURRENT_TIMESTAMP)
+         ON CONFLICT (key)
+         DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+        [JSON.stringify({ enabled })]
+    );
+    res.json({ success: true, enabled });
+}
+
+export async function getOneDriveOauthSetting(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const rows = await query("SELECT value FROM app_settings WHERE key = 'onedrive_oauth' LIMIT 1", []);
+    const cfg = decryptOauthConfig(rows[0]?.value || {});
+    const clientId = String(cfg.clientId || "");
+    const clientSecret = String(cfg.clientSecret || "");
+    const redirectUri = String(cfg.redirectUri || "");
+    const frontendUrl = String(cfg.frontendUrl || "");
+
+    res.json({
+        hasClientId: !!clientId,
+        hasClientSecret: !!clientSecret,
+        clientIdMasked: maskIfPresent(clientId),
+        clientSecretMasked: maskIfPresent(clientSecret),
+        redirectUri,
+        frontendUrl,
+    });
+}
+
+export async function setOneDriveOauthSetting(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const rows = await query("SELECT value FROM app_settings WHERE key = 'onedrive_oauth' LIMIT 1", []);
+    const current = decryptOauthConfig(rows[0]?.value || {});
+    const next = normalizeOauthConfigForSave(current, req.body);
+
+    await query(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ('onedrive_oauth', $1::jsonb, CURRENT_TIMESTAMP)
+         ON CONFLICT (key)
+         DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+        [JSON.stringify(next)]
+    );
+
+    res.json({
+        success: true,
+        hasClientId: !!decryptSettingValue(next.clientId),
+        hasClientSecret: !!decryptSettingValue(next.clientSecret),
+        clientIdMasked: maskIfPresent(decryptSettingValue(next.clientId)),
+        clientSecretMasked: maskIfPresent(decryptSettingValue(next.clientSecret)),
         redirectUri: next.redirectUri,
         frontendUrl: next.frontendUrl,
     });

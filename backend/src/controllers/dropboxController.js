@@ -4,6 +4,7 @@ import fs from "fs";
 import path from "path";
 import { tmpdir } from "os";
 import { createHmac, timingSafeEqual } from "crypto";
+import { decryptSettingValue } from "../utils/settingsCrypto.js";
 
 const DROPBOX_AUTH_BASE = "https://www.dropbox.com/oauth2/authorize";
 const DROPBOX_TOKEN_URL = "https://api.dropboxapi.com/oauth2/token";
@@ -83,8 +84,8 @@ async function getDropboxOauthConfig() {
   const rows = await query("SELECT value FROM app_settings WHERE key = 'dropbox_oauth' LIMIT 1", []);
   const v = rows[0]?.value || {};
   return {
-    clientId: String(v.clientId || "").trim(),
-    clientSecret: String(v.clientSecret || "").trim(),
+    clientId: decryptSettingValue(String(v.clientId || "")).trim(),
+    clientSecret: decryptSettingValue(String(v.clientSecret || "")).trim(),
     redirectUri: String(v.redirectUri || "").trim(),
     frontendUrl: String(v.frontendUrl || "http://localhost:5173").trim(),
   };

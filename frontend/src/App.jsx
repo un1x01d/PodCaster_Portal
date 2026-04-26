@@ -86,6 +86,7 @@ export default function App() {
   const [password, setPassword] = useState("");
   const [googleEnabled, setGoogleEnabled] = useState(true);
   const [dropboxEnabled, setDropboxEnabled] = useState(true);
+  const [oneDriveEnabled, setOneDriveEnabled] = useState(true);
   const dashboardI18n = useDashboardI18n({ enabled: !!user });
 
   const [sheetId, setSheetId] = useState(() => localStorage.getItem("sheetId") || null);
@@ -152,6 +153,8 @@ export default function App() {
   // Multi-tab workbook support
   const [tabs, setTabs] = useState([]);
   const [activeTab, setActiveTab] = useState("");
+  const tabListCacheRef = useRef({});
+  const tabDataCacheRef = useRef({});
 
   const tableContainerRef = useRef(null);
 
@@ -574,9 +577,61 @@ export default function App() {
     }
   };
 
-  const loadData = async (sid = sheetId, preserveFilters = false, tabName = null) => {
-    if (!sid) return;
+  const handleOneDriveConnect = async () => {
+    if (!token) {
+      alert("Sign in first.");
+      return;
+    }
+    if (!oneDriveEnabled) {
+      alert("OneDrive integration is disabled.");
+      return;
+    }
     try {
+      const res = await axios.get(`${API}/auth/onedrive/url`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const url = String(res?.data?.url || "").trim();
+      if (!url) {
+        alert("OneDrive is not configured.");
+        return;
+      }
+      window.location.href = url;
+    } catch (err) {
+      console.error("onedrive auth url failed:", err);
+      alert(err?.response?.data?.error || "OneDrive is not configured.");
+    }
+  };
+
+  const applyLoadedRows = (sid, raw, preserveFilters = false) => {
+    if (!raw || !Array.isArray(raw)) {
+      console.warn("loadData: response is not an array", raw);
+      setData([]);
+      setHeaders([]);
+      return;
+    }
+    setData(raw);
+    const heads = raw.length ? Object.keys(raw[0]) : [];
+    setHeaders(heads);
+    setSheetId(sid);
+    localStorage.setItem("sheetId", sid);
+    if (!preserveFilters) {
+      setColumnFilters({});
+      setOpenFilterCol(null);
+    }
+  };
+
+  const getDataCacheKey = (sid, tabName = null) => `${String(sid)}::${tabName ? String(tabName) : "__all__"}`;
+
+  const loadData = async (sid = sheetId, preserveFilters = false, tabName = null, options = {}) => {
+    if (!sid) return;
+    const { preferCache = true } = options;
+    try {
+      const cacheKey = getDataCacheKey(sid, tabName);
+      if (preferCache && tabDataCacheRef.current[cacheKey]) {
+        applyLoadedRows(sid, tabDataCacheRef.current[cacheKey], preserveFilters);
+        return;
+      }
+
       const url = tabName
         ? `${API}/sheets/${sid}/data?tab=${encodeURIComponent(tabName)}`
         : `${API}/sheets/${sid}/data`;
@@ -585,57 +640,81 @@ export default function App() {
         headers: { Authorization: `Bearer ${token}` },
       });
       const raw = res.data;
-      if (!raw || !Array.isArray(raw)) {
-        console.warn("loadData: response is not an array", raw);
-        setData([]);
-        setHeaders([]);
-        return;
-      }
-      setData(raw);
-      const heads = raw.length ? Object.keys(raw[0]) : [];
-      setHeaders(heads);
-      setSheetId(sid);
-
-      localStorage.setItem("sheetId", sid);
-
-      if (!preserveFilters) {
-        setColumnFilters({});
-        setOpenFilterCol(null);
-      }
+      tabDataCacheRef.current[cacheKey] = Array.isArray(raw) ? raw : [];
+      applyLoadedRows(sid, raw, preserveFilters);
     } catch (e) {
       console.error(e);
       alert("Failed to load data");
     }
   };
 
-  const fetchTabs = async (sid) => {
+  const fetchTabs = async (sid, options = {}) => {
+    const { preferredTab = null, preserveActive = false } = options;
     if (!sid) {
       setTabs([]);
       setActiveTab("");
-      return;
+      return [];
+    }
+    const cached = tabListCacheRef.current[String(sid)];
+    if (Array.isArray(cached)) {
+      setTabs(cached);
+      if (cached.length > 0) {
+        const nextTab = (preferredTab && cached.includes(preferredTab))
+          ? preferredTab
+          : (preserveActive && activeTab && cached.includes(activeTab) ? activeTab : cached[0]);
+        setActiveTab(nextTab);
+        localStorage.setItem("activeTab", nextTab);
+      } else {
+        setActiveTab("");
+        localStorage.removeItem("activeTab");
+      }
+      return cached;
     }
     try {
       const res = await axios.get(`${API}/sheets/${sid}/tabs`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       const tabList = res.data?.tabs || [];
+      tabListCacheRef.current[String(sid)] = tabList;
       setTabs(tabList);
       if (tabList.length > 0) {
-        setActiveTab(tabList[0]);
-        localStorage.setItem("activeTab", tabList[0]);
+        const nextTab = (preferredTab && tabList.includes(preferredTab))
+          ? preferredTab
+          : (preserveActive && activeTab && tabList.includes(activeTab) ? activeTab : tabList[0]);
+        setActiveTab(nextTab);
+        localStorage.setItem("activeTab", nextTab);
+      } else {
+        setActiveTab("");
+        localStorage.removeItem("activeTab");
       }
+      return tabList;
     } catch (e) {
       console.error("fetchTabs failed:", e);
       setTabs([]);
       setActiveTab("");
       localStorage.removeItem("activeTab");
+      return [];
     }
   };
 
   const handleTabChange = (tabName) => {
     setActiveTab(tabName);
     localStorage.setItem("activeTab", tabName);
-    loadData(sheetId, true, tabName);
+    loadData(sheetId, true, tabName, { preferCache: true });
+  };
+
+  const hydrateSheetContext = async (sid, options = {}) => {
+    if (!sid) return;
+    const {
+      preferredTab = null,
+      preserveFilters = false,
+      preferCache = true,
+    } = options;
+    const tabList = await fetchTabs(sid, { preferredTab, preserveActive: false });
+    const resolvedTab = Array.isArray(tabList) && tabList.length
+      ? ((preferredTab && tabList.includes(preferredTab)) ? preferredTab : tabList[0])
+      : null;
+    await loadData(sid, preserveFilters, resolvedTab, { preferCache });
   };
 
   const handleUpload = async (uploadFile, folderId, displayName) => {
@@ -660,6 +739,7 @@ export default function App() {
         localStorage.setItem("activeFilename", activeName);
         setUploadDisplayName("");
         if (res.data.tabs && res.data.tabs.length > 0) {
+          tabListCacheRef.current[String(res.data.sheetId)] = res.data.tabs;
           setTabs(res.data.tabs);
           setActiveTab(res.data.tabs[0]);
           localStorage.setItem("activeTab", res.data.tabs[0]);
@@ -700,6 +780,7 @@ export default function App() {
         localStorage.setItem("activeFilename", activeName);
         setUploadDisplayName("");
         if (res.data.tabs && res.data.tabs.length > 0) {
+          tabListCacheRef.current[String(res.data.sheetId)] = res.data.tabs;
           setTabs(res.data.tabs);
           setActiveTab(res.data.tabs[0]);
           localStorage.setItem("activeTab", res.data.tabs[0]);
@@ -738,6 +819,7 @@ export default function App() {
         localStorage.setItem("activeFilename", activeName);
         setUploadDisplayName("");
         if (res.data.tabs && res.data.tabs.length > 0) {
+          tabListCacheRef.current[String(res.data.sheetId)] = res.data.tabs;
           setTabs(res.data.tabs);
           setActiveTab(res.data.tabs[0]);
           localStorage.setItem("activeTab", res.data.tabs[0]);
@@ -751,6 +833,45 @@ export default function App() {
     } catch (e) {
       console.error(e);
       alert(e.response?.data?.error || "Dropbox import failed");
+    }
+  };
+
+  const handleOneDriveImport = async ({ itemId, name, folderId, displayName }) => {
+    if (!itemId || !folderId || !String(displayName || "").trim()) return;
+    try {
+      const res = await axios.post(
+        `${API}/onedrive/import`,
+        {
+          itemId,
+          name,
+          folder_id: folderId,
+          display_name: String(displayName).trim(),
+        },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      alert("Imported from OneDrive!");
+      if (res.data?.sheetId) {
+        setSheetId(res.data.sheetId);
+        const activeName = res.data.display_name || res.data.filename;
+        setActiveFilename(activeName);
+        localStorage.setItem("activeFilename", activeName);
+        setUploadDisplayName("");
+        if (res.data.tabs && res.data.tabs.length > 0) {
+          tabListCacheRef.current[String(res.data.sheetId)] = res.data.tabs;
+          setTabs(res.data.tabs);
+          setActiveTab(res.data.tabs[0]);
+          localStorage.setItem("activeTab", res.data.tabs[0]);
+        }
+        loadData(res.data.sheetId);
+        if (token) {
+          axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } })
+            .then(r => setMyFiles(r.data || []));
+        }
+      }
+    } catch (e) {
+      console.error(e);
+      alert(e.response?.data?.error || "OneDrive import failed");
     }
   };
 
@@ -921,6 +1042,9 @@ export default function App() {
     axios.get(`${API}/auth/dropbox/status`)
       .then((r) => setDropboxEnabled(r?.data?.enabled !== false))
       .catch(() => setDropboxEnabled(true));
+    axios.get(`${API}/auth/onedrive/status`)
+      .then((r) => setOneDriveEnabled(r?.data?.enabled !== false))
+      .catch(() => setOneDriveEnabled(true));
   }, []);
 
   useEffect(() => {
@@ -968,6 +1092,26 @@ export default function App() {
       window.history.replaceState({}, document.title, nextUrl);
       alert(msg);
     }
+    const oneDriveConnected = params.get("onedrive_connected");
+    const oneDriveError = params.get("onedrive_error");
+    if (oneDriveConnected) {
+      params.delete("onedrive_connected");
+      params.delete("onedrive_error");
+      const next = params.toString();
+      const nextUrl = `${window.location.pathname}${next ? `?${next}` : ""}${window.location.hash || ""}`;
+      window.history.replaceState({}, document.title, nextUrl);
+      alert("OneDrive connected.");
+      return;
+    }
+    if (oneDriveError) {
+      const msg = "OneDrive authorization failed.";
+      params.delete("onedrive_connected");
+      params.delete("onedrive_error");
+      const next = params.toString();
+      const nextUrl = `${window.location.pathname}${next ? `?${next}` : ""}${window.location.hash || ""}`;
+      window.history.replaceState({}, document.title, nextUrl);
+      alert(msg);
+    }
   }, []);
 
   useEffect(() => {
@@ -978,9 +1122,11 @@ export default function App() {
           const savedSheetId = localStorage.getItem("sheetId");
           const savedTab = localStorage.getItem("activeTab");
           if (savedSheetId && savedSheetId !== "null") {
-            loadData(savedSheetId, false, savedTab || null);
-            fetchTabs(savedSheetId);
-            if (savedTab) setActiveTab(savedTab);
+            hydrateSheetContext(savedSheetId, {
+              preferredTab: savedTab || null,
+              preserveFilters: false,
+              preferCache: true,
+            });
           }
         })
         .catch(() => { setToken(""); setUser(null); });
@@ -1096,8 +1242,7 @@ export default function App() {
       localStorage.removeItem("activeTab"); // Clear tab on sheet switch to prevent cross-sheet contamination
       setActiveTab("");
     }
-    loadData(newSheetId);
-    fetchTabs(newSheetId);
+    hydrateSheetContext(newSheetId, { preserveFilters: false, preferCache: true });
   };
 
   /** ---------------------------
@@ -1188,6 +1333,9 @@ export default function App() {
                     myFiles={myFiles}
                     sheetId={sheetId}
                     activeFilename={activeFilename}
+                    tabs={tabs}
+                    activeTab={activeTab}
+                    onTabChange={handleTabChange}
                     headers={headers}
                     sortedData={sortedData}
                     columnFilters={columnFilters}
@@ -1216,6 +1364,7 @@ export default function App() {
                         data={sortedData}
                         allData={data}
                         headers={headers}
+                        activeTab={activeTab}
                         activeFilters={columnFilters}
                         onApplyFilter={applyContainsFilter}
                         onUpdateChart={applyChartConfig}
@@ -1290,7 +1439,10 @@ export default function App() {
                       handleGoogleDriveImport={handleGoogleDriveImport}
                       handleDropboxImport={handleDropboxImport}
                       handleDropboxConnect={handleDropboxConnect}
+                      handleOneDriveImport={handleOneDriveImport}
+                      handleOneDriveConnect={handleOneDriveConnect}
                       dropboxEnabled={dropboxEnabled}
+                      oneDriveEnabled={oneDriveEnabled}
                       loadData={loadData}
                       selectedViewId={selectedViewId} setSelectedViewId={setSelectedViewId}
                       views={views} setViews={setViews}
@@ -1333,7 +1485,7 @@ export default function App() {
                       tableContainerRef={tableContainerRef}
                       filterAnchorRefs={filterAnchorRefs}
                       filterBtnRefs={filterBtnRefs}
-                      myFiles={myFiles} loadStored={(id) => { loadData(id); fetchTabs(id); }}
+                      myFiles={myFiles} loadStored={(id) => { hydrateSheetContext(id, { preserveFilters: false, preferCache: true }); }}
                       tabs={tabs}
                       activeTab={activeTab}
                       onTabChange={handleTabChange}

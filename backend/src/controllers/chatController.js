@@ -424,6 +424,7 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
     output_schema: {
       answer: "string",
       operation: "none|filter|reset|count|sum|avg|max|min|top_n",
+      target_tab: "string|null",
       target_column: "string|null",
       group_by: "string|null",
       limit: "number|null",
@@ -444,6 +445,64 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
   });
   const json = await resp.json();
   return JSON.parse(json.choices[0].message.content);
+}
+
+function normalizeToken(value = "") {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9а-яёіїєґ]+/gi, " ").trim();
+}
+
+function resolveTabName(tabNames = [], requestedTab = null) {
+  if (!requestedTab || !tabNames.length) return null;
+  const raw = String(requestedTab).trim();
+  if (!raw) return null;
+  const exact = tabNames.find((t) => String(t).toLowerCase() === raw.toLowerCase());
+  if (exact) return exact;
+  const normalized = normalizeToken(raw);
+  if (!normalized) return null;
+  const loose = tabNames.find((t) => normalizeToken(t).includes(normalized) || normalized.includes(normalizeToken(t)));
+  return loose || null;
+}
+
+function inferTabFromMessage(tabNames = [], message = "") {
+  if (!tabNames.length || !message) return null;
+  const m = normalizeToken(message);
+  if (!m) return null;
+  let best = null;
+  let bestLen = 0;
+  for (const tab of tabNames) {
+    const n = normalizeToken(tab);
+    if (!n) continue;
+    if ((m.includes(n) || n.includes(m)) && n.length > bestLen) {
+      best = tab;
+      bestLen = n.length;
+    }
+  }
+  return best;
+}
+
+function buildTabDatasets(rows = [], fallbackHeaders = [], tabNames = []) {
+  const byTab = new Map();
+  rows.forEach((row) => {
+    const tab = String(row?.__tab_name || "").trim() || tabNames[0] || "Sheet1";
+    if (!byTab.has(tab)) byTab.set(tab, []);
+    const out = { ...(row || {}) };
+    delete out.__tab_name;
+    byTab.get(tab).push(out);
+  });
+  tabNames.forEach((tab) => {
+    if (!byTab.has(tab)) byTab.set(tab, []);
+  });
+  if (!byTab.size) byTab.set(tabNames[0] || "Sheet1", []);
+
+  const datasets = {};
+  for (const [tab, tabRows] of byTab.entries()) {
+    let headers = [];
+    const row0 = tabRows[0];
+    if (row0 && typeof row0 === "object") headers = Object.keys(row0);
+    if (!headers.length) headers = Array.isArray(fallbackHeaders) ? [...fallbackHeaders] : [];
+    datasets[tab] = { headers, rows: tabRows };
+  }
+  return datasets;
 }
 
 function normalizeSlavicGroupedNumbers(text = "") {
@@ -499,18 +558,50 @@ export async function chatQuery(req, res) {
   const locale = normalizeLocale(rawLocale || "en");
   const hasAccess = await checkSheetAccess(sheetId, req.user);
   if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
-  const loaded = await loadAccessibleRows(sheetId, req.user, activeTab);
-  const augmented = augmentRowsWithQuarter(loaded.rows || [], loaded.headers || []);
-  const headers = augmented.headers || [];
-  const baseRows = augmented.rows || [];
+
+  const loaded = await loadAccessibleRows(sheetId, req.user, null);
+  const rawTabNames = Array.isArray(loaded?.tabs) ? loaded.tabs : [];
+  const tabDatasets = buildTabDatasets(loaded.rows || [], loaded.headers || [], rawTabNames);
+  const tabNames = Object.keys(tabDatasets);
+  const tabProfiles = tabNames.map((tab) => {
+    const ds = tabDatasets[tab] || { headers: [], rows: [] };
+    return { tab, headers: ds.headers || [], row_count: (ds.rows || []).length, sample_rows: (ds.rows || []).slice(0, 6) };
+  });
+
+  const initialTab = resolveTabName(tabNames, activeTab) || inferTabFromMessage(tabNames, message);
+  const initialDataset = initialTab ? tabDatasets[initialTab] : {
+    headers: Array.from(new Set(tabNames.flatMap((t) => tabDatasets[t]?.headers || []))),
+    rows: tabNames.flatMap((t) => (tabDatasets[t]?.rows || []).map((r) => ({ ...r, Tab: t }))),
+  };
+  const initialAugmented = augmentRowsWithQuarter(initialDataset.rows || [], initialDataset.headers || []);
+  const aiHeaders = initialAugmented.headers || [];
+  const aiRows = initialAugmented.rows || [];
 
   let ai;
-  const sampleRows = baseRows.slice(0, CHAT_SAMPLE_ROWS);
-  const dateFormatHints = buildDateFormatHints(headers, sampleRows);
+  const sampleRows = aiRows.slice(0, CHAT_SAMPLE_ROWS);
+  const dateFormatHints = buildDateFormatHints(aiHeaders, sampleRows);
 
   try {
-    ai = await callOpenAI({ message, headers, sampleRows, conversationHistory, locale, dateFormatHints });
+    ai = await callOpenAI({
+      message: `${message}\n\nAvailable tabs: ${tabNames.join(", ") || "N/A"}\nIf the question maps to a specific tab, set target_tab in the JSON response.`,
+      headers: aiHeaders,
+      sampleRows,
+      conversationHistory,
+      locale,
+      dateFormatHints,
+      schemaProfile: { available_tabs: tabNames, tab_profiles: tabProfiles }
+    });
   } catch (e) { return res.status(502).json({ error: "ai_unavailable" }); }
+
+  const aiTab = resolveTabName(tabNames, ai?.target_tab);
+  const selectedTab = aiTab || initialTab || null;
+  const selectedDataset = selectedTab ? tabDatasets[selectedTab] : {
+    headers: Array.from(new Set(tabNames.flatMap((t) => tabDatasets[t]?.headers || []))),
+    rows: tabNames.flatMap((t) => (tabDatasets[t]?.rows || []).map((r) => ({ ...r, Tab: t }))),
+  };
+  const selectedAugmented = augmentRowsWithQuarter(selectedDataset.rows || [], selectedDataset.headers || []);
+  const headers = selectedAugmented.headers || [];
+  const baseRows = selectedAugmented.rows || [];
 
   const aiFilters = (ai?.filters || []).map(f => ({
     column: resolveColumn(headers, f.column),
@@ -568,7 +659,7 @@ export async function chatQuery(req, res) {
     answer,
     actions: { reset_filters: isReset, filters: uiFilters, chart },
     preview_rows: exec.previewRows || [],
-    meta: { totalRows: baseRows.length, matchedRows: matchedRows.length, operation: ai?.operation || "none", locale }
+    meta: { totalRows: baseRows.length, matchedRows: matchedRows.length, operation: ai?.operation || "none", locale, selectedTab, availableTabs: tabNames }
   });
 }
 
@@ -598,14 +689,14 @@ export async function checkSheetAccess(sheetId, user) {
 }
 
 async function loadAccessibleRows(sheetId, user, activeTab = null) {
-  const sheet = await query("SELECT headers FROM sheets WHERE id = $1", [sheetId]);
+  const sheet = await query("SELECT headers, tabs, tab_name FROM sheets WHERE id = $1", [sheetId]);
   const rows = activeTab
     ? await query(
-        "SELECT row_data FROM sheet_rows WHERE sheet_id = $1 AND tab_name = $2 ORDER BY row_index ASC",
+        "SELECT row_data, tab_name FROM sheet_rows WHERE sheet_id = $1 AND tab_name = $2 ORDER BY row_index ASC",
         [sheetId, activeTab]
       )
     : await query(
-        "SELECT row_data FROM sheet_rows WHERE sheet_id = $1 ORDER BY row_index ASC",
+        "SELECT row_data, tab_name FROM sheet_rows WHERE sheet_id = $1 ORDER BY row_index ASC",
         [sheetId]
       );
 
@@ -620,6 +711,10 @@ async function loadAccessibleRows(sheetId, user, activeTab = null) {
 
   return {
     headers,
-    rows: rows.map((r) => (typeof r.row_data === "string" ? JSON.parse(r.row_data) : r.row_data)),
+    tabs: Array.isArray(sheet[0]?.tabs) ? sheet[0].tabs : (sheet[0]?.tab_name ? [sheet[0].tab_name] : []),
+    rows: rows.map((r) => {
+      const data = (typeof r.row_data === "string" ? JSON.parse(r.row_data) : r.row_data) || {};
+      return { ...data, __tab_name: r.tab_name || null };
+    }),
   };
 }

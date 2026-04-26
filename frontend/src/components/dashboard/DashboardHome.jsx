@@ -341,20 +341,10 @@ function KpiCalendarField({ label, value, onChange }) {
               );
             })}
           </div>
-          <div className="mt-2 flex gap-1">
+          <div className="mt-2">
             <button
               type="button"
-              className="flex-1 rounded border border-blue-300 bg-blue-50 px-2 py-1 text-[10px] font-bold text-blue-700 hover:bg-blue-100"
-              onClick={() => {
-                onChange(todayIso);
-                setOpen(false);
-              }}
-            >
-              Today
-            </button>
-            <button
-              type="button"
-              className="flex-1 rounded border border-slate-300 bg-white px-2 py-1 text-[10px] font-bold text-slate-700 hover:bg-slate-50"
+              className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-[10px] font-bold text-slate-700 hover:bg-slate-50"
               onClick={() => {
                 onChange("");
                 setOpen(false);
@@ -465,6 +455,9 @@ export default function DashboardHome({
   myFiles = [],
   sheetId,
   activeFilename,
+  tabs = [],
+  activeTab = "",
+  onTabChange,
   headers = [],
   sortedData = [],
   columnFilters = {},
@@ -583,12 +576,29 @@ export default function DashboardHome({
   }, [headers, numericHeaderOptions, sortedData]);
 
   React.useEffect(() => {
-    setTopCategoriesConfig((prev) => ({
-      ...prev,
-      categoryColumn: prev.categoryColumn || categoryCol || "",
-      valueColumn: prev.valueColumn || metricCol || "",
-    }));
-  }, [categoryCol, metricCol, sheetStructureSignature]);
+    setTopCategoriesConfig((prev) => {
+      const hasCategory = String(prev.categoryColumn || "").trim().length > 0;
+      const hasValue = String(prev.valueColumn || "").trim().length > 0;
+      const categoryValid = hasCategory && headers.includes(prev.categoryColumn);
+      const valueValid = hasValue && headers.includes(prev.valueColumn);
+
+      const nextCategory = categoryValid
+        ? prev.categoryColumn
+        : (categoryCol || "");
+      const nextValue = valueValid
+        ? prev.valueColumn
+        : (metricCol || "");
+
+      if (nextCategory === prev.categoryColumn && nextValue === prev.valueColumn) {
+        return prev;
+      }
+      return {
+        ...prev,
+        categoryColumn: nextCategory,
+        valueColumn: nextValue,
+      };
+    });
+  }, [categoryCol, metricCol, headers, sheetStructureSignature]);
 
   React.useEffect(() => {
     setTrendConfig((prev) => {
@@ -657,6 +667,7 @@ export default function DashboardHome({
       || user.is_admin === true
     );
   }, [user]);
+  const hasMultipleTabs = Array.isArray(tabs) && tabs.length > 1;
 
   const persistPinnedConfig = React.useCallback((itemsOverride = null) => {
     if (!sheetStructureSignature) return;
@@ -1866,6 +1877,20 @@ export default function DashboardHome({
                       placeholder="Ticket name"
                       className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-900"
                     />
+                    {hasMultipleTabs && (
+                      <div className="mt-1 flex items-center gap-2">
+                        <span className="shrink-0 text-[11px] font-semibold text-slate-700">Tab</span>
+                        <select
+                          value={String(activeTab || tabs[0] || "")}
+                          onChange={(e) => onTabChange && onTabChange(e.target.value)}
+                          className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-900"
+                        >
+                          {tabs.map((t) => (
+                            <option key={`kpi-tab-${card.id}-${t}`} value={t}>{t}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
                     <div className="mt-1 grid grid-cols-2 gap-1">
                       <select
                         value={String(kpiOverrides?.[card.id]?.column || "")}
@@ -1925,24 +1950,10 @@ export default function DashboardHome({
                           }}
                         />
                       </div>
-                      <div className="mt-2 grid grid-cols-2 gap-1">
+                      <div className="mt-2">
                         <button
                           type="button"
-                          className="rounded-md border border-blue-300 bg-blue-50 px-2 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-100"
-                          onClick={() => {
-                            const today = new Date();
-                            const iso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
-                            setKpiOverrides((prev) => ({
-                              ...prev,
-                              [card.id]: { ...(prev?.[card.id] || {}), from: iso, to: iso },
-                            }));
-                          }}
-                        >
-                          Today
-                        </button>
-                        <button
-                          type="button"
-                          className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+                          className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
                           onClick={() => {
                             setKpiOverrides((prev) => ({
                               ...prev,
@@ -2094,6 +2105,20 @@ export default function DashboardHome({
                 </div>
                 {trendEditOpen && (
                   <div className="mb-2 rounded-md border border-slate-200 bg-slate-50 p-2 space-y-2">
+                    {hasMultipleTabs && (
+                      <div className="flex items-center gap-2">
+                        <span className="shrink-0 text-[11px] font-semibold text-slate-700">Tab</span>
+                        <select
+                          value={String(activeTab || tabs[0] || "")}
+                          onChange={(e) => onTabChange && onTabChange(e.target.value)}
+                          className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-900"
+                        >
+                          {tabs.map((t) => (
+                            <option key={`trend-tab-${t}`} value={t}>{t}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
                     <input
                       type="text"
                       value={String(trendConfig.title || "")}
@@ -2368,6 +2393,20 @@ export default function DashboardHome({
                 </div>
                 {topCategoriesEditOpen && (
                   <div className="mb-2 grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {hasMultipleTabs && (
+                    <div className="md:col-span-2 flex items-center gap-2">
+                      <span className="shrink-0 text-[11px] font-semibold text-slate-700">Tab</span>
+                      <select
+                        value={String(activeTab || tabs[0] || "")}
+                        onChange={(e) => onTabChange && onTabChange(e.target.value)}
+                        className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-900"
+                      >
+                        {tabs.map((t) => (
+                          <option key={`top-tab-${t}`} value={t}>{t}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                   <input
                     type="text"
                     value={String(topCategoriesConfig.title || "")}

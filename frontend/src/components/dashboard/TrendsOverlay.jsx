@@ -38,6 +38,9 @@ export default function TrendsOverlay({
     setTrendsOn,
     trendsDateKey, setTrendsDateKey,
     headers,
+    tabs = [],
+    activeTab = "",
+    onTabChange,
     trendsValueKey, setTrendsValueKey,
     trendGranularity, setTrendGranularity,
     compareYears, setCompareYears,
@@ -51,23 +54,35 @@ export default function TrendsOverlay({
                 <button onClick={() => setTrendsOn(false)} className="text-gray-400 hover:text-gray-600 transition-colors">✕ Close</button>
             </div>
             <div className="flex gap-4 mb-6 flex-wrap items-end">
+                {Array.isArray(tabs) && tabs.length > 0 && (
+                    <div>
+                        <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Tab</label>
+                        <select
+                            value={activeTab || tabs[0] || ""}
+                            onChange={(e) => onTabChange && onTabChange(e.target.value)}
+                            className="border border-slate-300 bg-white px-2.5 py-1 rounded-md text-xs font-bold min-w-[180px] h-8"
+                        >
+                            {tabs.map((t) => <option key={t} value={t}>{t}</option>)}
+                        </select>
+                    </div>
+                )}
                 <div>
                     <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Date Column</label>
-                    <select value={trendsDateKey || ""} onChange={e => setTrendsDateKey(e.target.value)} className="border border-slate-300 bg-white p-2 rounded-lg text-sm min-w-[200px] h-10">
+                    <select value={trendsDateKey || ""} onChange={e => setTrendsDateKey(e.target.value)} className="border border-slate-300 bg-white px-2.5 py-1 rounded-md text-xs font-bold min-w-[180px] h-8">
                         <option value="">Auto-detect...</option>
                         {headers.map(h => <option key={h} value={h}>{h}</option>)}
                     </select>
                 </div>
                 <div>
                     <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Value to Plot</label>
-                    <select value={trendsValueKey || ""} onChange={e => setTrendsValueKey(e.target.value)} className="border border-slate-300 bg-white p-2 rounded-lg text-sm min-w-[200px] h-10">
+                    <select value={trendsValueKey || ""} onChange={e => setTrendsValueKey(e.target.value)} className="border border-slate-300 bg-white px-2.5 py-1 rounded-md text-xs font-bold min-w-[180px] h-8">
                         <option value="">Select...</option>
                         {headers.map(h => <option key={h} value={h}>{h}</option>)}
                     </select>
                 </div>
                 <div>
                     <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Granularity</label>
-                    <select value={trendGranularity} onChange={e => setTrendGranularity(e.target.value)} className="border border-slate-300 bg-white p-2 rounded-lg text-sm h-10">
+                    <select value={trendGranularity} onChange={e => setTrendGranularity(e.target.value)} className="border border-slate-300 bg-white px-2.5 py-1 rounded-md text-xs font-bold h-8">
                         <option value="quarter">Quarterly</option>
                         <option value="month">Monthly</option>
                         <option value="year">Yearly</option>
@@ -81,30 +96,37 @@ export default function TrendsOverlay({
                         value={compareYears}
                         onChange={setCompareYears}
                         placeholder="Select years..."
-                        className="min-w-[160px] h-10"
+                        className="min-w-[160px] h-8"
                     />
                 </div>
             </div>
             <div className="h-80 w-full bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
                 {trendsData && trendsData.length > 0 ? (
                     <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={trendsData}>
+                        <LineChart data={trendsData} margin={{ top: 8, right: 20, left: 24, bottom: 8 }}>
                             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
                             <XAxis
                                 dataKey="date"
-                                tick={{ fontSize: 12, fill: '#6b7280' }}
+                                tick={{ fontSize: 12, fill: "#334155", fontWeight: 700 }}
                                 tickLine={false}
                                 axisLine={false}
                                 dy={10}
                                 tickFormatter={(label) => formatTrendAxisLabel(label, trendGranularity, compareYears)}
                             />
-                            <YAxis tick={{ fontSize: 12, fill: '#6b7280' }} tickLine={false} axisLine={false} dx={-10} tickFormatter={(val) => formatSmart(val, trendsValueKey)} width={80} />
+                            <YAxis
+                                tick={{ fontSize: 12, fill: "#334155", fontWeight: 700 }}
+                                tickLine={false}
+                                axisLine={false}
+                                dx={-4}
+                                tickFormatter={(val) => formatSmart(val, trendsValueKey)}
+                                width={130}
+                            />
                             <Tooltip
                                 content={<TrendTooltip />}
                                 labelFormatter={(label) => formatTrendAxisLabel(label, trendGranularity, compareYears)}
-                                cursor={{ stroke: '#cbd5e1', strokeWidth: 1, strokeDasharray: '4 4' }}
+                                cursor={{ stroke: "#cbd5e1", strokeWidth: 1, strokeDasharray: "4 4" }}
                             />
-                            <Legend />
+                            <Legend wrapperStyle={{ fontSize: 12, fontWeight: 700, color: "#1f2937" }} />
 
                             {(!compareYears || compareYears.length === 0) ? (
                                 // Single Line

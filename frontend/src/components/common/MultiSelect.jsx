@@ -42,18 +42,18 @@ export default function MultiSelect({
                 type="button"
                 disabled={disabled}
                 onClick={() => !disabled && setOpen(!open)}
-                className={`flex items-center justify-between w-full border border-slate-200 bg-white px-3 py-2 rounded-lg text-sm transition-all shadow-sm
-          ${disabled ? "bg-slate-50 text-slate-400 cursor-not-allowed" : "hover:border-blue-400 hover:ring-2 hover:ring-blue-50 focus:ring-2 focus:ring-blue-100"}
+                className={`flex items-center justify-between w-full border border-slate-300 bg-white px-2.5 py-1 rounded-md text-xs transition-colors shadow-sm h-8
+          ${disabled ? "bg-slate-50 text-slate-400 cursor-not-allowed" : "hover:border-slate-400 hover:bg-slate-50 focus:ring-2 focus:ring-slate-200"}
         `}
             >
-                <span className="truncate mr-2 font-medium text-slate-700">{displayLabel}</span>
+                <span className="truncate mr-2 font-bold text-slate-700">{displayLabel}</span>
                 <span className="text-slate-400 text-xs">▼</span>
             </button>
 
             {open && (
-                <div className="absolute z-50 mt-1 w-full min-w-[160px] bg-white border border-slate-200 rounded-xl shadow-xl max-h-60 overflow-y-auto p-1 ring-1 ring-black/5">
+                <div className="absolute z-50 mt-1 w-full min-w-[160px] bg-white border border-slate-200 rounded-md shadow-xl max-h-56 overflow-y-auto p-1 ring-1 ring-black/5">
                     {options.length === 0 ? (
-                        <div className="p-2 text-sm text-slate-400 italic text-center">No options</div>
+                        <div className="p-2 text-xs text-slate-400 italic text-center">No options</div>
                     ) : (
                         options.map((opt) => {
                             const label = typeof opt === 'object' ? opt.label : opt;
@@ -64,8 +64,8 @@ export default function MultiSelect({
                                 <div
                                     key={val}
                                     onClick={() => toggleOption(val)}
-                                    className={`flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer text-sm
-                    ${isSelected ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-600 hover:bg-slate-50"}
+                                    className={`flex items-center gap-2 px-2 py-1 rounded-md cursor-pointer text-xs
+                    ${isSelected ? "bg-slate-100 text-slate-900 font-bold" : "text-slate-700 hover:bg-slate-50"}
                   `}
                                 >
                                     <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors

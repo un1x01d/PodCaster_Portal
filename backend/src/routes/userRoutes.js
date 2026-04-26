@@ -5,6 +5,8 @@ import {
     getGoogleOauthSetting, setGoogleOauthSetting,
     getDropboxIntegrationSetting, setDropboxIntegrationSetting,
     getDropboxOauthSetting, setDropboxOauthSetting,
+    getOneDriveIntegrationSetting, setOneDriveIntegrationSetting,
+    getOneDriveOauthSetting, setOneDriveOauthSetting,
     getUserGroups,
     listGroups, createGroup, updateGroup, deleteGroup, getGroupMembers, updateGroupMembers, getGroupSheets,
     addUserToGroup, removeUserFromGroup, toggleGroupAdmin,
@@ -32,6 +34,10 @@ router.get("/admin/settings/dropbox-integration", asyncHandler(getDropboxIntegra
 router.patch("/admin/settings/dropbox-integration", asyncHandler(setDropboxIntegrationSetting));
 router.get("/admin/settings/dropbox-oauth", asyncHandler(getDropboxOauthSetting));
 router.patch("/admin/settings/dropbox-oauth", asyncHandler(setDropboxOauthSetting));
+router.get("/admin/settings/onedrive-integration", asyncHandler(getOneDriveIntegrationSetting));
+router.patch("/admin/settings/onedrive-integration", asyncHandler(setOneDriveIntegrationSetting));
+router.get("/admin/settings/onedrive-oauth", asyncHandler(getOneDriveOauthSetting));
+router.patch("/admin/settings/onedrive-oauth", asyncHandler(setOneDriveOauthSetting));
 
 // Groups
 router.use("/groups", (req, res, next) => {
