@@ -497,6 +497,8 @@ export async function getChatAudio(req, res) {
 export async function chatQuery(req, res) {
   const { sheetId, activeTab = null, message, conversationHistory = [], locale: rawLocale } = req.body || {};
   const locale = normalizeLocale(rawLocale || "en");
+  const hasAccess = await checkSheetAccess(sheetId, req.user);
+  if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
   const loaded = await loadAccessibleRows(sheetId, req.user, activeTab);
   const augmented = augmentRowsWithQuarter(loaded.rows || [], loaded.headers || []);
   const headers = augmented.headers || [];
@@ -568,6 +570,31 @@ export async function chatQuery(req, res) {
     preview_rows: exec.previewRows || [],
     meta: { totalRows: baseRows.length, matchedRows: matchedRows.length, operation: ai?.operation || "none", locale }
   });
+}
+
+export async function checkSheetAccess(sheetId, user) {
+  if (user.role === "admin") return true;
+  const res = await query(
+    `SELECT COUNT(s.id) FROM sheets s
+     LEFT JOIN folders f ON f.id = s.folder_id
+     WHERE s.id = $1 AND (
+         (
+           EXISTS (
+             SELECT 1
+             FROM folder_groups fg
+             JOIN user_groups ug ON ug.group_id = fg.group_id
+             WHERE fg.folder_id = f.id AND ug.user_id = $2
+           )
+           OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)
+         )
+         OR
+         (s.id IN (SELECT sheet_id FROM permissions WHERE user_id = $2))
+         OR
+         (s.id IN (SELECT sheet_id FROM group_permissions WHERE group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)))
+     )`,
+    [sheetId, user.id]
+  );
+  return res?.[0]?.count !== "0";
 }
 
 async function loadAccessibleRows(sheetId, user, activeTab = null) {

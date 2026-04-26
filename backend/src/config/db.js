@@ -28,6 +28,9 @@ export async function initDb() {
   `);
   // Add column if missing (for existing DBs)
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS default_view_id INT;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name TEXT;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS company TEXT;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_required BOOLEAN DEFAULT FALSE;`);
   await pool.query(`ALTER TABLE users ALTER COLUMN role SET DEFAULT 'user';`);
   await pool.query(`UPDATE users SET role = 'user' WHERE role = chr(112)||chr(114)||chr(111)||chr(100)||chr(117)||chr(99)||chr(101)||chr(114);`);
@@ -43,6 +46,7 @@ export async function initDb() {
   // Add column if missing (for existing DBs)
   await pool.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
   await pool.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS max_file_size_mb INT DEFAULT 100;`);
+  await pool.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS max_total_storage_mb INT DEFAULT 10240;`);
 
   // USER_GROUPS (membership)
   await pool.query(`
@@ -67,6 +71,23 @@ export async function initDb() {
     );
   `);
   await pool.query(`ALTER TABLE folders ADD COLUMN IF NOT EXISTS parent_id INT;`);
+  await pool.query(`ALTER TABLE folders ADD COLUMN IF NOT EXISTS owner_user_id INT;`);
+  await pool.query(`ALTER TABLE folders ADD COLUMN IF NOT EXISTS max_file_size_mb INT DEFAULT 100;`);
+  await pool.query(`ALTER TABLE folders ADD COLUMN IF NOT EXISTS max_total_size_mb INT DEFAULT 1024;`);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE table_name='folders' AND constraint_name='folders_owner_user_fk'
+      ) THEN
+        ALTER TABLE folders
+          ADD CONSTRAINT folders_owner_user_fk
+          FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE SET NULL;
+      END IF;
+    END $$;
+  `);
   await pool.query(`DROP INDEX IF EXISTS folders_group_unique;`);
   await pool.query(`
     DO $$

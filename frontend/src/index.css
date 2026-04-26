@@ -34,13 +34,13 @@
   }
 
   .btn-premium {
-    @apply inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold transition-all
-           hover:scale-[1.02] active:scale-[0.98] shadow-md hover:shadow-lg disabled:opacity-50;
+    @apply inline-flex items-center justify-center rounded-md px-3.5 py-2 text-sm font-semibold transition-colors
+           border border-slate-300 shadow-sm hover:shadow-sm disabled:opacity-50;
   }
 
   .input-premium {
-    @apply w-full rounded-xl border border-slate-200 bg-white/50 px-4 py-2 text-sm 
-           transition-all focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 outline-none;
+    @apply w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm
+           transition-colors focus:border-slate-500 focus:ring-2 focus:ring-slate-200 outline-none;
   }
 
   .table-pro-text {
@@ -56,6 +56,40 @@
     font-variant-numeric: tabular-nums;
     font-feature-settings: "tnum" 1, "kern" 1;
   }
+}
+
+.admin-modern button,
+.admin-modern input,
+.admin-modern select,
+.admin-modern textarea {
+  border-radius: 0.375rem !important;
+}
+
+.admin-modern select {
+  background-color: #ffffff;
+  border-color: #cbd5e1;
+  color: #0f172a;
+}
+
+.admin-modern button {
+  letter-spacing: 0.01em;
+}
+
+.admin-compact .input-premium,
+.admin-compact select.input-premium,
+.admin-compact input.input-premium {
+  font-size: 12px !important;
+  font-weight: 700;
+  padding: 0.32rem 0.55rem !important;
+  min-height: 30px;
+}
+
+.admin-compact .btn-premium,
+.admin-compact button {
+  font-size: 12px !important;
+  font-weight: 700;
+  padding: 0.32rem 0.55rem !important;
+  min-height: 30px;
 }
 
 /* Ensure full-height layout */

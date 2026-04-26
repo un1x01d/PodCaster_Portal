@@ -62,6 +62,11 @@ function sanitizeDisplayName(value) {
     return text.slice(0, 120);
 }
 
+export function canUploadSheetsByRole(role) {
+    const normalized = String(role || "").toLowerCase();
+    return normalized === "admin" || normalized === "group_admin";
+}
+
 // Helper to determine active sheet versioning
 async function getVersionedFilename(client, folderId, originalName) {
     if (!folderId) return originalName; // No versioning in root? Or just basic? adhering to original logic which only checked folder
@@ -97,7 +102,7 @@ async function getVersionedFilename(client, folderId, originalName) {
 
 export async function uploadSheet(req, res) {
     try {
-        if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+        if (!canUploadSheetsByRole(req.user?.role)) return res.status(403).json({ error: "Forbidden" });
         if (!req.file) return res.status(400).json({ error: "No file" });
 
         const originalName = req.file.originalname || "uploaded.xlsx";

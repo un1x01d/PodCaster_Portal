@@ -36,7 +36,7 @@ export async function listUsers(req, res) {
     try {
         if (isGlobalAdmin) {
             const users = await query(
-                `SELECT id, email, role, default_view_id,
+                `SELECT id, email, role, default_view_id, first_name, last_name, company,
                         CASE WHEN password IS NULL THEN 'google' ELSE 'manual' END AS auth_provider
                  FROM users
                  ORDER BY id ASC`
@@ -48,7 +48,7 @@ export async function listUsers(req, res) {
             
             // Return users who share ANY handled group with the admin
             const users = await query(`
-                SELECT DISTINCT u.id, u.email, u.role, u.default_view_id,
+                SELECT DISTINCT u.id, u.email, u.role, u.default_view_id, u.first_name, u.last_name, u.company,
                                 CASE WHEN u.password IS NULL THEN 'google' ELSE 'manual' END AS auth_provider
                 FROM users u
                 JOIN user_groups ug ON u.id = ug.user_id
@@ -69,15 +69,22 @@ export async function createUser(req, res) {
         if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
         if (req.body.role === "admin") return res.status(403).json({ error: "Forbidden" });
     }
-    const { email, password, role } = req.body;
+    const { email, password, role, firstName, lastName, company } = req.body;
+    const emailText = String(email || "").trim();
+    const firstNameText = String(firstName || "").trim();
+    const lastNameText = String(lastName || "").trim();
+    const companyText = String(company || "").trim();
+    if (!emailText || !firstNameText || !lastNameText || !companyText) {
+        return res.status(400).json({ error: "first_name_last_name_email_company_required" });
+    }
 
     const temporaryPassword = password || generateComplexPassword(16);
     const hashedFn = await hashPassword(temporaryPassword);
 
     try {
         const created = await query(
-            "INSERT INTO users (email, password, role, password_reset_required) VALUES ($1, $2, $3, $4) RETURNING id, email, role",
-            [email, hashedFn, role || "user", true]
+            "INSERT INTO users (email, password, role, first_name, last_name, company, password_reset_required) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, email, role, first_name, last_name, company",
+            [emailText, hashedFn, role || "user", firstNameText, lastNameText, companyText, true]
         );
         const payload = { ...created[0] };
         if (EXPOSE_TEMP_PASSWORDS) payload.newPassword = temporaryPassword;
@@ -90,7 +97,7 @@ export async function createUser(req, res) {
 
 export async function updateUser(req, res) {
     const { id } = req.params;
-    const { email, password, role, reset } = req.body;
+    const { email, password, role, reset, firstName, lastName, company } = req.body;
     
     const isGlobalAdmin = req.user.role === "admin";
     if (!isGlobalAdmin) {
@@ -121,12 +128,28 @@ export async function updateUser(req, res) {
         let idx = 1;
 
         if (email !== undefined) {
+            if (!String(email || "").trim()) return res.status(400).json({ error: "email_required" });
             fields.push(`email=$${idx++}`);
-            values.push(email);
+            values.push(String(email).trim());
         }
         if (role !== undefined) {
             fields.push(`role=$${idx++}`);
             values.push(role);
+        }
+        if (firstName !== undefined) {
+            if (!String(firstName || "").trim()) return res.status(400).json({ error: "first_name_required" });
+            fields.push(`first_name=$${idx++}`);
+            values.push(String(firstName).trim());
+        }
+        if (lastName !== undefined) {
+            if (!String(lastName || "").trim()) return res.status(400).json({ error: "last_name_required" });
+            fields.push(`last_name=$${idx++}`);
+            values.push(String(lastName).trim());
+        }
+        if (company !== undefined) {
+            if (!String(company || "").trim()) return res.status(400).json({ error: "company_required" });
+            fields.push(`company=$${idx++}`);
+            values.push(String(company).trim());
         }
         if (password !== undefined) {
             const hashed = await hashPassword(password);
@@ -350,7 +373,37 @@ export async function setDropboxOauthSetting(req, res) {
 
 export async function listGroups(req, res) {
     if (req.user.role === "admin") {
-        const groups = await query("SELECT * FROM groups ORDER BY id ASC");
+        const groups = await query(
+            `WITH group_folders AS (
+               SELECT DISTINCT fg.group_id, fg.folder_id
+               FROM folder_groups fg
+               UNION
+               SELECT g.id AS group_id, f.id AS folder_id
+               FROM groups g
+               JOIN folders f ON f.group_id = g.id
+             ),
+             folder_usage AS (
+               SELECT
+                 s.folder_id,
+                 COALESCE(SUM(pg_column_size(sr.row_data)), 0)::bigint AS total_size_bytes
+               FROM sheets s
+               LEFT JOIN sheet_rows sr ON sr.sheet_id = s.id
+               GROUP BY s.folder_id
+             ),
+             group_usage AS (
+               SELECT
+                 gf.group_id,
+                 COALESCE(SUM(fu.total_size_bytes), 0)::bigint AS used_storage_bytes
+               FROM group_folders gf
+               LEFT JOIN folder_usage fu ON fu.folder_id = gf.folder_id
+               GROUP BY gf.group_id
+             )
+             SELECT g.*,
+                    COALESCE(gu.used_storage_bytes, 0)::bigint AS used_storage_bytes
+             FROM groups g
+             LEFT JOIN group_usage gu ON gu.group_id = g.id
+             ORDER BY g.id ASC`
+        );
         return res.json(groups);
     }
 
@@ -358,7 +411,38 @@ export async function listGroups(req, res) {
     if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
 
     const groups = await query(
-        "SELECT * FROM groups WHERE id = ANY($1::int[]) ORDER BY id ASC",
+        `WITH group_folders AS (
+           SELECT DISTINCT fg.group_id, fg.folder_id
+           FROM folder_groups fg
+           WHERE fg.group_id = ANY($1::int[])
+           UNION
+           SELECT g.id AS group_id, f.id AS folder_id
+           FROM groups g
+           JOIN folders f ON f.group_id = g.id
+           WHERE g.id = ANY($1::int[])
+         ),
+         folder_usage AS (
+           SELECT
+             s.folder_id,
+             COALESCE(SUM(pg_column_size(sr.row_data)), 0)::bigint AS total_size_bytes
+           FROM sheets s
+           LEFT JOIN sheet_rows sr ON sr.sheet_id = s.id
+           GROUP BY s.folder_id
+         ),
+         group_usage AS (
+           SELECT
+             gf.group_id,
+             COALESCE(SUM(fu.total_size_bytes), 0)::bigint AS used_storage_bytes
+           FROM group_folders gf
+           LEFT JOIN folder_usage fu ON fu.folder_id = gf.folder_id
+           GROUP BY gf.group_id
+         )
+         SELECT g.*,
+                COALESCE(gu.used_storage_bytes, 0)::bigint AS used_storage_bytes
+         FROM groups g
+         LEFT JOIN group_usage gu ON gu.group_id = g.id
+         WHERE g.id = ANY($1::int[])
+         ORDER BY g.id ASC`,
         [adminGroups]
     );
     return res.json(groups);
@@ -366,9 +450,12 @@ export async function listGroups(req, res) {
 
 export async function createGroup(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const { name, maxFileSizeMb } = req.body;
+    const { name, maxFileSizeMb, maxTotalStorageMb } = req.body;
     try {
-        const r = await query("INSERT INTO groups (name, max_file_size_mb) VALUES ($1, $2) RETURNING *", [name, maxFileSizeMb || 100]);
+        const r = await query(
+            "INSERT INTO groups (name, max_file_size_mb, max_total_storage_mb) VALUES ($1, $2, $3) RETURNING *",
+            [name, maxFileSizeMb || 100, maxTotalStorageMb || 10240]
+        );
         res.json(r[0]);
     } catch (e) {
         if (String(e).includes("unique")) return res.status(400).json({ error: "Name exists" });
@@ -379,11 +466,11 @@ export async function createGroup(req, res) {
 export async function updateGroup(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     const { id } = req.params;
-    const { name, maxFileSizeMb } = req.body;
+    const { name, maxFileSizeMb, maxTotalStorageMb } = req.body;
     try {
         const r = await query(
-            "UPDATE groups SET name = COALESCE($1, name), max_file_size_mb = COALESCE($2, max_file_size_mb) WHERE id = $3 RETURNING *",
-            [name, maxFileSizeMb, id]
+            "UPDATE groups SET name = COALESCE($1, name), max_file_size_mb = COALESCE($2, max_file_size_mb), max_total_storage_mb = COALESCE($3, max_total_storage_mb) WHERE id = $4 RETURNING *",
+            [name, maxFileSizeMb, maxTotalStorageMb, id]
         );
         if (!r.length) return res.status(404).json({ error: "not_found" });
         res.json(r[0]);
@@ -540,19 +627,36 @@ export async function listFolders(req, res) {
     let rows;
     if (req.user.role === "admin") {
         rows = await query(`
+            WITH folder_usage AS (
+              SELECT
+                s.folder_id,
+                COUNT(DISTINCT s.id)::int AS sheet_count,
+                COALESCE(SUM(pg_column_size(sr.row_data)), 0)::bigint AS total_size_bytes
+              FROM sheets s
+              LEFT JOIN sheet_rows sr ON sr.sheet_id = s.id
+              GROUP BY s.folder_id
+            )
             SELECT
               f.id,
               f.name,
               f.parent_id,
               f.created_at,
               f.group_id AS legacy_group_id,
+              f.owner_user_id,
+              f.max_file_size_mb,
+              f.max_total_size_mb,
+              ou.email AS owner_user_email,
+              COALESCE(fu.sheet_count, 0) AS sheet_count,
+              COALESCE(fu.total_size_bytes, 0) AS total_size_bytes,
               COALESCE(
                 ARRAY_AGG(DISTINCT fg.group_id) FILTER (WHERE fg.group_id IS NOT NULL),
                 ARRAY[]::INT[]
               ) AS group_ids
             FROM folders f
             LEFT JOIN folder_groups fg ON fg.folder_id = f.id
-            GROUP BY f.id, f.name, f.parent_id, f.created_at, f.group_id
+            LEFT JOIN users ou ON ou.id = f.owner_user_id
+            LEFT JOIN folder_usage fu ON fu.folder_id = f.id
+            GROUP BY f.id, f.name, f.parent_id, f.created_at, f.group_id, f.owner_user_id, f.max_file_size_mb, f.max_total_size_mb, ou.email, fu.sheet_count, fu.total_size_bytes
             ORDER BY f.name ASC
         `);
     } else {
@@ -560,18 +664,35 @@ export async function listFolders(req, res) {
         if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
 
         rows = await query(`
+            WITH folder_usage AS (
+              SELECT
+                s.folder_id,
+                COUNT(DISTINCT s.id)::int AS sheet_count,
+                COALESCE(SUM(pg_column_size(sr.row_data)), 0)::bigint AS total_size_bytes
+              FROM sheets s
+              LEFT JOIN sheet_rows sr ON sr.sheet_id = s.id
+              GROUP BY s.folder_id
+            )
             SELECT
               f.id,
               f.name,
               f.parent_id,
               f.created_at,
               f.group_id AS legacy_group_id,
+              f.owner_user_id,
+              f.max_file_size_mb,
+              f.max_total_size_mb,
+              ou.email AS owner_user_email,
+              COALESCE(fu.sheet_count, 0) AS sheet_count,
+              COALESCE(fu.total_size_bytes, 0) AS total_size_bytes,
               COALESCE(
                 ARRAY_AGG(DISTINCT fg.group_id) FILTER (WHERE fg.group_id IS NOT NULL),
                 ARRAY[]::INT[]
               ) AS group_ids
             FROM folders f
             LEFT JOIN folder_groups fg ON fg.folder_id = f.id
+            LEFT JOIN users ou ON ou.id = f.owner_user_id
+            LEFT JOIN folder_usage fu ON fu.folder_id = f.id
             WHERE (
               f.group_id = ANY($1::int[])
               OR EXISTS (
@@ -581,7 +702,7 @@ export async function listFolders(req, res) {
                   AND fg2.group_id = ANY($1::int[])
               )
             )
-            GROUP BY f.id, f.name, f.parent_id, f.created_at, f.group_id
+            GROUP BY f.id, f.name, f.parent_id, f.created_at, f.group_id, f.owner_user_id, f.max_file_size_mb, f.max_total_size_mb, ou.email, fu.sheet_count, fu.total_size_bytes
             ORDER BY f.name ASC
         `, [adminGroups]);
     }
@@ -615,19 +736,22 @@ export async function listFolders(req, res) {
 
 export async function createFolder(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const { name, groupId, groupIds, parentId } = req.body;
+    const { name, groupId, groupIds, parentId, ownerUserId, maxFileSizeMb, maxTotalSizeMb } = req.body;
     try {
         const normalizedGroupIds = Array.isArray(groupIds)
           ? groupIds.map((g) => parseInt(g, 10)).filter((g) => Number.isInteger(g))
           : (groupId ? [parseInt(groupId, 10)].filter((g) => Number.isInteger(g)) : []);
         const parent = parentId ? parseInt(parentId, 10) : null;
+        const ownerUser = ownerUserId ? parseInt(ownerUserId, 10) : null;
+        const maxFile = Number.isFinite(Number(maxFileSizeMb)) ? Number(maxFileSizeMb) : 100;
+        const maxTotal = Number.isFinite(Number(maxTotalSizeMb)) ? Number(maxTotalSizeMb) : 1024;
 
         const client = await getClient();
         try {
           await client.query("BEGIN");
           const r = await client.query(
-            "INSERT INTO folders (name, group_id, parent_id) VALUES ($1, $2, $3) RETURNING *",
-            [name, normalizedGroupIds[0] || null, parent]
+            "INSERT INTO folders (name, group_id, parent_id, owner_user_id, max_file_size_mb, max_total_size_mb) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
+            [name, normalizedGroupIds[0] || null, parent, ownerUser, maxFile, maxTotal]
           );
           const folder = r.rows[0];
           for (const gid of normalizedGroupIds) {
@@ -646,6 +770,54 @@ export async function createFolder(req, res) {
         }
     } catch {
         res.status(400).json({ error: "failed" });
+    }
+}
+
+export async function updateFolder(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const folderId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(folderId)) return res.status(400).json({ error: "invalid_folder_id" });
+    const { groupIds, maxFileSizeMb, maxTotalSizeMb } = req.body || {};
+    try {
+        const normalizedGroupIds = Array.isArray(groupIds)
+          ? groupIds.map((g) => parseInt(g, 10)).filter((g) => Number.isInteger(g))
+          : [];
+        const maxFile = Number.isFinite(Number(maxFileSizeMb)) ? Number(maxFileSizeMb) : 100;
+        const maxTotal = Number.isFinite(Number(maxTotalSizeMb)) ? Number(maxTotalSizeMb) : 1024;
+
+        const client = await getClient();
+        try {
+          await client.query("BEGIN");
+          const updatedRows = await client.query(
+            `UPDATE folders
+             SET group_id = $1,
+                 max_file_size_mb = $2,
+                 max_total_size_mb = $3
+             WHERE id = $4
+             RETURNING *`,
+            [normalizedGroupIds[0] || null, maxFile, maxTotal, folderId]
+          );
+          if (!updatedRows.rows.length) {
+            await client.query("ROLLBACK");
+            return res.status(404).json({ error: "not_found" });
+          }
+          await client.query("DELETE FROM folder_groups WHERE folder_id = $1", [folderId]);
+          for (const gid of normalizedGroupIds) {
+            await client.query(
+              "INSERT INTO folder_groups (folder_id, group_id) VALUES ($1, $2) ON CONFLICT (folder_id, group_id) DO NOTHING",
+              [folderId, gid]
+            );
+          }
+          await client.query("COMMIT");
+          return res.json({ ...updatedRows.rows[0], group_ids: normalizedGroupIds });
+        } catch (e) {
+          await client.query("ROLLBACK");
+          throw e;
+        } finally {
+          client.release();
+        }
+    } catch {
+        return res.status(400).json({ error: "failed" });
     }
 }
 

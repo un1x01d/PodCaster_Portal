@@ -8,7 +8,7 @@ import {
     getUserGroups,
     listGroups, createGroup, updateGroup, deleteGroup, getGroupMembers, updateGroupMembers, getGroupSheets,
     addUserToGroup, removeUserFromGroup, toggleGroupAdmin,
-    listFolders, createFolder, deleteFolder,
+    listFolders, createFolder, updateFolder, deleteFolder,
     setPermissions, getPermissions, setGroupPermissions, getGroupPermissions
 } from "../controllers/userController.js";
 import { auth } from "../middleware/auth.js";
@@ -53,6 +53,7 @@ router.get("/groups/:id/sheets", asyncHandler(getGroupSheets));
 // Folders
 router.get("/folders", asyncHandler(listFolders));
 router.post("/folders", asyncHandler(createFolder));
+router.patch("/folders/:id", asyncHandler(updateFolder));
 router.delete("/folders/:id", asyncHandler(deleteFolder));
 
 // Permissions

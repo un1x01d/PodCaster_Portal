@@ -3,6 +3,7 @@ import { uploadSheet } from "./sheetController.js";
 import fs from "fs";
 import path from "path";
 import { tmpdir } from "os";
+import { createHmac, timingSafeEqual } from "crypto";
 
 const DROPBOX_AUTH_BASE = "https://www.dropbox.com/oauth2/authorize";
 const DROPBOX_TOKEN_URL = "https://api.dropboxapi.com/oauth2/token";
@@ -10,6 +11,58 @@ const DROPBOX_ACCOUNT_URL = "https://api.dropboxapi.com/2/users/get_current_acco
 const DROPBOX_LIST_FOLDER_URL = "https://api.dropboxapi.com/2/files/list_folder";
 const DROPBOX_DOWNLOAD_URL = "https://content.dropboxapi.com/2/files/download";
 const SUPPORTED_EXTS = [".csv", ".xls", ".xlsx"];
+const DROPBOX_OAUTH_STATE_TTL_MS = 5 * 60 * 1000;
+
+function base64UrlEncode(value) {
+  return Buffer.from(value, "utf8").toString("base64url");
+}
+
+function base64UrlDecode(value) {
+  return Buffer.from(value, "base64url").toString("utf8");
+}
+
+function getDropboxStateSecret() {
+  const candidate = String(process.env.DROPBOX_OAUTH_STATE_SECRET || process.env.JWT_SECRET || "").trim();
+  if (!candidate) throw new Error("dropbox_state_secret_missing");
+  return candidate;
+}
+
+function signDropboxState(payloadB64, secret) {
+  return createHmac("sha256", secret).update(payloadB64).digest("base64url");
+}
+
+export function createDropboxOauthState(userId, now = Date.now()) {
+  const uid = Number(userId);
+  if (!Number.isInteger(uid) || uid <= 0) throw new Error("invalid_user_id");
+  const payload = { uid, exp: now + DROPBOX_OAUTH_STATE_TTL_MS };
+  const payloadB64 = base64UrlEncode(JSON.stringify(payload));
+  const signature = signDropboxState(payloadB64, getDropboxStateSecret());
+  return `${payloadB64}.${signature}`;
+}
+
+export function verifyDropboxOauthState(state, now = Date.now()) {
+  const raw = String(state || "").trim();
+  if (!raw || !raw.includes(".")) return null;
+  const [payloadB64, signature] = raw.split(".");
+  if (!payloadB64 || !signature) return null;
+
+  const expected = signDropboxState(payloadB64, getDropboxStateSecret());
+  const sigBuf = Buffer.from(signature);
+  const expectedBuf = Buffer.from(expected);
+  if (sigBuf.length !== expectedBuf.length || !timingSafeEqual(sigBuf, expectedBuf)) return null;
+
+  let payload;
+  try {
+    payload = JSON.parse(base64UrlDecode(payloadB64));
+  } catch {
+    return null;
+  }
+  const uid = Number(payload?.uid);
+  const exp = Number(payload?.exp || 0);
+  if (!Number.isInteger(uid) || uid <= 0) return null;
+  if (!Number.isFinite(exp) || exp <= now) return null;
+  return uid;
+}
 
 function isSupportedSpreadsheetName(name) {
   const lower = String(name || "").toLowerCase();
@@ -146,7 +199,7 @@ export async function getDropboxStatus(_req, res) {
 export async function getDropboxAuthUrl(req, res) {
   try {
     const cfg = await requireDropboxConfig();
-    const state = String(req.user?.id || "");
+    const state = createDropboxOauthState(req.user?.id);
     const params = new URLSearchParams({
       client_id: cfg.clientId,
       redirect_uri: cfg.redirectUri,
@@ -170,8 +223,8 @@ export async function dropboxCallback(req, res) {
       return res.redirect(`${cfg.frontendUrl}/workspace?dropbox_error=missing_code`);
     }
 
-    const userId = Number(state);
-    if (!Number.isInteger(userId) || userId <= 0) {
+    const userId = verifyDropboxOauthState(state);
+    if (!userId) {
       return res.redirect(`${cfg.frontendUrl}/workspace?dropbox_error=invalid_state`);
     }
 
