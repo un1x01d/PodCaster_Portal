@@ -88,64 +88,101 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
 
     const normalizeSlavicSpeechNumbers = (text, lang) => {
         const toWords = lang === "uk" ? numberToWordsUk : numberToWordsRu;
-        return String(text || "").replace(/\b-?\d{1,3}(?:[ ,]\d{3})*(?:[.,]\d+)?\b/g, (raw) => {
-            const normalized = raw.replace(/\s/g, "").replace(",", ".");
-            const parsed = Number(normalized);
-            if (!Number.isFinite(parsed)) return raw;
-            const intPart = Math.trunc(parsed);
-            const frac = Math.abs(parsed - intPart);
-            const base = toWords(intPart);
-            if (!frac) return base;
-            const fracDigits = String(normalized.split(".")[1] || "");
-            return `${base} ${lang === "uk" ? "цілих" : "целых"} ${fracDigits}`;
+        const denomByLen = lang === "uk"
+            ? { 1: "десятих", 2: "сотих", 3: "тисячних", 4: "десятитисячних", 5: "стотисячних", 6: "мільйонних" }
+            : { 1: "десятых", 2: "сотых", 3: "тысячных", 4: "десятитысячных", 5: "стотысячных", 6: "миллионных" };
+
+        const expandCompact = (numText, scalePow) => {
+            const neg = numText.startsWith("-");
+            const src = neg ? numText.slice(1) : numText;
+            const [intRaw, fracRaw = ""] = src.split(/[.,]/);
+            const intPart = intRaw.replace(/\D/g, "") || "0";
+            const fracPart = fracRaw.replace(/\D/g, "");
+            const digits = `${intPart}${fracPart}`.replace(/^0+/, "") || "0";
+            const val = BigInt(digits) * (10n ** BigInt(scalePow));
+            const div = 10n ** BigInt(fracPart.length || 0);
+            const out = (val / div).toString();
+            return `${neg ? "-" : ""}${out}`;
+        };
+
+        const parseToken = (raw) => {
+            let s = String(raw || "").trim().replace(/\s/g, "");
+            if (!s) return null;
+            if (s.startsWith(".") || s.startsWith(",")) s = `0${s}`;
+            const neg = s.startsWith("-");
+            if (neg) s = s.slice(1);
+
+            const lastComma = s.lastIndexOf(",");
+            const lastDot = s.lastIndexOf(".");
+            let decSep = "";
+            if (lastComma >= 0 && lastDot >= 0) decSep = lastComma > lastDot ? "," : ".";
+            else if (lastComma >= 0) decSep = (s.split(",").length - 1) === 1 ? "," : "";
+            else if (lastDot >= 0) decSep = (s.split(".").length - 1) === 1 ? "." : "";
+
+            const parts = decSep ? s.split(decSep) : [s, ""];
+            const intDigits = (parts[0] || "0").replace(/[.,]/g, "");
+            const fracDigits = (parts[1] || "").replace(/[^\d]/g, "");
+            if (!/^\d+$/.test(intDigits) || (fracDigits && !/^\d+$/.test(fracDigits))) return null;
+            return { neg, intDigits: intDigits.replace(/^0+/, "") || "0", fracDigits: fracDigits.replace(/0+$/, "") };
+        };
+
+        let prepared = String(text || "");
+        prepared = prepared.replace(/\b(-?\d+(?:[.,]\d+)?)\s*([kKmMbB])\b/g, (_, n, suf) => {
+            const p = suf.toLowerCase() === "k" ? 3 : suf.toLowerCase() === "m" ? 6 : 9;
+            return expandCompact(String(n), p);
+        });
+
+        return prepared.replace(/-?(?:\d{1,3}(?:[ ,]\d{3})+|\d+)(?:[.,]\d+)?|-?[.,]\d+/g, (raw) => {
+            const parsed = parseToken(raw);
+            if (!parsed) return raw;
+            const intNum = Number(`${parsed.neg ? "-" : ""}${parsed.intDigits}`);
+            if (!Number.isFinite(intNum)) return raw;
+            const base = toWords(intNum);
+            if (!parsed.fracDigits) return base;
+
+            // 0.5 / 2.5 style -> natural "half" phrasing.
+            if (parsed.fracDigits === "5") {
+                return `${base} ${lang === "uk" ? "з половиною" : "с половиной"}`;
+            }
+
+            const fracNum = Number(parsed.fracDigits);
+            const fracWords = toWords(fracNum);
+            const denom = denomByLen[Math.min(parsed.fracDigits.length, 6)] || (lang === "uk" ? "десятих" : "десятых");
+            return `${base} ${lang === "uk" ? "цілих" : "целых"} ${fracWords} ${denom}`;
         });
     };
 
     const normalizeSlavicPronunciation = (text, lang) => {
-        const letterR = lang === "uk" ? "ер" : "эр";
-        let out = String(text || "");
-        // Convert latin words to cyrillic-ish phonetics so browser TTS does not use English "R".
-        out = out.replace(/\b[A-Za-z]{2,}\b/g, (w) => {
-            const lower = w.toLowerCase();
-            return lower
-                .replace(/shch/g, "щ")
-                .replace(/zh/g, "ж")
-                .replace(/ch/g, "ч")
-                .replace(/sh/g, "ш")
-                .replace(/kh/g, "х")
-                .replace(/ya/g, "я")
-                .replace(/yu/g, "ю")
-                .replace(/yo/g, "ё")
-                .replace(/a/g, "а")
-                .replace(/b/g, "б")
-                .replace(/c/g, "к")
-                .replace(/d/g, "д")
-                .replace(/e/g, "е")
-                .replace(/f/g, "ф")
-                .replace(/g/g, "г")
-                .replace(/h/g, "х")
-                .replace(/i/g, "и")
-                .replace(/j/g, "дж")
-                .replace(/k/g, "к")
-                .replace(/l/g, "л")
-                .replace(/m/g, "м")
-                .replace(/n/g, "н")
-                .replace(/o/g, "о")
-                .replace(/p/g, "п")
-                .replace(/q/g, "к")
-                .replace(/r/g, "р")
-                .replace(/s/g, "с")
-                .replace(/t/g, "т")
-                .replace(/u/g, "у")
-                .replace(/v/g, "в")
-                .replace(/w/g, "в")
-                .replace(/x/g, "кс")
-                .replace(/y/g, "й")
-                .replace(/z/g, "з");
-        });
-        // Standalone Latin R/r (codes, abbreviations) => spoken local letter name.
-        out = out.replace(/\b[rR]\b/g, letterR);
-        return out;
+        const mapRu = {
+            shch: "щ", yo: "ё", zh: "ж", kh: "х", ts: "ц", ch: "ч", sh: "ш", yu: "ю", ya: "я",
+            a: "а", b: "б", c: "к", d: "д", e: "е", f: "ф", g: "г", h: "х", i: "и", j: "дж",
+            k: "к", l: "л", m: "м", n: "н", o: "о", p: "п", q: "к", r: "р", s: "с", t: "т",
+            u: "у", v: "в", w: "в", x: "кс", y: "й", z: "з"
+        };
+        const mapUk = {
+            shch: "щ", yo: "йо", zh: "ж", kh: "х", ts: "ц", ch: "ч", sh: "ш", yu: "ю", ya: "я",
+            a: "а", b: "б", c: "к", d: "д", e: "е", f: "ф", g: "г", h: "г", i: "і", j: "дж",
+            k: "к", l: "л", m: "м", n: "н", o: "о", p: "п", q: "к", r: "р", s: "с", t: "т",
+            u: "у", v: "в", w: "в", x: "кс", y: "и", z: "з"
+        };
+        const map = lang === "uk" ? mapUk : mapRu;
+        const translit = (word) => {
+            let out = "";
+            let i = 0;
+            const s = String(word || "").toLowerCase();
+            while (i < s.length) {
+                const four = s.slice(i, i + 4);
+                const three = s.slice(i, i + 3);
+                const two = s.slice(i, i + 2);
+                if (map[four]) { out += map[four]; i += 4; continue; }
+                if (map[three]) { out += map[three]; i += 3; continue; }
+                if (map[two]) { out += map[two]; i += 2; continue; }
+                out += map[s[i]] || s[i];
+                i += 1;
+            }
+            return out;
+        };
+        return String(text || "").replace(/\b[A-Za-z][A-Za-z0-9&.'’-]*\b/g, (w) => translit(w));
     };
 
     const stopCurrentAudio = () => {
@@ -307,9 +344,9 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
         const speechText = (slavicLang === "ru" || slavicLang === "uk")
             ? normalizeSlavicPronunciation(normalizeSlavicSpeechNumbers(text, slavicLang), slavicLang)
             : text;
-        const utterance = new SpeechSynthesisUtterance(speechText);
         const localeMap = { 'es': 'es-ES', 'uk': 'uk-UA', 'ru': 'ru-RU', 'en': 'en-US' };
         const targetLang = localeMap[locale] || locale || 'en-US';
+        const utterance = new SpeechSynthesisUtterance(speechText);
         utterance.lang = targetLang;
         
         const currentVoices = voices.length > 0 ? voices : synth.getVoices();

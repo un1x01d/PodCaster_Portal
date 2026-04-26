@@ -66,15 +66,14 @@ export default function DashboardHeader({
 
     return (
         <header className="glass border-b border-slate-200/50 px-8 py-4 grid grid-cols-[1fr_auto_1fr] items-center sticky top-0 z-50 shadow-sm backdrop-blur-xl">
-            {/* Left: Logo & Title */}
+            {/* Left: Logo Link */}
             <div className="flex justify-start">
-                <Link to="/" className="flex items-center gap-4 hover:opacity-80 transition-all hover:scale-[1.02] active:scale-95">
-                    <div className="w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center text-white font-black text-xl shadow-xl shadow-indigo-100">
-                        P
-                    </div>
-                    <h1 className="text-2xl font-black text-slate-900 tracking-tighter">
-                        {ui.portalTitle}
-                    </h1>
+                <Link to="/" className="inline-flex items-center">
+                    <img
+                        src="/assets/tform-logo.png"
+                        alt="Logo"
+                        className="h-12 w-auto max-w-[420px] object-contain"
+                    />
                 </Link>
             </div>
 

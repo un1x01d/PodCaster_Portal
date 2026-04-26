@@ -171,9 +171,34 @@ export function useChatbotLogic({
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isOpen]);
 
+  const clearMessages = useCallback(() => {
+    const reset = [{
+      type: "bot",
+      text: copy.chatResetMessage || "Chat reset. Ask another question about this spreadsheet.",
+      timestamp: new Date(),
+      isSystem: true,
+    }];
+    setMessages(reset);
+    const key = makeChatStorageKey(sheetId, activeTab);
+    if (key && typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem(key, JSON.stringify(reset));
+      } catch (_) {
+        // no-op
+      }
+    }
+  }, [copy.chatResetMessage, sheetId, activeTab]);
+
   const handleSend = useCallback(async () => {
     const q = input.trim();
     if (!q || !sheetId || isSending) return;
+    const clearCommand = /^(clear chat|reset chat|очистить чат|очисти чат|скинь чат|сбросить чат|clear)$/i.test(q);
+    if (clearCommand) {
+      clearMessages();
+      if (onApplyFilter) onApplyFilter("RESET_ALL");
+      setInput("");
+      return;
+    }
 
     setMessages((prev) => [...prev, { type: "user", text: q, timestamp: new Date() }]);
     setInput("");
@@ -182,6 +207,7 @@ export function useChatbotLogic({
     try {
       const res = await api.post("/chat/query", {
         sheetId,
+        activeTab: activeTab || null,
         message: q,
         activeFilters: serializeActiveFilters(activeFilters),
         conversationHistory: buildConversationHistory(messages),
@@ -228,25 +254,7 @@ export function useChatbotLogic({
     } finally {
       setIsSending(false);
     }
-  }, [input, sheetId, isSending, activeFilters, messages, onApplyFilter, onUpdateChart, locale, copy.appliedFilters, copy.chatRequestFailed]);
-
-  const clearMessages = useCallback(() => {
-    const reset = [{
-      type: "bot",
-      text: copy.chatResetMessage || "Chat reset. Ask another question about this spreadsheet.",
-      timestamp: new Date(),
-      isSystem: true,
-    }];
-    setMessages(reset);
-    const key = makeChatStorageKey(sheetId, activeTab);
-    if (key && typeof window !== "undefined") {
-      try {
-        window.localStorage.setItem(key, JSON.stringify(reset));
-      } catch (_) {
-        // no-op
-      }
-    }
-  }, [copy.chatResetMessage, sheetId, activeTab]);
+  }, [input, sheetId, activeTab, isSending, activeFilters, messages, onApplyFilter, onUpdateChart, locale, copy.appliedFilters, copy.chatRequestFailed, clearMessages]);
 
   return {
     messages,

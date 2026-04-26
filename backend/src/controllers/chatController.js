@@ -15,6 +15,83 @@ function toNum(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+function parseDateValue(v) {
+  if (v === null || v === undefined || v === "") return null;
+  if (v instanceof Date && !Number.isNaN(v.getTime())) return v;
+  if (typeof v === "string") {
+    const s = v.trim();
+    if (!s) return null;
+    const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (iso) return new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
+    const d = new Date(s);
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+  const n = Number(v);
+  if (!Number.isNaN(n) && n > 25569 && n < 60000) {
+    const ms = (n - 25569) * 86400 * 1000;
+    const d = new Date(Date.UTC(1970, 0, 1) + ms);
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+  return null;
+}
+
+function detectQuarterFromText(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return null;
+  const qy = s.match(/\bQ([1-4])\b(?:\s*[-/ ]?\s*(\d{4}))?/i);
+  if (qy) return qy[2] ? `Q${qy[1]} ${qy[2]}` : `Q${qy[1]}`;
+  const yq = s.match(/\b(\d{4})\s*[-/ ]?\s*Q([1-4])\b/i);
+  if (yq) return `Q${yq[2]} ${yq[1]}`;
+  const roman = s.match(/\b([IV]{1,3}|IV)\s*квартал\b(?:\s*(\d{4}))?/i);
+  if (roman) {
+    const map = { I: 1, II: 2, III: 3, IV: 4 };
+    const q = map[String(roman[1]).toUpperCase()];
+    if (q) return roman[2] ? `Q${q} ${roman[2]}` : `Q${q}`;
+  }
+  const local = s.match(/\b(?:квартал|quarter)\s*([1-4])\b(?:\s*(\d{4}))?/i);
+  if (local) return local[2] ? `Q${local[1]} ${local[2]}` : `Q${local[1]}`;
+  return null;
+}
+
+function quarterFromDate(date) {
+  const month = date.getMonth();
+  const q = Math.floor(month / 3) + 1;
+  return `Q${q} ${date.getFullYear()}`;
+}
+
+function augmentRowsWithQuarter(rows = [], headers = []) {
+  if (!Array.isArray(rows) || !rows.length) return { rows, headers };
+  const baseHeaders = Array.isArray(headers) ? [...headers] : [];
+  const quarterLike = baseHeaders.filter((h) => /quarter|qtr|квартал/i.test(String(h)));
+  const dateLike = baseHeaders.filter((h) => /date|time|period|month|year|дата|період/i.test(String(h)));
+  const quarterCol = quarterLike[0] || null;
+  const dateCol = !quarterCol ? dateLike[0] : null;
+
+  const enriched = rows.map((r) => {
+    const row = typeof r === "object" && r ? { ...r } : {};
+    let q = null;
+    if (quarterCol) q = detectQuarterFromText(row[quarterCol]);
+    if (!q && dateCol) {
+      const d = parseDateValue(row[dateCol]);
+      if (d) q = quarterFromDate(d);
+    }
+    if (!q) {
+      for (const h of baseHeaders) {
+        if (q) break;
+        q = detectQuarterFromText(row[h]);
+      }
+    }
+    if (q) row.Quarter = q;
+    return row;
+  });
+
+  const hasQuarter = enriched.some((r) => r && r.Quarter);
+  const outHeaders = hasQuarter && !baseHeaders.includes("Quarter")
+    ? [...baseHeaders, "Quarter"]
+    : baseHeaders;
+  return { rows: enriched, headers: outHeaders };
+}
+
 function formatValue(v, locale = "en", col = "", forSpeech = false) {
   if (typeof v !== "number" || !Number.isFinite(v)) return String(v ?? "");
   
@@ -22,22 +99,20 @@ function formatValue(v, locale = "en", col = "", forSpeech = false) {
   const isPercent = col && /percent|margin|rate|ratio|%/i.test(String(col));
 
   try {
-    const formatter = new Intl.NumberFormat('en-US', {
-      style: isCurrency ? 'currency' : 'decimal',
-      currency: 'USD',
-      minimumFractionDigits: (isCurrency || isPercent) ? 2 : 0,
-      maximumFractionDigits: 2,
-      useGrouping: !forSpeech, 
-    });
-    let out = formatter.format(v);
-    if (isPercent && !isCurrency && !out.includes('%')) out += '%';
-    return out;
+    const abs = Math.abs(v);
+    const sign = v < 0 ? "-" : "";
+    const num = Number.isInteger(abs)
+      ? abs.toLocaleString("en-US", { useGrouping: !forSpeech })
+      : abs.toLocaleString("en-US", { useGrouping: !forSpeech, maximumFractionDigits: 20 });
+    const pfx = isCurrency ? "$" : "";
+    const sfx = (isPercent && !isCurrency) ? "%" : "";
+    return `${sign}${pfx}${num}${sfx}`;
   } catch (e) {
     const abs = Math.abs(v);
     const sign = v < 0 ? "-" : "";
     const pfx = isCurrency ? "$" : "";
     const sfx = (isPercent && !isCurrency) ? "%" : "";
-    return `${sign}${pfx}${abs.toLocaleString('en-US', { useGrouping: !forSpeech, maximumFractionDigits: 2 })}${sfx}`;
+    return `${sign}${pfx}${String(abs)}${sfx}`;
   }
 }
 
@@ -179,6 +254,39 @@ function formatAnswerWithBullets(answer = "") {
   return lines.map((l) => `• ${l}`).join("\n");
 }
 
+function enforceCommaThousands(answer = "") {
+  const text = String(answer || "");
+  // Convert spaced thousands like "12 000 000" -> "12,000,000"
+  // Keep decimal part if present.
+  return text.replace(/\b\d{1,3}(?:\s\d{3})+(?:[.,]\d+)?\b/g, (raw) => {
+    const compact = raw.replace(/\s+/g, "");
+    const hasComma = compact.includes(",");
+    const hasDot = compact.includes(".");
+    if (hasComma && hasDot) {
+      // treat commas as thousands separators and keep decimal dot
+      const [intPart, decPart] = compact.split(".");
+      return `${intPart.replace(/,/g, ",")}.${decPart}`;
+    }
+    if (hasComma || hasDot) {
+      const sep = hasDot ? "." : ",";
+      const idx = compact.lastIndexOf(sep);
+      const intPart = compact.slice(0, idx).replace(/[.,]/g, "");
+      const decPart = compact.slice(idx + 1);
+      return `${Number(intPart).toLocaleString("en-US")}.${decPart}`;
+    }
+    return Number(compact).toLocaleString("en-US");
+  });
+}
+
+function stripApproximationWords(answer = "") {
+  return String(answer || "")
+    .replace(/\b(approximately|approx\.?|about)\b/gi, "")
+    .replace(/\b(примерно|около)\b/gi, "")
+    .replace(/\b(приблизно|близько)\b/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 function looksLikeDateHeader(header = "") {
   return /date|time|day|month|year|period|quarter/i.test(String(header));
 }
@@ -240,7 +348,17 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
     "Language: Always provide 'answer' in the requested output_locale, regardless of the user's message language.",
     "Internal Logic: Map user terms to available_columns for operations, but keep final explanation in output_locale.",
     "Date handling: When referencing spreadsheet dates, preserve the detected column date syntax exactly (do not convert to another format).",
+    "Quarter handling: Interpret Q1/Q2/Q3/Q4 as quarter periods.",
+    "Quarter handling: Also interpret localized quarter aliases as Q1..Q4 (e.g., квартал 1/2/3/4, 1 квартал, I/II/III/IV квартал).",
+    "Language rule for quarter wording: use the English word 'quarter' only in English output.",
+    "Language rule for quarter wording: in Russian use 'квартал', in Ukrainian use 'квартал/кварталу' as grammatically appropriate.",
     "Number formatting: Use grouped numbers with thousands separators in the final answer (example: 12,345.67).",
+    "Rounding rule: Do not round numeric values. Keep all available precision from the source data.",
+    "Do not describe numeric values as approximate.",
+    "Do not shorten values into compact forms like K/M/B unless user explicitly asks.",
+    "Use only numeric values that can be derived from the provided spreadsheet rows.",
+    "Never invent numbers, never estimate, and never substitute generic sample values.",
+    "If exact numeric evidence is unavailable, clearly say data is unavailable instead of guessing.",
     "Supported operations: none, filter, reset, count, sum, avg, max, min, top_n.",
     "IMPORTANT: Only use operation: 'filter' when user explicitly says 'Show', 'Filter', 'Find', or 'View only'.",
     "Use bullet points for multiple findings or drivers.",
@@ -250,6 +368,16 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
   const userPrompt = {
     question: message,
     output_locale: normalizeLocale(locale || "en"),
+    quarter_aliases: [
+      "Q1 = first quarter",
+      "Q2 = second quarter",
+      "Q3 = third quarter",
+      "Q4 = fourth quarter",
+      "квартал 1 / 1 квартал / I квартал = Q1",
+      "квартал 2 / 2 квартал / II квартал = Q2",
+      "квартал 3 / 3 квартал / III квартал = Q3",
+      "квартал 4 / 4 квартал / IV квартал = Q4"
+    ],
     conversation_history: conversationHistory,
     available_columns: headers,
     date_format_hints: dateFormatHints || [],
@@ -280,6 +408,16 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
   return JSON.parse(json.choices[0].message.content);
 }
 
+function normalizeSlavicGroupedNumbers(text = "") {
+  // Convert en-US grouped numbers into slavic-friendly spoken format:
+  // 12,000,000.50 -> 12 000 000,50
+  return String(text || "").replace(/\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b/g, (m) => {
+    const [intPart, decPart] = m.split(".");
+    const grouped = intPart.replace(/,/g, " ");
+    return decPart ? `${grouped},${decPart}` : grouped;
+  });
+}
+
 export async function getChatAudio(req, res) {
   const { text, locale } = req.body;
   const apiKey = process.env.OPENAI_API_KEY;
@@ -292,9 +430,9 @@ export async function getChatAudio(req, res) {
   if (lang === "ru") voice = "alloy";
   
   let cleanedText = text;
-  if (lang === "uk") cleanedText = normalizeUkrainianSpeechNumbers(text);
+  if (lang === "uk") cleanedText = normalizeUkrainianSpeechNumbers(normalizeSlavicGroupedNumbers(text));
   if (lang === "ru") {
-    cleanedText = text.replace(/(\d),(\d{3})/g, "$1 $2");
+    cleanedText = normalizeSlavicGroupedNumbers(text);
   }
 
   try {
@@ -319,9 +457,12 @@ export async function getChatAudio(req, res) {
 }
 
 export async function chatQuery(req, res) {
-  const { sheetId, message, conversationHistory = [], locale: rawLocale } = req.body || {};
+  const { sheetId, activeTab = null, message, conversationHistory = [], locale: rawLocale } = req.body || {};
   const locale = normalizeLocale(rawLocale || "en");
-  const { headers, rows: baseRows } = await loadAccessibleRows(sheetId, req.user);
+  const loaded = await loadAccessibleRows(sheetId, req.user, activeTab);
+  const augmented = augmentRowsWithQuarter(loaded.rows || [], loaded.headers || []);
+  const headers = augmented.headers || [];
+  const baseRows = augmented.rows || [];
 
   let ai;
   const sampleRows = baseRows.slice(0, CHAT_SAMPLE_ROWS);
@@ -350,7 +491,14 @@ export async function chatQuery(req, res) {
     aggregation: ai.chart.aggregation || "sum"
   } : null;
 
-  let answer = ai?.answer || exec.answer || "Done.";
+  const numericOps = new Set(["count", "sum", "avg", "max", "min", "top_n"]);
+  const op = String(ai?.operation || "none").toLowerCase();
+  let answer = (numericOps.has(op) && exec.answer)
+    ? exec.answer
+    : (ai?.answer || exec.answer || "Done.");
+  if (exec.answer && (/\d/.test(String(answer)) || /(?:approximately|approx\.?|about|примерно|около|приблизно|близько)/i.test(String(answer)))) {
+    answer = exec.answer;
+  }
   answer = formatAnswerWithBullets(answer);
   if (!isEnglishLocale(locale) && answer) {
     try {
@@ -368,6 +516,8 @@ export async function chatQuery(req, res) {
       // keep original answer if translation fails
     }
   }
+  answer = stripApproximationWords(answer);
+  answer = enforceCommaThousands(answer);
 
   const isReset = ai?.operation === "reset" || /reset|clear|all records/i.test(ai?.answer || "");
   const uiFilters = (ai?.operation === "filter" || ai?.operation === "apply_filter") ? aiFilters : [];
@@ -380,17 +530,26 @@ export async function chatQuery(req, res) {
   });
 }
 
-async function loadAccessibleRows(sheetId, user) {
+async function loadAccessibleRows(sheetId, user, activeTab = null) {
   const sheet = await query("SELECT headers FROM sheets WHERE id = $1", [sheetId]);
-  const rows = await query(
-    "SELECT row_data FROM sheet_rows WHERE sheet_id = $1 ORDER BY row_index ASC",
-    [sheetId]
-  );
+  const rows = activeTab
+    ? await query(
+        "SELECT row_data FROM sheet_rows WHERE sheet_id = $1 AND tab_name = $2 ORDER BY row_index ASC",
+        [sheetId, activeTab]
+      )
+    : await query(
+        "SELECT row_data FROM sheet_rows WHERE sheet_id = $1 ORDER BY row_index ASC",
+        [sheetId]
+      );
 
   const rawHeaders = sheet[0]?.headers;
-  const headers = Array.isArray(rawHeaders)
+  let headers = Array.isArray(rawHeaders)
     ? rawHeaders
     : (typeof rawHeaders === "string" ? JSON.parse(rawHeaders || "[]") : []);
+  if (!headers.length && rows.length) {
+    const row0 = typeof rows[0]?.row_data === "string" ? JSON.parse(rows[0].row_data) : rows[0]?.row_data;
+    headers = row0 && typeof row0 === "object" ? Object.keys(row0) : [];
+  }
 
   return {
     headers,
