@@ -1335,7 +1335,11 @@ export default function DashboardHome({
             {cardsWithOverrides.map((card) => (
               <div
                 key={card.id}
-                className={`rounded-md border border-slate-200 bg-white shadow-sm ${card.id === "pinnedMetrics" ? "h-[160px] p-2.5 overflow-hidden" : (kpiEditorOpen[card.id] ? "p-3" : "h-[160px] p-3 overflow-hidden")}`}
+                className={`rounded-md border border-slate-200 bg-white shadow-sm ${
+                  card.id === "pinnedMetrics"
+                    ? (queryOpen ? "p-2.5" : "h-[160px] p-2.5 overflow-hidden")
+                    : (kpiEditorOpen[card.id] ? "p-3" : "h-[160px] p-3 overflow-hidden")
+                }`}
               >
                 {card.id === "pinnedMetrics" ? (
                   <>
