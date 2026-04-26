@@ -624,17 +624,45 @@ export default function App() {
 
   const loadData = async (sid = sheetId, preserveFilters = false, tabName = null, options = {}) => {
     if (!sid) return;
-    const { preferCache = true } = options;
+    const { preferCache = true, limit, offset } = options;
     try {
-      const cacheKey = getDataCacheKey(sid, tabName);
+      const params = new URLSearchParams();
+      if (tabName) params.append("tab", tabName);
+      
+      // Pass the selected Locked View ID for backend enforcement
+      if (selectedViewId) {
+        params.append("viewId", selectedViewId);
+      }
+
+      // Pass sort configuration to server
+      if (sortConfig) {
+        params.append("sort_by", sortConfig.key);
+        params.append("sort_order", sortConfig.direction);
+      }
+      
+      // Pass active filters to server
+      if (columnFilters && Object.keys(columnFilters).length > 0) {
+        const serializableFilters = {};
+        Object.entries(columnFilters).forEach(([col, val]) => {
+          if (val instanceof Set) {
+            serializableFilters[col] = Array.from(val);
+          } else {
+            serializableFilters[col] = val;
+          }
+        });
+        params.append("filters", JSON.stringify(serializableFilters));
+      }
+
+      if (limit !== undefined) params.append("limit", limit);
+      if (offset !== undefined) params.append("offset", offset);
+
+      const cacheKey = getDataCacheKey(sid, tabName) + "?" + params.toString();
       if (preferCache && tabDataCacheRef.current[cacheKey]) {
         applyLoadedRows(sid, tabDataCacheRef.current[cacheKey], preserveFilters);
         return;
       }
 
-      const url = tabName
-        ? `${API}/sheets/${sid}/data?tab=${encodeURIComponent(tabName)}`
-        : `${API}/sheets/${sid}/data`;
+      const url = `${API}/sheets/${sid}/data?${params.toString()}`;
 
       const res = await axios.get(url, {
         headers: { Authorization: `Bearer ${token}` },
@@ -647,6 +675,13 @@ export default function App() {
       alert("Failed to load data");
     }
   };
+
+  // Re-fetch data when sort, filters, or view changes (Server-side)
+  useEffect(() => {
+    if (sheetId && user) {
+      loadData(sheetId, true, activeTab, { preferCache: false });
+    }
+  }, [sortConfig, columnFilters, activeTab, selectedViewId]);
 
   const fetchTabs = async (sid, options = {}) => {
     const { preferredTab = null, preserveActive = false } = options;
@@ -1269,6 +1304,7 @@ export default function App() {
             activeFilename={activeFilename}
             onSwitchSheet={handleSwitchSheet}
             onDeleteSheet={deleteSheet}
+            onSaveView={() => setShowColumnSelector(true)}
             locale={dashboardI18n.locale}
             setLocale={dashboardI18n.setLocale}
             copy={dashboardI18n.copy}

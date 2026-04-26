@@ -653,27 +653,24 @@ export default function UserManagement({ token, user, sheetId }) {
     });
     setUserViews(new Set((res.data || []).map((v) => v.id)));
   };
-  const fetchSelectedUserGroups = async (uid) => {
-    if (!uid) {
-      setSelectedUserGroupIds(new Set());
-      return;
+
+  const toggleUserViewPerm = async (viewId) => {
+    if (!selectedUserId) return;
+    const hasPerm = userViews.has(viewId);
+    try {
+      if (hasPerm) {
+        await axios.delete(`${API}/views/user-permissions/${viewId}/${selectedUserId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      } else {
+        await axios.post(`${API}/views/user-permissions`, { viewId, userId: selectedUserId }, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      }
+      fetchUserViews(selectedUserId);
+    } catch (e) {
+      console.error("toggleUserViewPerm failed", e);
     }
-    const gids = await getGroupsForUser(uid);
-    setSelectedUserGroupIds(new Set(gids.map((g) => Number(g))));
-  };
-  const fetchUserGroupMap = async () => {
-    if (!uniqueUsers.length) {
-      setUserGroupMap({});
-      return;
-    }
-    const pairs = await Promise.all(uniqueUsers.map(async (u) => {
-      const gids = await getGroupsForUser(u.id);
-      const names = gids
-        .map((gid) => groups.find((g) => Number(g.id) === Number(gid))?.name || String(gid))
-        .filter(Boolean);
-      return [u.id, names];
-    }));
-    setUserGroupMap(Object.fromEntries(pairs));
   };
 
   const fetchGroupViews = async (groupId) => {
@@ -682,6 +679,34 @@ export default function UserManagement({ token, user, sheetId }) {
       headers: { Authorization: `Bearer ${token}` },
     });
     setGroupViews(new Set((res.data || []).map((v) => v.id)));
+  };
+
+  const toggleGroupViewPerm = async (viewId) => {
+    if (!selectedGroupId) return;
+    const hasPerm = groupViews.has(viewId);
+    try {
+      if (hasPerm) {
+        await axios.delete(`${API}/views/group-permissions/${viewId}/${selectedGroupId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      } else {
+        await axios.post(`${API}/views/group-permissions`, { viewId, groupId: selectedGroupId }, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      }
+      fetchGroupViews(selectedGroupId);
+    } catch (e) {
+      console.error("toggleGroupViewPerm failed", e);
+    }
+  };
+
+  const fetchSelectedUserGroups = async (uid) => {
+    if (!uid) {
+      setSelectedUserGroupIds(new Set());
+      return;
+    }
+    const gids = await getGroupsForUser(uid);
+    setSelectedUserGroupIds(new Set(gids.map((g) => Number(g))));
   };
 
   // when user changes, reload their 10 sheets and reset user-perms state
@@ -2001,47 +2026,29 @@ export default function UserManagement({ token, user, sheetId }) {
                   </div>
                 </div>
 
-                <div className="pt-8 border-t border-slate-200/30">
-                  <h4 className="font-bold text-sm text-slate-700 mb-4">View Permissions</h4>
-                  <div className="grid grid-cols-2 gap-2">
-                    {views.filter(v => String(v.sheet_id) === String(selectedUserSheetId)).map((v) => (
-                      <label key={v.id} className={`flex items-center gap-3 p-3 rounded-md border transition-all cursor-pointer ${
-                        userViews.has(v.id) ? "bg-indigo-50 border-indigo-200 text-indigo-700 font-bold" : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50"
-                      }`}>
-                        <input
-                          type="checkbox"
-                          checked={userViews.has(v.id)}
-                          onChange={async () => {
-                            const newViews = new Set(userViews);
-                            try {
-                              if (newViews.has(v.id)) {
-                                await axios.delete(
-                                  `${API}/views/user-permissions/${v.id}/${selectedUserId}`,
-                                  { headers: { Authorization: `Bearer ${token}` } }
-                                );
-                                newViews.delete(v.id);
-                              } else {
-                                await axios.post(
-                                  `${API}/views/user-permissions`,
-                                  { viewId: v.id, userId: selectedUserId },
-                                  { headers: { Authorization: `Bearer ${token}` } }
-                                );
-                                newViews.add(v.id);
-                              }
-                              setUserViews(newViews);
-                            } catch (e) {
-                              alert(e.response?.data?.error || "Failed to update view permission");
-                            }
-                          }}
-                        />
-                        <span className="text-xs truncate">{v.name}</span>
+                {/* Locked Views for User */}
+                <div className="space-y-3 pt-4 border-t border-slate-200">
+                  <h4 className="font-bold text-sm text-slate-700">Locked Views (Data Restrictions)</h4>
+                  <p className="text-[10px] text-slate-500 italic mb-2">Assigning a Locked View will strictly limit this user to the specific columns and row filters defined in that view.</p>
+                  <div className="space-y-1.5">
+                    {views.filter(v => String(v.sheet_id) === String(selectedUserSheetId)).map(v => (
+                      <label key={v.id} className={`flex items-center justify-between p-2 rounded-md border cursor-pointer ${userViews.has(v.id) ? "bg-emerald-50 border-emerald-200" : "bg-white border-slate-200"}`}>
+                        <div className="flex items-center gap-2">
+                          <input type="checkbox" checked={userViews.has(v.id)} onChange={() => toggleUserViewPerm(v.id)} className="w-3.5 h-3.5 rounded text-emerald-600" />
+                          <span className="text-[11px] font-semibold text-slate-700">{v.name}</span>
+                        </div>
+                        <span className="text-[9px] text-slate-400 italic">by {v.created_by}</span>
                       </label>
                     ))}
+                    {!views.filter(v => String(v.sheet_id) === String(selectedUserSheetId)).length && (
+                      <div className="text-[10px] text-slate-400 italic">No views created for this sheet yet.</div>
+                    )}
                   </div>
                 </div>
 
                 <div className="pt-8 border-t border-slate-200/30">
                   <h4 className="font-bold text-sm text-slate-700 mb-4">Default View Selection</h4>
+
                   <div className="flex gap-2">
                     <select
                       className="input-premium py-2 flex-1"
@@ -2191,51 +2198,33 @@ export default function UserManagement({ token, user, sheetId }) {
                         </div>
                       </div>
 
-                      <div className="pt-4 border-t border-slate-200/30">
-                        <h4 className="font-bold text-sm text-slate-700 mb-3">Group View Permissions</h4>
-                        <div className="grid grid-cols-1 gap-2">
-                          {views.filter(v => String(v.sheet_id) === String(selectedUserSheetId)).map((v) => (
-                            <label key={v.id} className={`flex items-center gap-3 p-3 rounded-md border transition-all cursor-pointer ${
-                              groupViews.has(v.id) ? "bg-emerald-50 border-emerald-200 text-emerald-700 font-bold" : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50"
-                            }`}>
-                              <input
-                                type="checkbox"
-                                checked={groupViews.has(v.id)}
-                                onChange={async () => {
-                                  const next = new Set(groupViews);
-                                  try {
-                                    if (next.has(v.id)) {
-                                      await axios.delete(
-                                        `${API}/views/group-permissions/${v.id}/${selectedGroupId}`,
-                                        { headers: { Authorization: `Bearer ${token}` } }
-                                      );
-                                      next.delete(v.id);
-                                    } else {
-                                      await axios.post(
-                                        `${API}/views/group-permissions`,
-                                        { viewId: v.id, groupId: selectedGroupId },
-                                        { headers: { Authorization: `Bearer ${token}` } }
-                                      );
-                                      next.add(v.id);
-                                    }
-                                    setGroupViews(next);
-                                  } catch (e) {
-                                    alert(e.response?.data?.error || "Failed to update group view permission");
-                                  }
-                                }}
-                              />
-                              <span className="text-xs truncate">{v.name}</span>
+                      {/* Locked Views for Group */}
+                      <div className="space-y-3 pt-4 border-t border-slate-200">
+                        <h4 className="font-bold text-sm text-slate-700">Locked Views (Data Restrictions)</h4>
+                        <p className="text-[10px] text-slate-500 italic mb-2">Assigning a Locked View will strictly limit all members of this group to the specific columns and row filters defined in that view.</p>
+                        <div className="space-y-1.5">
+                          {views.filter(v => String(v.sheet_id) === String(selectedUserSheetId)).map(v => (
+                            <label key={v.id} className={`flex items-center justify-between p-2 rounded-md border cursor-pointer ${groupViews.has(v.id) ? "bg-emerald-50 border-emerald-200" : "bg-white border-slate-200"}`}>
+                              <div className="flex items-center gap-2">
+                                <input type="checkbox" checked={groupViews.has(v.id)} onChange={() => toggleGroupViewPerm(v.id)} className="w-3.5 h-3.5 rounded text-emerald-600" />
+                                <span className="text-[11px] font-semibold text-slate-700">{v.name}</span>
+                              </div>
+                              <span className="text-[9px] text-slate-400 italic">by {v.created_by}</span>
                             </label>
                           ))}
+                          {!views.filter(v => String(v.sheet_id) === String(selectedUserSheetId)).length && (
+                            <div className="text-[10px] text-slate-400 italic">No views created for this sheet yet.</div>
+                          )}
                         </div>
                       </div>
 
                       <button
-                        className="btn-premium bg-emerald-600 hover:bg-emerald-700 text-white w-full py-3"
+                        className="btn-premium bg-emerald-600 hover:bg-emerald-700 text-white w-full py-3 mt-4"
                         onClick={saveGroupPermissions}
                       >
                         Save Group Permissions
                       </button>
+
                     </>
                 </div>
                 )}

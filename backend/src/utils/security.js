@@ -2,9 +2,6 @@ import bcrypt from "bcrypt";
 import { randomInt } from "crypto";
 
 const SALT_ROUNDS = 10;
-const ALLOW_LEGACY_PLAINTEXT_PASSWORDS = process.env.ALLOW_LEGACY_PLAINTEXT_PASSWORDS
-    ? process.env.ALLOW_LEGACY_PLAINTEXT_PASSWORDS === "true"
-    : process.env.NODE_ENV !== "production";
 
 /**
  * Hash a password using bcrypt.
@@ -17,11 +14,9 @@ export async function hashPassword(password) {
 
 /**
  * Verify a password against a hash.
- * Implements "lazy migration": if the stored password is NOT a bcrypt hash,
- * it treats it as plaintext, compares, and returns 'needs_rehash' if valid.
  * 
  * @param {string} password - The plain text password from login.
- * @param {string} storedPassword - The password string stored in DB (hash or plain).
+ * @param {string} storedPassword - The bcrypt hash stored in DB.
  * @returns {Promise<{ valid: boolean, rehash: boolean }>} 
  */
 export async function verifyPassword(password, storedPassword) {
@@ -33,16 +28,10 @@ export async function verifyPassword(password, storedPassword) {
     if (isBcrypt) {
         const valid = await bcrypt.compare(password, storedPassword);
         return { valid, rehash: false };
-    } else {
-        if (!ALLOW_LEGACY_PLAINTEXT_PASSWORDS) {
-            return { valid: false, rehash: false };
-        }
-        // Plaintext fallback (Lazy Migration)
-        if (password === storedPassword) {
-            return { valid: true, rehash: true };
-        }
-        return { valid: false, rehash: false };
     }
+    
+    // Legacy plaintext support removed for security.
+    return { valid: false, rehash: false };
 }
 
 /**

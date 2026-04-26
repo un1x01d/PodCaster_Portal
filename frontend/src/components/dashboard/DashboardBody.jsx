@@ -445,40 +445,64 @@ export default function DashboardBody(props) {
                                     >
                                         Refresh Data
                                     </button>
-                                    {user.role === "admin" && (
-                                        <details className="left-menu-disclosure">
-                                            <summary className="left-menu-summary">
-                                                Saved Views
-                                                <span className="left-menu-summary-meta">{activeView?.name || "None selected"}</span>
+                                    {user.role === "admin" ? (
+                                        <details className="left-menu-disclosure" open>
+                                            <summary className="left-menu-summary font-bold">
+                                                Locked Views (Admin)
+                                                <span className="left-menu-summary-meta">{activeView?.name || "None active"}</span>
                                             </summary>
-                                            <div className="left-menu-nested">
+                                            <div className="left-menu-nested space-y-2">
                                                 <SearchableSelect
                                                     options={viewOptions}
                                                     value={selectedViewId}
                                                     onChange={(e) => {
                                                         const viewId = e.target.value;
                                                         setSelectedViewId(viewId);
+                                                        // loadData is triggered by useEffect in App.jsx when selectedViewId changes
                                                     }}
                                                     onDelete={deleteView}
-                                                    placeholder="Saved Views…"
+                                                    placeholder="Locked Views…"
                                                     className="w-full"
-                                                    panelWidth={320}
+                                                    buttonClassName="!bg-white !border-slate-300"
+                                                    panelWidth={210}
                                                 />
                                                 <button
                                                     type="button"
-                                                    className="left-menu-action"
+                                                    className="w-full btn-premium bg-indigo-600 text-white py-1.5 text-[10px] font-bold shadow-sm hover:bg-indigo-700"
                                                     onClick={() => {
-                                                        const name = prompt("Enter a name for this view:");
+                                                        const name = prompt("Enter a name for this Locked View (includes current filters/pivots):");
                                                         if (name) {
                                                             setPendingViewName(name);
                                                             setShowColumnSelector(true);
                                                         }
                                                     }}
                                                 >
-                                                    Save View
+                                                    Create Locked View
                                                 </button>
                                             </div>
                                         </details>
+                                    ) : (
+                                        <div className="mt-4 px-2">
+                                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2 ml-1">Available Views</label>
+                                            <SearchableSelect
+                                                options={viewOptions}
+                                                value={selectedViewId}
+                                                onChange={(e) => {
+                                                    const viewId = e.target.value;
+                                                    setSelectedViewId(viewId);
+                                                }}
+                                                placeholder="Switch View…"
+                                                className="w-full"
+                                                buttonClassName="!bg-white !border-slate-300"
+                                                panelWidth={210}
+                                            />
+                                            {activeView && (
+                                                <div className="mt-2 p-2 bg-indigo-50 border border-indigo-100 rounded-md">
+                                                    <div className="text-[9px] font-bold text-indigo-600 uppercase">Active restriction</div>
+                                                    <div className="text-[11px] font-medium text-slate-700 truncate">{activeView.name}</div>
+                                                </div>
+                                            )}
+                                        </div>
                                     )}
                                 </div>
                             )}

@@ -34,7 +34,6 @@ export async function initDb() {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS company TEXT;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_required BOOLEAN DEFAULT FALSE;`);
   await pool.query(`ALTER TABLE users ALTER COLUMN role SET DEFAULT 'user';`);
-  await pool.query(`UPDATE users SET role = 'user' WHERE role = chr(112)||chr(114)||chr(111)||chr(100)||chr(117)||chr(99)||chr(101)||chr(114);`);
 
   // GROUPS
   await pool.query(`
@@ -404,13 +403,6 @@ export async function initDb() {
   await pool.query(`ALTER TABLE insight_settings ADD COLUMN IF NOT EXISTS preferred_metric_column TEXT;`);
   await pool.query(`ALTER TABLE insight_settings ADD COLUMN IF NOT EXISTS thresholds JSONB NOT NULL DEFAULT '{}'::jsonb;`);
   await pool.query(`ALTER TABLE insight_settings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
-
-  // seed admin
-  await pool.query(`
-    INSERT INTO users (email,password,role)
-    VALUES ('admin@example.com','admin123','admin')
-    ON CONFLICT (email) DO NOTHING;
-  `);
 }
 
 export default pool;

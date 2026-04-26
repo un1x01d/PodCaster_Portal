@@ -158,6 +158,7 @@ async function getVersionedFilename(client, folderId, originalName) {
 }
 
 export async function uploadSheet(req, res) {
+    let filePath = req.file?.path;
     try {
         const isAdminRole = canUploadSheetsByRole(req.user?.role);
         const isGroupAdmin = req.user?.id ? await isGroupAdminUser(req.user.id) : false;
@@ -170,38 +171,27 @@ export async function uploadSheet(req, res) {
         const folderId = rawFolderId ? parseInt(rawFolderId, 10) : null;
         if (!displayName) return res.status(400).json({ error: "display_name_required" });
 
-        console.log(`[upload] name=${originalName} mime=${req.file.mimetype} folderId=${folderId ?? "—"}`);
+        console.log(`[upload] name=${originalName} size=${req.file.size} folderId=${folderId ?? "—"}`);
 
-        // Parse Workbook
+        // Read file into buffer and delete temporary file immediately to free disk space
+        const fileBuffer = fs.readFileSync(filePath);
+        fs.unlink(filePath, () => {});
+        filePath = null;
+
+        // Parse Workbook (using type: 'buffer' for efficiency)
         let wb;
         try {
-            // Primary: Use readFile (most memory efficient)
-            wb = XLSX.readFile(req.file.path, { cellDates: true });
-        } catch (eStr) {
-            console.warn("XLSX.readFile by path failed, attempting buffer read:", eStr.message);
-            try {
-                // Fallback: Read file into memory buffer first (bypasses some permission issues)
-                const buf = fs.readFileSync(req.file.path);
-                wb = XLSX.read(buf, { type: 'buffer', cellDates: true });
-            } catch (fallbackErr) {
-                console.error("XLSX final read failure:", fallbackErr);
-                const msg = String(fallbackErr?.message || "unknown_error");
-                if (msg.includes("Invalid HTML: could not find <table>")) {
-                    return res.status(422).json({
-                        error: "html_without_tables",
-                        message: "This file is HTML without <table>. Re-export as CSV/XLSX or include a table."
-                    });
-                }
-                return res.status(400).json({
-                    error: "unreadable_spreadsheet",
-                    message: "Could not parse file as CSV/XLSX/XML/HTML-table."
-                });
-            }
+            wb = XLSX.read(fileBuffer, { type: 'buffer', cellDates: true });
+        } catch (err) {
+            console.error("XLSX read failure:", err);
+            return res.status(400).json({
+                error: "unreadable_spreadsheet",
+                message: "Could not parse file as CSV/XLSX/XML/HTML-table."
+            });
         }
 
         const sheetNames = wb.SheetNames;
         if (!sheetNames || sheetNames.length === 0) {
-            console.error("No sheets in workbook");
             return res.status(400).json({ error: "no_sheets" });
         }
         if (sheetNames.length > MAX_UPLOAD_SHEETS) {
@@ -215,7 +205,7 @@ export async function uploadSheet(req, res) {
         try {
             await client.query('BEGIN');
 
-            // Deactivate all previous sheets
+            // Deactivate all previous sheets (Global setting - could be scoped by user if needed)
             await client.query("UPDATE sheets SET active = FALSE WHERE active = TRUE");
 
             const sheetId = `${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
@@ -258,8 +248,10 @@ export async function uploadSheet(req, res) {
             const versionedFilename = await getVersionedFilename(client, assignedFolderId, originalName);
 
             // Get headers from FIRST tab
-            const firstTabRows = XLSX.utils.sheet_to_json(wb.Sheets[sheetNames[0]], { defval: "" }).map(normalizeSheetRow);
-            const headers = Object.keys(firstTabRows[0] || {});
+            const firstTab = wb.Sheets[sheetNames[0]];
+            const firstTabRows = XLSX.utils.sheet_to_json(firstTab, { defval: "", range: 0, header: 1 });
+            const headers = Array.isArray(firstTabRows[0]) ? firstTabRows[0].filter(h => !!h) : [];
+            
             if (headers.length > MAX_UPLOAD_COLUMNS) {
                 await client.query('ROLLBACK');
                 return res.status(413).json({
@@ -275,10 +267,13 @@ export async function uploadSheet(req, res) {
                 [sheetId, JSON.stringify(headers), true, versionedFilename, displayName, assignedFolderId, null, sheetNames[0], JSON.stringify(sheetNames)]
             );
 
-            // Insert Rows
+            // Insert Rows in Chunks per Tab
             let totalRows = 0;
             for (const sn of sheetNames) {
-                const rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { defval: "" }).map(normalizeSheetRow);
+                const ws = wb.Sheets[sn];
+                // Use stream-like row processing to save memory if sheets are large
+                const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+                
                 if (rows.length > MAX_UPLOAD_ROWS_PER_SHEET) {
                     await client.query('ROLLBACK');
                     return res.status(413).json({
@@ -295,7 +290,8 @@ export async function uploadSheet(req, res) {
                         maxTotalRows: MAX_UPLOAD_TOTAL_ROWS
                     });
                 }
-                const CHUNK_SIZE = 1000;
+
+                const CHUNK_SIZE = 500; // Smaller chunk size for JSONB insertion
                 for (let j = 0; j < rows.length; j += CHUNK_SIZE) {
                     const chunk = rows.slice(j, j + CHUNK_SIZE);
                     const values = [];
@@ -303,7 +299,8 @@ export async function uploadSheet(req, res) {
                     let pIdx = 1;
 
                     chunk.forEach((r, idx) => {
-                        values.push(sheetId, j + idx, JSON.stringify(r), sn);
+                        const normalizedRow = normalizeSheetRow(r);
+                        values.push(sheetId, j + idx, JSON.stringify(normalizedRow), sn);
                         placeHolders.push(`($${pIdx++}, $${pIdx++}, $${pIdx++}, $${pIdx++})`);
                     });
 
@@ -336,10 +333,10 @@ export async function uploadSheet(req, res) {
         if (e?.code === "LIMIT_FILE_SIZE") {
             return res.status(413).json({ error: "file_too_large", maxMB: 100 });
         }
-        res.status(500).json({ error: "upload_failed", message: "An unexpected error occurred during upload." });
+        res.status(500).json({ error: "upload_failed", message: e.message || "An unexpected error occurred during upload." });
     } finally {
-        if (req.file && req.file.path) {
-            fs.unlink(req.file.path, () => {});
+        if (filePath) {
+            fs.unlink(filePath, () => {});
         }
     }
 }
@@ -530,7 +527,7 @@ export async function getSheetTabs(req, res) {
 
 export async function getSheetData(req, res) {
     const { id } = req.params;
-    const { tab } = req.query;
+    const { tab, sort_by, sort_order, filters: filtersRaw, viewId } = req.query;
     const userId = req.user.id;
     const pagination = parsePagination(req.query, { maxLimit: MAX_SHEET_DATA_LIMIT });
     if (pagination.error) {
@@ -540,7 +537,31 @@ export async function getSheetData(req, res) {
     let validCols = [];
     let rowFiltersList = [];
     let hasFullAccess = false;
+    let viewConfig = null;
 
+    // 1. Resolve Locked View if provided
+    if (viewId) {
+        const [view] = await query(
+            `SELECT v.config FROM views v
+             WHERE v.id = $1 AND v.sheet_id = $2
+               AND (
+                 $3 = 'admin'
+                 OR EXISTS (SELECT 1 FROM view_user_permissions WHERE view_id = v.id AND user_id = $4)
+                 OR EXISTS (
+                   SELECT 1 FROM view_group_permissions vgp 
+                   JOIN user_groups ug ON ug.group_id = vgp.group_id
+                   WHERE vgp.view_id = v.id AND ug.user_id = $4
+                 )
+               )`,
+            [viewId, id, req.user.role, userId]
+        );
+        if (!view) {
+            return res.status(403).json({ error: "Forbidden", message: "You do not have permission to access this view." });
+        }
+        viewConfig = typeof view.config === 'string' ? JSON.parse(view.config) : view.config;
+    }
+
+    // 2. Resolve Base Permissions
     if (req.user.role !== "admin") {
         const folderAccess = await query(
             `SELECT 1
@@ -554,7 +575,7 @@ export async function getSheetData(req, res) {
                    JOIN user_groups ug ON ug.group_id = fg.group_id
                    WHERE fg.folder_id = f.id AND ug.user_id = $2
                  )
-                 OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2) -- legacy compatibility
+                 OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)
                )`,
             [id, userId]
         );
@@ -571,7 +592,7 @@ export async function getSheetData(req, res) {
 
         const allPerms = [...userPerms, ...groupPerms];
 
-        if (!hasFullAccess && allPerms.length === 0) {
+        if (!hasFullAccess && allPerms.length === 0 && !viewId) {
             return res.status(403).json({ error: "Forbidden", message: "You do not have permission to access this sheet." });
         }
 
@@ -585,8 +606,7 @@ export async function getSheetData(req, res) {
             });
             validCols = Array.from(allowedColsSet);
 
-            // Bug 3: If user has metadata access but no allowed columns, deny data access
-            if (allPerms.length > 0 && validCols.length === 0) {
+            if (allPerms.length > 0 && validCols.length === 0 && !viewId) {
                 return res.status(403).json({ 
                     error: "Forbidden", 
                     message: "You have permission to access this sheet, but no columns have been shared with you." 
@@ -597,22 +617,87 @@ export async function getSheetData(req, res) {
         hasFullAccess = true;
     }
 
+    // 3. Merge View Restrictions with Base Permissions
+    if (viewConfig) {
+        // If view has restricted columns, further restrict validCols
+        if (Array.isArray(viewConfig.visibleColumns) && viewConfig.visibleColumns.length > 0) {
+            if (hasFullAccess) {
+                validCols = viewConfig.visibleColumns;
+                hasFullAccess = false; // Now restricted by view
+            } else {
+                validCols = validCols.filter(c => viewConfig.visibleColumns.includes(c));
+            }
+        }
+        // If view has forced filters, add them to rowFiltersList
+        if (viewConfig.columnFilters && Object.keys(viewConfig.columnFilters).length > 0) {
+            rowFiltersList.push(viewConfig.columnFilters);
+            hasFullAccess = false;
+        }
+    }
+
     try {
         let sql = `SELECT row_data FROM sheet_rows WHERE sheet_id = $1`;
         const params = [id];
 
         if (tab) {
-            sql += ` AND tab_name = $2`;
+            sql += ` AND tab_name = $${params.length + 1}`;
             params.push(tab);
         }
 
+        // Apply RBAC + Locked View row filters
         if (!hasFullAccess) {
             const filterClause = buildRowFilterWhereClause(rowFiltersList, params.length + 1);
             sql += filterClause.sql;
             params.push(...filterClause.params);
         }
 
-        sql += ` ORDER BY row_index ASC`;
+        // Apply dynamic UI column filters
+        if (filtersRaw) {
+            try {
+                const uiFilters = typeof filtersRaw === 'string' ? JSON.parse(filtersRaw) : filtersRaw;
+                if (typeof uiFilters === 'object' && !Array.isArray(uiFilters)) {
+                    Object.entries(uiFilters).forEach(([col, val]) => {
+                        if (!val) return;
+                        // Security: Only allow filtering on validCols if not admin
+                        if (!hasFullAccess && !validCols.includes(col)) return;
+
+                        if (typeof val === 'string' || typeof val === 'number') {
+                            sql += ` AND (row_data->>$${params.length + 1}) ILIKE $${params.length + 2}`;
+                            params.push(col, `%${val}%`);
+                        } else if (Array.isArray(val) && val.length > 0) {
+                            sql += ` AND (row_data->>$${params.length + 1}) = ANY($${params.length + 2}::text[])`;
+                            params.push(col, val.map(v => String(v)));
+                        } else if (typeof val === 'object' && val.value) {
+                            const op = val.operator === 'equals' ? '=' : 'ILIKE';
+                            const searchVal = val.operator === 'equals' ? String(val.value) : `%${val.value}%`;
+                            sql += ` AND (row_data->>$${params.length + 1}) ${op} $${params.length + 2}`;
+                            params.push(col, searchVal);
+                        }
+                    });
+                }
+            } catch (e) {
+                console.warn("Failed to parse UI filters:", e);
+            }
+        }
+
+        // Apply sorting
+        if (sort_by) {
+            const direction = String(sort_order).toLowerCase() === 'desc' ? 'DESC' : 'ASC';
+            // Security: Only allow sorting on validCols if not admin
+            if (hasFullAccess || validCols.includes(sort_by)) {
+                sql += ` ORDER BY (
+                    CASE 
+                        WHEN (row_data->>$${params.length + 1}) ~ '^-?[0-9.]+[^a-zA-Z]*$' 
+                        THEN CAST(regexp_replace(row_data->>$${params.length + 1}, '[^0-9.-]', '', 'g') AS NUMERIC)
+                        ELSE NULL 
+                    END) ${direction} NULLS LAST, (row_data->>$${params.length + 1}) ${direction}`;
+                params.push(sort_by);
+            } else {
+                sql += ` ORDER BY row_index ASC`;
+            }
+        } else {
+            sql += ` ORDER BY row_index ASC`;
+        }
 
         if (pagination.hasPagination) {
             sql += ` LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
@@ -624,21 +709,19 @@ export async function getSheetData(req, res) {
 
         let rows = await query(sql, params);
 
+        // Strip unauthorized columns for non-admins (or view-restricted)
         if (!hasFullAccess) {
-            rows = rows.filter(r => {
+            rows = rows.map(r => {
                 const rowData = typeof r.row_data === 'string' ? JSON.parse(r.row_data) : r.row_data;
-                if (validCols.length > 0) {
-                    Object.keys(rowData).forEach(k => {
-                        if (!validCols.includes(k)) {
-                            delete rowData[k];
-                        }
-                    });
-                } else {
-                    rowData = {};
-                }
-                r.row_data = rowData;
-                return true;
+                Object.keys(rowData).forEach(k => {
+                    if (!validCols.includes(k)) {
+                        delete rowData[k];
+                    }
+                });
+                return rowData;
             });
+        } else {
+            rows = rows.map(r => typeof r.row_data === 'string' ? JSON.parse(r.row_data) : r.row_data);
         }
 
         if (!pagination.hasPagination && SHEET_DATA_HARD_CAP > 0 && rows.length > SHEET_DATA_HARD_CAP) {
@@ -649,7 +732,7 @@ export async function getSheetData(req, res) {
             });
         }
 
-        res.json(rows.map(r => r.row_data));
+        res.json(rows);
     } catch (e) {
         console.error("Get sheet data failed:", e);
         res.status(500).json({ error: "failed" });
