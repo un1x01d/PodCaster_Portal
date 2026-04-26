@@ -358,6 +358,24 @@ export default function DashboardHome({
   const [kpiOverrides, setKpiOverrides] = React.useState({});
   const [kpiEditorOpen, setKpiEditorOpen] = React.useState({});
   const [kpiOverridesLoaded, setKpiOverridesLoaded] = React.useState(false);
+  const [topCategoriesConfig, setTopCategoriesConfig] = React.useState({
+    title: "",
+    categoryColumn: "",
+    valueColumn: "",
+    agg: "sum",
+    aiQuery: "",
+    aiValue: "",
+    aiOverride: false,
+  });
+  const [topCategoriesEditOpen, setTopCategoriesEditOpen] = React.useState(false);
+  const [trendEditOpen, setTrendEditOpen] = React.useState(false);
+  const [trendConfig, setTrendConfig] = React.useState({
+    title: "",
+    lines: [],
+    aiQuery: "",
+    aiValue: "",
+    aiOverride: false,
+  });
   const autoSubmitKeyRef = React.useRef("");
   const pinnedTitleTranslateInFlightRef = React.useRef(new Set());
   const pinnedTitleTranslateCooldownRef = React.useRef(new Map());
@@ -386,6 +404,52 @@ export default function DashboardHome({
     () => headers.map((h) => String(h || "").trim().toLowerCase()).join("|"),
     [headers]
   );
+
+  const numericHeaderOptions = React.useMemo(() => {
+    return headers.filter((h) => {
+      let nonEmpty = 0;
+      let numeric = 0;
+      for (let i = 0; i < Math.min(sortedData.length, 400); i += 1) {
+        const raw = sortedData[i]?.[h];
+        if (raw === null || raw === undefined || raw === "") continue;
+        nonEmpty += 1;
+        if (parseNumber(raw) !== null) numeric += 1;
+      }
+      return nonEmpty > 0 && numeric / nonEmpty >= 0.65;
+    });
+  }, [headers, sortedData]);
+
+  const categoryHeaderOptions = React.useMemo(() => {
+    return headers.filter((h) => {
+      if (numericHeaderOptions.includes(h)) return false;
+      const seen = new Set();
+      for (let i = 0; i < Math.min(sortedData.length, 400); i += 1) {
+        const raw = String(sortedData[i]?.[h] ?? "").trim();
+        if (!raw) continue;
+        seen.add(raw);
+      }
+      return seen.size >= 2 && seen.size <= 80;
+    });
+  }, [headers, numericHeaderOptions, sortedData]);
+
+  React.useEffect(() => {
+    setTopCategoriesConfig((prev) => ({
+      ...prev,
+      categoryColumn: prev.categoryColumn || categoryCol || "",
+      valueColumn: prev.valueColumn || metricCol || "",
+    }));
+  }, [categoryCol, metricCol, sheetStructureSignature]);
+
+  React.useEffect(() => {
+    setTrendConfig((prev) => {
+      if (Array.isArray(prev.lines) && prev.lines.length) return prev;
+      const defaultCol = revenueMetricCol || metricCol || "";
+      return {
+        ...prev,
+        lines: defaultCol ? [{ id: "line_1", label: defaultCol, column: defaultCol, mode: "sum" }] : [],
+      };
+    });
+  }, [revenueMetricCol, metricCol, sheetStructureSignature]);
 
   React.useEffect(() => {
     try {
@@ -736,6 +800,14 @@ export default function DashboardHome({
         const numericOnly = answer.replace(/[^0-9.,-]/g, "").trim();
         const parsed = Number(String(numericOnly || answer).replace(/,/g, ""));
         if (!Number.isFinite(parsed)) return;
+        if (ticketId === "__top_categories__") {
+          setTopCategoriesConfig((prev) => ({ ...prev, aiValue: String(parsed) }));
+          return;
+        }
+        if (ticketId === "__trend_over_time__") {
+          setTrendConfig((prev) => ({ ...prev, aiValue: String(parsed) }));
+          return;
+        }
         setKpiOverrides((prev) => ({
           ...prev,
           [ticketId]: {
@@ -785,6 +857,25 @@ export default function DashboardHome({
 
   const submitTicketPromptToAI = React.useCallback((cardId, queryText = "") => {
     const id = String(cardId || "").trim();
+    const query = String(queryText || "").trim();
+    if (!id || !query || !sheetId) return;
+    const message = [
+      `Request: ${query}`,
+      "Return only the final value as digits (numbers only, optional decimal separator). No words.",
+    ].join("\n");
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("dashboard:submit-chat", {
+        detail: {
+          sheetId,
+          message,
+          meta: { ticketId: id, silent: true },
+        },
+      }));
+    }
+  }, [sheetId]);
+
+  const submitChartPromptToAI = React.useCallback((ticketId, queryText = "") => {
+    const id = String(ticketId || "").trim();
     const query = String(queryText || "").trim();
     if (!id || !query || !sheetId) return;
     const message = [
@@ -1085,6 +1176,92 @@ export default function DashboardHome({
       .sort((a, b) => b.value - a.value)
       .slice(0, 8);
   }, [effectiveRows, categoryCol, metricCol]);
+
+  const topChartCategoryCol = topCategoriesConfig.categoryColumn || categoryCol || "";
+  const topChartValueCol = topCategoriesConfig.valueColumn || metricCol || "";
+  const topChartAggMode = String(topCategoriesConfig.agg || "sum").toLowerCase() === "avg" ? "avg" : "sum";
+  const topChartTitle = String(topCategoriesConfig.title || "").trim() || ui.topCategories;
+
+  const topChartCategoryAgg = React.useMemo(() => {
+    if (!topChartCategoryCol || !topChartValueCol) return [];
+    const map = new Map();
+    effectiveRows.forEach((r) => {
+      const key = String(r?.[topChartCategoryCol] ?? "").trim();
+      if (!key) return;
+      const amount = parseNumber(r?.[topChartValueCol]);
+      const prev = map.get(key) || { sum: 0, count: 0 };
+      if (amount !== null) {
+        prev.sum += amount;
+        prev.count += 1;
+      }
+      map.set(key, prev);
+    });
+    return Array.from(map.entries())
+      .map(([name, stat]) => ({
+        name,
+        value: Number((topChartAggMode === "avg" ? (stat.count ? stat.sum / stat.count : 0) : stat.sum).toFixed(2)),
+      }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 8);
+  }, [effectiveRows, topChartCategoryCol, topChartValueCol, topChartAggMode]);
+  const topChartAiValue = Number(String(topCategoriesConfig.aiValue || "").replace(/,/g, ""));
+  const topChartCategoryAggDisplay = React.useMemo(() => {
+    if (topCategoriesConfig.aiOverride && Number.isFinite(topChartAiValue)) {
+      return [{ name: "AI", value: Number(topChartAiValue.toFixed(2)) }];
+    }
+    return topChartCategoryAgg;
+  }, [topCategoriesConfig.aiOverride, topChartAiValue, topChartCategoryAgg]);
+
+  const configuredTrendLines = React.useMemo(
+    () => (Array.isArray(trendConfig.lines) ? trendConfig.lines.filter((l) => l && l.id && l.column) : []),
+    [trendConfig.lines]
+  );
+
+  const trendDataWithConfiguredLines = React.useMemo(() => {
+    if (!dateCol || configuredTrendLines.length === 0) return trendData;
+    const accum = new Map();
+    effectiveRows.forEach((r) => {
+      const d = parseDate(r?.[dateCol]);
+      if (!d) return;
+      const period = toBucketKey(d, sparklineGranularity);
+      const prev = accum.get(period) || {};
+      configuredTrendLines.forEach((line) => {
+        const key = `cfg_${line.id}`;
+        const mode = String(line.mode || "sum").toLowerCase();
+        const value = parseNumber(r?.[line.column]);
+        if (!Number.isFinite(value)) return;
+        const bucket = prev[key] || { sum: 0, count: 0, last: null };
+        bucket.sum += value;
+        bucket.count += 1;
+        bucket.last = value;
+        prev[key] = bucket;
+        prev.__period = period;
+      });
+      accum.set(period, prev);
+    });
+    const byPeriod = new Map(trendData.map((p) => [p.period, { ...p }]));
+    Array.from(accum.entries()).forEach(([period, row]) => {
+      const target = byPeriod.get(period) || { period };
+      configuredTrendLines.forEach((line) => {
+        const key = `cfg_${line.id}`;
+        const mode = String(line.mode || "sum").toLowerCase();
+        const bucket = row[key];
+        if (!bucket) return;
+        const out = mode === "avg"
+          ? (bucket.count ? bucket.sum / bucket.count : 0)
+          : (mode === "current" ? (bucket.last ?? 0) : bucket.sum);
+        target[key] = Number(out.toFixed(2));
+      });
+      byPeriod.set(period, target);
+    });
+    return Array.from(byPeriod.values()).sort((a, b) => String(a.period).localeCompare(String(b.period)));
+  }, [dateCol, configuredTrendLines, effectiveRows, sparklineGranularity, trendData]);
+
+  const trendAiValue = Number(String(trendConfig.aiValue || "").replace(/,/g, ""));
+  const trendDataDisplay = React.useMemo(() => {
+    if (!(trendConfig.aiOverride && Number.isFinite(trendAiValue))) return trendDataWithConfiguredLines;
+    return trendDataWithConfiguredLines.map((row) => ({ ...row, __ai_override__: Number(trendAiValue.toFixed(2)) }));
+  }, [trendDataWithConfiguredLines, trendConfig.aiOverride, trendAiValue]);
 
   const onTrendMouseDown = (state) => {
     const label = state?.activeLabel;
@@ -1414,7 +1591,7 @@ export default function DashboardHome({
                                   next[idx] = { ...next[idx], description: e.target.value };
                                   setPinnedInput((prev) => ({ ...prev, items: next }));
                                 }}
-                                placeholder="AI query/description for this value..."
+                                placeholder="Example: What is the total revenue for Q4 2025? Return only the number."
                                 className="mt-1 h-12 w-full resize-none rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-900"
                               />
                               <button
@@ -1546,7 +1723,7 @@ export default function DashboardHome({
                             [card.id]: { ...(prev?.[card.id] || {}), aiQuery: value },
                           }));
                         }}
-                        placeholder="AI query for this ticket..."
+                        placeholder="Example: What is the latest value for Net Income? Return only the number."
                         className="col-span-2 rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-900"
                       />
                       <button
@@ -1658,9 +1835,136 @@ export default function DashboardHome({
           <div className="min-w-0 space-y-3">
             <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
               <div className="rounded-md border border-slate-200 bg-white p-4 shadow-sm xl:col-span-2">
-                <div className="text-[11px] font-bold uppercase tracking-wider text-slate-700 mb-2">
-                  {ui.trendOverTime} {dateCol && revenueMetricCol ? `(${revenueMetricCol}${incomeMetricCol ? `, ${incomeMetricCol}` : ""}${expenseCol || canDeriveExpense ? `, ${ui.expense}` : ""} ${ui.by} ${dateCol})` : ""}
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-[11px] font-bold uppercase tracking-wider text-slate-700">
+                    {(String(trendConfig.title || "").trim() || ui.trendOverTime)} {dateCol && revenueMetricCol ? `(${revenueMetricCol}${incomeMetricCol ? `, ${incomeMetricCol}` : ""}${expenseCol || canDeriveExpense ? `, ${ui.expense}` : ""} ${ui.by} ${dateCol})` : ""}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setTrendEditOpen((v) => !v)}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-slate-300 bg-white text-[12px] font-bold text-slate-700 hover:bg-slate-50"
+                    title={trendEditOpen ? "Close Trend editor" : "Edit Trend"}
+                    aria-label={trendEditOpen ? "Close Trend editor" : "Edit Trend"}
+                  >
+                    ✎
+                  </button>
                 </div>
+                {trendEditOpen && (
+                  <div className="mb-2 rounded-md border border-slate-200 bg-slate-50 p-2 space-y-2">
+                    <input
+                      type="text"
+                      value={String(trendConfig.title || "")}
+                      onChange={(e) => setTrendConfig((prev) => ({ ...prev, title: e.target.value }))}
+                      placeholder={ui.trendOverTime}
+                      className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-900"
+                    />
+                    <div className="space-y-1">
+                      {configuredTrendLines.map((line) => (
+                        <div key={`trend-line-${line.id}`} className="grid grid-cols-12 gap-1">
+                          <input
+                            type="text"
+                            value={String(line.label || "")}
+                            onChange={(e) => {
+                              const value = e.target.value;
+                              setTrendConfig((prev) => ({
+                                ...prev,
+                                lines: (prev.lines || []).map((x) => (x.id === line.id ? { ...x, label: value } : x)),
+                              }));
+                            }}
+                            placeholder="Line name"
+                            className="col-span-4 rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-900"
+                          />
+                          <select
+                            value={String(line.column || "")}
+                            onChange={(e) => {
+                              const value = e.target.value;
+                              setTrendConfig((prev) => ({
+                                ...prev,
+                                lines: (prev.lines || []).map((x) => (x.id === line.id ? { ...x, column: value } : x)),
+                              }));
+                            }}
+                            className="col-span-4 rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-900"
+                          >
+                            <option value="">Column…</option>
+                            {numericHeaderOptions.map((h) => (
+                              <option key={`trend-col-${line.id}-${h}`} value={h}>{h}</option>
+                            ))}
+                          </select>
+                          <select
+                            value={String(line.mode || "sum")}
+                            onChange={(e) => {
+                              const value = e.target.value;
+                              setTrendConfig((prev) => ({
+                                ...prev,
+                                lines: (prev.lines || []).map((x) => (x.id === line.id ? { ...x, mode: value } : x)),
+                              }));
+                            }}
+                            className="col-span-3 rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-900"
+                          >
+                            <option value="current">Current</option>
+                            <option value="sum">Sum</option>
+                            <option value="avg">Average</option>
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setTrendConfig((prev) => ({
+                                ...prev,
+                                lines: (prev.lines || []).filter((x) => x.id !== line.id),
+                              }));
+                            }}
+                            className="col-span-1 rounded-md border border-slate-300 bg-white px-1 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-50"
+                            title="Remove line"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const id = `line_${Date.now()}`;
+                        const defaultCol = numericHeaderOptions[0] || "";
+                        setTrendConfig((prev) => ({
+                          ...prev,
+                          lines: [...(prev.lines || []), { id, label: defaultCol || "Line", column: defaultCol, mode: "sum" }],
+                        }));
+                      }}
+                      className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+                    >
+                      + Add line
+                    </button>
+                    <input
+                      type="text"
+                      value={String(trendConfig.aiQuery || "")}
+                      onChange={(e) => setTrendConfig((prev) => ({ ...prev, aiQuery: e.target.value }))}
+                      placeholder="Example: What is the average monthly revenue in the selected range? Return only the number."
+                      className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-900"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => submitChartPromptToAI("__trend_over_time__", trendConfig.aiQuery || "")}
+                      disabled={!String(trendConfig.aiQuery || "").trim()}
+                      className={`rounded-md border px-2 py-1 text-[11px] font-semibold ${
+                        !String(trendConfig.aiQuery || "").trim()
+                          ? "border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed"
+                          : "border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                      }`}
+                    >
+                      Get Value from AI
+                    </button>
+                    <label className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={!!trendConfig.aiOverride}
+                        onChange={(e) => setTrendConfig((prev) => ({ ...prev, aiOverride: e.target.checked }))}
+                        className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
+                      />
+                      <span>AI override calculated trend</span>
+                    </label>
+                  </div>
+                )}
                 {appliedRange && (
                   <div className="mb-2 flex items-center gap-2">
                     <span className="text-[11px] text-slate-800 font-semibold">
@@ -1675,14 +1979,14 @@ export default function DashboardHome({
                     </button>
                   </div>
                 )}
-                {trendData.length > 1 ? (
+                {trendDataDisplay.length > 1 ? (
                   <div
                     className="h-64 select-none"
                     onMouseDownCapture={(e) => e.preventDefault()}
                   >
                     <ResponsiveContainer width="100%" height="100%">
                       <ComposedChart
-                        data={trendData}
+                        data={trendDataDisplay}
                         onMouseDown={onTrendMouseDown}
                         onMouseMove={onTrendMouseMove}
                         onMouseUp={onTrendMouseUp}
@@ -1752,6 +2056,8 @@ export default function DashboardHome({
                           }}
                         />
                         <Legend wrapperStyle={{ fontSize: "11px", color: "#1e293b" }} />
+                        {!trendConfig.aiOverride && (
+                        <>
                         <Area
                           type="monotone"
                           dataKey="gapLower"
@@ -1768,6 +2074,23 @@ export default function DashboardHome({
                         {incomeMetricCol && (
                           <Line type="monotone" dataKey="incomeValue" name={incomeMetricCol} stroke="#16a34a" strokeWidth={2.2} dot={false} connectNulls />
                         )}
+                        </>
+                        )}
+                        {trendConfig.aiOverride && Number.isFinite(trendAiValue) && (
+                          <Line type="monotone" dataKey="__ai_override__" name="AI Override" stroke="#7c3aed" strokeWidth={2.2} dot={false} connectNulls />
+                        )}
+                        {!trendConfig.aiOverride && configuredTrendLines.map((line, idx) => (
+                          <Line
+                            key={`cfg-line-${line.id}`}
+                            type="monotone"
+                            dataKey={`cfg_${line.id}`}
+                            name={String(line.label || line.column || `Line ${idx + 1}`)}
+                            stroke={PIE_COLORS[idx % PIE_COLORS.length]}
+                            strokeWidth={2}
+                            dot={false}
+                            connectNulls
+                          />
+                        ))}
                         {rangeDraft?.start && rangeDraft?.end && (
                           <ReferenceArea
                             x1={rangeDraft.start}
@@ -1786,13 +2109,91 @@ export default function DashboardHome({
               </div>
 
               <div className="rounded-md border border-slate-200 bg-white p-4 shadow-sm">
-                <div className="text-[11px] font-bold uppercase tracking-wider text-slate-700 mb-2">
-                  {ui.topCategories} {categoryCol && metricCol ? `(${categoryCol} ${ui.by} ${metricCol})` : ""}
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-[11px] font-bold uppercase tracking-wider text-slate-700">
+                    {topChartTitle} {topChartCategoryCol && topChartValueCol ? `(${topChartCategoryCol} ${ui.by} ${topChartValueCol})` : ""}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setTopCategoriesEditOpen((v) => !v)}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-slate-300 bg-white text-[12px] font-bold text-slate-700 hover:bg-slate-50"
+                    title={topCategoriesEditOpen ? "Close Top Categories editor" : "Edit Top Categories"}
+                    aria-label={topCategoriesEditOpen ? "Close Top Categories editor" : "Edit Top Categories"}
+                  >
+                    ✎
+                  </button>
                 </div>
-                {categoryAgg.length > 0 ? (
+                {topCategoriesEditOpen && (
+                  <div className="mb-2 grid grid-cols-1 md:grid-cols-2 gap-2">
+                  <input
+                    type="text"
+                    value={String(topCategoriesConfig.title || "")}
+                    onChange={(e) => setTopCategoriesConfig((prev) => ({ ...prev, title: e.target.value }))}
+                    placeholder={ui.topCategories}
+                    className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-900"
+                  />
+                  <select
+                    value={String(topCategoriesConfig.agg || "sum")}
+                    onChange={(e) => setTopCategoriesConfig((prev) => ({ ...prev, agg: e.target.value }))}
+                    className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-900"
+                  >
+                    <option value="sum">Sum</option>
+                    <option value="avg">Avg</option>
+                  </select>
+                  <select
+                    value={String(topCategoriesConfig.categoryColumn || "")}
+                    onChange={(e) => setTopCategoriesConfig((prev) => ({ ...prev, categoryColumn: e.target.value }))}
+                    className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-900"
+                  >
+                    <option value="">Category column…</option>
+                    {categoryHeaderOptions.map((h) => (
+                      <option key={`top-cat-col-${h}`} value={h}>{h}</option>
+                    ))}
+                  </select>
+                  <select
+                    value={String(topCategoriesConfig.valueColumn || "")}
+                    onChange={(e) => setTopCategoriesConfig((prev) => ({ ...prev, valueColumn: e.target.value }))}
+                    className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-900"
+                  >
+                    <option value="">Value column…</option>
+                    {numericHeaderOptions.map((h) => (
+                      <option key={`top-val-col-${h}`} value={h}>{h}</option>
+                    ))}
+                  </select>
+                  <input
+                    type="text"
+                    value={String(topCategoriesConfig.aiQuery || "")}
+                    onChange={(e) => setTopCategoriesConfig((prev) => ({ ...prev, aiQuery: e.target.value }))}
+                    placeholder="Example: What is the summed value for the top category by this metric? Return only the number."
+                    className="md:col-span-2 rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-900"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => submitChartPromptToAI("__top_categories__", topCategoriesConfig.aiQuery || "")}
+                    disabled={!String(topCategoriesConfig.aiQuery || "").trim()}
+                    className={`md:col-span-2 rounded-md border px-2 py-1 text-[11px] font-semibold ${
+                      !String(topCategoriesConfig.aiQuery || "").trim()
+                        ? "border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed"
+                        : "border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                    }`}
+                  >
+                    Get Value from AI
+                  </button>
+                  <label className="md:col-span-2 inline-flex items-center gap-1.5 text-[10px] font-semibold text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={!!topCategoriesConfig.aiOverride}
+                      onChange={(e) => setTopCategoriesConfig((prev) => ({ ...prev, aiOverride: e.target.checked }))}
+                      className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
+                    />
+                    <span>AI override calculated categories</span>
+                  </label>
+                  </div>
+                )}
+                {topChartCategoryAggDisplay.length > 0 ? (
                   <div className="h-64">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={categoryAgg}>
+                      <BarChart data={topChartCategoryAggDisplay}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                         <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#334155" }} interval={0} angle={-15} textAnchor="end" height={60} />
                         <YAxis width={68} tick={{ fontSize: 11, fill: "#334155" }} tickFormatter={(v) => formatCompactCurrency(Number(v), locale)} />
@@ -1815,7 +2216,7 @@ export default function DashboardHome({
                                 </div>
                                 <div style={{ fontSize: "11px", margin: 0, padding: 0, display: "flex", alignItems: "center", gap: "6px" }}>
                                   <span style={{ width: "8px", height: "8px", borderRadius: "9999px", background: color, display: "inline-block" }} />
-                                  <span style={{ fontWeight: 800, color }}>{ui.value}:</span>
+                                  <span style={{ fontWeight: 800, color }}>{topChartAggMode === "avg" ? "Avg" : ui.value}:</span>
                                   <span style={{ fontWeight: 600, color: "#334155" }}>{formatMoneyIfLarge(Number(row?.value), locale)}</span>
                                 </div>
                               </div>
@@ -1823,7 +2224,7 @@ export default function DashboardHome({
                           }}
                         />
                         <Bar dataKey="value" radius={[2, 2, 0, 0]}>
-                          {categoryAgg.map((entry, idx) => (
+                          {topChartCategoryAggDisplay.map((entry, idx) => (
                             <Cell key={entry.name} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
                           ))}
                         </Bar>
