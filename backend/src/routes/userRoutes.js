@@ -3,6 +3,8 @@ import {
     listUsers, createUser, updateUser, deleteUser, setDefaultView,
     getGoogleIntegrationSetting, setGoogleIntegrationSetting,
     getGoogleOauthSetting, setGoogleOauthSetting,
+    getDropboxIntegrationSetting, setDropboxIntegrationSetting,
+    getDropboxOauthSetting, setDropboxOauthSetting,
     getUserGroups,
     listGroups, createGroup, updateGroup, deleteGroup, getGroupMembers, updateGroupMembers, getGroupSheets,
     addUserToGroup, removeUserFromGroup, toggleGroupAdmin,
@@ -26,6 +28,10 @@ router.get("/admin/settings/google-integration", asyncHandler(getGoogleIntegrati
 router.patch("/admin/settings/google-integration", asyncHandler(setGoogleIntegrationSetting));
 router.get("/admin/settings/google-oauth", asyncHandler(getGoogleOauthSetting));
 router.patch("/admin/settings/google-oauth", asyncHandler(setGoogleOauthSetting));
+router.get("/admin/settings/dropbox-integration", asyncHandler(getDropboxIntegrationSetting));
+router.patch("/admin/settings/dropbox-integration", asyncHandler(setDropboxIntegrationSetting));
+router.get("/admin/settings/dropbox-oauth", asyncHandler(getDropboxOauthSetting));
+router.patch("/admin/settings/dropbox-oauth", asyncHandler(setDropboxOauthSetting));
 
 // Groups
 router.use("/groups", (req, res, next) => {

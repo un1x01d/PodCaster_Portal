@@ -207,6 +207,27 @@ export async function initDb() {
   await pool.query(`ALTER TABLE user_google_tokens ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP;`);
   await pool.query(`ALTER TABLE user_google_tokens ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
 
+  // DROPBOX TOKENS (for Dropbox import integration)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_dropbox_tokens (
+      user_id INT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      dropbox_account_id TEXT,
+      access_token TEXT,
+      refresh_token TEXT,
+      scope TEXT,
+      token_type TEXT DEFAULT 'Bearer',
+      expires_at TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`ALTER TABLE user_dropbox_tokens ADD COLUMN IF NOT EXISTS dropbox_account_id TEXT;`);
+  await pool.query(`ALTER TABLE user_dropbox_tokens ADD COLUMN IF NOT EXISTS access_token TEXT;`);
+  await pool.query(`ALTER TABLE user_dropbox_tokens ADD COLUMN IF NOT EXISTS refresh_token TEXT;`);
+  await pool.query(`ALTER TABLE user_dropbox_tokens ADD COLUMN IF NOT EXISTS scope TEXT;`);
+  await pool.query(`ALTER TABLE user_dropbox_tokens ADD COLUMN IF NOT EXISTS token_type TEXT DEFAULT 'Bearer';`);
+  await pool.query(`ALTER TABLE user_dropbox_tokens ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP;`);
+  await pool.query(`ALTER TABLE user_dropbox_tokens ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
+
   // APP SETTINGS
   await pool.query(`
     CREATE TABLE IF NOT EXISTS app_settings (
@@ -220,6 +241,11 @@ export async function initDb() {
     VALUES ('google_integration', '{"enabled": true}'::jsonb, CURRENT_TIMESTAMP)
     ON CONFLICT (key) DO NOTHING;
   `);
+  await pool.query(`
+    INSERT INTO app_settings (key, value, updated_at)
+    VALUES ('dropbox_integration', '{"enabled": true}'::jsonb, CURRENT_TIMESTAMP)
+    ON CONFLICT (key) DO NOTHING;
+  `);
   const googleOauthSeed = {
     clientId: String(process.env.GOOGLE_CLIENT_ID || ""),
     clientSecret: String(process.env.GOOGLE_CLIENT_SECRET || ""),
@@ -231,6 +257,18 @@ export async function initDb() {
      VALUES ('google_oauth', $1::jsonb, CURRENT_TIMESTAMP)
      ON CONFLICT (key) DO NOTHING;`,
     [JSON.stringify(googleOauthSeed)]
+  );
+  const dropboxOauthSeed = {
+    clientId: "",
+    clientSecret: "",
+    redirectUri: "",
+    frontendUrl: "http://localhost:5173",
+  };
+  await pool.query(
+    `INSERT INTO app_settings (key, value, updated_at)
+     VALUES ('dropbox_oauth', $1::jsonb, CURRENT_TIMESTAMP)
+     ON CONFLICT (key) DO NOTHING;`,
+    [JSON.stringify(dropboxOauthSeed)]
   );
   // USER permissions
   await pool.query(`

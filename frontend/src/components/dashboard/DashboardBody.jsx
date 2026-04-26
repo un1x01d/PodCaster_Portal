@@ -31,6 +31,9 @@ export default function DashboardBody(props) {
 
         handleUpload,
         handleGoogleDriveImport,
+        handleDropboxImport,
+        handleDropboxConnect,
+        dropboxEnabled,
         loadData,
         selectedViewId,
         setSelectedViewId,
@@ -121,15 +124,27 @@ export default function DashboardBody(props) {
         danger: false
     });
     const [insightsOn, setInsightsOn] = useState(false);
-    const [driveFiles, setDriveFiles] = useState([]);
+    const [drivePickerOpen, setDrivePickerOpen] = useState(false);
+    const [driveEntries, setDriveEntries] = useState([]);
     const [driveLoading, setDriveLoading] = useState(false);
-    const [selectedDriveFileId, setSelectedDriveFileId] = useState("");
+    const [driveBreadcrumbs, setDriveBreadcrumbs] = useState([{ id: "root", name: "My Drive" }]);
+    const [selectedDriveFile, setSelectedDriveFile] = useState(null);
+    const [dropboxPickerOpen, setDropboxPickerOpen] = useState(false);
+    const [dropboxEntries, setDropboxEntries] = useState([]);
+    const [dropboxLoading, setDropboxLoading] = useState(false);
+    const [dropboxBreadcrumbs, setDropboxBreadcrumbs] = useState([{ path: "", name: "Dropbox" }]);
+    const [selectedDropboxFile, setSelectedDropboxFile] = useState(null);
 
     const toggleMenu = (key) => {
         setExpandedMenus((prev) => ({ ...prev, [key]: !prev[key] }));
     };
 
     const activeView = views.find((v) => String(v.id) === String(selectedViewId));
+    const canImportFromDrive = React.useMemo(() => {
+        if (!user) return false;
+        if (String(user.role || "").toLowerCase() === "admin") return true;
+        return !!(user.is_group_admin || user.group_admin || user.is_admin);
+    }, [user]);
 
     // Fetch folders on mount
     React.useEffect(() => {
@@ -158,24 +173,6 @@ export default function DashboardBody(props) {
         );
     }, [folders]);
 
-    const driveFileOptions = React.useMemo(() => {
-        return [{ value: "", label: "Google Drive file…" }].concat(
-            driveFiles.map((f) => ({
-                value: String(f.id),
-                label: f?.name || f?.id || "Unnamed file",
-            }))
-        );
-    }, [driveFiles]);
-
-    const driveDropdownWidthCh = React.useMemo(() => {
-        const labels = driveFileOptions
-            .map((o) => String(o?.label || ""))
-            .filter(Boolean);
-        const longest = labels.length ? Math.max(...labels.map((s) => s.length)) : 14;
-        // tighter bounds to keep dropdown compact
-        return Math.max(10, Math.min(longest + 1, 16));
-    }, [driveFileOptions]);
-
     const viewOptions = React.useMemo(() => {
         return [{ value: "", label: "Select a view…" }].concat(
             views.map((v) => ({ value: v.id, label: v.name }))
@@ -201,20 +198,90 @@ export default function DashboardBody(props) {
         }
     };
 
-    const fetchGoogleDriveFiles = async () => {
+    const isSupportedDriveFile = React.useCallback((entry) => {
+        const mime = String(entry?.mimeType || "").toLowerCase();
+        const name = String(entry?.name || "").toLowerCase();
+        if (mime === "text/csv" || mime === "application/vnd.ms-excel" || mime === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") {
+            return true;
+        }
+        return name.endsWith(".csv") || name.endsWith(".xls") || name.endsWith(".xlsx");
+    }, []);
+
+    const fetchDriveEntries = React.useCallback(async (nextParentId = "root", nextBreadcrumbs = null) => {
         setDriveLoading(true);
         try {
             const res = await axios.get(`${API}/google/drive/files`, {
-                headers: { Authorization: `Bearer ${token}` }
+                headers: { Authorization: `Bearer ${token}` },
+                params: { parentId: nextParentId },
             });
-            setDriveFiles(Array.isArray(res?.data?.files) ? res.data.files : []);
+            const raw = Array.isArray(res?.data?.files) ? res.data.files : [];
+            const normalized = raw
+                .filter((entry) => {
+                    const mime = String(entry?.mimeType || "");
+                    if (mime === "application/vnd.google-apps.folder") return true;
+                    return isSupportedDriveFile(entry);
+                })
+                .map((entry) => ({ ...entry, id: String(entry.id || "") }))
+                .filter((entry) => entry.id);
+            setDriveEntries(normalized);
+            setDriveBreadcrumbs(Array.isArray(nextBreadcrumbs) && nextBreadcrumbs.length ? nextBreadcrumbs : [{ id: "root", name: "My Drive" }]);
         } catch (e) {
-            console.error("Fetch Google Drive files failed:", e);
+            console.error("Fetch Google Drive entries failed:", e);
             alert(e?.response?.data?.error || "Failed to fetch Google Drive files");
         } finally {
             setDriveLoading(false);
         }
-    };
+    }, [API, token, isSupportedDriveFile]);
+
+    const openDrivePicker = React.useCallback(() => {
+        setSelectedDriveFile(null);
+        setDrivePickerOpen(true);
+        fetchDriveEntries("root", [{ id: "root", name: "My Drive" }]);
+    }, [fetchDriveEntries]);
+
+    const closeDrivePicker = React.useCallback(() => {
+        setDrivePickerOpen(false);
+        setSelectedDriveFile(null);
+    }, []);
+
+    const fetchDropboxEntries = React.useCallback(async (nextPath = "", nextBreadcrumbs = null) => {
+        setDropboxLoading(true);
+        try {
+            const res = await axios.get(`${API}/dropbox/files`, {
+                headers: { Authorization: `Bearer ${token}` },
+                params: { path: nextPath },
+            });
+            const raw = Array.isArray(res?.data?.entries) ? res.data.entries : [];
+            const normalized = raw
+                .map((entry) => ({ ...entry, id: String(entry.id || entry.pathLower || "") }))
+                .filter((entry) => entry.id);
+            setDropboxEntries(normalized);
+            setDropboxBreadcrumbs(Array.isArray(nextBreadcrumbs) && nextBreadcrumbs.length ? nextBreadcrumbs : [{ path: "", name: "Dropbox" }]);
+        } catch (e) {
+            const errCode = String(e?.response?.data?.error || "");
+            if (errCode === "dropbox_not_connected") {
+                if (confirm("Dropbox is not connected for this user yet. Connect now?")) {
+                    handleDropboxConnect?.();
+                }
+                return;
+            }
+            console.error("Fetch Dropbox entries failed:", e);
+            alert(e?.response?.data?.error || "Failed to fetch Dropbox files");
+        } finally {
+            setDropboxLoading(false);
+        }
+    }, [API, token, handleDropboxConnect]);
+
+    const openDropboxPicker = React.useCallback(() => {
+        setSelectedDropboxFile(null);
+        setDropboxPickerOpen(true);
+        fetchDropboxEntries("", [{ path: "", name: "Dropbox" }]);
+    }, [fetchDropboxEntries]);
+
+    const closeDropboxPicker = React.useCallback(() => {
+        setDropboxPickerOpen(false);
+        setSelectedDropboxFile(null);
+    }, []);
 
     // Calculate dynamic col widths based on header length
     const colWidths = React.useMemo(() => {
@@ -378,120 +445,95 @@ export default function DashboardBody(props) {
                             </button>
                             {expandedMenus.data && (
                                 <div className="left-menu-submenu">
-                                    {user.role === "admin" && (
+                                    {canImportFromDrive && (
                                         <details className="left-menu-disclosure">
                                             <summary className="left-menu-summary">Upload & Import</summary>
                                             <div className="left-menu-nested">
-                                                <label className="left-menu-file-picker">
-                                                    <input
-                                                        type="file"
-                                                        onChange={(e) => {
-                                                            const f = e.target.files?.[0];
-                                                            setFile(f || null);
-                                                            setSelectedFileName(f?.name || "");
-                                                            e.target.value = null;
-                                                        }}
-                                                        className="hidden"
-                                                    />
-                                                    <span>📂</span>
-                                                    <span className="truncate">{selectedFileName || "Choose spreadsheet"}</span>
-                                                </label>
-                                                <SearchableSelect
-                                                    options={folderOptions}
-                                                    value={selectedFolderId}
-                                                    onChange={(e) => setSelectedFolderId(e.target.value)}
-                                                    placeholder="Select Folder…"
-                                                    className="w-full"
-                                                    buttonClassName="left-menu-action !font-medium !text-[0.74rem]"
-                                                    labelClassName="!font-medium tracking-normal"
-                                                    panelClassName="!rounded-md !border-slate-200 !shadow-xl"
-                                                    optionClassName="!rounded-sm hover:!bg-slate-50"
-                                                    optionTextClassName="!font-medium !text-[0.78rem]"
-                                                    searchInputClassName="!text-[0.78rem] !font-medium"
-                                                    panelWidth={210}
-                                                />
-                                                <input
-                                                    type="text"
-                                                    value={uploadDisplayName}
-                                                    onChange={(e) => setUploadDisplayName(e.target.value.replace(/\s+/g, "_"))}
-                                                    placeholder="Display_name (required)"
-                                                    className="left-menu-action"
-                                                    maxLength={120}
-                                                    required
-                                                />
+                                                {String(user?.role || "").toLowerCase() === "admin" && (
+                                                    <>
+                                                        <label className="left-menu-file-picker">
+                                                            <input
+                                                                type="file"
+                                                                onChange={(e) => {
+                                                                    const f = e.target.files?.[0];
+                                                                    setFile(f || null);
+                                                                    setSelectedFileName(f?.name || "");
+                                                                    e.target.value = null;
+                                                                }}
+                                                                className="hidden"
+                                                            />
+                                                            <span>📂</span>
+                                                            <span className="truncate">{selectedFileName || "Choose spreadsheet"}</span>
+                                                        </label>
+                                                        <SearchableSelect
+                                                            options={folderOptions}
+                                                            value={selectedFolderId}
+                                                            onChange={(e) => setSelectedFolderId(e.target.value)}
+                                                            placeholder="Select Folder…"
+                                                            className="w-full"
+                                                            buttonClassName="left-menu-action !font-medium !text-[0.74rem]"
+                                                            labelClassName="!font-medium tracking-normal"
+                                                            panelClassName="!rounded-md !border-slate-200 !shadow-xl"
+                                                            optionClassName="!rounded-sm hover:!bg-slate-50"
+                                                            optionTextClassName="!font-medium !text-[0.78rem]"
+                                                            searchInputClassName="!text-[0.78rem] !font-medium"
+                                                            panelWidth={210}
+                                                        />
+                                                        <input
+                                                            type="text"
+                                                            value={uploadDisplayName}
+                                                            onChange={(e) => setUploadDisplayName(e.target.value.replace(/\s+/g, "_"))}
+                                                            placeholder="Display_name (required)"
+                                                            className="left-menu-action"
+                                                            maxLength={120}
+                                                            required
+                                                        />
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                handleUpload(file, selectedFolderId, uploadDisplayName);
+                                                            }}
+                                                            disabled={!file || !selectedFolderId || !String(uploadDisplayName || "").trim()}
+                                                            className={`left-menu-action ${!file || !selectedFolderId || !String(uploadDisplayName || "").trim() ? "left-menu-action-disabled" : ""}`}
+                                                            title={
+                                                                !file
+                                                                    ? "Choose a file"
+                                                                    : !selectedFolderId
+                                                                        ? "Select a folder"
+                                                                        : !String(uploadDisplayName || "").trim()
+                                                                            ? "Enter a display name"
+                                                                            : "Upload & Load"
+                                                            }
+                                                        >
+                                                            Upload & Load
+                                                        </button>
+                                                    </>
+                                                )}
                                                 <button
                                                     type="button"
-                                                    onClick={() => {
-                                                        handleUpload(file, selectedFolderId, uploadDisplayName);
-                                                    }}
-                                                    disabled={!file || !selectedFolderId || !String(uploadDisplayName || "").trim()}
-                                                    className={`left-menu-action ${!file || !selectedFolderId || !String(uploadDisplayName || "").trim() ? "left-menu-action-disabled" : ""}`}
-                                                    title={
-                                                        !file
-                                                            ? "Choose a file"
-                                                            : !selectedFolderId
-                                                                ? "Select a folder"
-                                                                : !String(uploadDisplayName || "").trim()
-                                                                    ? "Enter a display name"
-                                                                    : "Upload & Load"
-                                                    }
+                                                    onClick={openDrivePicker}
+                                                    className="left-menu-action inline-flex items-center gap-2"
                                                 >
-                                                    Upload & Load
+                                                    <svg viewBox="0 0 87 78" width="14" height="14" aria-hidden="true" className="shrink-0">
+                                                        <path fill="#0066DA" d="M6.6 77.3L0 65.9L22.4 27.2H35.6L6.6 77.3Z" />
+                                                        <path fill="#00AC47" d="M80.4 77.3H6.6L13.2 65.9H87L80.4 77.3Z" />
+                                                        <path fill="#EA4335" d="M50.8 0L87 65.9H73.8L37.6 0H50.8Z" />
+                                                        <path fill="#00832D" d="M35.6 27.2L42.2 15.8H55.4L48.8 27.2H35.6Z" />
+                                                        <path fill="#2684FC" d="M22.4 27.2L29 15.8H42.2L35.6 27.2H22.4Z" />
+                                                        <path fill="#FFBA00" d="M48.8 27.2L55.4 15.8L77.8 54.5L71.2 65.9L48.8 27.2Z" />
+                                                    </svg>
+                                                    <span>Import from Google Drive</span>
                                                 </button>
-                                                <div className="left-menu-divider" />
                                                 <button
                                                     type="button"
-                                                    onClick={fetchGoogleDriveFiles}
-                                                    className="left-menu-action"
-                                                    disabled={driveLoading}
+                                                    onClick={openDropboxPicker}
+                                                    disabled={!dropboxEnabled}
+                                                    className={`left-menu-action inline-flex items-center gap-2 ${dropboxEnabled ? "" : "left-menu-action-disabled"}`}
                                                 >
-                                                    {driveLoading ? "Loading Drive Files..." : "Browse Google Drive"}
-                                                </button>
-                                                <SearchableSelect
-                                                    options={driveFileOptions}
-                                                    value={selectedDriveFileId}
-                                                    onChange={(e) => setSelectedDriveFileId(e.target.value)}
-                                                    placeholder="Select Google Drive file…"
-                                                    className="inline-flex w-auto max-w-[180px]"
-                                                    buttonClassName="w-auto max-w-[180px] h-8 px-2.5 rounded-md border border-slate-200 bg-white text-slate-700 text-[0.72rem] font-normal hover:border-slate-300 hover:bg-slate-50 transition-colors"
-                                                    labelClassName="!font-normal tracking-normal !text-slate-700 !text-[0.72rem]"
-                                                    panelClassName="!rounded-md !border-slate-300 !shadow-md !bg-slate-100 overflow-hidden"
-                                                    optionClassName="!rounded-none !px-2 !py-1.5 !bg-transparent hover:!bg-slate-200"
-                                                    optionTextClassName="!font-normal !text-[0.7rem] !text-slate-700 !truncate !block"
-                                                    searchInputClassName="!text-[0.7rem] !font-normal !border-slate-300 !bg-slate-50 !text-slate-700"
-                                                    panelWidth={`${driveDropdownWidthCh}ch`}
-                                                    panelMinWidth={`${driveDropdownWidthCh}ch`}
-                                                    panelMaxWidth={`${driveDropdownWidthCh}ch`}
-                                                    panelStyle={{ fontFamily: "'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" }}
-                                                    optionTextStyle={{ fontFamily: "'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif", letterSpacing: "0.005em" }}
-                                                    searchInputStyle={{ fontFamily: "'Avenir Next', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif", letterSpacing: "0.005em" }}
-                                                />
-                                                <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                        const selectedDriveFile = driveFiles.find((f) => String(f.id) === String(selectedDriveFileId));
-                                                        if (!selectedDriveFile) return;
-                                                        handleGoogleDriveImport({
-                                                            fileId: selectedDriveFile.id,
-                                                            name: selectedDriveFile.name,
-                                                            mimeType: selectedDriveFile.mimeType,
-                                                            folderId: selectedFolderId,
-                                                            displayName: uploadDisplayName,
-                                                        });
-                                                    }}
-                                                    disabled={!selectedDriveFileId || !selectedFolderId || !String(uploadDisplayName || "").trim()}
-                                                    className={`left-menu-action ${!selectedDriveFileId || !selectedFolderId || !String(uploadDisplayName || "").trim() ? "left-menu-action-disabled" : ""}`}
-                                                    title={
-                                                        !selectedDriveFileId
-                                                            ? "Select a Google Drive file"
-                                                            : !selectedFolderId
-                                                                ? "Select a folder"
-                                                                : !String(uploadDisplayName || "").trim()
-                                                                    ? "Enter a display name"
-                                                                    : "Import selected Google Drive file"
-                                                    }
-                                                >
-                                                    Import from Google Drive
+                                                    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" className="shrink-0">
+                                                        <path fill="#0061FF" d="M6 2 0 6l6 4 6-4-6-4Zm12 0-6 4 6 4 6-4-6-4ZM6 10l-6 4 6 4 6-4-6-4Zm12 0-6 4 6 4 6-4-6-4ZM12 14l-6 4 6 4 6-4-6-4Z" />
+                                                    </svg>
+                                                    <span>Import from Dropbox</span>
                                                 </button>
                                             </div>
                                         </details>
@@ -610,6 +652,215 @@ export default function DashboardBody(props) {
                     </div>
                 )}
             </aside>
+
+            {drivePickerOpen && (
+                <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-900/35 p-4">
+                    <div className="w-full max-w-2xl rounded-xl border border-slate-300 bg-white shadow-2xl">
+                        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+                            <div>
+                                <h3 className="text-sm font-semibold text-slate-900">Import from Google Drive</h3>
+                                <p className="text-[11px] font-medium text-slate-500">Supported files: CSV, XLS, XLSX</p>
+                            </div>
+                            <button type="button" onClick={closeDrivePicker} className="rounded-md border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                                Close
+                            </button>
+                        </div>
+                        <div className="border-b border-slate-200 px-4 py-2 text-xs text-slate-600">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                                {driveBreadcrumbs.map((crumb, idx) => (
+                                    <button
+                                        key={`${crumb.id}-${idx}`}
+                                        type="button"
+                                        className={`rounded px-1.5 py-0.5 font-semibold ${idx === driveBreadcrumbs.length - 1 ? "bg-slate-200 text-slate-800" : "text-slate-600 hover:bg-slate-100"}`}
+                                        onClick={() => {
+                                            const nextCrumbs = driveBreadcrumbs.slice(0, idx + 1);
+                                            const target = nextCrumbs[nextCrumbs.length - 1];
+                                            fetchDriveEntries(target.id, nextCrumbs);
+                                            setSelectedDriveFile(null);
+                                        }}
+                                    >
+                                        {crumb.name}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        <div className="max-h-[380px] overflow-y-auto p-2">
+                            {driveLoading ? (
+                                <div className="px-3 py-6 text-center text-sm font-semibold text-slate-500">Loading…</div>
+                            ) : driveEntries.length ? (
+                                <div className="space-y-1">
+                                    {driveEntries.map((entry) => {
+                                        const isFolder = String(entry.mimeType || "") === "application/vnd.google-apps.folder";
+                                        const selected = selectedDriveFile?.id && selectedDriveFile.id === entry.id;
+                                        return (
+                                            <button
+                                                key={entry.id}
+                                                type="button"
+                                                onClick={() => {
+                                                    if (isFolder) {
+                                                        const nextCrumbs = driveBreadcrumbs.concat([{ id: entry.id, name: entry.name || "Folder" }]);
+                                                        setSelectedDriveFile(null);
+                                                        fetchDriveEntries(entry.id, nextCrumbs);
+                                                        return;
+                                                    }
+                                                    setSelectedDriveFile(entry);
+                                                }}
+                                                className={`flex w-full items-center justify-between rounded-md border px-3 py-2 text-left ${selected ? "border-blue-400 bg-blue-50" : "border-slate-200 bg-white hover:bg-slate-50"}`}
+                                            >
+                                                <span className="truncate text-sm font-medium text-slate-800">
+                                                    {isFolder ? "📁 " : "📄 "}
+                                                    {entry.name || "Unnamed"}
+                                                </span>
+                                                <span className="ml-3 shrink-0 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                                                    {isFolder ? "Folder" : "File"}
+                                                </span>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            ) : (
+                                <div className="px-3 py-6 text-center text-sm font-semibold text-slate-500">No supported files in this folder.</div>
+                            )}
+                        </div>
+                        <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-4 py-3">
+                            <button type="button" onClick={closeDrivePicker} className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                disabled={!selectedDriveFile || !selectedFolderId || !String(uploadDisplayName || "").trim()}
+                                onClick={() => {
+                                    if (!selectedDriveFile) return;
+                                    handleGoogleDriveImport({
+                                        fileId: selectedDriveFile.id,
+                                        name: selectedDriveFile.name,
+                                        mimeType: selectedDriveFile.mimeType,
+                                        folderId: selectedFolderId,
+                                        displayName: uploadDisplayName,
+                                    });
+                                    closeDrivePicker();
+                                }}
+                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedDriveFile || !selectedFolderId || !String(uploadDisplayName || "").trim() ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
+                                title={
+                                    !selectedFolderId
+                                        ? "Select a destination folder first"
+                                        : !String(uploadDisplayName || "").trim()
+                                            ? "Enter a display name"
+                                            : !selectedDriveFile
+                                                ? "Select a Google Drive file"
+                                                : "Import selected file"
+                                }
+                            >
+                                Import selected file
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {dropboxPickerOpen && (
+                <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-900/35 p-4">
+                    <div className="w-full max-w-2xl rounded-xl border border-slate-300 bg-white shadow-2xl">
+                        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+                            <div>
+                                <h3 className="text-sm font-semibold text-slate-900">Import from Dropbox</h3>
+                                <p className="text-[11px] font-medium text-slate-500">Supported files: CSV, XLS, XLSX</p>
+                            </div>
+                            <button type="button" onClick={closeDropboxPicker} className="rounded-md border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                                Close
+                            </button>
+                        </div>
+                        <div className="border-b border-slate-200 px-4 py-2 text-xs text-slate-600">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                                {dropboxBreadcrumbs.map((crumb, idx) => (
+                                    <button
+                                        key={`${crumb.path}-${idx}`}
+                                        type="button"
+                                        className={`rounded px-1.5 py-0.5 font-semibold ${idx === dropboxBreadcrumbs.length - 1 ? "bg-slate-200 text-slate-800" : "text-slate-600 hover:bg-slate-100"}`}
+                                        onClick={() => {
+                                            const nextCrumbs = dropboxBreadcrumbs.slice(0, idx + 1);
+                                            const target = nextCrumbs[nextCrumbs.length - 1];
+                                            fetchDropboxEntries(target.path, nextCrumbs);
+                                            setSelectedDropboxFile(null);
+                                        }}
+                                    >
+                                        {crumb.name}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        <div className="max-h-[380px] overflow-y-auto p-2">
+                            {dropboxLoading ? (
+                                <div className="px-3 py-6 text-center text-sm font-semibold text-slate-500">Loading…</div>
+                            ) : dropboxEntries.length ? (
+                                <div className="space-y-1">
+                                    {dropboxEntries.map((entry) => {
+                                        const isFolder = String(entry.tag || "") === "folder";
+                                        const selected = selectedDropboxFile?.id && selectedDropboxFile.id === entry.id;
+                                        return (
+                                            <button
+                                                key={entry.id}
+                                                type="button"
+                                                onClick={() => {
+                                                    if (isFolder) {
+                                                        const nextCrumbs = dropboxBreadcrumbs.concat([{ path: entry.pathLower || "", name: entry.name || "Folder" }]);
+                                                        setSelectedDropboxFile(null);
+                                                        fetchDropboxEntries(entry.pathLower || "", nextCrumbs);
+                                                        return;
+                                                    }
+                                                    setSelectedDropboxFile(entry);
+                                                }}
+                                                className={`flex w-full items-center justify-between rounded-md border px-3 py-2 text-left ${selected ? "border-blue-400 bg-blue-50" : "border-slate-200 bg-white hover:bg-slate-50"}`}
+                                            >
+                                                <span className="truncate text-sm font-medium text-slate-800">
+                                                    {isFolder ? "📁 " : "📄 "}
+                                                    {entry.name || "Unnamed"}
+                                                </span>
+                                                <span className="ml-3 shrink-0 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                                                    {isFolder ? "Folder" : "File"}
+                                                </span>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            ) : (
+                                <div className="px-3 py-6 text-center text-sm font-semibold text-slate-500">No supported files in this folder.</div>
+                            )}
+                        </div>
+                        <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-4 py-3">
+                            <button type="button" onClick={closeDropboxPicker} className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                disabled={!selectedDropboxFile || !selectedFolderId || !String(uploadDisplayName || "").trim()}
+                                onClick={() => {
+                                    if (!selectedDropboxFile) return;
+                                    handleDropboxImport({
+                                        pathLower: selectedDropboxFile.pathLower,
+                                        name: selectedDropboxFile.name,
+                                        folderId: selectedFolderId,
+                                        displayName: uploadDisplayName,
+                                    });
+                                    closeDropboxPicker();
+                                }}
+                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedDropboxFile || !selectedFolderId || !String(uploadDisplayName || "").trim() ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
+                                title={
+                                    !selectedFolderId
+                                        ? "Select a destination folder first"
+                                        : !String(uploadDisplayName || "").trim()
+                                            ? "Enter a display name"
+                                            : !selectedDropboxFile
+                                                ? "Select a Dropbox file"
+                                                : "Import selected file"
+                                }
+                            >
+                                Import selected file
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-y-auto">
 

@@ -85,6 +85,7 @@ export default function App() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [googleEnabled, setGoogleEnabled] = useState(true);
+  const [dropboxEnabled, setDropboxEnabled] = useState(true);
   const dashboardI18n = useDashboardI18n({ enabled: !!user });
 
   const [sheetId, setSheetId] = useState(() => localStorage.getItem("sheetId") || null);
@@ -548,6 +549,31 @@ export default function App() {
     }
   };
 
+  const handleDropboxConnect = async () => {
+    if (!token) {
+      alert("Sign in first.");
+      return;
+    }
+    if (!dropboxEnabled) {
+      alert("Dropbox integration is disabled.");
+      return;
+    }
+    try {
+      const res = await axios.get(`${API}/auth/dropbox/url`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const url = String(res?.data?.url || "").trim();
+      if (!url) {
+        alert("Dropbox is not configured.");
+        return;
+      }
+      window.location.href = url;
+    } catch (err) {
+      console.error("dropbox auth url failed:", err);
+      alert(err?.response?.data?.error || "Dropbox is not configured.");
+    }
+  };
+
   const loadData = async (sid = sheetId, preserveFilters = false, tabName = null) => {
     if (!sid) return;
     try {
@@ -687,6 +713,44 @@ export default function App() {
     } catch (e) {
       console.error(e);
       alert(e.response?.data?.error || "Google Drive import failed");
+    }
+  };
+
+  const handleDropboxImport = async ({ pathLower, name, folderId, displayName }) => {
+    if (!pathLower || !folderId || !String(displayName || "").trim()) return;
+    try {
+      const res = await axios.post(
+        `${API}/dropbox/import`,
+        {
+          pathLower,
+          name,
+          folder_id: folderId,
+          display_name: String(displayName).trim(),
+        },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      alert("Imported from Dropbox!");
+      if (res.data?.sheetId) {
+        setSheetId(res.data.sheetId);
+        const activeName = res.data.display_name || res.data.filename;
+        setActiveFilename(activeName);
+        localStorage.setItem("activeFilename", activeName);
+        setUploadDisplayName("");
+        if (res.data.tabs && res.data.tabs.length > 0) {
+          setTabs(res.data.tabs);
+          setActiveTab(res.data.tabs[0]);
+          localStorage.setItem("activeTab", res.data.tabs[0]);
+        }
+        loadData(res.data.sheetId);
+        if (token) {
+          axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } })
+            .then(r => setMyFiles(r.data || []));
+        }
+      }
+    } catch (e) {
+      console.error(e);
+      alert(e.response?.data?.error || "Dropbox import failed");
     }
   };
 
@@ -854,6 +918,9 @@ export default function App() {
     axios.get(`${API}/auth/google/status`)
       .then((r) => setGoogleEnabled(r?.data?.enabled !== false))
       .catch(() => setGoogleEnabled(true));
+    axios.get(`${API}/auth/dropbox/status`)
+      .then((r) => setDropboxEnabled(r?.data?.enabled !== false))
+      .catch(() => setDropboxEnabled(true));
   }, []);
 
   useEffect(() => {
@@ -876,6 +943,26 @@ export default function App() {
         : "Google sign-in failed.";
       params.delete("google_token");
       params.delete("google_error");
+      const next = params.toString();
+      const nextUrl = `${window.location.pathname}${next ? `?${next}` : ""}${window.location.hash || ""}`;
+      window.history.replaceState({}, document.title, nextUrl);
+      alert(msg);
+    }
+    const dropboxConnected = params.get("dropbox_connected");
+    const dropboxError = params.get("dropbox_error");
+    if (dropboxConnected) {
+      params.delete("dropbox_connected");
+      params.delete("dropbox_error");
+      const next = params.toString();
+      const nextUrl = `${window.location.pathname}${next ? `?${next}` : ""}${window.location.hash || ""}`;
+      window.history.replaceState({}, document.title, nextUrl);
+      alert("Dropbox connected.");
+      return;
+    }
+    if (dropboxError) {
+      const msg = "Dropbox authorization failed.";
+      params.delete("dropbox_connected");
+      params.delete("dropbox_error");
       const next = params.toString();
       const nextUrl = `${window.location.pathname}${next ? `?${next}` : ""}${window.location.hash || ""}`;
       window.history.replaceState({}, document.title, nextUrl);
@@ -1201,6 +1288,9 @@ export default function App() {
                       uploadDisplayName={uploadDisplayName} setUploadDisplayName={setUploadDisplayName}
                       handleUpload={handleUpload}
                       handleGoogleDriveImport={handleGoogleDriveImport}
+                      handleDropboxImport={handleDropboxImport}
+                      handleDropboxConnect={handleDropboxConnect}
+                      dropboxEnabled={dropboxEnabled}
                       loadData={loadData}
                       selectedViewId={selectedViewId} setSelectedViewId={setSelectedViewId}
                       views={views} setViews={setViews}

@@ -222,6 +222,153 @@ function parseDate(v) {
   return null;
 }
 
+function toIsoDateLocal(d) {
+  if (!(d instanceof Date) || Number.isNaN(d.getTime())) return "";
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function parseIsoDate(v) {
+  if (!v || typeof v !== "string") return null;
+  const m = v.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+}
+
+function formatMonthTitle(d) {
+  if (!(d instanceof Date) || Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+}
+
+function KpiCalendarField({ label, value, onChange }) {
+  const selectedDate = parseIsoDate(value);
+  const [open, setOpen] = React.useState(false);
+  const [monthAnchor, setMonthAnchor] = React.useState(() => {
+    const base = selectedDate || new Date();
+    return new Date(base.getFullYear(), base.getMonth(), 1);
+  });
+
+  React.useEffect(() => {
+    if (!selectedDate) return;
+    setMonthAnchor(new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
+  }, [value]);
+
+  const monthStart = new Date(monthAnchor.getFullYear(), monthAnchor.getMonth(), 1);
+  const monthEnd = new Date(monthAnchor.getFullYear(), monthAnchor.getMonth() + 1, 0);
+  const startWeekday = monthStart.getDay(); // 0=Sun
+  const daysInMonth = monthEnd.getDate();
+  const cells = [];
+  for (let i = 0; i < startWeekday; i += 1) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d += 1) cells.push(new Date(monthAnchor.getFullYear(), monthAnchor.getMonth(), d));
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const selectedIso = value || "";
+  const todayIso = toIsoDateLocal(new Date());
+
+  return (
+    <div className="relative">
+      <label className="flex flex-col gap-1 text-[10px] font-bold text-slate-600">
+        <span>{label}</span>
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-bold text-slate-900 text-left hover:bg-slate-50"
+          style={{ fontFamily: "'Aptos', 'Segoe UI Variable Text', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" }}
+        >
+          {selectedDate ? formatMMDDYYYY(selectedDate) : "Select date"}
+        </button>
+      </label>
+      {open && (
+        <div
+          className="absolute z-[220] mt-1 w-[220px] rounded-md border border-slate-300 bg-white shadow-lg p-2"
+          style={{ fontFamily: "'Aptos', 'Segoe UI Variable Text', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" }}
+        >
+          <div className="mb-1 flex items-center justify-between">
+            <button
+              type="button"
+              className="h-6 w-6 rounded border border-slate-300 bg-white text-[10px] font-bold text-slate-700 hover:bg-slate-50"
+              onClick={() => setMonthAnchor((m) => new Date(m.getFullYear(), m.getMonth() - 1, 1))}
+            >
+              ‹
+            </button>
+            <div className="text-[10px] font-bold text-slate-700">{formatMonthTitle(monthAnchor)}</div>
+            <button
+              type="button"
+              className="h-6 w-6 rounded border border-slate-300 bg-white text-[10px] font-bold text-slate-700 hover:bg-slate-50"
+              onClick={() => setMonthAnchor((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1))}
+            >
+              ›
+            </button>
+          </div>
+          <div className="grid grid-cols-7 gap-[2px]">
+            {weekday.map((w, idx) => (
+              <div
+                key={`wk-${w}`}
+                className={`h-5 flex items-center justify-center text-[9px] font-bold ${
+                  idx === 0 ? "bg-blue-50 text-blue-700 rounded-sm" : "text-slate-500"
+                }`}
+              >
+                {w}
+              </div>
+            ))}
+            {cells.map((d, idx) => {
+              if (!d) return <div key={`blank-${idx}`} className="h-6" />;
+              const iso = toIsoDateLocal(d);
+              const isSelected = iso === selectedIso;
+              const isToday = iso === todayIso;
+              const isSunday = d.getDay() === 0;
+              return (
+                <button
+                  type="button"
+                  key={`day-${iso}`}
+                  className={`h-6 rounded-sm text-[10px] font-bold transition-colors ${
+                    isSelected
+                      ? "bg-blue-600 text-white"
+                      : isSunday
+                        ? "bg-blue-50 text-blue-700 hover:bg-blue-100"
+                        : "text-slate-700 hover:bg-slate-100"
+                  } ${isToday && !isSelected ? "ring-1 ring-blue-300" : ""}`}
+                  onClick={() => {
+                    onChange(iso);
+                    setOpen(false);
+                  }}
+                >
+                  {d.getDate()}
+                </button>
+              );
+            })}
+          </div>
+          <div className="mt-2 flex gap-1">
+            <button
+              type="button"
+              className="flex-1 rounded border border-blue-300 bg-blue-50 px-2 py-1 text-[10px] font-bold text-blue-700 hover:bg-blue-100"
+              onClick={() => {
+                onChange(todayIso);
+                setOpen(false);
+              }}
+            >
+              Today
+            </button>
+            <button
+              type="button"
+              className="flex-1 rounded border border-slate-300 bg-white px-2 py-1 text-[10px] font-bold text-slate-700 hover:bg-slate-50"
+              onClick={() => {
+                onChange("");
+                setOpen(false);
+              }}
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function buildSeriesFromRows(rows, dateCol, valueGetter, granularity = "day") {
   if (!dateCol || !Array.isArray(rows)) return [];
   const map = new Map();
@@ -1516,14 +1663,14 @@ export default function DashboardHome({
           <div className="flex gap-3">
             <Link
               to="/workspace"
-              className="inline-flex items-center justify-center rounded-md border border-blue-800 bg-blue-700 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-blue-800 focus:outline-none focus:ring-2 focus:ring-blue-300"
+              className="inline-flex items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 shadow-sm transition-all duration-150 hover:-translate-y-px hover:border-slate-400 hover:bg-slate-50 hover:shadow focus:outline-none focus:ring-2 focus:ring-slate-200"
             >
               {ui.openWorkspace}
             </Link>
             {user?.role === "admin" && (
               <Link
                 to="/users"
-                className="inline-flex items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition-colors hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                className="inline-flex items-center justify-center rounded-md border border-slate-800 bg-slate-800 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-all duration-150 hover:-translate-y-px hover:bg-slate-900 hover:shadow focus:outline-none focus:ring-2 focus:ring-slate-300"
               >
                 {ui.adminPanel}
               </Link>
@@ -1533,11 +1680,17 @@ export default function DashboardHome({
 
         <div className={`mt-6 grid grid-cols-1 ${chatSection ? "2xl:grid-cols-[minmax(0,1fr)_22rem]" : ""} gap-3`}>
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-            {orderedCardsWithOverrides.map((card) => (
-              <div
-                key={card.id}
-                draggable
-                onDragStart={(e) => {
+            {orderedCardsWithOverrides.map((card) => {
+              const isEditingCard = card.id === "pinnedMetrics" ? queryOpen : !!kpiEditorOpen[card.id];
+              return (
+                <div
+                  key={card.id}
+                  draggable={!isEditingCard}
+                  onDragStart={(e) => {
+                  if (isEditingCard) {
+                    e.preventDefault();
+                    return;
+                  }
                   setDragCardId(card.id);
                   setDropCardId("");
                   e.dataTransfer.effectAllowed = "move";
@@ -1584,8 +1737,8 @@ export default function DashboardHome({
                   card.id === "pinnedMetrics"
                     ? (queryOpen ? "p-2.5" : "h-[160px] p-2.5 overflow-hidden")
                     : (kpiEditorOpen[card.id] ? "p-3" : "h-[160px] p-3 overflow-hidden")
-                } ${dragCardId === card.id ? "opacity-70 ring-2 ring-blue-300" : ""} ${dropCardId === card.id ? "ring-2 ring-slate-300" : ""}`}
-              >
+                } ${!isEditingCard ? "cursor-grab active:cursor-grabbing" : "cursor-default"} ${dragCardId === card.id ? "opacity-70 ring-2 ring-blue-300" : ""} ${dropCardId === card.id ? "ring-2 ring-slate-300" : ""}`}
+                >
                 {card.id === "pinnedMetrics" ? (
                   <>
                     <div className="flex items-center justify-between">
@@ -1746,39 +1899,60 @@ export default function DashboardHome({
                         <option value="count">Count</option>
                       </select>
                     </div>
-                    <div className="mt-1 grid grid-cols-2 gap-1">
-                      <select
-                        value={String(kpiOverrides?.[card.id]?.from || "")}
-                        onChange={(e) => {
-                          const value = e.target.value;
-                          setKpiOverrides((prev) => ({
-                            ...prev,
-                            [card.id]: { ...(prev?.[card.id] || {}), from: value },
-                          }));
-                        }}
-                        className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-900"
-                      >
-                        <option value="">From: All time</option>
-                        {availableSheetDates.map((d) => (
-                          <option key={`kpi-from-${card.id}-${d}`} value={d}>{d}</option>
-                        ))}
-                      </select>
-                      <select
-                        value={String(kpiOverrides?.[card.id]?.to || "")}
-                        onChange={(e) => {
-                          const value = e.target.value;
-                          setKpiOverrides((prev) => ({
-                            ...prev,
-                            [card.id]: { ...(prev?.[card.id] || {}), to: value },
-                          }));
-                        }}
-                        className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-900"
-                      >
-                        <option value="">To: All time</option>
-                        {availableSheetDates.map((d) => (
-                          <option key={`kpi-to-${card.id}-${d}`} value={d}>{d}</option>
-                        ))}
-                      </select>
+                    <div
+                      className="mt-1 rounded-md border border-slate-200 bg-slate-50/80 p-2"
+                      style={{ fontFamily: "'Aptos', 'Segoe UI Variable Text', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" }}
+                    >
+                      <div className="grid grid-cols-2 gap-1">
+                        <KpiCalendarField
+                          label="From"
+                          value={String(kpiOverrides?.[card.id]?.from || "")}
+                          onChange={(nextValue) => {
+                            setKpiOverrides((prev) => ({
+                              ...prev,
+                              [card.id]: { ...(prev?.[card.id] || {}), from: nextValue },
+                            }));
+                          }}
+                        />
+                        <KpiCalendarField
+                          label="To"
+                          value={String(kpiOverrides?.[card.id]?.to || "")}
+                          onChange={(nextValue) => {
+                            setKpiOverrides((prev) => ({
+                              ...prev,
+                              [card.id]: { ...(prev?.[card.id] || {}), to: nextValue },
+                            }));
+                          }}
+                        />
+                      </div>
+                      <div className="mt-2 grid grid-cols-2 gap-1">
+                        <button
+                          type="button"
+                          className="rounded-md border border-blue-300 bg-blue-50 px-2 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-100"
+                          onClick={() => {
+                            const today = new Date();
+                            const iso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+                            setKpiOverrides((prev) => ({
+                              ...prev,
+                              [card.id]: { ...(prev?.[card.id] || {}), from: iso, to: iso },
+                            }));
+                          }}
+                        >
+                          Today
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+                          onClick={() => {
+                            setKpiOverrides((prev) => ({
+                              ...prev,
+                              [card.id]: { ...(prev?.[card.id] || {}), from: "", to: "" },
+                            }));
+                          }}
+                        >
+                          All time
+                        </button>
+                      </div>
                     </div>
                     <div className="mt-1 grid grid-cols-2 gap-1">
                       <input
@@ -1889,8 +2063,9 @@ export default function DashboardHome({
                 ) : <div className="mt-1.5 h-11" />}
                   </>
                 )}
-              </div>
-            ))}
+                </div>
+              );
+            })}
           </div>
         {chatSection && (
           <div className="rounded-md border border-slate-200 bg-white p-2 shadow-sm h-[360px] max-h-[42vh] overflow-hidden">

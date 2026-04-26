@@ -223,6 +223,14 @@ async function getValidAccessTokenForUser(cfg, userId) {
   return refreshed.access_token;
 }
 
+async function isGroupAdminUser(userId) {
+  const rows = await query(
+    "SELECT COUNT(*)::int AS c FROM user_groups WHERE user_id = $1 AND is_admin = TRUE",
+    [userId]
+  );
+  return Number(rows?.[0]?.c || 0) > 0;
+}
+
 export async function getGoogleLoginUrl(_req, res) {
   try {
     const cfg = await requireGoogleConfig();
@@ -266,14 +274,17 @@ export async function listGoogleDriveFiles(req, res) {
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
     const accessToken = await getValidAccessTokenForUser(cfg, userId);
+    const parentId = String(req.query?.parentId || "root").trim() || "root";
+    const safeParentId = parentId.replace(/'/g, "\\'");
     const q = [
       "trashed = false",
-      "(mimeType = 'application/vnd.google-apps.spreadsheet' or mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' or mimeType = 'text/csv')",
+      `'${safeParentId}' in parents`,
+      "(mimeType = 'application/vnd.google-apps.folder' or mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' or mimeType = 'application/vnd.ms-excel' or mimeType = 'text/csv')",
     ].join(" and ");
     const params = new URLSearchParams({
       pageSize: "100",
-      fields: "files(id,name,mimeType,modifiedTime,size,webViewLink)",
-      orderBy: "modifiedTime desc",
+      fields: "files(id,name,mimeType,modifiedTime,size,webViewLink,parents)",
+      orderBy: "folder,name_natural",
       q,
     });
 
@@ -298,7 +309,9 @@ export async function listGoogleDriveFiles(req, res) {
 export async function importGoogleDriveFile(req, res) {
   try {
     const cfg = await requireGoogleConfig();
-    if (req.user?.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const isAdmin = String(req.user?.role || "").toLowerCase() === "admin";
+    const isGroupAdmin = req.user?.id ? await isGroupAdminUser(req.user.id) : false;
+    if (!isAdmin && !isGroupAdmin) return res.status(403).json({ error: "Forbidden" });
 
     const fileId = String(req.body?.fileId || "").trim();
     const fileName = String(req.body?.name || "google-drive-file").trim();

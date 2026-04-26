@@ -1,0 +1,323 @@
+import { query } from "../config/db.js";
+import { uploadSheet } from "./sheetController.js";
+import fs from "fs";
+import path from "path";
+import { tmpdir } from "os";
+
+const DROPBOX_AUTH_BASE = "https://www.dropbox.com/oauth2/authorize";
+const DROPBOX_TOKEN_URL = "https://api.dropboxapi.com/oauth2/token";
+const DROPBOX_ACCOUNT_URL = "https://api.dropboxapi.com/2/users/get_current_account";
+const DROPBOX_LIST_FOLDER_URL = "https://api.dropboxapi.com/2/files/list_folder";
+const DROPBOX_DOWNLOAD_URL = "https://content.dropboxapi.com/2/files/download";
+const SUPPORTED_EXTS = [".csv", ".xls", ".xlsx"];
+
+function isSupportedSpreadsheetName(name) {
+  const lower = String(name || "").toLowerCase();
+  return SUPPORTED_EXTS.some((ext) => lower.endsWith(ext));
+}
+
+async function isDropboxIntegrationEnabled() {
+  try {
+    const rows = await query("SELECT value FROM app_settings WHERE key = 'dropbox_integration' LIMIT 1", []);
+    if (!rows.length) return true;
+    return !!rows[0]?.value?.enabled;
+  } catch {
+    return true;
+  }
+}
+
+async function getDropboxOauthConfig() {
+  const rows = await query("SELECT value FROM app_settings WHERE key = 'dropbox_oauth' LIMIT 1", []);
+  const v = rows[0]?.value || {};
+  return {
+    clientId: String(v.clientId || "").trim(),
+    clientSecret: String(v.clientSecret || "").trim(),
+    redirectUri: String(v.redirectUri || "").trim(),
+    frontendUrl: String(v.frontendUrl || "http://localhost:5173").trim(),
+  };
+}
+
+async function requireDropboxConfig() {
+  const enabled = await isDropboxIntegrationEnabled();
+  if (!enabled) throw new Error("dropbox_integration_disabled");
+  const cfg = await getDropboxOauthConfig();
+  if (!cfg.clientId || !cfg.clientSecret || !cfg.redirectUri) {
+    throw new Error("dropbox_oauth_not_configured");
+  }
+  return cfg;
+}
+
+async function upsertDropboxTokens(userId, tokenPayload) {
+  const expiresIn = Number(tokenPayload?.expires_in || 14400);
+  const expiresAt = new Date(Date.now() + Math.max(60, expiresIn) * 1000);
+  await query(
+    `INSERT INTO user_dropbox_tokens (user_id, dropbox_account_id, access_token, refresh_token, scope, token_type, expires_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+     ON CONFLICT (user_id)
+     DO UPDATE SET
+       dropbox_account_id = EXCLUDED.dropbox_account_id,
+       access_token = EXCLUDED.access_token,
+       refresh_token = COALESCE(EXCLUDED.refresh_token, user_dropbox_tokens.refresh_token),
+       scope = EXCLUDED.scope,
+       token_type = EXCLUDED.token_type,
+       expires_at = EXCLUDED.expires_at,
+       updated_at = NOW()`,
+    [
+      userId,
+      tokenPayload?.dropbox_account_id || null,
+      tokenPayload?.access_token || null,
+      tokenPayload?.refresh_token || null,
+      tokenPayload?.scope || null,
+      tokenPayload?.token_type || "Bearer",
+      expiresAt.toISOString(),
+    ]
+  );
+}
+
+async function refreshAccessToken(cfg, refreshToken) {
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: refreshToken,
+    client_id: cfg.clientId,
+    client_secret: cfg.clientSecret,
+  });
+  const res = await fetch(DROPBOX_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`dropbox_token_refresh_failed: ${text.slice(0, 300)}`);
+  }
+  return res.json();
+}
+
+async function getValidAccessTokenForUser(cfg, userId) {
+  const rows = await query(
+    "SELECT user_id, access_token, refresh_token, expires_at FROM user_dropbox_tokens WHERE user_id = $1 LIMIT 1",
+    [userId]
+  );
+  if (!rows.length) throw new Error("dropbox_not_connected");
+
+  const rec = rows[0];
+  const expiresAt = rec.expires_at ? new Date(rec.expires_at).getTime() : 0;
+  const stillValid = rec.access_token && expiresAt > (Date.now() + 60_000);
+  if (stillValid) return rec.access_token;
+
+  if (!rec.refresh_token) throw new Error("dropbox_refresh_token_missing");
+  const refreshed = await refreshAccessToken(cfg, rec.refresh_token);
+  await upsertDropboxTokens(userId, {
+    ...refreshed,
+    refresh_token: rec.refresh_token,
+  });
+  return refreshed.access_token;
+}
+
+async function fetchDropboxAccount(accessToken) {
+  const res = await fetch(DROPBOX_ACCOUNT_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: "null",
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`dropbox_account_failed: ${text.slice(0, 300)}`);
+  }
+  return res.json();
+}
+
+async function isGroupAdminUser(userId) {
+  const rows = await query(
+    "SELECT COUNT(*)::int AS c FROM user_groups WHERE user_id = $1 AND is_admin = TRUE",
+    [userId]
+  );
+  return Number(rows?.[0]?.c || 0) > 0;
+}
+
+export async function getDropboxStatus(_req, res) {
+  const enabled = await isDropboxIntegrationEnabled();
+  return res.json({ enabled });
+}
+
+export async function getDropboxAuthUrl(req, res) {
+  try {
+    const cfg = await requireDropboxConfig();
+    const state = String(req.user?.id || "");
+    const params = new URLSearchParams({
+      client_id: cfg.clientId,
+      redirect_uri: cfg.redirectUri,
+      response_type: "code",
+      token_access_type: "offline",
+      scope: "account_info.read files.metadata.read files.content.read",
+      state,
+    });
+    return res.json({ url: `${DROPBOX_AUTH_BASE}?${params.toString()}` });
+  } catch (e) {
+    return res.status(400).json({ error: e?.message || "dropbox_oauth_not_configured" });
+  }
+}
+
+export async function dropboxCallback(req, res) {
+  try {
+    const cfg = await requireDropboxConfig();
+    const code = String(req.query?.code || "").trim();
+    const state = String(req.query?.state || "").trim();
+    if (!code || !state) {
+      return res.redirect(`${cfg.frontendUrl}/workspace?dropbox_error=missing_code`);
+    }
+
+    const userId = Number(state);
+    if (!Number.isInteger(userId) || userId <= 0) {
+      return res.redirect(`${cfg.frontendUrl}/workspace?dropbox_error=invalid_state`);
+    }
+
+    const body = new URLSearchParams({
+      code,
+      grant_type: "authorization_code",
+      client_id: cfg.clientId,
+      client_secret: cfg.clientSecret,
+      redirect_uri: cfg.redirectUri,
+    });
+    const tokenRes = await fetch(DROPBOX_TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    if (!tokenRes.ok) {
+      const text = await tokenRes.text();
+      throw new Error(`dropbox_token_exchange_failed: ${text.slice(0, 300)}`);
+    }
+    const tokens = await tokenRes.json();
+    const account = await fetchDropboxAccount(tokens.access_token);
+
+    await upsertDropboxTokens(userId, {
+      ...tokens,
+      dropbox_account_id: account?.account_id || null,
+    });
+
+    return res.redirect(`${cfg.frontendUrl}/workspace?dropbox_connected=1`);
+  } catch (e) {
+    console.error("dropbox callback failed:", e?.message || e);
+    const cfg = await getDropboxOauthConfig();
+    return res.redirect(`${cfg.frontendUrl || "http://localhost:5173"}/workspace?dropbox_error=oauth_failed`);
+  }
+}
+
+export async function listDropboxFiles(req, res) {
+  try {
+    const cfg = await requireDropboxConfig();
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const accessToken = await getValidAccessTokenForUser(cfg, userId);
+    const pathArg = String(req.query?.path || "").trim();
+    const body = {
+      path: pathArg,
+      recursive: false,
+      include_deleted: false,
+      include_non_downloadable_files: false,
+    };
+
+    const resp = await fetch(DROPBOX_LIST_FOLDER_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const txt = await resp.text();
+      throw new Error(`dropbox_list_failed: ${txt.slice(0, 300)}`);
+    }
+
+    const json = await resp.json();
+    const entries = Array.isArray(json?.entries) ? json.entries : [];
+    const items = entries
+      .filter((entry) => {
+        const tag = String(entry?.[".tag"] || "");
+        if (tag === "folder") return true;
+        if (tag !== "file") return false;
+        return isSupportedSpreadsheetName(entry?.name);
+      })
+      .map((entry) => ({
+        id: String(entry?.id || entry?.path_lower || ""),
+        name: String(entry?.name || ""),
+        pathLower: String(entry?.path_lower || ""),
+        pathDisplay: String(entry?.path_display || ""),
+        tag: String(entry?.[".tag"] || ""),
+        clientModified: entry?.client_modified || null,
+        serverModified: entry?.server_modified || null,
+        size: Number(entry?.size || 0),
+      }))
+      .filter((entry) => entry.id);
+
+    return res.json({ entries: items, path: pathArg || "" });
+  } catch (e) {
+    const msg = e?.message || "dropbox_failed";
+    if (msg.includes("dropbox_not_connected")) return res.status(400).json({ error: "dropbox_not_connected" });
+    console.error("dropbox list failed:", msg);
+    return res.status(500).json({ error: "dropbox_list_failed", message: msg });
+  }
+}
+
+export async function importDropboxFile(req, res) {
+  try {
+    const cfg = await requireDropboxConfig();
+    const isAdmin = String(req.user?.role || "").toLowerCase() === "admin";
+    const isGroupAdmin = req.user?.id ? await isGroupAdminUser(req.user.id) : false;
+    if (!isAdmin && !isGroupAdmin) return res.status(403).json({ error: "Forbidden" });
+
+    const filePath = String(req.body?.pathLower || req.body?.path || "").trim();
+    const fileName = String(req.body?.name || path.basename(filePath) || "dropbox-file").trim();
+    const displayName = String(req.body?.display_name || req.body?.displayName || "").trim();
+    const folderId = req.body?.folder_id ?? req.body?.folderId ?? null;
+
+    if (!filePath) return res.status(400).json({ error: "file_path_required" });
+    if (!displayName) return res.status(400).json({ error: "display_name_required" });
+    if (!isSupportedSpreadsheetName(fileName)) return res.status(415).json({ error: "unsupported_file_type" });
+
+    const accessToken = await getValidAccessTokenForUser(cfg, req.user.id);
+    const downloadResp = await fetch(DROPBOX_DOWNLOAD_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Dropbox-API-Arg": JSON.stringify({ path: filePath }),
+      },
+    });
+    if (!downloadResp.ok) {
+      const txt = await downloadResp.text();
+      throw new Error(`dropbox_download_failed: ${txt.slice(0, 300)}`);
+    }
+
+    const ext = path.extname(fileName || "") || ".xlsx";
+    const safeBase = (fileName || "dropbox-file").replace(/[^\w.-]+/g, "_");
+    const originalname = safeBase.endsWith(ext) ? safeBase : `${safeBase}${ext}`;
+
+    const buf = Buffer.from(await downloadResp.arrayBuffer());
+    const tmpPath = path.join(tmpdir(), `dropbox_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`);
+    fs.writeFileSync(tmpPath, buf);
+
+    req.file = {
+      path: tmpPath,
+      originalname,
+      mimetype: "application/octet-stream",
+      size: buf.length,
+    };
+    req.body = {
+      ...(req.body || {}),
+      display_name: displayName,
+      folder_id: folderId,
+    };
+
+    return uploadSheet(req, res);
+  } catch (e) {
+    const msg = e?.message || "dropbox_import_failed";
+    console.error("dropbox import failed:", msg);
+    return res.status(500).json({ error: "dropbox_import_failed", message: msg });
+  }
+}

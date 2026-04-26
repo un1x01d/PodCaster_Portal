@@ -270,6 +270,82 @@ export async function setGoogleOauthSetting(req, res) {
     });
 }
 
+export async function getDropboxIntegrationSetting(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const rows = await query("SELECT value FROM app_settings WHERE key = 'dropbox_integration' LIMIT 1", []);
+    const enabled = rows.length ? !!rows[0]?.value?.enabled : true;
+    res.json({ enabled });
+}
+
+export async function setDropboxIntegrationSetting(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const enabled = !!req.body?.enabled;
+    await query(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ('dropbox_integration', $1::jsonb, CURRENT_TIMESTAMP)
+         ON CONFLICT (key)
+         DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+        [JSON.stringify({ enabled })]
+    );
+    res.json({ success: true, enabled });
+}
+
+export async function getDropboxOauthSetting(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const rows = await query("SELECT value FROM app_settings WHERE key = 'dropbox_oauth' LIMIT 1", []);
+    const cfg = rows[0]?.value || {};
+    const clientId = String(cfg.clientId || "");
+    const clientSecret = String(cfg.clientSecret || "");
+    const redirectUri = String(cfg.redirectUri || "");
+    const frontendUrl = String(cfg.frontendUrl || "");
+
+    res.json({
+        hasClientId: !!clientId,
+        hasClientSecret: !!clientSecret,
+        clientIdMasked: maskIfPresent(clientId),
+        clientSecretMasked: maskIfPresent(clientSecret),
+        redirectUri,
+        frontendUrl,
+    });
+}
+
+export async function setDropboxOauthSetting(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+
+    const rows = await query("SELECT value FROM app_settings WHERE key = 'dropbox_oauth' LIMIT 1", []);
+    const current = rows[0]?.value || {};
+
+    const incomingClientIdRaw = typeof req.body?.clientId === "string" ? req.body.clientId.trim() : undefined;
+    const incomingClientSecretRaw = typeof req.body?.clientSecret === "string" ? req.body.clientSecret.trim() : undefined;
+    const incomingRedirectRaw = typeof req.body?.redirectUri === "string" ? req.body.redirectUri.trim() : undefined;
+    const incomingFrontendRaw = typeof req.body?.frontendUrl === "string" ? req.body.frontendUrl.trim() : undefined;
+
+    const next = {
+        clientId: (incomingClientIdRaw && incomingClientIdRaw !== "***") ? incomingClientIdRaw : String(current.clientId || ""),
+        clientSecret: (incomingClientSecretRaw && incomingClientSecretRaw !== "***") ? incomingClientSecretRaw : String(current.clientSecret || ""),
+        redirectUri: incomingRedirectRaw !== undefined ? incomingRedirectRaw : String(current.redirectUri || ""),
+        frontendUrl: incomingFrontendRaw !== undefined ? incomingFrontendRaw : String(current.frontendUrl || ""),
+    };
+
+    await query(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ('dropbox_oauth', $1::jsonb, CURRENT_TIMESTAMP)
+         ON CONFLICT (key)
+         DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+        [JSON.stringify(next)]
+    );
+
+    res.json({
+        success: true,
+        hasClientId: !!next.clientId,
+        hasClientSecret: !!next.clientSecret,
+        clientIdMasked: maskIfPresent(next.clientId),
+        clientSecretMasked: maskIfPresent(next.clientSecret),
+        redirectUri: next.redirectUri,
+        frontendUrl: next.frontendUrl,
+    });
+}
+
 // --- Groups ---
 
 export async function listGroups(req, res) {

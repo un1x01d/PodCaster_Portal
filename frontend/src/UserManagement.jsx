@@ -42,6 +42,23 @@ export default function UserManagement({ token, user, sheetId }) {
     frontendUrl: "",
   });
   const [googleOauthSaving, setGoogleOauthSaving] = useState(false);
+  const [dropboxIntegrationEnabled, setDropboxIntegrationEnabled] = useState(true);
+  const [dropboxIntegrationSaving, setDropboxIntegrationSaving] = useState(false);
+  const [dropboxOauthMeta, setDropboxOauthMeta] = useState({
+    hasClientId: false,
+    hasClientSecret: false,
+    clientIdMasked: "",
+    clientSecretMasked: "",
+    redirectUri: "",
+    frontendUrl: "",
+  });
+  const [dropboxOauthForm, setDropboxOauthForm] = useState({
+    clientId: "",
+    clientSecret: "",
+    redirectUri: "",
+    frontendUrl: "",
+  });
+  const [dropboxOauthSaving, setDropboxOauthSaving] = useState(false);
 
   // user-level permissions UI (select a sheet from user's groups)
   const [selectedUserId, setSelectedUserId] = useState(null);
@@ -256,6 +273,96 @@ export default function UserManagement({ token, user, sheetId }) {
     }
   };
 
+  const fetchDropboxIntegrationSetting = async () => {
+    if (user?.role !== "admin") return;
+    try {
+      const res = await axios.get(`${API}/admin/settings/dropbox-integration`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setDropboxIntegrationEnabled(!!res?.data?.enabled);
+    } catch (e) {
+      console.error("fetchDropboxIntegrationSetting failed", e);
+    }
+  };
+
+  const toggleDropboxIntegration = async () => {
+    if (user?.role !== "admin" || dropboxIntegrationSaving) return;
+    const nextEnabled = !dropboxIntegrationEnabled;
+    setDropboxIntegrationSaving(true);
+    try {
+      await axios.patch(`${API}/admin/settings/dropbox-integration`, { enabled: nextEnabled }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setDropboxIntegrationEnabled(nextEnabled);
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to update Dropbox integration");
+    } finally {
+      setDropboxIntegrationSaving(false);
+    }
+  };
+
+  const fetchDropboxOauthSetting = async () => {
+    if (user?.role !== "admin") return;
+    try {
+      const res = await axios.get(`${API}/admin/settings/dropbox-oauth`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || {};
+      setDropboxOauthMeta({
+        hasClientId: !!data.hasClientId,
+        hasClientSecret: !!data.hasClientSecret,
+        clientIdMasked: data.clientIdMasked || "",
+        clientSecretMasked: data.clientSecretMasked || "",
+        redirectUri: data.redirectUri || "",
+        frontendUrl: data.frontendUrl || "",
+      });
+      setDropboxOauthForm((prev) => ({
+        ...prev,
+        clientId: "",
+        clientSecret: "",
+        redirectUri: data.redirectUri || "",
+        frontendUrl: data.frontendUrl || "",
+      }));
+    } catch (e) {
+      console.error("fetchDropboxOauthSetting failed", e);
+    }
+  };
+
+  const saveDropboxOauthSetting = async () => {
+    if (user?.role !== "admin" || dropboxOauthSaving) return;
+    setDropboxOauthSaving(true);
+    try {
+      const payload = {
+        clientId: dropboxOauthForm.clientId || "***",
+        clientSecret: dropboxOauthForm.clientSecret || "***",
+        redirectUri: dropboxOauthForm.redirectUri || "",
+        frontendUrl: dropboxOauthForm.frontendUrl || "",
+      };
+      const res = await axios.patch(`${API}/admin/settings/dropbox-oauth`, payload, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || {};
+      setDropboxOauthMeta({
+        hasClientId: !!data.hasClientId,
+        hasClientSecret: !!data.hasClientSecret,
+        clientIdMasked: data.clientIdMasked || "",
+        clientSecretMasked: data.clientSecretMasked || "",
+        redirectUri: data.redirectUri || "",
+        frontendUrl: data.frontendUrl || "",
+      });
+      setDropboxOauthForm((prev) => ({
+        ...prev,
+        clientId: "",
+        clientSecret: "",
+      }));
+      alert("Dropbox OAuth settings updated");
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to update Dropbox OAuth settings");
+    } finally {
+      setDropboxOauthSaving(false);
+    }
+  };
+
   const fetchGroupMembers = async (gid) => {
     if (!gid) return setGroupMembers([]);
     try {
@@ -375,6 +482,8 @@ export default function UserManagement({ token, user, sheetId }) {
       fetchAllSheets(); // load on mount
       fetchGoogleIntegrationSetting();
       fetchGoogleOauthSetting();
+      fetchDropboxIntegrationSetting();
+      fetchDropboxOauthSetting();
     }
   }, [token]);
 
@@ -895,6 +1004,60 @@ export default function UserManagement({ token, user, sheetId }) {
                   {googleOauthSaving ? "Saving..." : "Save Google OAuth"}
                 </button>
                 <div className="text-[10px] text-slate-400">Client ID/Secret are masked and never returned in plain text.</div>
+              </div>
+              <button
+                type="button"
+                onClick={toggleDropboxIntegration}
+                disabled={dropboxIntegrationSaving}
+                className={`w-full flex items-center justify-between px-3 py-2 rounded-md border text-xs font-bold uppercase tracking-wider transition-colors ${
+                  dropboxIntegrationEnabled
+                    ? "bg-blue-50 border-blue-200 text-blue-700"
+                    : "bg-slate-100 border-slate-200 text-slate-600"
+                } ${dropboxIntegrationSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                title="Enable or disable Dropbox integration"
+              >
+                <span>Dropbox Integration</span>
+                <span>{dropboxIntegrationEnabled ? "Enabled" : "Disabled"}</span>
+              </button>
+              <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+                <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Dropbox OAuth Config</div>
+                <input
+                  type="password"
+                  className="input-premium"
+                  placeholder={dropboxOauthMeta.hasClientId ? "***" : "Dropbox App Key (Client ID)"}
+                  value={dropboxOauthForm.clientId}
+                  onChange={(e) => setDropboxOauthForm((prev) => ({ ...prev, clientId: e.target.value }))}
+                  autoComplete="new-password"
+                />
+                <input
+                  type="password"
+                  className="input-premium"
+                  placeholder={dropboxOauthMeta.hasClientSecret ? "***" : "Dropbox App Secret (Client Secret)"}
+                  value={dropboxOauthForm.clientSecret}
+                  onChange={(e) => setDropboxOauthForm((prev) => ({ ...prev, clientSecret: e.target.value }))}
+                  autoComplete="new-password"
+                />
+                <input
+                  className="input-premium"
+                  placeholder="Redirect URI"
+                  value={dropboxOauthForm.redirectUri}
+                  onChange={(e) => setDropboxOauthForm((prev) => ({ ...prev, redirectUri: e.target.value }))}
+                />
+                <input
+                  className="input-premium"
+                  placeholder="Frontend URL"
+                  value={dropboxOauthForm.frontendUrl}
+                  onChange={(e) => setDropboxOauthForm((prev) => ({ ...prev, frontendUrl: e.target.value }))}
+                />
+                <button
+                  type="button"
+                  onClick={saveDropboxOauthSetting}
+                  disabled={dropboxOauthSaving}
+                  className={`btn-premium bg-slate-800 text-white w-full py-2 ${dropboxOauthSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                >
+                  {dropboxOauthSaving ? "Saving..." : "Save Dropbox OAuth"}
+                </button>
+                <div className="text-[10px] text-slate-400">App key/secret are masked and never returned in plain text.</div>
               </div>
             </>
           )}

@@ -2,6 +2,18 @@ import { query } from "../config/db.js";
 import { hashPassword, verifyPassword } from "../utils/security.js";
 import { generateToken } from "../middleware/auth.js";
 
+async function resolveGroupAdminFlags(userId) {
+    const rows = await query(
+        "SELECT COUNT(*)::int AS c FROM user_groups WHERE user_id = $1 AND is_admin = TRUE",
+        [userId]
+    );
+    const isGroupAdmin = Number(rows?.[0]?.c || 0) > 0;
+    return {
+        is_group_admin: isGroupAdmin,
+        group_admin: isGroupAdmin,
+    };
+}
+
 export async function login(req, res) {
     const { email, password } = req.body || {};
     if (!email || !password) return res.status(400).json({ error: "Missing credentials" });
@@ -23,13 +35,15 @@ export async function login(req, res) {
         }
 
         const token = generateToken(user);
+        const groupFlags = await resolveGroupAdminFlags(user.id);
         res.json({
             token,
             user: {
                 id: user.id,
                 email: user.email,
                 role: user.role,
-                password_reset_required: user.password_reset_required
+                password_reset_required: user.password_reset_required,
+                ...groupFlags,
             }
         });
     } catch (err) {
@@ -45,7 +59,8 @@ export async function getMe(req, res) {
             [req.user.id]
         );
         if (!rows.length) return res.status(404).json({ error: "user_not_found" });
-        res.json(rows[0]);
+        const groupFlags = await resolveGroupAdminFlags(rows[0].id);
+        res.json({ ...rows[0], ...groupFlags });
     } catch (err) {
         console.error("[Auth] getMe error:", err);
         res.status(500).json({ error: "internal_server_error" });
