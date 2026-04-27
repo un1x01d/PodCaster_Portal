@@ -86,7 +86,7 @@ export const DASHBOARD_COPY_EN = {
 };
 
 export const DASHBOARD_LANGUAGES = [
-  { code: "en", label: "English", flag: "https://upload.wikimedia.org/wikipedia/en/a/ae/Flag_of_the_United_Kingdom.svg" },
+  { code: "en", label: "English", flag: "https://flagcdn.com/us.svg" },
   { code: "uk", label: "Українська", flag: "https://upload.wikimedia.org/wikipedia/commons/4/49/Flag_of_Ukraine.svg" },
   { code: "ru", label: "Русский", flag: "https://upload.wikimedia.org/wikipedia/en/f/f3/Flag_of_Russia.svg" },
   { code: "es", label: "Español", flag: "https://upload.wikimedia.org/wikipedia/en/9/9a/Flag_of_Spain.svg" },

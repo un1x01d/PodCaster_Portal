@@ -425,10 +425,16 @@ export async function initDb() {
 
   // SEED DICTIONARY (EN/RU/UK)
   const initialTerms = [
-    { cat: 'revenue', lang: 'en', terms: ["revenue", "income", "sales", "proceeds", "gross", "billings", "turnover", "ebit", "earn", "receipts", "top line", "inflow", "collections", "volume", "top-line", "accruals", "yield", "bookings", "gross-sales", "gain", "profitability", "takings", "earnings", "net-sales", "gross-revenue"] },
-    { cat: 'revenue', lang: 'ru', terms: ["доход", "выручка", "прибуток", "оборот", "надходження", "продажі", "реализация", "кассовые", "чеки", "наторговали", "приход", "приток", "касса", "выработка", "дебет", "заработок", "профит", "маржа", "барыш", "оборотка", "торговля"] },
+    { cat: 'revenue', lang: 'en', terms: ["revenue", "sales", "proceeds", "gross", "billings", "turnover", "receipts", "top line", "inflow", "collections", "volume", "top-line", "bookings", "gross-sales", "takings", "net-sales", "gross-revenue"] },
+    { cat: 'revenue', lang: 'ru', terms: ["выручка", "оборот", "надходження", "продажі", "реализация", "реалізація", "кассовые", "чеки", "наторговали", "приход", "приток", "касса", "выработка", "дебет", "оборотка", "торговля"] },
+    { cat: 'revenue', lang: 'uk', terms: ["виторг", "дохід", "оборот", "надходження", "продажі", "виторгували", "каса", "касові", "надходження", "прибутки"] },
+    { cat: 'profit', lang: 'en', terms: ["income", "profit", "net", "earnings", "ebit", "ebitda", "margin", "gain", "profitability", "bottom line", "bottom-line", "surplus", "markup", "roi"] },
+    { cat: 'profit', lang: 'ru', terms: ["доход", "прибыль", "маржа", "барыш", "заработок", "профит", "чистая прибыль", "рентабельность"] },
+    { cat: 'profit', lang: 'uk', terms: ["прибуток", "чистий прибуток", "маржа", "рентабельність", "заробіток", "профіт", "надлишок"] },
     { cat: 'expense', lang: 'en', terms: ["expense", "cost", "spending", "cogs", "outgo", "expenditure", "burn", "overhead", "opex", "capex", "outflow", "payments", "disbursements", "fixed", "variable", "sg&a", "marketing", "procurement", "labor", "materials", "loss", "bill", "invoice", "charge", "refund", "discount", "fee", "payout", "cost-of-sales"] },
-    { cat: 'expense', lang: 'ru', terms: ["расход", "витрати", "затраты", "издержки", "траты", "себестоимость", "видатки", "собівартість", "опекс", "капекс", "закупка", "убыток", "минус", "оплата", "платеж", "списание", "счет", "усушка", "потеря", "трата", "амортизация", "налог", "аренда", "зарплата"] },
+    { cat: 'expense', lang: 'ru', terms: ["расход", "издержки", "траты", "себестоимость", "опекс", "капекс", "закупка", "убыток", "минус", "оплата", "платеж", "списание", "счет", "усушка", "потеря", "трата", "амортизация", "налог", "аренда", "зарплата"] },
+    { cat: 'expense', lang: 'uk', terms: ["витрати", "затрати", "видатки", "собівартість", "опекс", "капекс", "закупівля", "збиток", "мінус", "оплата", "платіж", "списання", "рахунок", "втрата", "трата", "амортизація", "податок", "оренда", "зарплата"] },
+
     { cat: 'asset', lang: 'en', terms: ["asset", "cash", "receivable", "inventory", "property", "equipment", "investment", "liquid", "balance", "capital", "reserves", "holdings", "bank", "treasury", "ar", "ppe", "equity", "resources", "stock", "fund", "wealth", "value", "security", "saving", "deposit", "portfolio"] },
     { cat: 'asset', lang: 'ru', terms: ["актив", "готівка", "наличность", "запаси", "имущество", "оборудование", "капитал", "дебиторка", "дебіторка", "склад", "остаток", "баланс", "власність", "кошти", "ресурс", "фонд", "вложение", "инвестиция", "собственность", "депозит", "счет", "нал"] },
     { cat: 'liability', lang: 'en', terms: ["liability", "debt", "loan", "payable", "obligation", "accrual", "ap", "credit", "mortgage", "borrowing", "interest", "tax", "due", "arrears", "unearned", "overdraft", "bond", "claim", "leverage", "finance", "draw"] },

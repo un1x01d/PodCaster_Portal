@@ -807,8 +807,8 @@ function naturalizeNumbersForTTS(text = "", locale = "en") {
 
   if (lang === "uk") {
     out = out.replace(/\bvs\b/gi, "проти");
-    out = out.replace(/\bNet Income\b/gi, "Чистий прибуток");
-    out = out.replace(/\bRevenue\b/gi, "Виручка");
+    out = out.replace(/\bNet Income\b/gi, "Прибуток");
+    out = out.replace(/\bRevenue\b/gi, "Виторг");
     out = out.replace(/\bAnalysis\b/gi, "Аналіз");
     out = out.replace(/\bSummary\b/gi, "Підсумок");
     out = out.replace(/\bGrowth\b/gi, "Зростання");
@@ -896,19 +896,27 @@ function phoneticExpandSlavicNumbers(text = "", lang = "ru") {
   return out;
 }
 
-function slavicNumberToWords(num, lang = "ru") {
+function getSlavicPlural(n, forms) {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return forms[0];
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return forms[1];
+  return forms[2];
+}
+
+function slavicNumberToWords(num, lang = "ru", gender = "m") {
   const n = Math.floor(Math.abs(num));
   if (n === 0) return lang === "ru" ? "ноль" : "нуль";
 
   const ru = {
-    ones: ["", "один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять"],
+    ones: { m: ["", "один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять"], f: ["", "одна", "две", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять"] },
     teens: ["десять", "одиннадцать", "двенадцать", "тринадцать", "четырнадцать", "пятнадцать", "шестнадцать", "семнадцать", "восемнадцать", "девятнадцать"],
     tens: ["", "", "двадцать", "тридцать", "сорок", "пятьдесят", "шестьдесят", "семьдесят", "восемьдесят", "девяносто"],
     hundreds: ["", "сто", "двести", "триста", "четыреста", "пятьсот", "шестьсот", "семьсот", "восемьсот", "девятьсот"]
   };
   
   const uk = {
-    ones: ["", "один", "два", "три", "чотири", "п'ять", "шість", "сім", "вісім", "дев'ять"],
+    ones: { m: ["", "один", "два", "три", "чотири", "п'ять", "шість", "сім", "вісім", "дев'ять"], f: ["", "одна", "дві", "три", "чотири", "п'ять", "шість", "сім", "вісім", "дев'ять"] },
     teens: ["десять", "одинадцять", "дванадцять", "тринадцять", "чотирнадцять", "п'ятнадцять", "шістнадцять", "сімнадцять", "вісімнадцять", "дев'ятнадцять"],
     tens: ["", "", "двадцять", "тридцять", "сорок", "п'ятдесят", "шістдесят", "сімдесят", "вісімдесят", "дев'яносто"],
     hundreds: ["", "сто", "двісті", "триста", "чотириста", "п'ятсот", "шістсот", "сімсот", "вісімсот", "дев'ятсот"]
@@ -916,39 +924,82 @@ function slavicNumberToWords(num, lang = "ru") {
 
   const words = lang === "ru" ? ru : uk;
 
-  function convertSmall(val) {
-    if (val < 10) return words.ones[val];
+  function convertSmall(val, g) {
+    if (val < 10) return words.ones[g][val];
     if (val < 20) return words.teens[val - 10];
-    if (val < 100) return (words.tens[Math.floor(val / 10)] + " " + words.ones[val % 10]).trim();
-    if (val < 1000) return (words.hundreds[Math.floor(val / 100)] + " " + convertSmall(val % 100)).trim();
+    if (val < 100) return (words.tens[Math.floor(val / 10)] + " " + words.ones[g][val % 10]).trim();
+    if (val < 1000) return (words.hundreds[Math.floor(val / 100)] + " " + convertSmall(val % 100, g)).trim();
     return "";
   }
 
-  // Handle Thousands, Millions, Billions
+  // Define plural forms [singular_nom, singular_gen, plural_gen]
+  const billionsForms = lang === "ru" ? ["миллиард", "миллиарда", "миллиардов"] : ["мільярд", "мільярди", "мільярдів"];
+  const millionsForms = lang === "ru" ? ["миллион", "миллиона", "миллионов"] : ["мільйон", "мільйони", "мільйонів"];
+  const thousandsForms = lang === "ru" ? ["тысяча", "тысячи", "тысяч"] : ["тисяча", "тисячі", "тисяч"];
+
   const parts = [];
   const billions = Math.floor(n / 1000000000);
   const millions = Math.floor((n % 1000000000) / 1000000);
   const thousands = Math.floor((n % 1000000) / 1000);
   const remainder = n % 1000;
 
-  if (billions > 0) parts.push(convertSmall(billions) + (lang === "ru" ? " миллиардов" : " мільярдів"));
-  if (millions > 0) parts.push(convertSmall(millions) + (lang === "ru" ? " миллионов" : " мільйонів"));
-  if (thousands > 0) parts.push(convertSmall(thousands) + (lang === "ru" ? " тысяч" : " тисяч"));
-  if (remainder > 0 || parts.length === 0) parts.push(convertSmall(remainder));
+  if (billions > 0) parts.push(convertSmall(billions, "m") + " " + getSlavicPlural(billions, billionsForms));
+  if (millions > 0) parts.push(convertSmall(millions, "m") + " " + getSlavicPlural(millions, millionsForms));
+  if (thousands > 0) parts.push(convertSmall(thousands, "f") + " " + getSlavicPlural(thousands, thousandsForms));
+  if (remainder > 0 || parts.length === 0) parts.push(convertSmall(remainder, gender));
 
   return parts.join(" ").trim();
 }
 
 function expandFinancialTextPhonetically(text = "", lang = "ru") {
     let out = String(text || "");
-    const rules = lang === "ru" ? { and: "и" } : { and: "та" };
+    const rules = lang === "ru" ? {
+        and: "и",
+        dollars: ["доллар", "доллара", "долларов"],
+        cents: ["цент", "цента", "центов"],
+        percents: ["процент", "процента", "процентов"]
+    } : {
+        and: "і",
+        dollars: ["долар", "долари", "доларів"],
+        cents: ["цент", "центи", "центів"],
+        percents: ["відсоток", "відсотки", "відсотків"]
+    };
 
-    // Target currency with cents: (digits) (unit) (и/та) (digits) (cents)
-    // We already expanded the units in naturalizeNumbersForTTS, so we look for those patterns
-    // Example: "123 доларів та 45 центів" -> "сто двадцять три доларів та сорок п'ять центів"
-    
-    return out.replace(/(\d+)\s?(миллиона|миллионов|мільйона|мільйонів|тысяч|тисяч|доларів|долларов|процентов|відсотків|центів|центов)/g, (m, num, unit) => {
-        return slavicNumberToWords(parseInt(num), lang) + " " + unit;
+    // 1. Handle Currency with optional cents: (digits)[.,](digits) (unit)
+    out = out.replace(/(\d+)(?:[.,](\d+))?\s?(доларів|долларов)/g, (m, integer, decimal, _) => {
+        const nInt = parseInt(integer);
+        const intWords = slavicNumberToWords(nInt, lang, "m");
+        const intUnit = getSlavicPlural(nInt, rules.dollars);
+        
+        if (decimal) {
+            const nDec = parseInt(decimal);
+            const decWords = slavicNumberToWords(nDec, lang, "m");
+            const decUnit = getSlavicPlural(nDec, rules.cents);
+            return `${intWords} ${intUnit} ${rules.and} ${decWords} ${decUnit}`;
+        }
+        return `${intWords} ${intUnit}`;
+    });
+
+    // 2. Handle Percentages: (digits)[.,](digits) (unit)
+    out = out.replace(/(\d+)(?:[.,](\d+))?\s?(відсотків|процентов)/g, (m, integer, decimal, _) => {
+        const nInt = parseInt(integer);
+        const intWords = slavicNumberToWords(nInt, lang, "m");
+        const intUnit = getSlavicPlural(nInt, rules.percents);
+        
+        if (decimal) {
+            const nDec = parseInt(decimal);
+            const decWords = slavicNumberToWords(nDec, lang, "m");
+            const decUnit = getSlavicPlural(nDec, rules.percents); // Grammatically percentages use the same form for decimals
+            return `${intWords} ${rules.and} ${decWords} ${intUnit}`;
+        }
+        return `${intWords} ${intUnit}`;
+    });
+
+    // 3. Final cleanup of any lingering digits in financial groups
+    return out.replace(/(\d+)\s?(миллиона|миллионов|мільйона|мільйонів|тысяч|тисяч)/g, (m, num, unit) => {
+        const n = parseInt(num);
+        const gender = (unit.includes("тысяч") || unit.includes("тисяч")) ? "f" : "m";
+        return slavicNumberToWords(n, lang, gender) + " " + unit;
     });
 }
 

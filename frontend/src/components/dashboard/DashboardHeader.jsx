@@ -135,48 +135,59 @@ export default function DashboardHeader({
                             <button
                                 type="button"
                                 onClick={() => setLanguageMenuOpen((v) => !v)}
-                                className="w-10 h-10 rounded-2xl bg-white border border-slate-200 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 hover:border-indigo-200 transition-all flex items-center justify-center shadow-sm"
+                                className="flex items-center gap-2 h-8 px-2.5 rounded-lg bg-white border border-slate-200 text-slate-600 hover:text-slate-900 hover:border-slate-300 transition-all shadow-sm"
                                 title={ui.language}
                             >
-                                <svg xmlns="http://www.w3.org/2000/svg" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                                    <circle cx="12" cy="12" r="10" />
-                                    <path d="M2 12h20" />
-                                    <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10Z" />
-                                </svg>
+                                {(() => {
+                                    const currentLang = supportedLanguages.find(l => normalizeDashboardLocale(l.code) === effectiveLocale) || supportedLanguages[0];
+                                    return (
+                                        <>
+                                            <img 
+                                                src={currentLang.flag} 
+                                                alt="" 
+                                                className="w-3.5 h-3.5 rounded-sm object-cover" 
+                                            />
+                                            <span className="text-[10px] font-bold tracking-widest uppercase">{currentLang.code}</span>
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className={`opacity-40 transition-transform duration-200 ${languageMenuOpen ? 'rotate-180' : ''}`}>
+                                                <path d="m6 9 6 6 6-6"/>
+                                            </svg>
+                                        </>
+                                    );
+                                })()}
                             </button>
                             {languageMenuOpen && (
-                                <div className="absolute right-0 mt-2 w-56 rounded-2xl border border-slate-200 bg-white shadow-xl overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-200 origin-top-right">
-                                    <div className="px-4 py-2.5 text-[10px] font-bold uppercase tracking-widest text-slate-400 border-b border-slate-100 bg-slate-50/50">
-                                        {ui.language}
-                                    </div>
-                                    <div className="p-1.5 space-y-0.5">
-                                        {supportedLanguages.map((lang) => (
-                                            <button
-                                                key={lang.code}
-                                                type="button"
-                                                onClick={() => {
-                                                    setLocale(lang.code);
-                                                    setLanguageMenuOpen(false);
-                                                }}
-                                                className={`w-full flex items-center justify-between px-3 py-2 rounded-xl transition-all ${
-                                                    normalizeDashboardLocale(lang.code) === normalizeDashboardLocale(locale)
-                                                        ? "bg-indigo-50 text-indigo-700 font-bold"
-                                                        : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-                                                }`}
-                                            >
-                                                <div className="flex items-center gap-3">
-                                                    <img 
-                                                        src={lang.flag} 
-                                                        alt={lang.label} 
-                                                        className="w-5 h-5 rounded-full object-cover border border-slate-200 shadow-sm"
-                                                    />
-                                                    <span className="text-xs">{lang.label}</span>
-                                                </div>
-                                                {normalizeDashboardLocale(lang.code) === normalizeDashboardLocale(locale) && (
-                                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-indigo-500"><polyline points="20 6 9 17 4 12"/></svg>
-                                                )}
-                                            </button>
-                                        ))}
+                                <div className="absolute right-0 mt-1.5 w-44 rounded-xl border border-slate-200 bg-white shadow-xl z-50 animate-in fade-in zoom-in-95 duration-150 origin-top-right">
+                                    <div className="p-1 space-y-0.5">
+                                        {supportedLanguages.map((lang) => {
+                                            const isActive = normalizeDashboardLocale(lang.code) === effectiveLocale;
+                                            return (
+                                                <button
+                                                    key={lang.code}
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setLocale(lang.code);
+                                                        setLanguageMenuOpen(false);
+                                                    }}
+                                                    className={`w-full flex items-center justify-between px-2.5 py-2 rounded-lg transition-colors ${
+                                                        isActive
+                                                            ? "bg-slate-50 text-slate-900 font-semibold"
+                                                            : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                                                    }`}
+                                                >
+                                                    <div className="flex items-center gap-2.5">
+                                                        <img 
+                                                            src={lang.flag} 
+                                                            alt={lang.label} 
+                                                            className="w-4 h-4 rounded-sm object-cover border border-slate-100"
+                                                        />
+                                                        <span className="text-xs font-bold">{lang.label}</span>
+                                                    </div>
+                                                    {isActive && (
+                                                        <div className="w-1 h-1 rounded-full bg-slate-400" />
+                                                    )}
+                                                </button>
+                                            );
+                                        })}
                                     </div>
                                 </div>
                             )}

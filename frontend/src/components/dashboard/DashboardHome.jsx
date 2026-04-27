@@ -646,16 +646,36 @@ export default function DashboardHome({
     });
   }, [categoryCol, metricCol, headers, sheetStructureSignature]);
 
+  const PIE_COLORS = ["#2563eb", "#16a34a", "#fb923c", "#7c3aed", "#0369a1", "#0f766e", "#be185d", "#e11d48"];
+
   React.useEffect(() => {
     setTrendConfig((prev) => {
+      if (!sheetStructureSignature) return prev;
       if (Array.isArray(prev.lines) && prev.lines.length) return prev;
-      const defaultCol = revenueMetricCol || metricCol || "";
+      
+      const lines = [];
+      if (revenueMetricCol) {
+        lines.push({ id: "line_rev", label: "Revenue", column: revenueMetricCol, mode: "sum", color: "#2563eb" });
+      }
+      if (incomeMetricCol && incomeMetricCol !== revenueMetricCol) {
+        lines.push({ id: "line_inc", label: "Income", column: incomeMetricCol, mode: "sum", color: "#16a34a" });
+      }
+      // If we have both, we used to show expenses as a gap. 
+      // For simplicity, we can add a 'derived' expense or just let user add it if they have a column.
+      if (expenseCol) {
+         lines.push({ id: "line_exp", label: "Expense", column: expenseCol, mode: "sum", color: "#fb923c" });
+      }
+
+      if (lines.length === 0 && metricCol) {
+        lines.push({ id: "line_1", label: metricCol, column: metricCol, mode: "sum", color: "#2563eb" });
+      }
+
       return {
         ...prev,
-        lines: defaultCol ? [{ id: "line_1", label: defaultCol, column: defaultCol, mode: "sum" }] : [],
+        lines: lines,
       };
     });
-  }, [revenueMetricCol, metricCol, sheetStructureSignature]);
+  }, [revenueMetricCol, incomeMetricCol, expenseCol, metricCol, sheetStructureSignature]);
 
   React.useEffect(() => {
     try {
@@ -996,143 +1016,60 @@ export default function DashboardHome({
     };
   }, [sheetStructureSignature, pinnedLoaded, pinnedConfig, pinnedInput.items, normalizedLocale, upsertPinnedTitleTranslations]);
 
+  // --- Unified Dashboard Chat Response Handler ---
   React.useEffect(() => {
-    const onChatResponse = (event) => {
+    const handleDashboardChatResponse = (event) => {
       const detail = event?.detail || {};
       if (!detail?.sheetId || String(detail.sheetId) !== String(sheetId)) return;
       const answer = String(detail.answer || "").trim();
       if (!answer) return;
-      const ticketId = String(detail?.meta?.ticketId || "").trim();
-      if (ticketId) {
-        const numericOnly = answer.replace(/[^0-9.,-]/g, "").trim();
-        const parsed = Number(String(numericOnly || answer).replace(/,/g, ""));
-        if (!Number.isFinite(parsed)) return;
-        if (ticketId === "__top_categories__") {
-          setTopCategoriesConfig((prev) => ({ ...prev, aiValue: String(parsed) }));
+      const meta = detail?.meta || {};
+
+      // 1. KPI / Ticket Update
+      if (meta.ticketId) {
+        const cleaned = answer.replace(/[^\d.-]/g, "");
+        const numeric = parseFloat(cleaned);
+        if (!Number.isFinite(numeric)) return;
+
+        if (meta.ticketId === "__top_categories__") {
+          setTopCategoriesConfig((prev) => ({ ...prev, aiValue: String(numeric) }));
           return;
         }
-        if (ticketId === "__trend_over_time__") {
-          setTrendConfig((prev) => ({ ...prev, aiValue: String(parsed) }));
+        if (meta.ticketId === "__trend_over_time__") {
+          setTrendConfig((prev) => ({ ...prev, aiValue: String(numeric) }));
           return;
         }
         setKpiOverrides((prev) => ({
           ...prev,
-          [ticketId]: {
-            ...(prev?.[ticketId] || {}),
-            aiValue: String(parsed),
+          [meta.ticketId]: {
+            ...(prev?.[meta.ticketId] || {}),
+            aiValue: String(numeric),
             aiUpdatedAt: new Date().toISOString(),
+            aiOverride: true,
+            manualOverride: true
           },
         }));
         return;
       }
-      const numericOnly = answer.replace(/[^0-9.,-]/g, "").trim();
-      const nextValue = numericOnly || answer;
-      const index = Number(detail?.meta?.index);
-      if (!Number.isInteger(index) || index < 0 || index > 3) return;
-      setPinnedInput((prev) => {
-        const items = ensurePinnedItems(prev.items);
-        items[index] = { ...items[index], value: nextValue };
-        persistPinnedConfig(items);
-        return { ...prev, items };
-      });
-    };
-    window.addEventListener("dashboard:chat-response", onChatResponse);
-    return () => window.removeEventListener("dashboard:chat-response", onChatResponse);
-  }, [sheetId, sheetStructureSignature, persistPinnedConfig]);
 
-  const submitPinnedPromptToAI = React.useCallback((index, descriptionOverride = "") => {
-    if (!Number.isInteger(index) || index < 0 || index > 3) return;
-    const items = ensurePinnedItems(pinnedInput.items);
-    const description = String(descriptionOverride || items[index]?.description || "").trim();
-    const message = [
-      description ? `Request: ${description}` : "",
-      "Return only the final value as digits (numbers only, optional decimal separator). No words."
-    ]
-      .filter(Boolean)
-      .join("\n");
-    if (!message || !sheetId) return;
-    if (typeof window !== "undefined") {
-      window.dispatchEvent(new CustomEvent("dashboard:submit-chat", {
-        detail: {
-          sheetId,
-          message,
-          meta: { index, silent: true },
-        },
-      }));
-    }
-  }, [pinnedInput, sheetId]);
+      // 2. Pinned Metric Update
+      if (Number.isInteger(meta.index) && meta.index >= 0 && meta.index <= 3) {
+        const cleaned = answer.replace(/[^\d.-]/g, "");
+        const numeric = parseFloat(cleaned);
+        if (Number.isNaN(numeric)) return;
 
-  const submitTicketPromptToAI = React.useCallback((cardId, queryText = "") => {
-    const id = String(cardId || "").trim();
-    const query = String(queryText || "").trim();
-    if (!id || !query || !sheetId) return;
-    const message = [
-      `Request: ${query}`,
-      "Return only the final value as digits (numbers only, optional decimal separator). No words.",
-    ].join("\n");
-    if (typeof window !== "undefined") {
-      window.dispatchEvent(new CustomEvent("dashboard:submit-chat", {
-        detail: {
-          sheetId,
-          message,
-          meta: { ticketId: id, silent: true },
-        },
-      }));
-    }
-  }, [sheetId]);
-
-  const submitChartPromptToAI = React.useCallback((ticketId, queryText = "") => {
-    const id = String(ticketId || "").trim();
-    const query = String(queryText || "").trim();
-    if (!id || !query || !sheetId) return;
-    const message = [
-      `Request: ${query}`,
-      "Return only the final value as digits (numbers only, optional decimal separator). No words.",
-    ].join("\n");
-    if (typeof window !== "undefined") {
-      window.dispatchEvent(new CustomEvent("dashboard:submit-chat", {
-        detail: {
-          sheetId,
-          message,
-          meta: { ticketId: id, silent: true },
-        },
-      }));
-    }
-  }, [sheetId]);
-
-  // Handle AI Responses for Pinned Metrics & Tickets
-  React.useEffect(() => {
-    const onAiResponse = (event) => {
-      const { sheetId: resSheetId, answer, meta } = event.detail || {};
-      if (String(resSheetId) !== String(sheetId)) return;
-      if (!meta || (!Number.isInteger(meta.index) && !meta.ticketId)) return;
-
-      // Extract number from answer: "The value is $1,234.56" -> "1234.56"
-      const cleaned = String(answer || "").replace(/[^\d.-]/g, "");
-      const numeric = parseFloat(cleaned);
-      if (Number.isNaN(numeric)) return;
-
-      if (Number.isInteger(meta.index)) {
-        // Update Pinned Metric
         setPinnedInput((prev) => {
-          const nextItems = [...prev.items];
-          if (nextItems[meta.index]) {
-            nextItems[meta.index] = { ...nextItems[meta.index], value: String(numeric) };
-          }
-          return { ...prev, items: nextItems };
+          const items = ensurePinnedItems(prev.items);
+          items[meta.index] = { ...items[meta.index], value: String(numeric) };
+          persistPinnedConfig(items);
+          return { ...prev, items };
         });
-      } else if (meta.ticketId) {
-        // Update Ticket/KPI Override
-        setKpiOverrides((prev) => ({
-          ...prev,
-          [meta.ticketId]: { ...(prev[meta.ticketId] || {}), aiValue: String(numeric), aiOverride: true, manualOverride: true }
-        }));
       }
     };
 
-    window.addEventListener("dashboard:chat-response", onAiResponse);
-    return () => window.removeEventListener("dashboard:chat-response", onAiResponse);
-  }, [sheetId]);
+    window.addEventListener("dashboard:chat-response", handleDashboardChatResponse);
+    return () => window.removeEventListener("dashboard:chat-response", handleDashboardChatResponse);
+  }, [sheetId, sheetStructureSignature, persistPinnedConfig]);
 
   // Auto AI refresh is intentionally disabled: pinned values update only on manual "Submit to AI".
 
@@ -2187,7 +2124,7 @@ export default function DashboardHome({
               <div className="rounded-md border border-slate-200 bg-white p-4 shadow-sm xl:col-span-2">
                 <div className="mb-2 flex items-center justify-between">
                   <div className="text-[11px] font-bold uppercase tracking-wider text-slate-700">
-                    {(String(trendConfig.title || "").trim() || ui.trendOverTime)} {dateCol && revenueMetricCol ? `(${revenueMetricCol}${incomeMetricCol ? `, ${incomeMetricCol}` : ""}${expenseCol || canDeriveExpense ? `, ${ui.expense}` : ""} ${ui.by} ${dateCol})` : ""}
+                    {(String(trendConfig.title || "").trim() || ui.trendOverTime)} {dateCol && (configuredTrendLines.length > 0) ? `(${configuredTrendLines.map(l => l.label || l.column).join(", ")} ${ui.by} ${dateCol})` : ""}
                   </div>
                   <button
                     type="button"
@@ -2401,12 +2338,9 @@ export default function DashboardHome({
                                   {formatPeriodForTooltip(label, locale)}
                                 </div>
                                 {orderedRows.map((row, idx) => {
-                                  const rawName = row?.name || row?.dataKey || ui.value;
-                                  const displayName = rawName === "gapBand" ? ui.expense : rawName;
-                                  const rawVal = displayName === ui.expense
-                                    ? row?.payload?.expenseFromRevenueIncome
-                                    : row?.value;
-                                  const color = metricColor(rawName);
+                                  const displayName = row?.name || row?.dataKey || ui.value;
+                                  const rawVal = row?.value;
+                                  const color = row?.color || row?.stroke || "#64748b";
                                   return (
                                     <div key={`${displayName}-${idx}`} style={{ fontSize: "11px", color: "#334155", margin: "1px 0", padding: 0, display: "flex", alignItems: "center", gap: "6px" }}>
                                       <span style={{ width: "8px", height: "8px", borderRadius: "9999px", background: color, display: "inline-block" }} />
@@ -2420,26 +2354,6 @@ export default function DashboardHome({
                           }}
                         />
                         <Legend wrapperStyle={{ fontSize: "11px", color: "#1e293b" }} />
-                        {!trendConfig.aiOverride && (
-                        <>
-                        <Area
-                          type="monotone"
-                          dataKey="gapLower"
-                          stackId="revIncomeGap"
-                          fill="transparent"
-                          fillOpacity={0}
-                          stroke="none"
-                          legendType="none"
-                          isAnimationActive={false}
-                          connectNulls
-                        />
-                        <Area type="monotone" dataKey="gapBand" stackId="revIncomeGap" fill="#fb923c" fillOpacity={0.2} stroke="none" isAnimationActive={false} connectNulls name="Expenses" />
-                        <Line type="monotone" dataKey="revenueValue" name={revenueMetricCol || "Revenue"} stroke="#2563eb" strokeWidth={2.2} dot={false} connectNulls />
-                        {incomeMetricCol && (
-                          <Line type="monotone" dataKey="incomeValue" name={incomeMetricCol} stroke="#16a34a" strokeWidth={2.2} dot={false} connectNulls />
-                        )}
-                        </>
-                        )}
                         {trendConfig.aiOverride && Number.isFinite(trendAiValue) && (
                           <Line type="monotone" dataKey="__ai_override__" name="AI Override" stroke="#7c3aed" strokeWidth={2.2} dot={false} connectNulls />
                         )}
@@ -2449,8 +2363,8 @@ export default function DashboardHome({
                             type="monotone"
                             dataKey={`cfg_${line.id}`}
                             name={String(line.label || line.column || `Line ${idx + 1}`)}
-                            stroke={PIE_COLORS[idx % PIE_COLORS.length]}
-                            strokeWidth={2}
+                            stroke={line.color || PIE_COLORS[idx % PIE_COLORS.length]}
+                            strokeWidth={2.2}
                             dot={false}
                             connectNulls
                           />

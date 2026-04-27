@@ -260,15 +260,6 @@ export function useChatbotLogic({
         isFilter: filters.length > 0,
         filterCol: filters[0]?.column,
       }]);
-      if (typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent("dashboard:chat-response", {
-          detail: {
-            sheetId,
-            answer,
-            meta,
-          },
-        }));
-      }
     } catch (e) {
       const msg = e?.response?.data?.message || e?.response?.data?.error || copy.chatRequestFailed || "AI chat request failed.";
       setMessages((prev) => [...prev, { type: "bot", text: msg, timestamp: new Date() }]);
@@ -315,6 +306,7 @@ export function useChatbotLogic({
             const answer = typeof result.answer === "string" && result.answer.trim()
               ? result.answer
               : "";
+            
             if (typeof window !== "undefined") {
               window.dispatchEvent(new CustomEvent("dashboard:chat-response", {
                 detail: {
