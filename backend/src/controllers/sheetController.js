@@ -1,6 +1,8 @@
 import * as XLSX from "xlsx";
 import path from "path";
 import fs from "fs";
+import { Worker } from "worker_threads";
+import { fileURLToPath } from "url";
 import { query, getClient } from "../config/db.js";
 import { parsePagination } from "../utils/pagination.js";
 
@@ -157,6 +159,26 @@ async function getVersionedFilename(client, folderId, originalName) {
     return originalName;
 }
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const XLSX_WORKER_PATH = path.join(__dirname, "..", "utils", "xlsxWorker.js");
+
+function parseWorkbookInWorker(buffer) {
+    return new Promise((resolve, reject) => {
+        const worker = new Worker(XLSX_WORKER_PATH, {
+            workerData: { buffer }
+        });
+        worker.on('message', (msg) => {
+            if (msg.success) resolve(msg.result);
+            else reject(new Error(msg.error));
+        });
+        worker.on('error', reject);
+        worker.on('exit', (code) => {
+            if (code !== 0) reject(new Error(`Worker stopped with exit code ${code}`));
+        });
+    });
+}
+
 export async function uploadSheet(req, res) {
     let filePath = req.file?.path;
     try {
@@ -178,10 +200,10 @@ export async function uploadSheet(req, res) {
         fs.unlink(filePath, () => {});
         filePath = null;
 
-        // Parse Workbook (using type: 'buffer' for efficiency)
-        let wb;
+        // PERF-01 Fix: Parse Workbook in a worker thread to avoid blocking the event loop
+        let parsedResult;
         try {
-            wb = XLSX.read(fileBuffer, { type: 'buffer', cellDates: true });
+            parsedResult = await parseWorkbookInWorker(fileBuffer);
         } catch (err) {
             console.error("XLSX read failure:", err);
             return res.status(400).json({
@@ -190,7 +212,7 @@ export async function uploadSheet(req, res) {
             });
         }
 
-        const sheetNames = wb.SheetNames;
+        const { sheetNames, sheets } = parsedResult;
         if (!sheetNames || sheetNames.length === 0) {
             return res.status(400).json({ error: "no_sheets" });
         }
@@ -245,9 +267,20 @@ export async function uploadSheet(req, res) {
             const versionedFilename = await getVersionedFilename(client, assignedFolderId, originalName);
 
             // Get headers from FIRST tab
-            const firstTab = wb.Sheets[sheetNames[0]];
-            const firstTabRows = XLSX.utils.sheet_to_json(firstTab, { defval: "", range: 0, header: 1 });
-            const headers = Array.isArray(firstTabRows[0]) ? firstTabRows[0].filter(h => !!h) : [];
+            const firstTabName = sheetNames[0];
+            const firstTabRowsRaw = sheets[firstTabName];
+            
+            // STAB-01 Fix: Check if sheet has data
+            if (!firstTabRowsRaw || firstTabRowsRaw.length === 0) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ error: "empty_sheet", message: "The first tab of the uploaded file appears to be empty." });
+            }
+
+            // In worker, we used sheet_to_json directly for efficiency, 
+            // so we need to get headers differently if we want the raw array.
+            // However, the existing code expected header:1 for headers.
+            // Let's adjust the worker to return headers too, or just extract from objects.
+            const headers = Object.keys(firstTabRowsRaw[0]).filter(h => !!h && !h.startsWith("__rowNum__"));
             
             if (headers.length > MAX_UPLOAD_COLUMNS) {
                 await client.query('ROLLBACK');
@@ -261,15 +294,13 @@ export async function uploadSheet(req, res) {
             await client.query(
                 `INSERT INTO sheets (id, headers, active, filename, display_name, folder_id, stored_path, tab_name, tabs) 
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-                [sheetId, JSON.stringify(headers), true, versionedFilename, displayName, assignedFolderId, null, sheetNames[0], JSON.stringify(sheetNames)]
+                [sheetId, JSON.stringify(headers), true, versionedFilename, displayName, assignedFolderId, null, firstTabName, JSON.stringify(sheetNames)]
             );
 
             // Insert Rows in Chunks per Tab
             let totalRows = 0;
             for (const sn of sheetNames) {
-                const ws = wb.Sheets[sn];
-                // Use stream-like row processing to save memory if sheets are large
-                const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+                const rows = sheets[sn];
                 
                 if (rows.length > MAX_UPLOAD_ROWS_PER_SHEET) {
                     await client.query('ROLLBACK');
@@ -357,15 +388,20 @@ export async function getUniqueValues(req, res) {
     }
 
     try {
-        let sql = `SELECT DISTINCT (row_data->>$1) as val FROM sheet_rows WHERE sheet_id = $2`;
+        // PERF-03 Fix: Use a subquery to hit the sheet_id index first, and sample for performance if large
+        let sql = `
+            SELECT DISTINCT (row_data->>$1) as val 
+            FROM (
+                SELECT row_data FROM sheet_rows 
+                WHERE sheet_id = $2 
+                ${tab ? 'AND tab_name = $3' : ''}
+                LIMIT 10000
+            ) as sampled
+            ORDER BY val ASC 
+            LIMIT 1000
+        `;
         const params = [col, id];
-
-        if (tab) {
-            sql += ` AND tab_name = $3`;
-            params.push(tab);
-        }
-
-        sql += ` ORDER BY val ASC LIMIT 1000`; // Safety limit for filter UI
+        if (tab) params.push(tab);
 
         const rows = await query(sql, params);
         const values = rows.map(r => r.val).filter(v => v !== null);

@@ -174,6 +174,7 @@ export async function initDb() {
       tab_name TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_sheet_rows_sheet_id ON sheet_rows(sheet_id);
+    CREATE INDEX IF NOT EXISTS idx_sheet_rows_pagination ON sheet_rows(sheet_id, row_index);
     CREATE INDEX IF NOT EXISTS idx_sheet_rows_row_data_gin ON sheet_rows USING gin(row_data);
   `);
 

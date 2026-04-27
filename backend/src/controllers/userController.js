@@ -152,6 +152,15 @@ export async function updateUser(req, res) {
 
         const sharesGroup = await query(`SELECT 1 FROM user_groups ug WHERE ug.user_id = $1 AND ug.group_id = ANY($2::int[])`, [id, adminGroups]);
         if (!sharesGroup.length) return res.status(403).json({ error: "Forbidden" });
+
+        // SEC-01 Fix: Ensure user doesn't belong to groups OUTSIDE the admin's scope
+        const unmanagedGroups = await query(
+            `SELECT group_id FROM user_groups WHERE user_id = $1 AND NOT (group_id = ANY($2::int[]))`, 
+            [id, adminGroups]
+        );
+        if (unmanagedGroups.length > 0) {
+            return res.status(403).json({ error: "Forbidden: User belongs to groups outside your admin scope." });
+        }
     }
 
     try {

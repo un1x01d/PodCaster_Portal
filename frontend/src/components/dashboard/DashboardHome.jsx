@@ -1704,7 +1704,8 @@ export default function DashboardHome({
   }, [cardsWithOverrides, topCardsOrder]);
 
   return (
-    <div className="p-5 md:p-7 bg-gradient-to-b from-slate-100 to-blue-50/60">
+    <div className="flex-1 min-h-0 bg-slate-50 relative overflow-y-auto scroll-smooth">
+      <div className="p-5 md:p-7 bg-gradient-to-b from-slate-100 to-blue-50/60">
       <div className="rounded-lg p-5 md:p-7 border border-slate-200 bg-white shadow-sm">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
@@ -2537,6 +2538,7 @@ export default function DashboardHome({
           </div>
         )}
       </div>
+    </div>
     </div>
   );
 }

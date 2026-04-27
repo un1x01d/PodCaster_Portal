@@ -1390,7 +1390,7 @@ export default function App() {
             DashboardHeader logo links to /.
         */}
 
-        <main className="flex-1 min-h-0 overflow-auto relative">
+        <main className="flex-1 min-h-0 relative">
           <Routes>
             <Route path="/" element={
               <ErrorBoundary>

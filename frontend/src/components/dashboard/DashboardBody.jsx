@@ -128,15 +128,28 @@ export default function DashboardBody(props) {
     const secondaryHeaderRef = useRef(null);
 
     // Sync header scroll with horizontal data scroll
-    const handlePrimaryScroll = ({ scrollLeft }) => {
+    const handlePrimaryScroll = ({ scrollLeft, scrollTop }) => {
         if (headerRef.current) {
             headerRef.current.scrollLeft = scrollLeft;
         }
+        if (comparisonOn && secondaryListRef.current) {
+            // Only sync if the position is significantly different to avoid loops
+            const currentSecondary = secondaryListRef.current.state?.scrollOffset || 0;
+            if (Math.abs(currentSecondary - scrollTop) > 1) {
+                secondaryListRef.current.scrollTo(scrollTop);
+            }
+        }
     };
 
-    const handleSecondaryScroll = ({ scrollLeft }) => {
+    const handleSecondaryScroll = ({ scrollLeft, scrollTop }) => {
         if (secondaryHeaderRef.current) {
             secondaryHeaderRef.current.scrollLeft = scrollLeft;
+        }
+        if (comparisonOn && primaryListRef.current) {
+            const currentPrimary = primaryListRef.current.state?.scrollOffset || 0;
+            if (Math.abs(currentPrimary - scrollTop) > 1) {
+                primaryListRef.current.scrollTo(scrollTop);
+            }
         }
     };
 
@@ -176,6 +189,9 @@ export default function DashboardBody(props) {
     const [primaryFields, setPrimaryFields] = useState([]);
     const [secondaryFields, setSecondaryFields] = useState([]);
 
+    const activePrimaryFields = primaryFields.length > 0 ? primaryFields : (displayHeaders || []);
+    const activeSecondaryFields = secondaryFields.length > 0 ? secondaryFields : (secondaryHeaders || []);
+
     // Reset fields when headers change
     useEffect(() => {
         if (displayHeaders?.length) {
@@ -191,6 +207,8 @@ export default function DashboardBody(props) {
 
     const primaryGridRef = useRef(null);
     const secondaryGridRef = useRef(null);
+    const primaryListRef = useRef(null);
+    const secondaryListRef = useRef(null);
 
     const handleMouseDown = (e) => {
         isResizingRef.current = true;
@@ -463,36 +481,6 @@ export default function DashboardBody(props) {
         return displayHeaders?.reduce((sum, h) => sum + (colWidths[h] || 180), 0) || 0;
     }, [displayHeaders, colWidths]);
 
-    // InnerElement forces the content width to enable horizontal scrolling
-    const InnerElement = useMemo(() => forwardRef(({ style, ...rest }, ref) => (
-        <div
-            ref={ref}
-            style={{
-                ...style,
-                width: `${totalRowWidth}px`,
-                position: 'relative'
-            }}
-            {...rest}
-        />
-    )), [totalRowWidth]);
-
-    // OuterElement intercepts scroll events to sync the header
-    const OuterElement = useMemo(() => forwardRef(({ onScroll, ...rest }, ref) => (
-        <div
-            ref={ref}
-            onScroll={(e) => {
-                // Pass event to react-window
-                onScroll(e);
-
-                // Sync header horizontal scroll
-                if (headerRef.current) {
-                    headerRef.current.scrollLeft = e.currentTarget.scrollLeft;
-                }
-            }}
-            {...rest}
-        />
-    )), []);
-
     // Non-admin users: show welcome screen until sheet is selected
     if (user.role !== "admin" && !sheetId) {
         return (
@@ -511,9 +499,11 @@ export default function DashboardBody(props) {
         );
     }
 
+    const hasChart = pivotOn || trendsOn || twoOn;
+
     // Admin or sheet selected: show normal dashboard
     return (
-        <div className="workspace-shell w-full h-full min-h-0 flex bg-slate-50 relative overflow-hidden pointer-events-auto">
+        <div className="workspace-shell w-full h-full min-h-0 flex bg-slate-50 relative pointer-events-auto">
             <aside
                 id="dashboard-left-menu"
                 aria-label="Dashboard actions menu"
@@ -1240,7 +1230,8 @@ export default function DashboardBody(props) {
                 </div>
             )}
 
-            <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-y-auto">
+            <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-y-auto scroll-smooth">
+                <div className="flex flex-col min-h-full">
 
             {/* Pivot Controls */}
             {pivotOn && (
@@ -1293,14 +1284,14 @@ export default function DashboardBody(props) {
                 />
             )}
 
-            <div className={`flex flex-col flex-1 min-h-0 bg-slate-50 ${comparisonOn ? 'overflow-hidden' : ''}`}>
-                <div id="split-container" className={`m-4 bg-white rounded-2xl shadow-2xl border border-gray-200 focus:ring-slate-100 relative z-0 flex-1 flex overflow-hidden ${comparisonOn ? 'gap-0' : 'flex-col'}`}>
+            <div className={`flex flex-col flex-1 min-h-0 bg-slate-50`}>
+                <div id="split-container" className={`m-4 bg-white rounded-2xl shadow-2xl border border-gray-200 focus:ring-slate-100 relative z-0 flex-1 flex overflow-hidden ${comparisonOn ? 'flex-row gap-0' : 'flex-col'} ${hasChart ? 'min-h-[750px]' : 'min-h-[600px]'}`} style={comparisonOn ? { height: '650px' } : {}}>
                     
                     {/* PRIMARY GRID */}
                     <div 
                         ref={primaryGridRef}
-                        className={`flex flex-col h-full min-h-0 min-w-0 ${!comparisonOn ? 'flex-1' : ''}`}
-                        style={comparisonOn ? { width: `${splitWidth}%` } : {}}
+                        className={`flex flex-col h-full min-h-0 min-w-0 ${comparisonOn ? '' : 'flex-1'}`}
+                        style={comparisonOn ? { width: `${splitWidth}%`, flex: `0 0 ${splitWidth}%` } : {}}
                     >
                         {sortedData?.length > 0 ? (
                             <>
@@ -1311,11 +1302,11 @@ export default function DashboardBody(props) {
                                 <div className="flex-1 w-full flex flex-col min-h-0">
                                     <div
                                         className="flex bg-slate-100 border-b border-slate-200 shadow-sm z-10 overflow-hidden shrink-0 h-10 items-center no-scrollbar"
-                                        style={{ width: "100%", direction: comparisonOn ? 'rtl' : 'ltr' }}
+                                        style={{ width: "100%" }}
                                         ref={headerRef}
                                     >
-                                        <div style={{ display: 'flex', width: (primaryFields.length * 180), height: '100%', direction: 'ltr' }}>
-                                            {primaryFields.map((h) => (
+                                        <div style={{ display: 'flex', width: (activePrimaryFields.length * 180), height: '100%' }}>
+                                            {activePrimaryFields.map((h) => (
                                                 <div
                                                     key={h}
                                                     style={{ width: colWidths[h] || 180, minWidth: colWidths[h] || 180 }}
@@ -1330,37 +1321,40 @@ export default function DashboardBody(props) {
                                     </div>
 
                                     <div className="flex-1 min-h-0 relative">
-                                        <AutoSizer>
-                                            {({ height, width }) => (
-                                                <List
-                                                    height={height}
-                                                    itemCount={sortedData.length}
-                                                    itemSize={36}
-                                                    width={width}
-                                                    onItemsRendered={handleItemsRendered}
-                                                    onScroll={handlePrimaryScroll}
-                                                    innerElementType={InnerElement}
-                                                    outerElementType={OuterElement}
-                                                    style={{ direction: comparisonOn ? 'rtl' : 'ltr' }}
-                                                >
-                                                    {({ index, style }) => {
-                                                        const row = sortedData[index];
-                                                        return (
-                                                            <div
-                                                                style={{ ...style, width: (primaryFields.length * 180), minWidth: "100%", direction: 'ltr' }}
-                                                                className={`flex ${index % 2 === 1 ? "bg-slate-50" : "bg-white"} hover:bg-indigo-50/50 transition-colors border-b border-slate-100 items-center h-8`}
-                                                            >
-                                                                {primaryFields.map((h) => (
-                                                                    <div key={h} style={{ width: colWidths[h] || 180, minWidth: colWidths[h] || 180 }} className="border-r border-slate-100 px-3 text-[11px] text-slate-700 truncate h-full flex items-center">
-                                                                        {typeof row[h] === 'number' ? formatSmart(row[h], h) : renderMaybeDate(h, row[h])}
-                                                                    </div>
-                                                                ))}
-                                                            </div>
-                                                        );
-                                                    }}
-                                                </List>
-                                            )}
-                                        </AutoSizer>
+                                        <div className="absolute inset-0">
+                                            <AutoSizer key={comparisonOn ? 'split-primary' : 'single-primary'}>
+                                                {({ height, width }) => (
+                                                    <List
+                                                        ref={primaryListRef}
+                                                        height={height}
+                                                        itemCount={sortedData.length}
+                                                        itemSize={36}
+                                                        width={width}
+                                                        onItemsRendered={handleItemsRendered}
+                                                        onScroll={handlePrimaryScroll}
+                                                        innerElementType={({ style, ...rest }) => (
+                                                            <div style={{ ...style, width: activePrimaryFields.length * 180, position: 'relative' }} {...rest} />
+                                                        )}
+                                                    >
+                                                        {({ index, style }) => {
+                                                            const row = sortedData[index];
+                                                            return (
+                                                                <div
+                                                                    style={{ ...style, width: (activePrimaryFields.length * 180), minWidth: "100%" }}
+                                                                    className={`flex ${index % 2 === 1 ? "bg-slate-50" : "bg-white"} hover:bg-indigo-50/50 transition-colors border-b border-slate-100 items-center h-8`}
+                                                                >
+                                                                    {activePrimaryFields.map((h) => (
+                                                                        <div key={h} style={{ width: colWidths[h] || 180, minWidth: colWidths[h] || 180 }} className="border-r border-slate-100 px-3 text-[11px] text-slate-700 truncate h-full flex items-center">
+                                                                            {typeof row[h] === 'number' ? formatSmart(row[h], h) : renderMaybeDate(h, row[h])}
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            );
+                                                        }}
+                                                    </List>
+                                                )}
+                                            </AutoSizer>
+                                        </div>
                                         {isBatchLoading && (
                                             <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-indigo-600 text-white px-3 py-1 rounded-full text-[9px] font-bold shadow-lg animate-bounce z-50">
                                                 Loading rows...
@@ -1389,7 +1383,7 @@ export default function DashboardBody(props) {
                         <div 
                             ref={secondaryGridRef}
                             className="flex flex-col h-full min-h-0 min-w-0 bg-slate-50/30"
-                            style={{ width: `${100 - splitWidth}%` }}
+                            style={{ width: `${100 - splitWidth}%`, flex: `1 1 ${100 - splitWidth}%` }}
                         >
                             {secondaryData?.length > 0 ? (
                                 <>
@@ -1402,8 +1396,8 @@ export default function DashboardBody(props) {
                                             className="flex bg-slate-200/50 border-b border-slate-200 shadow-sm z-10 overflow-hidden shrink-0 h-10 items-center"
                                             ref={secondaryHeaderRef}
                                         >
-                                            <div style={{ display: 'flex', width: secondaryFields.length * 180, height: '100%' }}>
-                                                {secondaryFields.map((h) => (
+                                            <div style={{ display: 'flex', width: activeSecondaryFields.length * 180, height: '100%' }}>
+                                                {activeSecondaryFields.map((h) => (
                                                     <div key={h} style={{ width: 180, minWidth: 180 }} className="px-3 py-1.5 text-[11px] font-bold text-slate-700 border-r border-slate-200 truncate h-full flex items-center">
                                                         {h}
                                                     </div>
@@ -1412,34 +1406,37 @@ export default function DashboardBody(props) {
                                         </div>
 
                                         <div className="flex-1 min-h-0 relative">
-                                            <AutoSizer>
-                                                {({ height, width }) => (
-                                                    <List
-                                                        height={height}
-                                                        itemCount={secondaryData.length}
-                                                        itemSize={36}
-                                                        width={width}
-                                                        onItemsRendered={handleSecondaryItemsRendered}
-                                                        onScroll={handleSecondaryScroll}
-                                                        innerElementType={({ style, ...rest }) => (
-                                                            <div style={{ ...style, width: secondaryFields.length * 180, position: 'relative' }} {...rest} />
-                                                        )}
-                                                    >
-                                                        {({ index, style }) => {
-                                                            const row = secondaryData[index];
-                                                            return (
-                                                                <div style={style} className={`flex ${index % 2 === 1 ? "bg-slate-100/30" : "bg-white"} border-b border-slate-100 items-center h-8`}>
-                                                                    {secondaryFields.map((h) => (
-                                                                        <div key={h} style={{ width: 180, minWidth: 180 }} className="border-r border-slate-100 px-3 text-[11px] text-slate-600 truncate">
-                                                                            {typeof row[h] === 'number' ? formatSmart(row[h], h) : renderMaybeDate(h, row[h])}
-                                                                        </div>
-                                                                    ))}
-                                                                </div>
-                                                            );
-                                                        }}
-                                                    </List>
-                                                )}
-                                            </AutoSizer>
+                                            <div className="absolute inset-0">
+                                                <AutoSizer key="split-secondary">
+                                                    {({ height, width }) => (
+                                                        <List
+                                                            ref={secondaryListRef}
+                                                            height={height}
+                                                            itemCount={secondaryData.length}
+                                                            itemSize={36}
+                                                            width={width}
+                                                            onItemsRendered={handleSecondaryItemsRendered}
+                                                            onScroll={handleSecondaryScroll}
+                                                            innerElementType={({ style, ...rest }) => (
+                                                                <div style={{ ...style, width: activeSecondaryFields.length * 180, position: 'relative' }} {...rest} />
+                                                            )}
+                                                        >
+                                                            {({ index, style }) => {
+                                                                const row = secondaryData[index];
+                                                                return (
+                                                                    <div style={style} className={`flex ${index % 2 === 1 ? "bg-slate-100/30" : "bg-white"} border-b border-slate-100 items-center h-8`}>
+                                                                        {activeSecondaryFields.map((h) => (
+                                                                            <div key={h} style={{ width: 180, minWidth: 180 }} className="border-r border-slate-100 px-3 text-[11px] text-slate-600 truncate">
+                                                                                {typeof row[h] === 'number' ? formatSmart(row[h], h) : renderMaybeDate(h, row[h])}
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                );
+                                                            }}
+                                                        </List>
+                                                    )}
+                                                </AutoSizer>
+                                            </div>
                                             {secondaryIsBatchLoading && (
                                                 <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-emerald-600 text-white px-3 py-1 rounded-full text-[9px] font-bold shadow-lg animate-bounce z-50">
                                                     Loading rows...
@@ -1461,6 +1458,7 @@ export default function DashboardBody(props) {
                             )}
                         </div>
                     )}
+                </div>
                 </div>
             </div>
             </div>
