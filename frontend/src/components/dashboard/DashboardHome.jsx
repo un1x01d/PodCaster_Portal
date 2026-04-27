@@ -71,11 +71,22 @@ function formatSparkValue(value, type, locale) {
   return formatMoneyIfLarge(numeric, locale);
 }
 
-function formatPinnedDisplayValue(raw) {
+function formatPinnedDisplayValue(raw, title = "") {
   const text = String(raw ?? "").trim();
   if (!text) return "";
-  const numeric = Number(text.replace(/,/g, ""));
+  const numeric = Number(text.replace(/[$,]/g, ""));
   if (!Number.isFinite(numeric)) return text;
+
+  const isCurrency = title && /price|cost|revenue|income|profit|earnings|salary|wage|amount|balance|total|summ|ebitda|val|fee|tax|debt|loan|payment|capital|asset|liability|equity|budget|spend|cash|funding|sales|purchase|gross|net|operating|opex|capex|amortization|depreciation|interest|dividend|expenditure|cogs|доход|выручка|прибуток|оборот|расход|витрати|затраты|опекс|капекс/i.test(String(title));
+  const isPercent = title && /percent|margin|rate|ratio|%|markup|yield|growth|change|variance|contribution|roi|roe|roa|discount|utilization|liquidity|solvency|leverage|turnover/i.test(String(title));
+
+  if (isCurrency) {
+    return "$" + numeric.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  if (isPercent) {
+    return numeric.toFixed(2) + "%";
+  }
+
   return numeric.toLocaleString("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
@@ -1761,11 +1772,8 @@ export default function DashboardHome({
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
             <h2 className="text-2xl md:text-3xl font-bold text-slate-900 tracking-tight">
-              {ui.dashboardOverview}
+              Hello {user?.name?.split(' ')[0] || user?.email?.split('@')[0]}!
             </h2>
-            <p className="text-slate-600 mt-1 text-sm md:text-base">
-              {formatTemplate(ui.dashboardSubtitle, { user: user?.email || "current user" })}
-            </p>
           </div>
           <div className="flex gap-3">
             <Link
@@ -1867,7 +1875,7 @@ export default function DashboardHome({
                               {String(pinnedTitleDisplayMap[idx] || item.title || `Value ${idx + 1}`)}
                             </div>
                             <div className="mt-1 rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] font-semibold text-slate-900">
-                              {formatPinnedDisplayValue(item.value) || "—"}
+                              {formatPinnedDisplayValue(item.value, pinnedTitleDisplayMap[idx] || item.title) || "—"}
                             </div>
                           </div>
                         ))}

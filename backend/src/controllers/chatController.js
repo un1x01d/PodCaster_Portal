@@ -9,7 +9,6 @@ const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "6000
 let SEMANTIC_CACHE = null;
 let RATIO_CACHE = null;
 let CACHE_TS = 0;
-const CACHE_TTL = 30000;
 
 const CHAT_SAMPLE_ROWS = 600;
 
@@ -169,7 +168,7 @@ async function computeDeterministicAnswer(operation, rows, targetColumn, groupBy
 
   const matchedRatio = ratios.find(r => r.match.test(q));
   if (matchedRatio) {
-    const resolvedCols = matchedRatio.cols.map(c => resolveColumn(headers, c, rows.slice(0, 10)));
+    const resolvedCols = await Promise.all(matchedRatio.cols.map(c => resolveColumn(headers, c, rows.slice(0, 10))));
     if (resolvedCols.every(c => !!c)) {
         const sums = resolvedCols.map(c => rows.reduce((acc, r) => acc + (toNum(r[c]) || 0), 0));
         if (sums.every(s => s !== 0 || matchedRatio.key === "rainy_day")) {
@@ -806,67 +805,175 @@ function naturalizeNumbersForTTS(text = "", locale = "en") {
   let out = String(text || "");
   const lang = (locale || "en").split("-")[0].toLowerCase();
 
-  // 1. Expand growth/change indicators and common abbreviations with native words
-  if (lang === "en") {
-    out = out.replace(/\bvs\b/gi, "versus");
-    out = out.replace(/\(\+/g, "(plus ");
-    out = out.replace(/\(\-/g, "(minus ");
-  } else if (lang === "uk") {
+  if (lang === "uk") {
     out = out.replace(/\bvs\b/gi, "проти");
+    out = out.replace(/\bNet Income\b/gi, "Чистий прибуток");
+    out = out.replace(/\bRevenue\b/gi, "Виручка");
+    out = out.replace(/\bAnalysis\b/gi, "Аналіз");
+    out = out.replace(/\bSummary\b/gi, "Підсумок");
+    out = out.replace(/\bGrowth\b/gi, "Зростання");
+    out = out.replace(/\bTotal\b/gi, "Разом");
+    // Handle currency with cents
+    out = out.replace(/\$([\d,]+)\.(\d{2})\b/g, "$1 доларів та $2 центів");
+    out = out.replace(/\$([\d,.\s]+)\b/g, "$1 доларів");
+    out = out.replace(/(\d+(?:[.,]\d+)?)%/g, "$1 відсотків");
     out = out.replace(/\(\+/g, "(плюс ");
     out = out.replace(/\(\-/g, "(мінус ");
     out = out.replace(/\b(20\d{2})\b/g, "$1 року");
-    out = out.replace(/\bRevenue\b/gi, "Виручка");
-    out = out.replace(/\bAnalysis\b/gi, "Аналіз");
-    out = out.replace(/\bYear over Year\b/gi, "Рік до року");
-    out = out.replace(/\bSummary\b/gi, "Підсумок");
   } else if (lang === "ru") {
     out = out.replace(/\bvs\b/gi, "против");
+    out = out.replace(/\bNet Income\b/gi, "Чистая прибыль");
+    out = out.replace(/\bRevenue\b/gi, "Выручка");
+    out = out.replace(/\bAnalysis\b/gi, "Анализ");
+    out = out.replace(/\bSummary\b/gi, "Итог");
+    out = out.replace(/\bGrowth\b/gi, "Рост");
+    out = out.replace(/\bTotal\b/gi, "Всего");
+    // Handle currency with cents
+    out = out.replace(/\$([\d,]+)\.(\d{2})\b/g, "$1 долларов и $2 центов");
+    out = out.replace(/\$([\d,.\s]+)\b/g, "$1 долларов");
+    out = out.replace(/(\d+(?:[.,]\d+)?)%/g, "$1 процентов");
     out = out.replace(/\(\+/g, "(плюс ");
     out = out.replace(/\(\-/g, "(минус ");
     out = out.replace(/\b(20\d{2})\b/g, "$1 года");
-    out = out.replace(/\bRevenue\b/gi, "Выручка");
-    out = out.replace(/\bAnalysis\b/gi, "Анализ");
-    out = out.replace(/\bYear over Year\b/gi, "Год к году");
-    out = out.replace(/\bSummary\b/gi, "Итог");
   }
-
-  // 2. Currency expansion: handle commas and add a pause after dollars
-  if (lang === "en") {
-    out = out.replace(/\$([\d,]+)\.(\d{2})\b/g, "$1 dollars, and $2 cents");
-    out = out.replace(/\$([\d,]+)\b/g, "$1 dollars,");
-  } else if (lang === "uk") {
-    out = out.replace(/\$([\d,]+)\.(\d{2})\b/g, "$1 доларів, та $2 центів");
-    out = out.replace(/\$([\d,]+)\b/g, "$1 доларів,");
-  } else if (lang === "ru") {
-    out = out.replace(/\$([\d,]+)\.(\d{2})\b/g, "$1 долларов, и $2 центов");
-    out = out.replace(/\$([\d,]+)\b/g, "$1 долларов,");
-  }
-
-  // 3. Percent expansion: 12.34% -> 12.34 percent
-  if (lang === "en") {
+ else {
+    // English defaults
+    out = out.replace(/\bvs\b/gi, "versus");
+    out = out.replace(/\$([\d,.]+)\b/g, "$1 dollars");
     out = out.replace(/(\d+(?:\.\d+)?)%/g, "$1 percent");
-  } else if (lang === "uk") {
-    out = out.replace(/(\d+(?:\.\d+)?)%/g, "$1 відсоток");
-  } else if (lang === "ru") {
-    out = out.replace(/(\d+(?:\.\d+)?)%/g, "$1 процент");
+    out = out.replace(/\(\+/g, "(plus ");
+    out = out.replace(/\(\-/g, "(minus ");
   }
 
   return out;
 }
 
+function cyrillicizeNumbers(text = "", lang = "en") {
+  if (lang !== "ru" && lang !== "uk") return text;
+  let out = String(text || "");
+
+  // Simple phonetic mapping for basic numbers to force Slavic engine context
+  const ruMap = {
+    "0": "ноль", "1": "один", "2": "два", "3": "три", "4": "четыре", "5": "пять",
+    "6": "шесть", "7": "семь", "8": "восемь", "9": "девять", "10": "десять"
+  };
+  const ukMap = {
+    "0": "нуль", "1": "один", "2": "два", "3": "три", "4": "чотири", "5": "п'ять",
+    "6": "шість", "7": "сім", "8": "вісім", "9": "дев'ять", "10": "десять"
+  };
+
+  const map = lang === "ru" ? ruMap : ukMap;
+
+  // We only cyrillicize small digits to keep the engine in native mode without making text massive
+  return out.replace(/\b(\d)\b/g, (m) => map[m] || m);
+}
+
+function phoneticExpandSlavicNumbers(text = "", lang = "ru") {
+  let out = String(text || "");
+  
+  // To ensure the engine says "thousands" correctly, we insert the word after the group
+  // Example: 43,846,658.62 -> 43 миллиона 846 тысяч 658 долларов и 62 цента
+  
+  const rules = lang === "ru" ? {
+    million: "миллиона",
+    thousand: "тысяч",
+    dollar: "долларов",
+    cent: "центов",
+    and: "и"
+  } : {
+    million: "мільйона",
+    thousand: "тисяч",
+    dollar: "доларів",
+    cent: "центів",
+    and: "та"
+  };
+
+  // Expand Millions
+  out = out.replace(/\b(\d{1,3})[,\s](\d{3})[,\s](\d{3})\b/g, `$1 ${rules.million} $2 ${rules.thousand} $3`);
+  // Expand Thousands
+  out = out.replace(/\b(\d{1,3})[,\s](\d{3})\b/g, `$1 ${rules.thousand} $2`);
+  
+  return out;
+}
+
+function slavicNumberToWords(num, lang = "ru") {
+  const n = Math.floor(Math.abs(num));
+  if (n === 0) return lang === "ru" ? "ноль" : "нуль";
+
+  const ru = {
+    ones: ["", "один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять"],
+    teens: ["десять", "одиннадцать", "двенадцать", "тринадцать", "четырнадцать", "пятнадцать", "шестнадцать", "семнадцать", "восемнадцать", "девятнадцать"],
+    tens: ["", "", "двадцать", "тридцать", "сорок", "пятьдесят", "шестьдесят", "семьдесят", "восемьдесят", "девяносто"],
+    hundreds: ["", "сто", "двести", "триста", "четыреста", "пятьсот", "шестьсот", "семьсот", "восемьсот", "девятьсот"]
+  };
+  
+  const uk = {
+    ones: ["", "один", "два", "три", "чотири", "п'ять", "шість", "сім", "вісім", "дев'ять"],
+    teens: ["десять", "одинадцять", "дванадцять", "тринадцять", "чотирнадцять", "п'ятнадцять", "шістнадцять", "сімнадцять", "вісімнадцять", "дев'ятнадцять"],
+    tens: ["", "", "двадцять", "тридцять", "сорок", "п'ятдесят", "шістдесят", "сімдесят", "вісімдесят", "дев'яносто"],
+    hundreds: ["", "сто", "двісті", "триста", "чотириста", "п'ятсот", "шістсот", "сімсот", "вісімсот", "дев'ятсот"]
+  };
+
+  const words = lang === "ru" ? ru : uk;
+
+  function convertSmall(val) {
+    if (val < 10) return words.ones[val];
+    if (val < 20) return words.teens[val - 10];
+    if (val < 100) return (words.tens[Math.floor(val / 10)] + " " + words.ones[val % 10]).trim();
+    if (val < 1000) return (words.hundreds[Math.floor(val / 100)] + " " + convertSmall(val % 100)).trim();
+    return "";
+  }
+
+  // Handle Thousands, Millions, Billions
+  const parts = [];
+  const billions = Math.floor(n / 1000000000);
+  const millions = Math.floor((n % 1000000000) / 1000000);
+  const thousands = Math.floor((n % 1000000) / 1000);
+  const remainder = n % 1000;
+
+  if (billions > 0) parts.push(convertSmall(billions) + (lang === "ru" ? " миллиардов" : " мільярдів"));
+  if (millions > 0) parts.push(convertSmall(millions) + (lang === "ru" ? " миллионов" : " мільйонів"));
+  if (thousands > 0) parts.push(convertSmall(thousands) + (lang === "ru" ? " тысяч" : " тисяч"));
+  if (remainder > 0 || parts.length === 0) parts.push(convertSmall(remainder));
+
+  return parts.join(" ").trim();
+}
+
+function expandFinancialTextPhonetically(text = "", lang = "ru") {
+    let out = String(text || "");
+    const rules = lang === "ru" ? { and: "и" } : { and: "та" };
+
+    // Target currency with cents: (digits) (unit) (и/та) (digits) (cents)
+    // We already expanded the units in naturalizeNumbersForTTS, so we look for those patterns
+    // Example: "123 доларів та 45 центів" -> "сто двадцять три доларів та сорок п'ять центів"
+    
+    return out.replace(/(\d+)\s?(миллиона|миллионов|мільйона|мільйонів|тысяч|тисяч|доларів|долларов|процентов|відсотків|центів|центов)/g, (m, num, unit) => {
+        return slavicNumberToWords(parseInt(num), lang) + " " + unit;
+    });
+}
+
 export async function getChatAudio(req, res) {
-  const { text, locale } = req.body;
+  let { text, locale } = req.body;
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey || !text) return res.status(400).json({ error: "missing_params" });
+
+  // Strip Markdown markers before TTS
+  text = text.replace(/\*/g, "");
 
   let voice = "nova"; 
   const lang = (locale || "en").split("-")[0].toLowerCase();
   if (lang === "es") voice = "shimmer"; 
-  if (lang === "uk") voice = "alloy";
-  if (lang === "ru") voice = "alloy";
+  if (lang === "uk") voice = "nova";
+  if (lang === "ru") voice = "nova";
   
   let cleanedText = naturalizeNumbersForTTS(text, locale);
+  
+  if (lang === "uk" || lang === "ru") {
+      cleanedText = phoneticExpandSlavicNumbers(cleanedText, lang);
+      cleanedText = expandFinancialTextPhonetically(cleanedText, lang); // NEW: Convert digits to words
+      cleanedText = cyrillicizeNumbers(cleanedText, lang);
+  }
+
   if (lang === "uk") cleanedText = normalizeUkrainianSpeechNumbers(normalizeSlavicGroupedNumbers(cleanedText));
   if (lang === "ru") {
     cleanedText = normalizeSlavicGroupedNumbers(cleanedText);
@@ -880,7 +987,7 @@ export async function getChatAudio(req, res) {
         model: lang === "en" ? "tts-1" : "tts-1-hd", 
         input: cleanedText, 
         voice,
-        speed: 0.9
+        speed: 0.85
       }),
     });
 
@@ -953,18 +1060,19 @@ export async function chatQuery(req, res) {
     const headers = selectedAugmented.headers || [];
     const baseRows = selectedAugmented.rows || [];
 
-    const aiFilters = (ai?.filters || []).map(f => ({
-      column: resolveColumn(headers, f.column, sampleRows),
+    const aiFilters = await Promise.all((ai?.filters || []).map(async f => ({
+      column: await resolveColumn(headers, f.column, sampleRows),
       operator: f.operator || "contains",
       value: f.value
-    })).filter(f => f.column);
+    })));
+    const filteredAiFilters = aiFilters.filter(f => f.column);
 
-    const matchedRows = applyFilters(baseRows, aiFilters);
+    const matchedRows = applyFilters(baseRows, filteredAiFilters);
     
     // Contextual Inheritance: Inherit Operation, Target & GroupBy
     let resolvedOperation = (ai?.operation || "none").toLowerCase();
-    let resolvedTarget = resolveColumn(headers, ai?.target_column, sampleRows);
-    let resolvedGroupBy = resolveColumn(headers, ai?.group_by, sampleRows);
+    let resolvedTarget = await resolveColumn(headers, ai?.target_column, sampleRows);
+    let resolvedGroupBy = await resolveColumn(headers, ai?.group_by, sampleRows);
     
     if (Array.isArray(conversationHistory) && conversationHistory.length > 0) {
         const lastTurn = conversationHistory[conversationHistory.length - 1];
@@ -980,7 +1088,7 @@ export async function chatQuery(req, res) {
             const lastWithTarget = [...conversationHistory].reverse().find(h => h.target_column || h.meta?.resolvedTarget);
             if (lastWithTarget) {
                 const rawTarget = lastWithTarget.target_column || lastWithTarget.meta?.resolvedTarget;
-                resolvedTarget = resolveColumn(headers, rawTarget, sampleRows);
+                resolvedTarget = await resolveColumn(headers, rawTarget, sampleRows);
             }
         }
 
@@ -989,7 +1097,7 @@ export async function chatQuery(req, res) {
             const lastWithGroupBy = [...conversationHistory].reverse().find(h => h.group_by || h.meta?.resolvedGroupBy);
             if (lastWithGroupBy) {
                 const rawGroupBy = lastWithGroupBy.group_by || lastWithGroupBy.meta?.resolvedGroupBy;
-                resolvedGroupBy = resolveColumn(headers, rawGroupBy, sampleRows);
+                resolvedGroupBy = await resolveColumn(headers, rawGroupBy, sampleRows);
             }
         }
     }
@@ -998,9 +1106,9 @@ export async function chatQuery(req, res) {
 
     const isChartOp = ["chart", "plot", "trend"].includes(ai?.operation);
     const chart = (isChartOp && ai?.chart) ? {
-      dateColumn: resolveColumn(headers, ai.chart.date_column, sampleRows),
-      valueColumn: resolveColumn(headers, ai.chart.value_column, sampleRows),
-      segmentBy: resolveColumn(headers, ai.chart.segment_by, sampleRows),
+      dateColumn: await resolveColumn(headers, ai.chart.date_column, sampleRows),
+      valueColumn: await resolveColumn(headers, ai.chart.value_column, sampleRows),
+      segmentBy: await resolveColumn(headers, ai.chart.segment_by, sampleRows),
       aggregation: ai.chart.aggregation || "sum"
     } : null;
 
