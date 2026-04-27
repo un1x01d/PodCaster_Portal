@@ -1390,7 +1390,7 @@ export default function App() {
             DashboardHeader logo links to /.
         */}
 
-        <main className="flex-1 min-h-0 relative">
+        <main className="flex-1 min-h-0 relative flex flex-col overflow-y-auto">
           <Routes>
             <Route path="/" element={
               <ErrorBoundary>
@@ -1642,7 +1642,7 @@ export default function App() {
               user?.role === "admin"
                 ? (
                   <ErrorBoundary>
-                    <div className="pt-0"><UserManagement token={token} user={user} sheetId={sheetId} /></div>
+                    <div className="flex-1 min-h-0 flex flex-col"><UserManagement token={token} user={user} sheetId={sheetId} /></div>
                   </ErrorBoundary>
                 )
                 : <div className="p-8 text-center text-gray-500">Access denied. Admin only.</div>

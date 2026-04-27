@@ -503,7 +503,7 @@ export default function DashboardBody(props) {
 
     // Admin or sheet selected: show normal dashboard
     return (
-        <div className="workspace-shell w-full h-full min-h-0 flex bg-slate-50 relative pointer-events-auto">
+        <div className="workspace-shell w-full h-full min-h-0 flex bg-slate-50 relative pointer-events-auto overflow-hidden">
             <aside
                 id="dashboard-left-menu"
                 aria-label="Dashboard actions menu"

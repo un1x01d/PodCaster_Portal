@@ -290,6 +290,9 @@ export async function uploadSheet(req, res) {
                 });
             }
 
+            // Deactivate other sheets (atomic within transaction)
+            await client.query("UPDATE sheets SET active = FALSE WHERE active = TRUE");
+
             // Insert Sheet Record
             await client.query(
                 `INSERT INTO sheets (id, headers, active, filename, display_name, folder_id, stored_path, tab_name, tabs) 
