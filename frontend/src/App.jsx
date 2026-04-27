@@ -96,6 +96,9 @@ export default function App() {
   const [data, setData] = useState([]);
   const [headers, setHeaders] = useState([]);
   const [sortConfig, setSortConfig] = useState(null);
+  const [isBatchLoading, setIsBatchLoading] = useState(false);
+  const [hasMoreData, setHasMoreData] = useState(true);
+  const BATCH_SIZE = 50;
 
   // column filters
   const [columnFilters, setColumnFilters] = useState({});
@@ -613,19 +616,29 @@ export default function App() {
     }
   };
 
-  const applyLoadedRows = (sid, raw, preserveFilters = false) => {
+  const applyLoadedRows = (sid, raw, preserveFilters = false, append = false) => {
     if (!raw || !Array.isArray(raw)) {
       console.warn("loadData: response is not an array", raw);
-      setData([]);
-      setHeaders([]);
+      if (!append) {
+        setData([]);
+        setHeaders([]);
+      }
       return;
     }
-    setData(raw);
-    const heads = raw.length ? Object.keys(raw[0]) : [];
-    setHeaders(heads);
+    
+    if (append) {
+        setData(prev => [...prev, ...raw]);
+        if (raw.length < BATCH_SIZE) setHasMoreData(false);
+    } else {
+        setData(raw);
+        const heads = raw.length ? Object.keys(raw[0]) : [];
+        setHeaders(heads);
+        setHasMoreData(raw.length >= BATCH_SIZE);
+    }
+
     setSheetId(sid);
     localStorage.setItem("sheetId", sid);
-    if (!preserveFilters) {
+    if (!preserveFilters && !append) {
       setColumnFilters({});
       setOpenFilterCol(null);
     }
@@ -635,7 +648,10 @@ export default function App() {
 
   const loadData = async (sid = sheetId, preserveFilters = false, tabName = null, options = {}) => {
     if (!sid) return;
-    const { preferCache = true, limit, offset } = options;
+    const { preferCache = true, limit = BATCH_SIZE, offset = 0, append = false } = options;
+    
+    if (append) setIsBatchLoading(true);
+
     try {
       const params = new URLSearchParams();
       if (tabName) params.append("tab", tabName);
@@ -664,12 +680,12 @@ export default function App() {
         params.append("filters", JSON.stringify(serializableFilters));
       }
 
-      if (limit !== undefined) params.append("limit", limit);
-      if (offset !== undefined) params.append("offset", offset);
+      params.append("limit", limit);
+      params.append("offset", offset);
 
       const cacheKey = getDataCacheKey(sid, tabName) + "?" + params.toString();
-      if (preferCache && tabDataCacheRef.current[cacheKey]) {
-        applyLoadedRows(sid, tabDataCacheRef.current[cacheKey], preserveFilters);
+      if (preferCache && !append && tabDataCacheRef.current[cacheKey]) {
+        applyLoadedRows(sid, tabDataCacheRef.current[cacheKey], preserveFilters, false);
         return;
       }
 
@@ -679,12 +695,25 @@ export default function App() {
         headers: { Authorization: `Bearer ${token}` },
       });
       const raw = res.data;
-      tabDataCacheRef.current[cacheKey] = Array.isArray(raw) ? raw : [];
-      applyLoadedRows(sid, raw, preserveFilters);
+      if (!append) {
+        tabDataCacheRef.current[cacheKey] = Array.isArray(raw) ? raw : [];
+      }
+      applyLoadedRows(sid, raw, preserveFilters, append);
     } catch (e) {
       console.error(e);
-      alert("Failed to load data");
+      // alert("Failed to load data");
+    } finally {
+      setIsBatchLoading(false);
     }
+  };
+
+  const onLoadMore = () => {
+    if (isBatchLoading || !hasMoreData || !sheetId) return;
+    loadData(sheetId, true, activeTab, { 
+        offset: data.length, 
+        append: true,
+        preferCache: false 
+    });
   };
 
   // Re-fetch data when sort, filters, or view changes (Server-side)
@@ -1549,6 +1578,8 @@ export default function App() {
                       onInsightOpenChart={applyChartConfig}
                       onInsightSaveView={saveInsightView}
                       fetchUniqueValues={fetchUniqueValues}
+                      onLoadMore={onLoadMore}
+                      isBatchLoading={isBatchLoading}
                     />
                     {sheetId && (
                     <SpreadsheetChatbot

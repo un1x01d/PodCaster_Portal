@@ -110,10 +110,19 @@ export default function DashboardBody(props) {
         onInsightApplyFilter,
         onInsightOpenChart,
         onInsightSaveView,
-        fetchUniqueValues
+        fetchUniqueValues,
+        onLoadMore,
+        isBatchLoading
     } = props;
 
     const headerRef = useRef(null);
+
+    // Detect near-end of scroll for infinite loading
+    const handleItemsRendered = ({ visibleStopIndex }) => {
+        if (visibleStopIndex >= sortedData.length - 15 && onLoadMore && !isBatchLoading) {
+            onLoadMore();
+        }
+    };
 
     // Internal State for Folders (fetched here to ensure freshness)
     const [folders, setFolders] = useState([]);
@@ -129,6 +138,30 @@ export default function DashboardBody(props) {
         danger: false
     });
     const [insightsOn, setInsightsOn] = useState(false);
+
+    // Comparison View State
+    const [comparisonOn, setComparisonOn] = useState(false);
+    const [secondarySheetId, setSecondarySheetId] = useState("");
+    const [secondaryData, setSecondaryData] = useState([]);
+    const [secondaryHeaders, setSecondaryHeaders] = useState([]);
+    const [secondaryLoading, setSecondaryLoading] = useState(false);
+
+    const fetchSecondaryData = async (sid) => {
+        if (!sid) return;
+        setSecondaryLoading(true);
+        try {
+            const res = await axios.get(`${API}/sheets/${sid}/data?limit=50`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            setSecondaryData(res.data || []);
+            const heads = res.data?.length ? Object.keys(res.data[0]) : [];
+            setSecondaryHeaders(heads);
+        } catch (e) {
+            console.error("Secondary load failed", e);
+        } finally {
+            setSecondaryLoading(false);
+        }
+    };
     const [drivePickerOpen, setDrivePickerOpen] = useState(false);
     const [driveEntries, setDriveEntries] = useState([]);
     const [driveLoading, setDriveLoading] = useState(false);
@@ -447,6 +480,41 @@ export default function DashboardBody(props) {
                                     >
                                         Refresh Data
                                     </button>
+
+                                    <div className="mt-2 border-t border-blue-800/30 pt-2 px-2">
+                                        <button 
+                                            className={`w-full flex items-center justify-between px-2 py-1.5 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${comparisonOn ? 'bg-indigo-600 text-white' : 'text-blue-300 hover:bg-blue-800/40'}`}
+                                            onClick={() => setComparisonOn(!comparisonOn)}
+                                        >
+                                            <span>Split-Screen Mode</span>
+                                            <span>{comparisonOn ? 'ON' : 'OFF'}</span>
+                                        </button>
+                                        {comparisonOn && (
+                                            <div className="mt-3 space-y-2 px-1">
+                                                <div className="flex items-center gap-2 mb-1">
+                                                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
+                                                    <label className="text-[9px] text-blue-200/70 uppercase font-black tracking-[0.1em]">Target File</label>
+                                                </div>
+                                                <SearchableSelect
+                                                    options={props.myFiles.map(f => ({ value: String(f.id), label: f.display_name || f.filename }))}
+                                                    value={secondarySheetId}
+                                                    onChange={(e) => {
+                                                        const sid = e.target.value;
+                                                        setSecondarySheetId(sid);
+                                                        fetchSecondaryData(sid);
+                                                    }}
+                                                    placeholder="Select sheet…"
+                                                    className="w-full"
+                                                    buttonClassName="!bg-white !border-slate-300 !text-slate-800 !h-8 !rounded-lg !text-[11px] !font-bold hover:!border-slate-400 transition-all shadow-sm"
+                                                    panelClassName="!rounded-xl !border-slate-200 !shadow-2xl"
+                                                    optionClassName="!rounded-md hover:!bg-indigo-50"
+                                                    optionTextClassName="!font-bold !text-[11px] !text-slate-800"
+                                                    searchInputClassName="!text-[11px] !font-bold !text-slate-900"
+                                                    panelWidth={210}
+                                                />
+                                            </div>
+                                        )}
+                                    </div>
                                     {user.role === "admin" ? (
                                         <details className="left-menu-disclosure" open>
                                             <summary className="left-menu-summary font-bold">
@@ -1098,169 +1166,140 @@ export default function DashboardBody(props) {
                 />
             )}
 
-            {/* Data Table */}
-            <div className="flex flex-col flex-1 min-h-0 bg-slate-50">
-                <div className="m-4 bg-white rounded-2xl shadow-2xl border border-gray-200 focus:ring-slate-100 relative z-0 flex-1 flex flex-col min-h-[500px] overflow-hidden">
-                    {sortedData?.length > 0 ? (
-                        <>
-                            <div className="sticky top-0 bg-slate-50/90 backdrop-blur text-slate-500 font-semibold border-b border-slate-200 z-10 px-4 py-2 text-xs uppercase tracking-wider flex justify-between items-center">
-                                {/* Filename display is now handled in Header mostly, but we can keep a breadcrumb here if needed. 
-                                    Or just empty. Original had 'Loaded: ...'. Keeping minimal.
-                                */}
-                                <span>Dataset: <b className="text-slate-800">{props.activeFilename || "Current Sheet"}</b></span>
-                            </div>
-
-                            {/* Virtualized Table Container */}
-                            <div className="flex-1 w-full flex flex-col min-h-0">
-
-                                {/* Headers Row (Flexible Height) */}
-                                <div
-                                    className="flex bg-slate-100 border-y border-slate-200 shadow-sm z-10 overflow-hidden shrink-0 h-10 items-center"
-                                    style={{ width: "100%" }}
-                                    ref={(el) => {
-                                        headerRef.current = el;
-                                        if (el && tableContainerRef.current) {
-                                            tableContainerRef.current.header = el;
-                                        }
-                                    }}
-                                >
-                                    {displayHeaders.map((h) => (
-                                        <div
-                                            key={h}
-                                            style={{ width: colWidths[h] || 180, minWidth: colWidths[h] || 180 }}
-                                            ref={(el) => {
-                                                if (!filterAnchorRefs.current) filterAnchorRefs.current = {};
-                                                filterAnchorRefs.current[h] = el;
-                                            }}
-                                            className="table-pro-text relative border-r border-slate-200 px-3 py-1.5 text-[12px] text-left cursor-pointer group flex items-center justify-between hover:bg-slate-200 transition-colors bg-slate-100 text-slate-800 font-semibold h-full"
-                                            onClick={(e) => {
-                                                if (openFilterCol === h) return;
-                                                const isFilterBtn = e.target.closest && e.target.closest(".filter-btn");
-                                                if (!isFilterBtn) requestSort(h);
-                                            }}
-                                        >
-                                            <span className="flex-1 font-semibold whitespace-nowrap leading-tight flex items-center gap-1">
-                                                <span>{h}</span>
-                                                {sortConfig?.key === h && (
-                                                    <span className="text-yellow-300 font-bold whitespace-nowrap">
-                                                        {sortConfig.direction === "asc" ? "▲" : "▼"}
-                                                    </span>
-                                                )}
-                                            </span>
-
-                                            <button
-                                                type="button"
-                                                ref={(el) => {
-                                                    if (!filterBtnRefs.current) filterBtnRefs.current = {};
-                                                    filterBtnRefs.current[h] = el;
-                                                }}
-                                                className={`filter-btn ml-2 text-[10px] h-6 px-1.5 rounded transition-all ${columnFilters[h] && columnFilters[h] instanceof Set && columnFilters[h].size > 0
-                                                    ? "bg-blue-100 text-blue-700 ring-2 ring-blue-200 font-bold"
-                                                    : "bg-slate-200 text-slate-500 hover:bg-slate-300 hover:text-slate-700 group-hover:bg-slate-200"
-                                                    }`}
-                                                title="Filter"
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    const next = openFilterCol === h ? null : h;
-                                                    setOpenFilterCol(next);
-                                                    if (next) fetchUniqueValues(h);
-                                                }}
-                                            >
-                                                ▼
-                                            </button>
-
-                                            {/* Filter Menu Rendering */}
-                                            {openFilterCol === h && (
-                                                <ColumnFilterMenu
-                                                    anchorMapRef={filterBtnRefs}
-                                                    columnKey={h}
-                                                    column={h}
-                                                    allValues={uniqueValuesByColumn[h] || []}
-                                                    appliedSelected={columnFilters[h] && columnFilters[h] instanceof Set ? columnFilters[h] : null}
-                                                    onApply={(col, set) => {
-                                                        setColumnFilters((prev) => {
-                                                            const next = { ...prev };
-                                                            if (set === null) delete next[col];
-                                                            else next[col] = new Set(set);
-                                                            return next;
-                                                        });
-                                                    }}
-                                                    onClear={(col) => {
-                                                        setColumnFilters((prev) => {
-                                                            const next = { ...prev };
-                                                            delete next[col];
-                                                            return next;
-                                                        });
-                                                    }}
-                                                    onClose={() => setOpenFilterCol(null)}
-                                                    tableContainerRef={tableContainerRef}
-                                                />
-                                            )}
-                                        </div>
-                                    ))}
-                                    {/* Spacer for vertical scrollbar compensation */}
-                                    <div style={{ minWidth: 100, flexShrink: 0 }}></div>
+            <div className={`flex flex-col flex-1 min-h-0 bg-slate-50 ${comparisonOn ? 'overflow-hidden' : ''}`}>
+                <div className={`m-4 bg-white rounded-2xl shadow-2xl border border-gray-200 focus:ring-slate-100 relative z-0 flex-1 flex overflow-hidden ${comparisonOn ? 'gap-0' : 'flex-col'}`}>
+                    
+                    {/* PRIMARY GRID */}
+                    <div className={`flex flex-col h-full min-h-0 min-w-0 ${comparisonOn ? 'flex-1 border-r border-slate-200' : 'flex-1'}`}>
+                        {sortedData?.length > 0 ? (
+                            <>
+                                <div className="sticky top-0 bg-slate-50/90 backdrop-blur text-slate-500 font-semibold border-b border-slate-200 z-10 px-4 py-2 text-[10px] uppercase tracking-wider flex justify-between items-center shrink-0">
+                                    <span>Primary: <b className="text-indigo-600">{props.activeFilename || "Current Sheet"}</b></span>
                                 </div>
 
-                                {/* Data List (Fills remaining space) */}
-                                <div className="flex-1 min-h-0">
-                                    <AutoSizer>
-                                        {({ height, width }) => (
-                                            <List
-                                                height={height}
-                                                itemCount={sortedData.length}
-                                                itemSize={36}
-                                                width={width}
-                                                outerRef={(el) => {
-                                                    tableContainerRef.current = el;
-                                                }}
-                                                innerElementType={InnerElement}
-                                                outerElementType={OuterElement}
+                                <div className="flex-1 w-full flex flex-col min-h-0">
+                                    <div
+                                        className="flex bg-slate-100 border-b border-slate-200 shadow-sm z-10 overflow-hidden shrink-0 h-10 items-center"
+                                        style={{ width: "100%" }}
+                                        ref={(el) => {
+                                            headerRef.current = el;
+                                        }}
+                                    >
+                                        {displayHeaders.map((h) => (
+                                            <div
+                                                key={h}
+                                                style={{ width: colWidths[h] || 180, minWidth: colWidths[h] || 180 }}
+                                                className="table-pro-text relative border-r border-slate-200 px-3 py-1.5 text-[11px] text-left cursor-pointer group flex items-center justify-between hover:bg-slate-200 transition-colors bg-slate-100 text-slate-800 font-bold h-full"
+                                                onClick={() => requestSort(h)}
                                             >
-                                                {({ index, style }) => {
-                                                    const row = sortedData[index];
-                                                    return (
-                                                        <div
-                                                            style={{ ...style, width: totalRowWidth, minWidth: "100%" }}
-                                                            className={`flex ${index % 2 === 1 ? "bg-slate-50" : "bg-white"} hover:bg-blue-50/80 transition-colors border-b border-slate-200 items-center h-8`}
-                                                        >
-                                                            {displayHeaders.map((h) => {
-                                                                const val = row[h];
-                                                                return (
-                                                                    <div
-                                                                        key={h}
-                                                                        style={{ width: colWidths[h] || 180, minWidth: colWidths[h] || 180 }}
-                                                                    className="table-pro-text border-r border-slate-200 px-3 text-[12px] text-slate-800 truncate h-full flex items-center whitespace-nowrap"
-                                                                        title={String(val)}
-                                                                    >
-                                                                        {typeof val === 'number'
-                                                                            ? <span className="table-pro-number text-slate-900 font-medium">{formatSmart(val, h)}</span>
-                                                                            : renderMaybeDate(h, val)
-                                                                        }
+                                                <span className="truncate">{h}</span>
+                                                {sortConfig?.key === h && <span className="ml-1 text-[9px]">{sortConfig.direction === "asc" ? "▲" : "▼"}</span>}
+                                            </div>
+                                        ))}
+                                    </div>
+
+                                    <div className="flex-1 min-h-0 relative">
+                                        <AutoSizer>
+                                            {({ height, width }) => (
+                                                <List
+                                                    height={height}
+                                                    itemCount={sortedData.length}
+                                                    itemSize={36}
+                                                    width={width}
+                                                    onItemsRendered={handleItemsRendered}
+                                                    innerElementType={InnerElement}
+                                                    outerElementType={OuterElement}
+                                                >
+                                                    {({ index, style }) => {
+                                                        const row = sortedData[index];
+                                                        return (
+                                                            <div
+                                                                style={{ ...style, width: totalRowWidth, minWidth: "100%" }}
+                                                                className={`flex ${index % 2 === 1 ? "bg-slate-50" : "bg-white"} hover:bg-indigo-50/50 transition-colors border-b border-slate-100 items-center h-8`}
+                                                            >
+                                                                {displayHeaders.map((h) => (
+                                                                    <div key={h} style={{ width: colWidths[h] || 180, minWidth: colWidths[h] || 180 }} className="border-r border-slate-100 px-3 text-[11px] text-slate-700 truncate h-full flex items-center">
+                                                                        {typeof row[h] === 'number' ? formatSmart(row[h], h) : renderMaybeDate(h, row[h])}
                                                                     </div>
-                                                                );
-                                                            })}
-                                                        </div>
-                                                    );
-                                                }}
-                                            </List>
+                                                                ))}
+                                                            </div>
+                                                        );
+                                                    }}
+                                                </List>
+                                            )}
+                                        </AutoSizer>
+                                        {isBatchLoading && (
+                                            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-indigo-600 text-white px-3 py-1 rounded-full text-[9px] font-bold shadow-lg animate-bounce z-50">
+                                                Loading rows...
+                                            </div>
                                         )}
-                                    </AutoSizer>
+                                    </div>
                                 </div>
-                            </div>
+                            </>
+                        ) : (
+                            <div className="text-gray-400 text-center py-20 text-xs">Select primary sheet.</div>
+                        )}
+                    </div>
 
-                            {/* Excel-style Tab Bar */}
-                            {tabs && tabs.length > 1 && (
-                                <SheetTabBar
-                                    tabs={tabs}
-                                    activeTab={activeTab}
-                                    onTabClick={onTabChange}
-                                />
+                    {/* SECONDARY GRID */}
+                    {comparisonOn && (
+                        <div className="flex flex-col h-full min-h-0 min-w-0 flex-1 bg-slate-50/30">
+                            {secondaryData?.length > 0 ? (
+                                <>
+                                    <div className="sticky top-0 bg-slate-100/90 backdrop-blur text-slate-500 font-semibold border-b border-slate-200 z-10 px-4 py-2 text-[10px] uppercase tracking-wider flex justify-between items-center shrink-0">
+                                        <span>Secondary: <b className="text-emerald-600">{props.myFiles.find(f => String(f.id) === String(secondarySheetId))?.display_name || "Sheet B"}</b></span>
+                                    </div>
+
+                                    <div className="flex-1 w-full flex flex-col min-h-0">
+                                        <div className="flex bg-slate-200/50 border-b border-slate-200 shadow-sm z-10 overflow-hidden shrink-0 h-10 items-center">
+                                            {secondaryHeaders.map((h) => (
+                                                <div key={h} style={{ width: 180, minWidth: 180 }} className="px-3 py-1.5 text-[11px] font-bold text-slate-700 border-r border-slate-200 truncate">
+                                                    {h}
+                                                </div>
+                                            ))}
+                                        </div>
+
+                                        <div className="flex-1 min-h-0">
+                                            <AutoSizer>
+                                                {({ height, width }) => (
+                                                    <List
+                                                        height={height}
+                                                        itemCount={secondaryData.length}
+                                                        itemSize={36}
+                                                        width={width}
+                                                        innerElementType={({ style, ...rest }) => (
+                                                            <div style={{ ...style, width: secondaryHeaders.length * 180, position: 'relative' }} {...rest} />
+                                                        )}
+                                                    >
+                                                        {({ index, style }) => {
+                                                            const row = secondaryData[index];
+                                                            return (
+                                                                <div style={style} className={`flex ${index % 2 === 1 ? "bg-slate-100/30" : "bg-white"} border-b border-slate-100 items-center h-8`}>
+                                                                    {secondaryHeaders.map((h) => (
+                                                                        <div key={h} style={{ width: 180, minWidth: 180 }} className="border-r border-slate-100 px-3 text-[11px] text-slate-600 truncate">
+                                                                            {typeof row[h] === 'number' ? formatSmart(row[h], h) : renderMaybeDate(h, row[h])}
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            );
+                                                        }}
+                                                    </List>
+                                                )}
+                                            </AutoSizer>
+                                        </div>
+                                    </div>
+                                </>
+                            ) : (
+                                <div className="h-full flex flex-col items-center justify-center p-8 text-center">
+                                    <div className="text-4xl mb-3">◫</div>
+                                    <div className="text-slate-400 font-bold text-[11px] uppercase tracking-widest">Select comparison sheet</div>
+                                </div>
                             )}
-                        </>
-                    ) : (
-                        <div className="text-gray-600 text-center py-10">
-                            Please select a sheet from the header to view dataset rows.
+                            {secondaryLoading && (
+                                <div className="absolute inset-0 bg-white/60 backdrop-blur-[1px] flex items-center justify-center z-50">
+                                    <div className="w-6 h-6 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>

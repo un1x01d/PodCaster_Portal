@@ -133,23 +133,100 @@ function formatValue(v, locale = "en", col = "", forSpeech = false) {
   }
 }
 
-function normalizeUkrainianSpeechNumbers(text = "") {
-  let out = String(text || "");
-  // Expand compact suffixes so TTS reads scale naturally.
-  out = out.replace(/\b(\d+(?:[.,]\d+)?)\s*[kK]\b/g, "$1 тисяч");
-  out = out.replace(/\b(\d+(?:[.,]\d+)?)\s*[mM]\b/g, "$1 мільйонів");
-  out = out.replace(/\b(\d+(?:[.,]\d+)?)\s*[bB]\b/g, "$1 мільярдів");
+/**
+ * PERF-01: Server-Side Math
+ * Executes heavy calculations in PostgreSQL instead of Node.js memory.
+ */
+async function computeSqlAggregation({ sheetId, user, operation, targetColumn, groupBy, filters = [], limit = 5, locale = "en", tabName = null }) {
+    const op = String(operation || "none").toLowerCase();
+    const nLimit = Number.isInteger(limit) ? limit : 5;
+    
+    // 1. Build Base Where Clause (RBAC + Tab + AI Filters)
+    let sql = `SELECT `;
+    const params = [sheetId];
+    let where = `WHERE sheet_id = $1`;
 
-  // Convert 12,345.67 -> 12 345,67 for Ukrainian speech parsing.
-  out = out.replace(/\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b/g, (m) => {
-    const [intPart, decPart] = m.split(".");
-    const spaced = intPart.replace(/,/g, " ");
-    return decPart ? `${spaced},${decPart}` : spaced;
-  });
+    if (tabName) {
+        where += ` AND tab_name = $${params.length + 1}`;
+        params.push(tabName);
+    }
 
-  // Convert plain decimals 1234.56 -> 1234,56
-  out = out.replace(/\b\d+\.\d+\b/g, (m) => m.replace(".", ","));
-  return out;
+    // Add AI Filters to SQL
+    filters.forEach(f => {
+        if (!f.column || f.value === undefined) return;
+        
+        let colSql = `row_data->>$${params.length + 1}`;
+        // Support virtual columns in filters
+        if (f.column === "Year") colSql = `EXTRACT(YEAR FROM (CAST(row_data->>$${params.length + 1} AS DATE)))::text`;
+        if (f.column === "Month") colSql = `TO_CHAR(CAST(row_data->>$${params.length + 1} AS DATE), 'Month')`;
+        if (f.column === "Quarter") colSql = `'Q' || TO_CHAR(CAST(row_data->>$${params.length + 1} AS DATE), 'Q YYYY')`;
+        
+        const valIdx = params.length + 2;
+        params.push(f.column === "Year" || f.column === "Month" || f.column === "Quarter" ? "Date" : f.column, String(f.value));
+
+        switch(f.operator) {
+            case 'gt': where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) > $${valIdx}::numeric)`; break;
+            case 'gte': where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) >= $${valIdx}::numeric)`; break;
+            case 'lt': where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) < $${valIdx}::numeric)`; break;
+            case 'lte': where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) <= $${valIdx}::numeric)`; break;
+            case 'equals': where += ` AND (${colSql} = $${valIdx})`; break;
+            default: where += ` AND (${colSql} ILIKE $${valIdx})`; params[params.length-1] = `%${f.value}%`; break;
+        }
+    });
+
+    try {
+        if (op === "count") {
+            const res = await query(`SELECT COUNT(*) as c FROM sheet_rows ${where}`, params);
+            return { answer: `Count: ${res[0].c} rows`, previewRows: [] };
+        }
+
+        if (!targetColumn) return null;
+
+        // Common Numeric Casting for target column
+        const valSql = `CAST(NULLIF(regexp_replace(row_data->>$${params.length + 1}, '[^0-9.-]', '', 'g'), '') AS NUMERIC)`;
+        params.push(targetColumn);
+
+        if (groupBy && ["sum", "avg", "top_n", "max", "min"].includes(op)) {
+            let groupSqlCol = `row_data->>$${params.length + 1}`;
+            if (groupBy === "Year") groupSqlCol = `EXTRACT(YEAR FROM (CAST(row_data->>$${params.length + 1} AS DATE)))::text`;
+            if (groupBy === "Month") groupSqlCol = `TO_CHAR(CAST(row_data->>$${params.length + 1} AS DATE), 'Month')`;
+            if (groupBy === "Quarter") groupSqlCol = `'Q' || TO_CHAR(CAST(row_data->>$${params.length + 1} AS DATE), 'Q YYYY')`;
+            
+            params.push(groupBy === "Year" || groupBy === "Month" || groupBy === "Quarter" ? "Date" : groupBy);
+            const aggOp = (op === "avg") ? "AVG" : (op === "max" ? "MAX" : (op === "min" ? "MIN" : "SUM"));
+            
+            const groupSql = `
+                SELECT ${groupSqlCol} as label, ${aggOp}(${valSql}) as value
+                FROM sheet_rows
+                ${where}
+                GROUP BY label
+                ORDER BY value DESC
+                LIMIT $${params.length + 1}
+            `;
+            params.push(nLimit);
+            const rows = await query(groupSql, params);
+            if (!rows.length) return { answer: "No matching data found.", previewRows: [] };
+
+            const answer = `Top ${rows.length} ${groupBy} by ${targetColumn}:\n` + 
+                rows.map((r, i) => `${i+1}. ${r.label}: ${formatValue(Number(r.value), locale, targetColumn)}`).join("\n");
+            
+            return { answer, previewRows: rows };
+        }
+
+        if (["sum", "avg", "max", "min"].includes(op)) {
+            const aggOp = op.toUpperCase();
+            const res = await query(`SELECT ${aggOp}(${valSql}) as v FROM sheet_rows ${where}`, params);
+            const val = Number(res[0].v || 0);
+            const labels = { SUM: "Total", AVG: "Average", MAX: "Max", MIN: "Min" };
+            return { answer: `${labels[aggOp]} ${targetColumn}: ${formatValue(val, locale, targetColumn)}`, previewRows: [] };
+        }
+
+    } catch (e) {
+        console.error("SQL Aggregation failed:", e);
+        return null; // Fallback to memory-based for complex ones or on error
+    }
+
+    return null;
 }
 
 async function computeDeterministicAnswer(operation, rows, targetColumn, groupBy, limit = 5, locale = "en", queryText = "") {
@@ -1062,29 +1139,17 @@ export async function chatQuery(req, res) {
   const hasAccess = await checkSheetAccess(sheetId, req.user);
   if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
 
-  const loaded = await loadAccessibleRows(sheetId, req.user, null);
-  if (loaded?.forbidden) return res.status(403).json({ error: "Forbidden" });
-  const rawTabNames = Array.isArray(loaded?.tabs) ? loaded.tabs : [];
-  const tabDatasets = buildTabDatasets(loaded.rows || [], loaded.headers || [], rawTabNames);
-  const tabNames = Object.keys(tabDatasets);
-  const tabProfiles = tabNames.map((tab) => {
-    const ds = tabDatasets[tab] || { headers: [], rows: [] };
-    return { tab, headers: ds.headers || [], row_count: (ds.rows || []).length, sample_rows: (ds.rows || []).slice(0, 6) };
-  });
+  // PERF-01: Load only SAMPLE rows for AI context, not all 500k rows
+  const loadedSample = await loadAccessibleRows(sheetId, req.user, null, 100);
+  if (loadedSample?.forbidden) return res.status(403).json({ error: "Forbidden" });
 
-  const initialTab = resolveTabName(tabNames, activeTab) || inferTabFromMessage(tabNames, message);
-  const initialDataset = initialTab ? tabDatasets[initialTab] : {
-    headers: Array.from(new Set(tabNames.flatMap((t) => tabDatasets[t]?.headers || []))),
-    rows: tabNames.flatMap((t) => (tabDatasets[t]?.rows || []).map((r) => ({ ...r, Tab: t }))),
-  };
-  const initialAugmented = augmentRowsWithQuarter(initialDataset.rows || [], initialDataset.headers || []);
-  const aiHeaders = initialAugmented.headers || [];
-  const aiRows = initialAugmented.rows || [];
-
-  let ai;
-  const sampleRows = aiRows.slice(0, CHAT_SAMPLE_ROWS);
+  const aiHeaders = loadedSample.headers || [];
+  const sampleRows = loadedSample.rows || [];
+  const tabNames = Array.isArray(loadedSample.tabs) ? loadedSample.tabs : [];
+  
   const dateFormatHints = buildDateFormatHints(aiHeaders, sampleRows);
 
+  let ai;
   try {
     ai = await callOpenAI({
       message: `${message}\n\nAvailable tabs: ${tabNames.join(", ") || "N/A"}\nIf the question maps to a specific tab, set target_tab in the JSON response.`,
@@ -1093,7 +1158,7 @@ export async function chatQuery(req, res) {
       conversationHistory,
       locale,
       dateFormatHints,
-      schemaProfile: { available_tabs: tabNames, tab_profiles: tabProfiles }
+      schemaProfile: { available_tabs: tabNames }
     });
   } catch (e) {
     console.error("OpenAI call failed:", e);
@@ -1101,78 +1166,62 @@ export async function chatQuery(req, res) {
   }
 
   try {
-    const aiTab = resolveTabName(tabNames, ai?.target_tab);
-    const selectedTab = aiTab || initialTab || null;
-    const selectedDataset = selectedTab ? tabDatasets[selectedTab] : {
-      headers: Array.from(new Set(tabNames.flatMap((t) => tabDatasets[t]?.headers || []))),
-      rows: tabNames.flatMap((t) => (tabDatasets[t]?.rows || []).map((r) => ({ ...r, Tab: t }))),
-    };
-    const selectedAugmented = augmentRowsWithQuarter(selectedDataset.rows || [], selectedDataset.headers || []);
-    const headers = selectedAugmented.headers || [];
-    const baseRows = selectedAugmented.rows || [];
-
+    const selectedTab = resolveTabName(tabNames, ai?.target_tab) || activeTab || null;
+    
+    // Resolve AI components
     const aiFilters = await Promise.all((ai?.filters || []).map(async f => ({
-      column: await resolveColumn(headers, f.column, sampleRows),
+      column: await resolveColumn(aiHeaders, f.column, sampleRows),
       operator: f.operator || "contains",
       value: f.value
     })));
     const filteredAiFilters = aiFilters.filter(f => f.column);
 
-    const matchedRows = applyFilters(baseRows, filteredAiFilters);
-    
-    // Contextual Inheritance: Inherit Operation, Target & GroupBy
     let resolvedOperation = (ai?.operation || "none").toLowerCase();
-    let resolvedTarget = await resolveColumn(headers, ai?.target_column, sampleRows);
-    let resolvedGroupBy = await resolveColumn(headers, ai?.group_by, sampleRows);
+    let resolvedTarget = await resolveColumn(aiHeaders, ai?.target_column, sampleRows);
+    let resolvedGroupBy = await resolveColumn(aiHeaders, ai?.group_by, sampleRows);
     
-    if (Array.isArray(conversationHistory) && conversationHistory.length > 0) {
-        const lastTurn = conversationHistory[conversationHistory.length - 1];
-        const lastMeta = lastTurn.meta || {};
-        
-        // 1. Inherit Operation if current is generic (none/filter) and user just provided a filter/location
-        if ((resolvedOperation === "none" || resolvedOperation === "filter") && lastMeta.operation && lastMeta.operation !== "none") {
-            resolvedOperation = lastMeta.operation;
-        }
+    // Attempt SQL-Level Aggregation FIRST (Fast, DB-level)
+    const numericOps = new Set(["count", "sum", "avg", "max", "min", "top_n"]);
+    let exec = null;
 
-        // 2. Inherit Target if missing
-        if (!resolvedTarget) {
-            const lastWithTarget = [...conversationHistory].reverse().find(h => h.target_column || h.meta?.resolvedTarget);
-            if (lastWithTarget) {
-                const rawTarget = lastWithTarget.target_column || lastWithTarget.meta?.resolvedTarget;
-                resolvedTarget = await resolveColumn(headers, rawTarget, sampleRows);
-            }
-        }
-
-        // 3. Inherit GroupBy if missing
-        if (!resolvedGroupBy) {
-            const lastWithGroupBy = [...conversationHistory].reverse().find(h => h.group_by || h.meta?.resolvedGroupBy);
-            if (lastWithGroupBy) {
-                const rawGroupBy = lastWithGroupBy.group_by || lastWithGroupBy.meta?.resolvedGroupBy;
-                resolvedGroupBy = await resolveColumn(headers, rawGroupBy, sampleRows);
-            }
-        }
+    if (numericOps.has(resolvedOperation)) {
+        exec = await computeSqlAggregation({
+            sheetId,
+            user: req.user,
+            operation: resolvedOperation,
+            targetColumn: resolvedTarget,
+            groupBy: resolvedGroupBy,
+            filters: filteredAiFilters,
+            limit: ai?.limit,
+            locale,
+            tabName: selectedTab
+        });
     }
 
-    const exec = await computeDeterministicAnswer(resolvedOperation, matchedRows, resolvedTarget, resolvedGroupBy, ai?.limit, locale, message);
+    // Fallback to Memory-Based logic for complex operations like YoY or ratios
+    if (!exec) {
+        // Only NOW load full rows if we really need to (YoY, custom ratios)
+        const fullLoad = await loadAccessibleRows(sheetId, req.user, selectedTab);
+        // Note: For memory-based fallback, we might still need augmentation if requested
+        const augmented = (resolvedGroupBy === "Year" || resolvedGroupBy === "Month" || resolvedGroupBy === "Quarter")
+            ? augmentRowsWithQuarter(fullLoad.rows, fullLoad.headers)
+            : { rows: fullLoad.rows, headers: fullLoad.headers };
+
+        const matchedRows = applyFilters(augmented.rows, filteredAiFilters);
+        exec = await computeDeterministicAnswer(resolvedOperation, matchedRows, resolvedTarget, resolvedGroupBy, ai?.limit, locale, message);
+    }
 
     const isChartOp = ["chart", "plot", "trend"].includes(ai?.operation);
     const chart = (isChartOp && ai?.chart) ? {
-      dateColumn: await resolveColumn(headers, ai.chart.date_column, sampleRows),
-      valueColumn: await resolveColumn(headers, ai.chart.value_column, sampleRows),
-      segmentBy: await resolveColumn(headers, ai.chart.segment_by, sampleRows),
+      dateColumn: await resolveColumn(aiHeaders, ai.chart.date_column, sampleRows),
+      valueColumn: await resolveColumn(aiHeaders, ai.chart.value_column, sampleRows),
+      segmentBy: await resolveColumn(aiHeaders, ai.chart.segment_by, sampleRows),
       aggregation: ai.chart.aggregation || "sum"
     } : null;
 
-    const numericOps = new Set(["count", "sum", "avg", "max", "min", "top_n", "year_over_year"]);
-    const op = String(ai?.operation || "none").toLowerCase();
-    const hasDataTarget = !!(ai?.target_column || ai?.filters?.length);
-    
     let answer = ai?.answer || exec.answer || "Done.";
     
-    // If it's a numeric operation OR specifically targeting data via filters, 
-    // the code-calculated 'exec.answer' must be the only source of truth...
-    if ((numericOps.has(op) || (op === "filter" && hasDataTarget)) && exec.answer) {
-        // ...UNLESS the code result is a generic 'No data' message and the AI actually found something in its window.
+    if ((numericOps.has(resolvedOperation) || (resolvedOperation === "filter" && !!resolvedTarget)) && exec.answer) {
         const isGenericNoData = exec.answer.includes("No data matched") || exec.answer.includes("no specific metric column");
         if (isGenericNoData && ai?.answer && ai.answer.length > 5) {
             answer = ai.answer;
@@ -1183,48 +1232,26 @@ export async function chatQuery(req, res) {
 
     answer = formatAnswerWithBullets(answer);
     answer = cleanAITechnicalNoise(answer);
-
-    if (!isEnglishLocale(locale) && answer) {
-      try {
-        const preserveTerms = dateFormatHints
-          .flatMap((h) => [h?.column, h?.example, h?.syntax])
-          .map((t) => String(t || "").trim())
-          .filter(Boolean);
-        const translated = await translateDashboardItems({
-          locale,
-          items: [{ key: "chat_answer", text: answer, preserveTerms }],
-          context: "chat-answer",
-        });
-        answer = translated?.[0]?.text || answer;
-      } catch (_) { }
-    }
-
     answer = stripApproximationWords(answer);
     answer = normalizeDatesAndRemoveTime(answer);
     answer = enforceCommaThousands(answer);
     answer = enforceTwoDecimals(answer);
 
-    const isReset = ai?.operation === "reset" || /reset|clear|all records/i.test(ai?.answer || "");
-    const uiFilters = (ai?.operation === "filter" || ai?.operation === "apply_filter") ? aiFilters : [];
-
     res.json({
       answer,
-      actions: { reset_filters: isReset, filters: uiFilters, chart },
+      actions: { reset_filters: ai?.operation === "reset", filters: filteredAiFilters, chart },
       preview_rows: exec.previewRows || [],
       meta: { 
-          totalRows: baseRows.length, 
-          matchedRows: matchedRows.length, 
           operation: ai?.operation || "none", 
           locale, 
           selectedTab, 
-          availableTabs: tabNames,
           resolvedTarget,
           resolvedGroupBy
       }
     });
   } catch (err) {
     console.error("Chat processing failed:", err);
-    res.status(500).json({ error: "internal_server_error", message: "Failed to process your request." });
+    res.status(500).json({ error: "internal_server_error" });
   }
 }
 
@@ -1253,73 +1280,23 @@ export async function checkSheetAccess(sheetId, user) {
   return res?.[0]?.count !== "0";
 }
 
-async function loadAccessibleRows(sheetId, user, activeTab = null) {
-  const sheet = await query("SELECT headers, tabs, tab_name FROM sheets WHERE id = $1", [sheetId]);
-  if (!sheet.length) return { headers: [], tabs: [], rows: [], forbidden: true };
-  const rows = activeTab
-    ? await query(
-        "SELECT row_data, tab_name FROM sheet_rows WHERE sheet_id = $1 AND tab_name = $2 ORDER BY row_index ASC",
-        [sheetId, activeTab]
-      )
-    : await query(
-        "SELECT row_data, tab_name FROM sheet_rows WHERE sheet_id = $1 ORDER BY row_index ASC",
-        [sheetId]
-      );
-
-  const rawHeaders = sheet[0]?.headers;
-  let headers = Array.isArray(rawHeaders)
-    ? rawHeaders
-    : (typeof rawHeaders === "string" ? JSON.parse(rawHeaders || "[]") : []);
-  if (!headers.length && rows.length) {
-    const row0 = typeof rows[0]?.row_data === "string" ? JSON.parse(rows[0].row_data) : rows[0]?.row_data;
-    headers = row0 && typeof row0 === "object" ? Object.keys(row0) : [];
-  }
-
-  if (user.role === "admin") {
-    return {
-      headers,
-      tabs: Array.isArray(sheet[0]?.tabs) ? sheet[0].tabs : (sheet[0]?.tab_name ? [sheet[0].tab_name] : []),
-      rows: rows.map((r) => {
-        const data = (typeof r.row_data === "string" ? JSON.parse(r.row_data) : r.row_data) || {};
-        return { ...data, __tab_name: r.tab_name || null };
-      }),
-      forbidden: false,
-    };
-  }
+async function loadAccessibleRows(sheetId, user, activeTab = null, rowLimit = null) {
+  const sheetRes = await query("SELECT headers, tabs, tab_name FROM sheets WHERE id = $1", [sheetId]);
+  if (!sheetRes.length) return { headers: [], tabs: [], rows: [], forbidden: true };
+  const sheet = sheetRes[0];
 
   const folderAccess = await query(
-    `SELECT 1
-     FROM sheets s
-     LEFT JOIN folders f ON f.id = s.folder_id
-     WHERE s.id = $1
-       AND (
-         EXISTS (
-           SELECT 1
-           FROM folder_groups fg
-           JOIN user_groups ug ON ug.group_id = fg.group_id
-           WHERE fg.folder_id = f.id AND ug.user_id = $2
-         )
-         OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)
-       )
-     LIMIT 1`,
+    `SELECT 1 FROM sheets s LEFT JOIN folders f ON f.id = s.folder_id WHERE s.id = $1 AND (EXISTS (SELECT 1 FROM folder_groups fg JOIN user_groups ug ON ug.group_id = fg.group_id WHERE fg.folder_id = f.id AND ug.user_id = $2) OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)) LIMIT 1`,
     [sheetId, user.id]
   );
-  const hasFullAccess = folderAccess.length > 0;
+  const hasFullAccess = (user.role === "admin" || folderAccess.length > 0);
 
-  let validCols = [];
+  let validCols = null;
   let rowFiltersList = [];
+
   if (!hasFullAccess) {
-    const userPerms = await query(
-      "SELECT allowed_columns, row_filters FROM permissions WHERE user_id = $2 AND sheet_id = $1",
-      [sheetId, user.id]
-    );
-    const groupPerms = await query(
-      `SELECT gp.allowed_columns, gp.row_filters
-       FROM group_permissions gp
-       JOIN user_groups ug ON ug.group_id = gp.group_id
-       WHERE ug.user_id = $2 AND gp.sheet_id = $1`,
-      [sheetId, user.id]
-    );
+    const userPerms = await query("SELECT allowed_columns, row_filters FROM permissions WHERE user_id = $2 AND sheet_id = $1", [sheetId, user.id]);
+    const groupPerms = await query(`SELECT gp.allowed_columns, gp.row_filters FROM group_permissions gp JOIN user_groups ug ON ug.group_id = gp.group_id WHERE ug.user_id = $2 AND gp.sheet_id = $1`, [sheetId, user.id]);
     const allPerms = [...userPerms, ...groupPerms];
     if (!allPerms.length) return { headers: [], tabs: [], rows: [], forbidden: true };
 
@@ -1334,34 +1311,57 @@ async function loadAccessibleRows(sheetId, user, activeTab = null) {
     if (!validCols.length) return { headers: [], tabs: [], rows: [], forbidden: true };
   }
 
-  let mappedRows = rows.map((r) => {
-    const data = (typeof r.row_data === "string" ? JSON.parse(r.row_data) : r.row_data) || {};
-    return { ...data, __tab_name: r.tab_name || null };
-  });
+  // Build the SQL query for efficient retrieval
+  let columnSelection = "row_data";
+  const params = [sheetId];
+  let where = "WHERE sheet_id = $1";
 
-  if (!hasFullAccess) {
-    mappedRows = mappedRows
-      .filter((rowData) => {
-        for (const filters of rowFiltersList) {
-          const keys = Object.keys(filters || {});
-          if (!keys.length) return true;
-          const match = keys.every((k) => String(rowData?.[k]) === String(filters[k]));
-          if (match) return true;
+  if (validCols && !hasFullAccess) {
+    columnSelection = `(SELECT jsonb_object_agg(key, value) FROM jsonb_each(row_data) WHERE key = ANY($${params.length + 1}::text[]))`;
+    params.push(validCols);
+  }
+
+  if (activeTab) {
+    where += ` AND tab_name = $${params.length + 1}`;
+    params.push(activeTab);
+  }
+
+  // Apply RBAC row filters in SQL if not full access
+  if (!hasFullAccess && rowFiltersList.length > 0) {
+    const filterClauses = [];
+    rowFiltersList.forEach(filters => {
+        const entries = Object.entries(filters).filter(([k]) => !!k);
+        if (entries.length > 0) {
+            const groupPredicates = entries.map(([k, v]) => {
+                params.push(k, String(v));
+                return `(row_data->>$${params.length - 1}) = $${params.length}`;
+            });
+            filterClauses.push(`(${groupPredicates.join(" AND ")})`);
         }
-        return false;
-      })
-      .map((rowData) => {
-        const stripped = { __tab_name: rowData.__tab_name || null };
-        validCols.forEach((c) => { stripped[c] = rowData?.[c]; });
-        return stripped;
-      });
-    headers = headers.filter((h) => validCols.includes(h));
+    });
+    if (filterClauses.length > 0) {
+        where += ` AND (${filterClauses.join(" OR ")})`;
+    }
+  }
+
+  let sql = `SELECT ${columnSelection} as row_data, tab_name FROM sheet_rows ${where} ORDER BY row_index ASC`;
+  if (rowLimit) {
+    sql += ` LIMIT $${params.length + 1}`;
+    params.push(rowLimit);
+  }
+
+  const rows = await query(sql, params);
+  const rawHeaders = sheet.headers;
+  let headers = Array.isArray(rawHeaders) ? rawHeaders : (typeof rawHeaders === "string" ? JSON.parse(rawHeaders || "[]") : []);
+
+  if (validCols && !hasFullAccess) {
+      headers = headers.filter(h => validCols.includes(h));
   }
 
   return {
     headers,
-    tabs: Array.isArray(sheet[0]?.tabs) ? sheet[0].tabs : (sheet[0]?.tab_name ? [sheet[0].tab_name] : []),
-    rows: mappedRows,
+    tabs: Array.isArray(sheet.tabs) ? sheet.tabs : (sheet.tab_name ? [sheet.tab_name] : []),
+    rows: rows.map(r => ({ ...(r.row_data || {}), __tab_name: r.tab_name })),
     forbidden: false,
   };
 }

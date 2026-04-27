@@ -674,8 +674,24 @@ export async function getSheetData(req, res) {
     }
 
     try {
-        let sql = `SELECT row_data FROM sheet_rows WHERE sheet_id = $1`;
-        const params = [id];
+        let columnSelection = "row_data";
+        const sqlParams = [id];
+
+        // RBAC: Data Stripping at Database Level
+        if (!hasFullAccess && validCols.length > 0) {
+            // Keep only keys in validCols. 
+            // PostgreSQL 9.5+ approach using JSONB subtraction or object_agg
+            // Using a subquery for object_agg is safest for keeping only allowed keys
+            columnSelection = `(
+                SELECT jsonb_object_agg(key, value)
+                FROM jsonb_each(row_data)
+                WHERE key = ANY($${sqlParams.length + 1}::text[])
+            )`;
+            sqlParams.push(validCols);
+        }
+
+        let sql = `SELECT ${columnSelection} AS row_data FROM sheet_rows WHERE sheet_id = $1`;
+        const params = sqlParams;
 
         if (tab) {
             sql += ` AND tab_name = $${params.length + 1}`;

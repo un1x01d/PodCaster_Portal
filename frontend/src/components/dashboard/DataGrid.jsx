@@ -23,11 +23,20 @@ export default function DataGrid({
     tabs,
     activeTab,
     onTabChange,
-    openSelect
+    openSelect,
+    onLoadMore,
+    isBatchLoading
 }) {
     // Calculate min col width
     const minColWidth = 180;
     const totalRowWidth = (displayHeaders?.length || 0) * minColWidth;
+
+    // Detect near-end of scroll
+    const handleItemsRendered = ({ visibleStopIndex }) => {
+        if (visibleStopIndex >= sortedData.length - 15 && onLoadMore && !isBatchLoading) {
+            onLoadMore();
+        }
+    };
 
     // Memoize InnerElement
     const InnerElement = useMemo(() => forwardRef(({ style, ...rest }, ref) => (
@@ -159,6 +168,7 @@ export default function DataGrid({
                                         itemCount={sortedData.length}
                                         itemSize={36}
                                         width={width}
+                                        onItemsRendered={handleItemsRendered}
                                         outerRef={(el) => {
                                             if (tableContainerRef) tableContainerRef.current = el;
                                         }}
