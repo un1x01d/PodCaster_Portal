@@ -58,6 +58,18 @@
   }
 }
 
+.resizing-active * {
+  pointer-events: none !important;
+}
+
+.no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+    display: none;
+}
+
 .admin-modern button,
 .admin-modern input,
 .admin-modern select,

@@ -100,8 +100,7 @@ export default function DashboardHeader({
             <div className="flex items-center justify-end gap-6">
                 <div className="h-8 w-px bg-slate-200/60 mx-1"></div>
 
-                <div className="flex items-center gap-3">
-                    <div className="w-[48ch] max-w-[48ch] min-w-[48ch]">
+                    <div className="flex-1 max-w-[320px] md:max-w-lg lg:w-[480px]">
                         <SearchableSelect
                             options={startOptions.concat(fileOptions)}
                             value={currentValue}
@@ -109,13 +108,13 @@ export default function DashboardHeader({
                             onDelete={user?.role === 'admin' ? onDeleteSheet : null}
                             placeholder={ui.searchSpreadsheets}
                             className="w-full"
-                            buttonClassName="w-full h-8 px-3 rounded-md border border-slate-300 bg-slate-100 text-slate-700 text-[0.72rem] font-normal shadow-sm hover:bg-slate-200"
-                            labelClassName="!text-[0.72rem] !font-normal"
-                            panelClassName="!rounded-md !border-slate-300 !bg-slate-100 !shadow-md"
-                            optionClassName="!rounded-none !px-2 !py-1.5 hover:!bg-slate-200"
-                            optionTextClassName="!text-[0.7rem] !font-normal !text-slate-700"
-                            searchInputClassName="!text-[0.7rem] !font-normal !border-slate-300 !bg-slate-50 !text-slate-700"
-                            panelWidth={"48ch"}
+                            buttonClassName="w-full h-8 px-3 rounded-[0.6rem] border border-slate-300 bg-white text-slate-900 text-[11px] font-bold shadow-sm hover:border-slate-400 transition-all"
+                            labelClassName="!text-[11px] !font-bold"
+                            panelClassName="!rounded-xl !border-slate-200 !shadow-2xl !mt-1"
+                            optionClassName="!rounded-md !px-3 !py-2 hover:!bg-indigo-50 !border-b !border-slate-50 last:!border-none"
+                            optionTextClassName="!text-[11px] !font-bold !text-slate-800"
+                            searchInputClassName="!text-[11px] !font-bold !py-2.5 !border-slate-100 !rounded-lg"
+                            panelWidth={400}
                         />
                     </div>
 
@@ -217,7 +216,6 @@ export default function DashboardHeader({
                         </button>
                     </div>
                 </div>
-            </div>
         </header>
     );
 }

@@ -7,10 +7,17 @@ export default function MultiSelect({
     onChange = () => { },
     placeholder = "Select...",
     className = "",
-    disabled = false
+    disabled = false,
+    activeColor = "blue" // "blue" or "emerald"
 }) {
     const [open, setOpen] = useState(false);
     const containerRef = useRef(null);
+    
+    const colorClasses = activeColor === "emerald" 
+        ? "bg-emerald-600 border-emerald-600" 
+        : "bg-blue-600 border-blue-600";
+    
+    const activeBg = activeColor === "emerald" ? "bg-emerald-50" : "bg-blue-50";
 
     // Close on click outside
     useEffect(() => {
@@ -65,11 +72,11 @@ export default function MultiSelect({
                                     key={val}
                                     onClick={() => toggleOption(val)}
                                     className={`flex items-center gap-2 px-2 py-1 rounded-md cursor-pointer text-xs
-                    ${isSelected ? "bg-slate-100 text-slate-900 font-bold" : "text-slate-700 hover:bg-slate-50"}
+                    ${isSelected ? `${activeBg} text-slate-900 font-bold` : "text-slate-700 hover:bg-slate-50"}
                   `}
                                 >
                                     <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors
-                    ${isSelected ? "bg-blue-600 border-blue-600" : "border-slate-300 bg-white"}
+                    ${isSelected ? colorClasses : "border-slate-300 bg-white"}
                   `}>
                                         {isSelected && (
                                             <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">

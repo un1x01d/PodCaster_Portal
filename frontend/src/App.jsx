@@ -98,6 +98,16 @@ export default function App() {
   const [sortConfig, setSortConfig] = useState(null);
   const [isBatchLoading, setIsBatchLoading] = useState(false);
   const [hasMoreData, setHasMoreData] = useState(true);
+
+  // Secondary Data (Comparison Mode)
+  const [secondaryData, setSecondaryData] = useState([]);
+  const [secondaryHeaders, setSecondaryHeaders] = useState([]);
+  const [secondarySortConfig, setSecondarySortConfig] = useState(null);
+  const [secondaryIsBatchLoading, setSecondaryIsBatchLoading] = useState(false);
+  const [secondaryHasMoreData, setSecondaryHasMoreData] = useState(true);
+  const [secondarySheetId, setSecondarySheetId] = useState("");
+  const [secondaryTab, setSecondaryTab] = useState(null);
+
   const BATCH_SIZE = 50;
 
   // column filters
@@ -648,34 +658,32 @@ export default function App() {
 
   const loadData = async (sid = sheetId, preserveFilters = false, tabName = null, options = {}) => {
     if (!sid) return;
-    const { preferCache = true, limit = BATCH_SIZE, offset = 0, append = false } = options;
+    const { preferCache = true, limit = BATCH_SIZE, offset = 0, append = false, context = "primary" } = options;
     
-    if (append) setIsBatchLoading(true);
+    const isPrimary = context === "primary";
+    if (append) {
+        if (isPrimary) setIsBatchLoading(true);
+        else setSecondaryIsBatchLoading(true);
+    }
 
     try {
       const params = new URLSearchParams();
       if (tabName) params.append("tab", tabName);
       
-      // Pass the selected Locked View ID for backend enforcement
-      if (selectedViewId) {
+      if (selectedViewId && isPrimary) {
         params.append("viewId", selectedViewId);
       }
 
-      // Pass sort configuration to server
-      if (sortConfig) {
-        params.append("sort_by", sortConfig.key);
-        params.append("sort_order", sortConfig.direction);
+      const activeSort = isPrimary ? sortConfig : secondarySortConfig;
+      if (activeSort) {
+        params.append("sort_by", activeSort.key);
+        params.append("sort_order", activeSort.direction);
       }
       
-      // Pass active filters to server
-      if (columnFilters && Object.keys(columnFilters).length > 0) {
+      if (isPrimary && columnFilters && Object.keys(columnFilters).length > 0) {
         const serializableFilters = {};
         Object.entries(columnFilters).forEach(([col, val]) => {
-          if (val instanceof Set) {
-            serializableFilters[col] = Array.from(val);
-          } else {
-            serializableFilters[col] = val;
-          }
+          serializableFilters[col] = (val instanceof Set) ? Array.from(val) : val;
         });
         params.append("filters", JSON.stringify(serializableFilters));
       }
@@ -684,26 +692,33 @@ export default function App() {
       params.append("offset", offset);
 
       const cacheKey = getDataCacheKey(sid, tabName) + "?" + params.toString();
-      if (preferCache && !append && tabDataCacheRef.current[cacheKey]) {
+      if (preferCache && !append && isPrimary && tabDataCacheRef.current[cacheKey]) {
         applyLoadedRows(sid, tabDataCacheRef.current[cacheKey], preserveFilters, false);
         return;
       }
 
       const url = `${API}/sheets/${sid}/data?${params.toString()}`;
-
-      const res = await axios.get(url, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
       const raw = res.data;
-      if (!append) {
-        tabDataCacheRef.current[cacheKey] = Array.isArray(raw) ? raw : [];
+
+      if (isPrimary) {
+          if (!append) tabDataCacheRef.current[cacheKey] = Array.isArray(raw) ? raw : [];
+          applyLoadedRows(sid, raw, preserveFilters, append);
+      } else {
+          if (append) {
+              setSecondaryData(prev => [...prev, ...raw]);
+              if (raw.length < BATCH_SIZE) setSecondaryHasMoreData(false);
+          } else {
+              setSecondaryData(raw);
+              setSecondaryHeaders(raw.length ? Object.keys(raw[0]) : []);
+              setSecondaryHasMoreData(raw.length >= BATCH_SIZE);
+          }
       }
-      applyLoadedRows(sid, raw, preserveFilters, append);
     } catch (e) {
       console.error(e);
-      // alert("Failed to load data");
     } finally {
-      setIsBatchLoading(false);
+      if (isPrimary) setIsBatchLoading(false);
+      else setSecondaryIsBatchLoading(false);
     }
   };
 
@@ -716,12 +731,29 @@ export default function App() {
     });
   };
 
+  const onLoadMoreSecondary = () => {
+    if (secondaryIsBatchLoading || !secondaryHasMoreData || !secondarySheetId) return;
+    loadData(secondarySheetId, true, secondaryTab, {
+        offset: secondaryData.length,
+        append: true,
+        context: "secondary",
+        preferCache: false
+    });
+  };
+
   // Re-fetch data when sort, filters, or view changes (Server-side)
   useEffect(() => {
     if (sheetId && user) {
       loadData(sheetId, true, activeTab, { preferCache: false });
     }
   }, [sortConfig, columnFilters, activeTab, selectedViewId]);
+
+  // Secondary Data Sync
+  useEffect(() => {
+    if (secondarySheetId && user) {
+      loadData(secondarySheetId, true, secondaryTab, { context: "secondary", preferCache: false });
+    }
+  }, [secondarySheetId, secondaryTab, secondarySortConfig]);
 
   const fetchTabs = async (sid, options = {}) => {
     const { preferredTab = null, preserveActive = false } = options;
@@ -1580,6 +1612,14 @@ export default function App() {
                       fetchUniqueValues={fetchUniqueValues}
                       onLoadMore={onLoadMore}
                       isBatchLoading={isBatchLoading}
+                      secondaryData={secondaryData}
+                      secondaryHeaders={secondaryHeaders}
+                      secondaryIsBatchLoading={secondaryIsBatchLoading}
+                      onLoadMoreSecondary={onLoadMoreSecondary}
+                      secondarySheetId={secondarySheetId}
+                      setSecondarySheetId={setSecondarySheetId}
+                      secondaryTab={secondaryTab}
+                      setSecondaryTab={setSecondaryTab}
                     />
                     {sheetId && (
                     <SpreadsheetChatbot

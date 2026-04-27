@@ -205,9 +205,6 @@ export async function uploadSheet(req, res) {
         try {
             await client.query('BEGIN');
 
-            // Deactivate all previous sheets (Global setting - could be scoped by user if needed)
-            await client.query("UPDATE sheets SET active = FALSE WHERE active = TRUE");
-
             const sheetId = `${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
 
             // Folder Resolution & Group Limit Check

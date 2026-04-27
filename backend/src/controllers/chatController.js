@@ -709,7 +709,12 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
   if (!apiKey) throw new Error("no_api_key");
 
   const system = [
-    "You are a spreadsheet analysis assistant.",
+    "You are a professional financial data analyst AI.",
+    "WORKSPACE AWARENESS: You have access to a workspace containing multiple spreadsheets.",
+    "CROSS-FILE COMPARISON: If the user asks to compare the current file with another file in the workspace (provided in schema_profile.available_files):",
+    " 1. Identify the 'sheet_id' of the comparison file.",
+    " 2. Populate the 'cross_targets' array in the response JSON.",
+    " 3. Example cross_targets: [{\"sheet_id\": \"id_of_file_a\", \"column\": \"Revenue\", \"operation\": \"sum\"}, {\"sheet_id\": \"id_of_file_b\", \"column\": \"Budget\", \"operation\": \"sum\"}]",
     "Autonomous Self-Teaching: If a user query is vague, missing a metric, or you 'do not know' the question (e.g., 'What's the biggest?'):",
     " 1. Discovery: Scan 'available_columns' and 'sample_rows' for the most significant numeric column (the 'Primary Metric') and the most descriptive text column (the 'Primary Dimension').",
     " 2. Deduction: Assume the user is asking for the Top N or Sum of that Primary Metric grouped by that Primary Dimension.",
@@ -774,7 +779,9 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
       group_by: "string|null",
       limit: "number|null",
       filters: [{ column: "string", operator: "contains|equals|gt|gte|lt|lte", value: "string|number" }],
-      chart: { date_column: "string", value_column: "string", segment_by: "string|null", aggregation: "sum|avg" }
+      chart: { date_column: "string", value_column: "string", segment_by: "string|null", aggregation: "sum|avg" },
+      cross_talk: "boolean",
+      cross_targets: [{ sheet_id: "string", column: "string", operation: "sum|avg|count|max|min" }]
     }
   };
 
@@ -1147,6 +1154,19 @@ export async function chatQuery(req, res) {
   const sampleRows = loadedSample.rows || [];
   const tabNames = Array.isArray(loadedSample.tabs) ? loadedSample.tabs : [];
   
+  // PERF-01: Build Workspace Schema for Cross-Sheet Intelligence
+  const workspaceRes = await query(
+      `SELECT s.id, s.display_name, s.filename, s.headers 
+       FROM sheets s 
+       WHERE (s.id IN (SELECT sheet_id FROM permissions WHERE user_id = $1) OR $2 = 'admin')`,
+      [req.user.id, req.user.role]
+  );
+  const availableFiles = workspaceRes.map(f => ({
+      id: f.id,
+      name: f.display_name || f.filename,
+      headers: typeof f.headers === 'string' ? JSON.parse(f.headers) : (f.headers || [])
+  }));
+
   const dateFormatHints = buildDateFormatHints(aiHeaders, sampleRows);
 
   let ai;
@@ -1158,7 +1178,10 @@ export async function chatQuery(req, res) {
       conversationHistory,
       locale,
       dateFormatHints,
-      schemaProfile: { available_tabs: tabNames }
+      schemaProfile: { 
+          available_tabs: tabNames,
+          available_files: availableFiles 
+      }
     });
   } catch (e) {
     console.error("OpenAI call failed:", e);
@@ -1180,7 +1203,38 @@ export async function chatQuery(req, res) {
     let resolvedTarget = await resolveColumn(aiHeaders, ai?.target_column, sampleRows);
     let resolvedGroupBy = await resolveColumn(aiHeaders, ai?.group_by, sampleRows);
     
-    // Attempt SQL-Level Aggregation FIRST (Fast, DB-level)
+    // --- CROSS-TALK SYNTHESIS ---
+    if (ai?.cross_talk && Array.isArray(ai.cross_targets) && ai.cross_targets.length >= 2) {
+        const results = await Promise.all(ai.cross_targets.map(async (t) => {
+            const res = await computeSqlAggregation({
+                sheetId: t.sheet_id,
+                user: req.user,
+                operation: t.operation || "sum",
+                targetColumn: t.column,
+                locale
+            });
+            // Extract numeric value from "Total X: $Y" or similar
+            const val = res?.answer ? parseFloat(res.answer.replace(/[^\d.-]/g, "")) : 0;
+            const fileName = availableFiles.find(f => String(f.id) === String(t.sheet_id))?.name || "Sheet";
+            return { value: val, column: t.column, fileName };
+        }));
+
+        const a = results[0];
+        const b = results[1];
+        const diff = a.value - b.value;
+        const pct = b.value !== 0 ? (diff / Math.abs(b.value)) * 100 : 0;
+        
+        const summary = `${a.fileName} (${a.column}) has ${formatValue(a.value, locale, a.column)}, while ${b.fileName} (${b.column}) has ${formatValue(b.value, locale, b.column)}. \n` +
+                        `The difference is ${diff >= 0 ? "+" : ""}${formatValue(diff, locale, a.column)} (${diff >= 0 ? "+" : ""}${pct.toFixed(2)}%).`;
+        
+        return res.json({
+            answer: summary,
+            actions: { reset_filters: false, filters: [], chart: null },
+            preview_rows: [],
+            meta: { operation: "cross_talk", locale, cross_results: results }
+        });
+    }
+
     const numericOps = new Set(["count", "sum", "avg", "max", "min", "top_n"]);
     let exec = null;
 

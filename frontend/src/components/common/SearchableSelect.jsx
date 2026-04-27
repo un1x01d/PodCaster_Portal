@@ -59,19 +59,21 @@ export default function SearchableSelect({
     }, [open]);
 
     return (
-        <div className={`relative inline-flex align-top ${className}`}>
+        <div className={`relative flex align-top ${className}`}>
             <button
                 ref={btnRef}
                 type="button"
                 disabled={disabled}
                 onClick={() => !disabled && setOpen((o) => !o)}
-                className={`${buttonClassName} flex items-center justify-between gap-2 ${disabled ? "bg-gray-100 cursor-not-allowed text-gray-400" : ""
+                className={`${buttonClassName} flex items-center justify-between gap-2 overflow-hidden ${disabled ? "bg-gray-100 cursor-not-allowed text-gray-400" : ""
                     }`}
                 title={selected?.label || placeholder}
-                style={{ maxWidth: "100%" }}
+                style={{ width: '100%', maxWidth: "100%" }}
             >
-                <div className={`truncate text-left flex-1 min-w-0 ${labelClassName}`} style={{ maxWidth: "100%" }}>{selected?.label || placeholder}</div>
-                <span className="opacity-70 shrink-0">▾</span>
+                <div className={`truncate text-left flex-1 min-w-0 flex items-center h-full pl-2 ${labelClassName}`} style={{ maxWidth: "100%" }}>
+                    <span className="truncate">{selected?.label || placeholder}</span>
+                </div>
+                <span className="opacity-50 shrink-0 text-[10px]">▼</span>
             </button>
 
             {open && !disabled && (

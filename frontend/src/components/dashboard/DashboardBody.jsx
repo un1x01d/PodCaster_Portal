@@ -1,10 +1,11 @@
-import React, { useState, useRef, useMemo, forwardRef } from "react";
+import React, { useState, useRef, useMemo, forwardRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { FixedSizeList as List } from "react-window";
 import AutoSizer from "react-virtualized-auto-sizer";
 import axios from "axios";
 
 import SearchableSelect from "../common/SearchableSelect";
+import MultiSelect from "../common/MultiSelect";
 import ColumnFilterMenu from "./ColumnFilterMenu";
 import SheetTabBar from "./SheetTabBar";
 import PivotOverlay from "./PivotOverlay";
@@ -112,15 +113,43 @@ export default function DashboardBody(props) {
         onInsightSaveView,
         fetchUniqueValues,
         onLoadMore,
-        isBatchLoading
+        isBatchLoading,
+        secondaryData,
+        secondaryHeaders,
+        secondaryIsBatchLoading,
+        onLoadMoreSecondary,
+        secondarySheetId,
+        setSecondarySheetId,
+        secondaryTab,
+        setSecondaryTab
     } = props;
 
     const headerRef = useRef(null);
+    const secondaryHeaderRef = useRef(null);
+
+    // Sync header scroll with horizontal data scroll
+    const handlePrimaryScroll = ({ scrollLeft }) => {
+        if (headerRef.current) {
+            headerRef.current.scrollLeft = scrollLeft;
+        }
+    };
+
+    const handleSecondaryScroll = ({ scrollLeft }) => {
+        if (secondaryHeaderRef.current) {
+            secondaryHeaderRef.current.scrollLeft = scrollLeft;
+        }
+    };
 
     // Detect near-end of scroll for infinite loading
     const handleItemsRendered = ({ visibleStopIndex }) => {
         if (visibleStopIndex >= sortedData.length - 15 && onLoadMore && !isBatchLoading) {
             onLoadMore();
+        }
+    };
+
+    const handleSecondaryItemsRendered = ({ visibleStopIndex }) => {
+        if (visibleStopIndex >= secondaryData.length - 15 && onLoadMoreSecondary && !secondaryIsBatchLoading) {
+            onLoadMoreSecondary();
         }
     };
 
@@ -141,27 +170,79 @@ export default function DashboardBody(props) {
 
     // Comparison View State
     const [comparisonOn, setComparisonOn] = useState(false);
-    const [secondarySheetId, setSecondarySheetId] = useState("");
-    const [secondaryData, setSecondaryData] = useState([]);
-    const [secondaryHeaders, setSecondaryHeaders] = useState([]);
-    const [secondaryLoading, setSecondaryLoading] = useState(false);
+    const [splitWidth, setSplitWidth] = useState(50); // percentage
+    const isResizingRef = useRef(false);
 
-    const fetchSecondaryData = async (sid) => {
-        if (!sid) return;
-        setSecondaryLoading(true);
-        try {
-            const res = await axios.get(`${API}/sheets/${sid}/data?limit=50`, {
-                headers: { Authorization: `Bearer ${token}` }
-            });
-            setSecondaryData(res.data || []);
-            const heads = res.data?.length ? Object.keys(res.data[0]) : [];
-            setSecondaryHeaders(heads);
-        } catch (e) {
-            console.error("Secondary load failed", e);
-        } finally {
-            setSecondaryLoading(false);
+    const [primaryFields, setPrimaryFields] = useState([]);
+    const [secondaryFields, setSecondaryFields] = useState([]);
+
+    // Reset fields when headers change
+    useEffect(() => {
+        if (displayHeaders?.length) {
+            setPrimaryFields(displayHeaders);
         }
+    }, [displayHeaders]);
+
+    useEffect(() => {
+        if (secondaryHeaders?.length) {
+            setSecondaryFields(secondaryHeaders);
+        }
+    }, [secondaryHeaders]);
+
+    const primaryGridRef = useRef(null);
+    const secondaryGridRef = useRef(null);
+
+    const handleMouseDown = (e) => {
+        isResizingRef.current = true;
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+        // Add a global class to disable pointer events on all IFrames/Grids
+        document.body.classList.add('resizing-active');
     };
+
+    useEffect(() => {
+        let animationFrameId;
+        
+        const handleMouseMove = (e) => {
+            if (!isResizingRef.current) return;
+            
+            // Throttle to screen refresh rate for maximum smoothness
+            if (animationFrameId) cancelAnimationFrame(animationFrameId);
+            
+            animationFrameId = requestAnimationFrame(() => {
+                const container = document.getElementById('split-container');
+                if (!container || !primaryGridRef.current || !secondaryGridRef.current) return;
+                
+                const containerRect = container.getBoundingClientRect();
+                let newPct = ((e.clientX - containerRect.left) / containerRect.width) * 100;
+                newPct = Math.max(15, Math.min(85, newPct));
+                
+                primaryGridRef.current.style.width = `${newPct}%`;
+                secondaryGridRef.current.style.width = `${100 - newPct}%`;
+            });
+        };
+        
+        const handleMouseUp = () => {
+            if (isResizingRef.current) {
+                if (primaryGridRef.current) {
+                    const finalPct = parseFloat(primaryGridRef.current.style.width);
+                    setSplitWidth(finalPct);
+                }
+                isResizingRef.current = false;
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+                document.body.classList.remove('resizing-active');
+            }
+        };
+        window.addEventListener('mousemove', handleMouseMove);
+        window.addEventListener('mouseup', handleMouseUp);
+        return () => {
+            window.removeEventListener('mousemove', handleMouseMove);
+            window.removeEventListener('mouseup', handleMouseUp);
+            if (animationFrameId) cancelAnimationFrame(animationFrameId);
+        };
+    }, []);
+
     const [drivePickerOpen, setDrivePickerOpen] = useState(false);
     const [driveEntries, setDriveEntries] = useState([]);
     const [driveLoading, setDriveLoading] = useState(false);
@@ -489,66 +570,108 @@ export default function DashboardBody(props) {
                                             <span>Split-Screen Mode</span>
                                             <span>{comparisonOn ? 'ON' : 'OFF'}</span>
                                         </button>
+
                                         {comparisonOn && (
-                                            <div className="mt-3 space-y-2 px-1">
-                                                <div className="flex items-center gap-2 mb-1">
-                                                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
-                                                    <label className="text-[9px] text-blue-200/70 uppercase font-black tracking-[0.1em]">Target File</label>
+                                            <div className="mt-3 space-y-1.5 px-1 animate-in slide-in-from-left-2 duration-300">
+                                                <div className="flex items-center gap-2 opacity-70">
+                                                    <div className="w-1 h-1 rounded-full bg-blue-400"></div>
+                                                    <label className="text-[9px] text-white font-bold uppercase tracking-[0.1em]">Primary Fields</label>
                                                 </div>
-                                                <SearchableSelect
-                                                    options={props.myFiles.map(f => ({ value: String(f.id), label: f.display_name || f.filename }))}
-                                                    value={secondarySheetId}
-                                                    onChange={(e) => {
-                                                        const sid = e.target.value;
-                                                        setSecondarySheetId(sid);
-                                                        fetchSecondaryData(sid);
-                                                    }}
-                                                    placeholder="Select sheet…"
+                                                <MultiSelect
+                                                    options={displayHeaders}
+                                                    value={primaryFields}
+                                                    onChange={setPrimaryFields}
+                                                    placeholder="Grab fields…"
                                                     className="w-full"
-                                                    buttonClassName="!bg-white !border-slate-300 !text-slate-800 !h-8 !rounded-lg !text-[11px] !font-bold hover:!border-slate-400 transition-all shadow-sm"
-                                                    panelClassName="!rounded-xl !border-slate-200 !shadow-2xl"
-                                                    optionClassName="!rounded-md hover:!bg-indigo-50"
-                                                    optionTextClassName="!font-bold !text-[11px] !text-slate-800"
-                                                    searchInputClassName="!text-[11px] !font-bold !text-slate-900"
-                                                    panelWidth={210}
+                                                    activeColor="blue"
                                                 />
+                                            </div>
+                                        )}
+
+                                        {comparisonOn && (
+                                            <div className="mt-4 space-y-1.5 px-0 animate-in slide-in-from-left-2 duration-300 border-t border-white/10 pt-3">
+                                                <div className="flex items-center gap-1.5 mb-1 px-3 opacity-70">
+                                                    <div className="w-0.5 h-2 bg-emerald-400"></div>
+                                                    <label className="text-[9px] text-white font-bold uppercase tracking-[0.1em]">Second Spreadsheet</label>
+                                                </div>
+                                                <div className="px-2">
+                                                    <SearchableSelect
+                                                        options={props.myFiles.map(f => ({ value: String(f.id), label: f.display_name || f.filename }))}
+                                                        value={secondarySheetId}
+                                                        onChange={(e) => {
+                                                            setSecondarySheetId(e.target.value);
+                                                        }}
+                                                        placeholder="Select sheet…"
+                                                        className="w-full"
+                                                        buttonClassName="!bg-white !border-slate-300 !text-slate-900 !h-8 !rounded-lg !text-[11px] !font-bold hover:!border-slate-400 hover:!bg-slate-50 transition-all shadow-sm"
+                                                        panelClassName="!bg-white !border-slate-200 !shadow-2xl !rounded-xl !mt-1"
+                                                        optionClassName="hover:!bg-indigo-50 !text-slate-600 hover:!text-slate-900 !rounded-lg"
+                                                        optionTextClassName="!font-bold !text-[11px] !text-inherit"
+                                                        searchInputClassName="!bg-slate-50 !border-slate-100 !text-slate-900 !placeholder-slate-400 !rounded-lg"
+                                                        panelWidth={200}
+                                                    />
+                                                </div>
+                                                {secondarySheetId && (
+                                                    <div className="mt-2 px-2 space-y-1.5">
+                                                        <div className="flex items-center gap-2 opacity-70">
+                                                            <div className="w-1 h-1 rounded-full bg-emerald-400"></div>
+                                                            <label className="text-[9px] text-white font-bold uppercase tracking-[0.1em]">Secondary Fields</label>
+                                                        </div>
+                                                        <MultiSelect
+                                                            options={secondaryHeaders}
+                                                            value={secondaryFields}
+                                                            onChange={setSecondaryFields}
+                                                            placeholder="Grab fields…"
+                                                            className="w-full"
+                                                            activeColor="emerald"
+                                                        />
+                                                    </div>
+                                                )}
                                             </div>
                                         )}
                                     </div>
                                     {user.role === "admin" ? (
-                                        <details className="left-menu-disclosure" open>
+                                        <details className="left-menu-disclosure">
                                             <summary className="left-menu-summary font-bold">
                                                 Locked Views (Admin)
                                                 <span className="left-menu-summary-meta">{activeView?.name || "None active"}</span>
                                             </summary>
-                                            <div className="left-menu-nested space-y-2">
-                                                <SearchableSelect
-                                                    options={viewOptions}
-                                                    value={selectedViewId}
-                                                    onChange={(e) => {
-                                                        const viewId = e.target.value;
-                                                        setSelectedViewId(viewId);
-                                                        // loadData is triggered by useEffect in App.jsx when selectedViewId changes
-                                                    }}
-                                                    onDelete={deleteView}
-                                                    placeholder="Locked Views…"
-                                                    className="w-full"
-                                                    buttonClassName="!bg-white !border-slate-300"
-                                                    panelWidth={210}
-                                                />
-                                                <button
-                                                    type="button"
-                                                    className="w-full btn-premium bg-indigo-600 text-white py-1.5 text-[10px] font-bold shadow-sm hover:bg-indigo-700"
-                                                    onClick={() => {
-                                                        const name = prompt("Enter a name for this Locked View (includes current filters/pivots):");
-                                                        if (name) {
-                                                            setPendingViewName(name);
-                                                            setShowColumnSelector(true);
-                                                        }
-                                                    }}
-                                                >
-                                                    Create Locked View
-                                                </button>
+                                            <div className="left-menu-nested space-y-2 px-0">
+                                                <div className="px-1">
+                                                    <SearchableSelect
+                                                        options={viewOptions}
+                                                        value={selectedViewId}
+                                                        onChange={(e) => {
+                                                            const viewId = e.target.value;
+                                                            setSelectedViewId(viewId);
+                                                        }}
+                                                        onDelete={deleteView}
+                                                        placeholder="Locked Views…"
+                                                        className="w-full"
+                                                        buttonClassName="!bg-white !border-slate-300 !rounded-lg !h-8 !text-[11px] !font-bold !text-slate-900 hover:!border-slate-400 hover:!bg-slate-50 transition-all shadow-sm"
+                                                        panelClassName="!bg-white !border-slate-200 !shadow-2xl !rounded-xl !mt-1"
+                                                        optionClassName="hover:!bg-indigo-50 !text-slate-600 hover:!text-slate-900 !rounded-lg"
+                                                        optionTextClassName="!font-bold !text-[11px] !text-inherit"
+                                                        searchInputClassName="!bg-slate-50 !border-slate-100 !text-slate-900 !placeholder-slate-400 !rounded-lg"
+                                                        panelWidth={200}
+                                                    />
+                                                </div>
+                                                <div className="px-1">
+                                                    <button
+                                                        type="button"
+                                                        className="w-full btn-premium bg-indigo-600 text-white py-1.5 text-[10px] font-bold shadow-sm hover:bg-indigo-700 rounded-md border-none"
+
+                                                        onClick={() => {
+                                                            const name = prompt("Enter a name for this Locked View (includes current filters/pivots):");
+                                                            if (name) {
+                                                                setPendingViewName(name);
+                                                                setShowColumnSelector(true);
+                                                            }
+                                                        }}
+                                                    >
+                                                        Create Locked View
+                                                    </button>
+                                                </div>
                                             </div>
                                         </details>
                                     ) : (
@@ -563,7 +686,11 @@ export default function DashboardBody(props) {
                                                 }}
                                                 placeholder="Switch View…"
                                                 className="w-full"
-                                                buttonClassName="!bg-white !border-slate-300"
+                                                buttonClassName="!bg-white !border-slate-300 !rounded-lg !h-8 !text-[11px] !font-bold !text-slate-900 hover:!border-slate-400 transition-all shadow-sm"
+                                                panelClassName="!bg-white !border-slate-200 !shadow-2xl !rounded-xl !mt-1"
+                                                optionClassName="hover:!bg-indigo-50 !text-slate-600 hover:!text-slate-900 !rounded-lg"
+                                                optionTextClassName="!font-bold !text-[11px] !text-inherit"
+                                                searchInputClassName="!bg-slate-50 !border-slate-100 !text-slate-900 !placeholder-slate-400 !rounded-lg"
                                                 panelWidth={210}
                                             />
                                             {activeView && (
@@ -611,11 +738,11 @@ export default function DashboardBody(props) {
                                                             onChange={(e) => setSelectedFolderId(e.target.value)}
                                                             placeholder="Select folder"
                                                             className="w-full"
-                                                            labelClassName="!text-black !font-bold"
-                                                            panelClassName="!rounded-md !border-slate-200 !shadow-xl"
-                                                            optionClassName="!rounded-sm hover:!bg-slate-50"
-                                                            optionTextClassName="!font-bold !text-[0.78rem] !text-black"
-                                                            searchInputClassName="!text-[0.78rem] !font-bold !text-black"
+                                                            buttonClassName="!bg-white !border-slate-300 !rounded-none !h-8 !text-[11px] !font-bold !text-slate-800 hover:!border-slate-400 shadow-sm"
+                                                            panelClassName="!rounded-none !border-slate-200 !shadow-2xl"
+                                                            optionClassName="!rounded-none hover:!bg-slate-50"
+                                                            optionTextClassName="!font-bold !text-[11px] !text-slate-800"
+                                                            searchInputClassName="!text-[11px] !font-bold !text-slate-900 !rounded-none"
                                                             panelWidth={210}
                                                         />
                                                         <input
@@ -1167,10 +1294,14 @@ export default function DashboardBody(props) {
             )}
 
             <div className={`flex flex-col flex-1 min-h-0 bg-slate-50 ${comparisonOn ? 'overflow-hidden' : ''}`}>
-                <div className={`m-4 bg-white rounded-2xl shadow-2xl border border-gray-200 focus:ring-slate-100 relative z-0 flex-1 flex overflow-hidden ${comparisonOn ? 'gap-0' : 'flex-col'}`}>
+                <div id="split-container" className={`m-4 bg-white rounded-2xl shadow-2xl border border-gray-200 focus:ring-slate-100 relative z-0 flex-1 flex overflow-hidden ${comparisonOn ? 'gap-0' : 'flex-col'}`}>
                     
                     {/* PRIMARY GRID */}
-                    <div className={`flex flex-col h-full min-h-0 min-w-0 ${comparisonOn ? 'flex-1 border-r border-slate-200' : 'flex-1'}`}>
+                    <div 
+                        ref={primaryGridRef}
+                        className={`flex flex-col h-full min-h-0 min-w-0 ${!comparisonOn ? 'flex-1' : ''}`}
+                        style={comparisonOn ? { width: `${splitWidth}%` } : {}}
+                    >
                         {sortedData?.length > 0 ? (
                             <>
                                 <div className="sticky top-0 bg-slate-50/90 backdrop-blur text-slate-500 font-semibold border-b border-slate-200 z-10 px-4 py-2 text-[10px] uppercase tracking-wider flex justify-between items-center shrink-0">
@@ -1179,23 +1310,23 @@ export default function DashboardBody(props) {
 
                                 <div className="flex-1 w-full flex flex-col min-h-0">
                                     <div
-                                        className="flex bg-slate-100 border-b border-slate-200 shadow-sm z-10 overflow-hidden shrink-0 h-10 items-center"
-                                        style={{ width: "100%" }}
-                                        ref={(el) => {
-                                            headerRef.current = el;
-                                        }}
+                                        className="flex bg-slate-100 border-b border-slate-200 shadow-sm z-10 overflow-hidden shrink-0 h-10 items-center no-scrollbar"
+                                        style={{ width: "100%", direction: comparisonOn ? 'rtl' : 'ltr' }}
+                                        ref={headerRef}
                                     >
-                                        {displayHeaders.map((h) => (
-                                            <div
-                                                key={h}
-                                                style={{ width: colWidths[h] || 180, minWidth: colWidths[h] || 180 }}
-                                                className="table-pro-text relative border-r border-slate-200 px-3 py-1.5 text-[11px] text-left cursor-pointer group flex items-center justify-between hover:bg-slate-200 transition-colors bg-slate-100 text-slate-800 font-bold h-full"
-                                                onClick={() => requestSort(h)}
-                                            >
-                                                <span className="truncate">{h}</span>
-                                                {sortConfig?.key === h && <span className="ml-1 text-[9px]">{sortConfig.direction === "asc" ? "▲" : "▼"}</span>}
-                                            </div>
-                                        ))}
+                                        <div style={{ display: 'flex', width: (primaryFields.length * 180), height: '100%', direction: 'ltr' }}>
+                                            {primaryFields.map((h) => (
+                                                <div
+                                                    key={h}
+                                                    style={{ width: colWidths[h] || 180, minWidth: colWidths[h] || 180 }}
+                                                    className="table-pro-text relative border-r border-slate-200 px-3 py-1.5 text-[11px] text-left cursor-pointer group flex items-center justify-between hover:bg-slate-200 transition-colors bg-slate-100 text-slate-800 font-bold h-full"
+                                                    onClick={() => requestSort(h)}
+                                                >
+                                                    <span className="truncate">{h}</span>
+                                                    {sortConfig?.key === h && <span className="ml-1 text-[9px]">{sortConfig.direction === "asc" ? "▲" : "▼"}</span>}
+                                                </div>
+                                            ))}
+                                        </div>
                                     </div>
 
                                     <div className="flex-1 min-h-0 relative">
@@ -1207,17 +1338,19 @@ export default function DashboardBody(props) {
                                                     itemSize={36}
                                                     width={width}
                                                     onItemsRendered={handleItemsRendered}
+                                                    onScroll={handlePrimaryScroll}
                                                     innerElementType={InnerElement}
                                                     outerElementType={OuterElement}
+                                                    style={{ direction: comparisonOn ? 'rtl' : 'ltr' }}
                                                 >
                                                     {({ index, style }) => {
                                                         const row = sortedData[index];
                                                         return (
                                                             <div
-                                                                style={{ ...style, width: totalRowWidth, minWidth: "100%" }}
+                                                                style={{ ...style, width: (primaryFields.length * 180), minWidth: "100%", direction: 'ltr' }}
                                                                 className={`flex ${index % 2 === 1 ? "bg-slate-50" : "bg-white"} hover:bg-indigo-50/50 transition-colors border-b border-slate-100 items-center h-8`}
                                                             >
-                                                                {displayHeaders.map((h) => (
+                                                                {primaryFields.map((h) => (
                                                                     <div key={h} style={{ width: colWidths[h] || 180, minWidth: colWidths[h] || 180 }} className="border-r border-slate-100 px-3 text-[11px] text-slate-700 truncate h-full flex items-center">
                                                                         {typeof row[h] === 'number' ? formatSmart(row[h], h) : renderMaybeDate(h, row[h])}
                                                                     </div>
@@ -1241,9 +1374,23 @@ export default function DashboardBody(props) {
                         )}
                     </div>
 
+                    {/* RESIZER */}
+                    {comparisonOn && (
+                        <div 
+                            className="w-1.5 h-full bg-slate-200 hover:bg-indigo-400 cursor-col-resize transition-colors z-20 flex items-center justify-center group"
+                            onMouseDown={handleMouseDown}
+                        >
+                            <div className="w-px h-8 bg-slate-400 group-hover:bg-white" />
+                        </div>
+                    )}
+
                     {/* SECONDARY GRID */}
                     {comparisonOn && (
-                        <div className="flex flex-col h-full min-h-0 min-w-0 flex-1 bg-slate-50/30">
+                        <div 
+                            ref={secondaryGridRef}
+                            className="flex flex-col h-full min-h-0 min-w-0 bg-slate-50/30"
+                            style={{ width: `${100 - splitWidth}%` }}
+                        >
                             {secondaryData?.length > 0 ? (
                                 <>
                                     <div className="sticky top-0 bg-slate-100/90 backdrop-blur text-slate-500 font-semibold border-b border-slate-200 z-10 px-4 py-2 text-[10px] uppercase tracking-wider flex justify-between items-center shrink-0">
@@ -1251,15 +1398,20 @@ export default function DashboardBody(props) {
                                     </div>
 
                                     <div className="flex-1 w-full flex flex-col min-h-0">
-                                        <div className="flex bg-slate-200/50 border-b border-slate-200 shadow-sm z-10 overflow-hidden shrink-0 h-10 items-center">
-                                            {secondaryHeaders.map((h) => (
-                                                <div key={h} style={{ width: 180, minWidth: 180 }} className="px-3 py-1.5 text-[11px] font-bold text-slate-700 border-r border-slate-200 truncate">
-                                                    {h}
-                                                </div>
-                                            ))}
+                                        <div 
+                                            className="flex bg-slate-200/50 border-b border-slate-200 shadow-sm z-10 overflow-hidden shrink-0 h-10 items-center"
+                                            ref={secondaryHeaderRef}
+                                        >
+                                            <div style={{ display: 'flex', width: secondaryFields.length * 180, height: '100%' }}>
+                                                {secondaryFields.map((h) => (
+                                                    <div key={h} style={{ width: 180, minWidth: 180 }} className="px-3 py-1.5 text-[11px] font-bold text-slate-700 border-r border-slate-200 truncate h-full flex items-center">
+                                                        {h}
+                                                    </div>
+                                                ))}
+                                            </div>
                                         </div>
 
-                                        <div className="flex-1 min-h-0">
+                                        <div className="flex-1 min-h-0 relative">
                                             <AutoSizer>
                                                 {({ height, width }) => (
                                                     <List
@@ -1267,15 +1419,17 @@ export default function DashboardBody(props) {
                                                         itemCount={secondaryData.length}
                                                         itemSize={36}
                                                         width={width}
+                                                        onItemsRendered={handleSecondaryItemsRendered}
+                                                        onScroll={handleSecondaryScroll}
                                                         innerElementType={({ style, ...rest }) => (
-                                                            <div style={{ ...style, width: secondaryHeaders.length * 180, position: 'relative' }} {...rest} />
+                                                            <div style={{ ...style, width: secondaryFields.length * 180, position: 'relative' }} {...rest} />
                                                         )}
                                                     >
                                                         {({ index, style }) => {
                                                             const row = secondaryData[index];
                                                             return (
                                                                 <div style={style} className={`flex ${index % 2 === 1 ? "bg-slate-100/30" : "bg-white"} border-b border-slate-100 items-center h-8`}>
-                                                                    {secondaryHeaders.map((h) => (
+                                                                    {secondaryFields.map((h) => (
                                                                         <div key={h} style={{ width: 180, minWidth: 180 }} className="border-r border-slate-100 px-3 text-[11px] text-slate-600 truncate">
                                                                             {typeof row[h] === 'number' ? formatSmart(row[h], h) : renderMaybeDate(h, row[h])}
                                                                         </div>
@@ -1286,6 +1440,11 @@ export default function DashboardBody(props) {
                                                     </List>
                                                 )}
                                             </AutoSizer>
+                                            {secondaryIsBatchLoading && (
+                                                <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-emerald-600 text-white px-3 py-1 rounded-full text-[9px] font-bold shadow-lg animate-bounce z-50">
+                                                    Loading rows...
+                                                </div>
+                                            )}
                                         </div>
                                     </div>
                                 </>
@@ -1295,7 +1454,7 @@ export default function DashboardBody(props) {
                                     <div className="text-slate-400 font-bold text-[11px] uppercase tracking-widest">Select comparison sheet</div>
                                 </div>
                             )}
-                            {secondaryLoading && (
+                            {secondaryIsBatchLoading && (
                                 <div className="absolute inset-0 bg-white/60 backdrop-blur-[1px] flex items-center justify-center z-50">
                                     <div className="w-6 h-6 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
                                 </div>
