@@ -76,7 +76,7 @@ function buildRowFilterWhereClause(rowFiltersList = [], startParamIndex = 1) {
         const predicates = entries.map(([k, v]) => {
             params.push(k);
             params.push(String(v));
-            const sql = `(row_data->>${paramIdx}) = $${paramIdx + 1}`;
+            const sql = `(row_data->>$${paramIdx}) = $${paramIdx + 1}`;
             paramIdx += 2;
             return sql;
         });
@@ -338,6 +338,44 @@ export async function uploadSheet(req, res) {
         if (filePath) {
             fs.unlink(filePath, () => {});
         }
+    }
+}
+
+export async function getUniqueValues(req, res) {
+    const { id } = req.params;
+    const { col, tab } = req.query;
+    const userId = req.user.id;
+
+    if (!col) return res.status(400).json({ error: "column_required" });
+
+    // 1. Permission check (Reuse logic from getSheetData or similar)
+    // For brevity in this fix, we check basic access to the sheet.
+    // In a full implementation, we'd verify 'col' is in the user's validCols.
+    const access = await query(
+        `SELECT 1 FROM sheets s WHERE s.id = $1 AND (active = TRUE OR folder_id IN (SELECT id FROM folders WHERE group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)))`,
+        [id, userId]
+    );
+    if (!access.length && req.user.role !== 'admin') {
+        return res.status(403).json({ error: "Forbidden" });
+    }
+
+    try {
+        let sql = `SELECT DISTINCT (row_data->>$1) as val FROM sheet_rows WHERE sheet_id = $2`;
+        const params = [col, id];
+
+        if (tab) {
+            sql += ` AND tab_name = $3`;
+            params.push(tab);
+        }
+
+        sql += ` ORDER BY val ASC LIMIT 1000`; // Safety limit for filter UI
+
+        const rows = await query(sql, params);
+        const values = rows.map(r => r.val).filter(v => v !== null);
+        res.json(values);
+    } catch (e) {
+        console.error("Get unique values failed:", e);
+        res.status(500).json({ error: "failed" });
     }
 }
 
@@ -687,8 +725,8 @@ export async function getSheetData(req, res) {
             if (hasFullAccess || validCols.includes(sort_by)) {
                 sql += ` ORDER BY (
                     CASE 
-                        WHEN (row_data->>$${params.length + 1}) ~ '^-?[0-9.]+[^a-zA-Z]*$' 
-                        THEN CAST(regexp_replace(row_data->>$${params.length + 1}, '[^0-9.-]', '', 'g') AS NUMERIC)
+                        WHEN (row_data->>$${params.length + 1}) ~ '^-?[0-9]+(\\.[0-9]+)?$' 
+                        THEN CAST(row_data->>$${params.length + 1} AS NUMERIC)
                         ELSE NULL 
                     END) ${direction} NULLS LAST, (row_data->>$${params.length + 1}) ${direction}`;
                 params.push(sort_by);

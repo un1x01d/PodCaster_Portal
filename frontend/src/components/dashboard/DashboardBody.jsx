@@ -56,6 +56,7 @@ export default function DashboardBody(props) {
         setColumnFilters,
         sortConfig,
         requestSort,
+        uniqueValuesByColumn,
 
         // Charts / Pivot State
         pivotOn, setPivotOn,
@@ -109,6 +110,7 @@ export default function DashboardBody(props) {
         onInsightApplyFilter,
         onInsightOpenChart,
         onInsightSaveView,
+        fetchUniqueValues
     } = props;
 
     const headerRef = useRef(null);
@@ -176,7 +178,7 @@ export default function DashboardBody(props) {
     }, [sheetId]);
 
     const folderOptions = React.useMemo(() => {
-        return [{ value: "", label: "Folder (required)…" }].concat(
+        return [{ value: "", label: "Select folder" }].concat(
             folders.map((f) => ({ value: String(f.id), label: f.path || f.name }))
         );
     }, [folders]);
@@ -539,12 +541,13 @@ export default function DashboardBody(props) {
                                                             options={folderOptions}
                                                             value={selectedFolderId}
                                                             onChange={(e) => setSelectedFolderId(e.target.value)}
-                                                            placeholder="Select Folder…"
+                                                            placeholder="Select folder"
                                                             className="w-full"
+                                                            labelClassName="!text-black !font-bold"
                                                             panelClassName="!rounded-md !border-slate-200 !shadow-xl"
                                                             optionClassName="!rounded-sm hover:!bg-slate-50"
-                                                            optionTextClassName="!font-bold !text-[0.78rem]"
-                                                            searchInputClassName="!text-[0.78rem] !font-bold"
+                                                            optionTextClassName="!font-bold !text-[0.78rem] !text-black"
+                                                            searchInputClassName="!text-[0.78rem] !font-bold !text-black"
                                                             panelWidth={210}
                                                         />
                                                         <input
@@ -1158,7 +1161,9 @@ export default function DashboardBody(props) {
                                                 title="Filter"
                                                 onClick={(e) => {
                                                     e.stopPropagation();
-                                                    setOpenFilterCol((prev) => (prev === h ? null : h));
+                                                    const next = openFilterCol === h ? null : h;
+                                                    setOpenFilterCol(next);
+                                                    if (next) fetchUniqueValues(h);
                                                 }}
                                             >
                                                 ▼

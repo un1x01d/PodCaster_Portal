@@ -5,7 +5,7 @@ import { isEnglishLocale, normalizeLocale, translateDashboardCards } from "../ut
 const INSIGHT_MAX_ROWS = Number.parseInt(process.env.INSIGHT_MAX_ROWS || "50000", 10);
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
-const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "25000", 10);
+const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10);
 const INSIGHT_CACHE = new Map();
 const INSIGHT_CACHE_TTL_MS = Number.parseInt(process.env.INSIGHT_CACHE_TTL_MS || `${10 * 60 * 1000}`, 10);
 const INSIGHT_CACHE_MAX_ENTRIES = Number.parseInt(process.env.INSIGHT_CACHE_MAX_ENTRIES || "200", 10);
@@ -327,6 +327,7 @@ async function callOpenAIInsightForecast({ metricCol, dateCol, series, context }
       }
     };
 
+    const isReasoningModel = OPENAI_MODEL.startsWith("o");
     const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
       method: "POST",
       signal: controller.signal,
@@ -336,7 +337,7 @@ async function callOpenAIInsightForecast({ metricCol, dateCol, series, context }
       },
       body: JSON.stringify({
         model: OPENAI_MODEL,
-        temperature: 0.2,
+        temperature: isReasoningModel ? 1 : 0.2,
         response_format: { type: "json_object" },
         messages: [
           {
@@ -427,6 +428,7 @@ async function callOpenAIInsightRecommendations({
       }
     };
 
+    const isReasoningModel = OPENAI_MODEL.startsWith("o");
     const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
       method: "POST",
       signal: controller.signal,
@@ -436,7 +438,7 @@ async function callOpenAIInsightRecommendations({
       },
       body: JSON.stringify({
         model: OPENAI_MODEL,
-        temperature: 0.25,
+        temperature: isReasoningModel ? 1 : 0.25,
         response_format: { type: "json_object" },
         messages: [
           {

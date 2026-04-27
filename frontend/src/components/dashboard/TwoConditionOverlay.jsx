@@ -21,7 +21,7 @@ export default function TwoConditionOverlay({
                 <button onClick={() => setTwoOn(false)} className="text-gray-400 hover:text-gray-600 transition-colors">✕ Close</button>
             </div>
             <div className="flex gap-4 mb-6 items-end flex-wrap">
-                {Array.isArray(tabs) && tabs.length > 0 && (
+                {Array.isArray(tabs) && tabs.length > 1 && (
                     <div>
                         <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Tab</label>
                         <select

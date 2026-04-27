@@ -54,7 +54,7 @@ export default function TrendsOverlay({
                 <button onClick={() => setTrendsOn(false)} className="text-gray-400 hover:text-gray-600 transition-colors">✕ Close</button>
             </div>
             <div className="flex gap-4 mb-6 flex-wrap items-end">
-                {Array.isArray(tabs) && tabs.length > 0 && (
+                {Array.isArray(tabs) && tabs.length > 1 && (
                     <div>
                         <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Tab</label>
                         <select
@@ -130,7 +130,15 @@ export default function TrendsOverlay({
 
                             {(!compareYears || compareYears.length === 0) ? (
                                 // Single Line
-                                <Line type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={3} dot={{ r: 4, strokeWidth: 2, fill: 'white' }} activeDot={{ r: 8, fill: '#3b82f6' }} />
+                                <Line 
+                                    type="monotone" 
+                                    dataKey="value" 
+                                    name={trendsValueKey || "Value"}
+                                    stroke="#3b82f6" 
+                                    strokeWidth={3} 
+                                    dot={{ r: 4, strokeWidth: 2, fill: 'white' }} 
+                                    activeDot={{ r: 8, fill: '#3b82f6' }} 
+                                />
                             ) : (
                                 // Comparison Lines (selected years)
                                 [...compareYears].sort((a, b) => b - a).map((year, i) => (

@@ -10,6 +10,7 @@ import {
     updateSheetDetails,
     getSheetTabs,
     getSheetData,
+    getUniqueValues,
     deleteSheet
 } from "../controllers/sheetController.js";
 import { auth } from "../middleware/auth.js";
@@ -56,6 +57,7 @@ router.get("/sheets/:id", asyncHandler(getSheetDetails));
 router.patch("/sheets/:id", asyncHandler(updateSheetDetails));
 router.get("/sheets/:id/tabs", asyncHandler(getSheetTabs));
 router.get("/sheets/:id/data", asyncHandler(getSheetData));
+router.get("/sheets/:id/unique-values", asyncHandler(getUniqueValues));
 router.delete("/sheets/:id", asyncHandler(deleteSheet));
 
 // Legacy/Compatibility alias for /sheets/list logic if needed, but listAllSheets covers it

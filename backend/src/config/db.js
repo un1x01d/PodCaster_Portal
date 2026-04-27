@@ -168,13 +168,15 @@ export async function initDb() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS sheet_rows (
       id SERIAL PRIMARY KEY,
-      sheet_id TEXT NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
-      row_index INT NOT NULL,
+      sheet_id TEXT REFERENCES sheets(id) ON DELETE CASCADE,
+      row_index INTEGER NOT NULL,
       row_data JSONB NOT NULL,
       tab_name TEXT
     );
+    CREATE INDEX IF NOT EXISTS idx_sheet_rows_sheet_id ON sheet_rows(sheet_id);
+    CREATE INDEX IF NOT EXISTS idx_sheet_rows_row_data_gin ON sheet_rows USING gin(row_data);
   `);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_sheet_rows_sheet_id ON sheet_rows(sheet_id);`);
+
   await pool.query(`ALTER TABLE sheet_rows ADD COLUMN IF NOT EXISTS tab_name TEXT;`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_sheet_rows_tab ON sheet_rows(sheet_id, tab_name);`);
 
@@ -401,8 +403,61 @@ export async function initDb() {
   await pool.query(`ALTER TABLE insight_settings ADD COLUMN IF NOT EXISTS muted_metrics JSONB NOT NULL DEFAULT '[]'::jsonb;`);
   await pool.query(`ALTER TABLE insight_settings ADD COLUMN IF NOT EXISTS preferred_date_column TEXT;`);
   await pool.query(`ALTER TABLE insight_settings ADD COLUMN IF NOT EXISTS preferred_metric_column TEXT;`);
-  await pool.query(`ALTER TABLE insight_settings ADD COLUMN IF NOT EXISTS thresholds JSONB NOT NULL DEFAULT '{}'::jsonb;`);
-  await pool.query(`ALTER TABLE insight_settings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
+  // --- SEMANTIC BRAIN & RATIOS ---
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS semantic_dictionary (
+      id SERIAL PRIMARY KEY,
+      category TEXT NOT NULL,
+      language TEXT NOT NULL,
+      synonym TEXT NOT NULL,
+      group_id INTEGER REFERENCES groups(id) ON DELETE CASCADE,
+      UNIQUE (category, language, synonym, group_id)
+    );
+    CREATE TABLE IF NOT EXISTS financial_ratios (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      match_pattern TEXT NOT NULL,
+      formula_type TEXT NOT NULL, -- 'margin', 'ratio', 'currency', 'months', 'weeks'
+      required_buckets JSONB NOT NULL, -- e.g. ["revenue", "expense"]
+      group_id INTEGER REFERENCES groups(id) ON DELETE CASCADE
+    );
+  `);
+
+  // SEED DICTIONARY (EN/RU/UK)
+  const initialTerms = [
+    { cat: 'revenue', lang: 'en', terms: ["revenue", "income", "sales", "proceeds", "gross", "billings", "turnover", "ebit", "earn", "receipts", "top line", "inflow", "collections", "volume", "top-line", "accruals", "yield", "bookings", "gross-sales", "gain", "profitability", "takings", "earnings", "net-sales", "gross-revenue"] },
+    { cat: 'revenue', lang: 'ru', terms: ["доход", "выручка", "прибуток", "оборот", "надходження", "продажі", "реализация", "кассовые", "чеки", "наторговали", "приход", "приток", "касса", "выработка", "дебет", "заработок", "профит", "маржа", "барыш", "оборотка", "торговля"] },
+    { cat: 'expense', lang: 'en', terms: ["expense", "cost", "spending", "cogs", "outgo", "expenditure", "burn", "overhead", "opex", "capex", "outflow", "payments", "disbursements", "fixed", "variable", "sg&a", "marketing", "procurement", "labor", "materials", "loss", "bill", "invoice", "charge", "refund", "discount", "fee", "payout", "cost-of-sales"] },
+    { cat: 'expense', lang: 'ru', terms: ["расход", "витрати", "затраты", "издержки", "траты", "себестоимость", "видатки", "собівартість", "опекс", "капекс", "закупка", "убыток", "минус", "оплата", "платеж", "списание", "счет", "усушка", "потеря", "трата", "амортизация", "налог", "аренда", "зарплата"] },
+    { cat: 'asset', lang: 'en', terms: ["asset", "cash", "receivable", "inventory", "property", "equipment", "investment", "liquid", "balance", "capital", "reserves", "holdings", "bank", "treasury", "ar", "ppe", "equity", "resources", "stock", "fund", "wealth", "value", "security", "saving", "deposit", "portfolio"] },
+    { cat: 'asset', lang: 'ru', terms: ["актив", "готівка", "наличность", "запаси", "имущество", "оборудование", "капитал", "дебиторка", "дебіторка", "склад", "остаток", "баланс", "власність", "кошти", "ресурс", "фонд", "вложение", "инвестиция", "собственность", "депозит", "счет", "нал"] },
+    { cat: 'liability', lang: 'en', terms: ["liability", "debt", "loan", "payable", "obligation", "accrual", "ap", "credit", "mortgage", "borrowing", "interest", "tax", "due", "arrears", "unearned", "overdraft", "bond", "claim", "leverage", "finance", "draw"] },
+    { cat: 'liability', lang: 'ru', terms: ["зобов'язання", "обязательство", "долг", "борг", "кредиторка", "задолженность", "пассив", "ссуда", "займ", "налоги", "податки", "пеня", "дефіцит", "кредит", "ипотека", "расписка", "вексель", "минус", "пассивы", "обязаловка", "недоимка"] },
+    { cat: 'count', lang: 'en', terms: ["count", "employee", "headcount", "staff", "user", "customer", "client", "person", "member", "unit", "workforce", "personnel", "workers", "subscriber", "quantity", "volume", "lead", "seat", "head", "team", "people", "agent", "user-base", "population"] },
+    { cat: 'count', lang: 'ru', terms: ["кількість", "сотрудник", "працівник", "штат", "персонал", "користувач", "клієнт", "участник", "единиц", "людей", "человек", "голов", "підписник", "база", "команда", "агент", "лид", "юзер", "рыло", "работник", "специалист", "кадры"] },
+    { cat: 'date', lang: 'en', terms: ["date", "period", "time", "year", "month", "quarter", "fiscal", "timestamp", "occured", "day", "weekly", "daily", "annual", "dated", "timeline", "moment", "created", "hour", "history", "schedule", "calendar", "era", "term"] },
+    { cat: 'date', lang: 'ru', terms: ["дата", "период", "період", "рік", "год", "місяць", "месяц", "час", "термін", "день", "квартал", "число", "момент", "строк", "время", "история", "график", "календарь", "эра", "срок", "длительность", "протяженность"] },
+  ];
+
+  for (const entry of initialTerms) {
+    for (const term of entry.terms) {
+      await pool.query(`INSERT INTO semantic_dictionary (category, language, synonym) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, [entry.cat, entry.lang, term]);
+    }
+  }
+
+  // SEED RATIOS
+  const initialRatios = [
+    { name: 'Gross Margin', match: 'gross margin|рентабельность|прибутковість', type: 'percent', buckets: ['revenue', 'expense'] },
+    { name: 'Free Cash Flow', match: 'free cash flow|fcf|свободный денежный поток|вільний грошовий потік', type: 'currency', buckets: ['revenue', 'expense'] },
+    { name: 'Burn Rate', match: 'burn rate|скорость сжигания|темп витрат', type: 'months', buckets: ['asset', 'expense'] },
+    { name: 'DSO', match: 'dso|days sales outstanding|период оборачиваемости дебиторки', type: 'days', buckets: ['asset', 'revenue'] },
+    { name: 'Current Ratio', match: 'current ratio|коэффициент ликвидности', type: 'ratio', buckets: ['asset', 'liability'] },
+    { name: 'Revenue per Employee', match: 'revenue per employee|выручка на сотрудника', type: 'currency', buckets: ['revenue', 'count'] }
+  ];
+
+  for (const ratio of initialRatios) {
+    await pool.query(`INSERT INTO financial_ratios (name, match_pattern, formula_type, required_buckets) VALUES ($1, $2, $3, $4) ON CONFLICT (name) DO NOTHING`, [ratio.name, ratio.match, ratio.type, JSON.stringify(ratio.buckets)]);
+  }
 }
 
 export default pool;

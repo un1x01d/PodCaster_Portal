@@ -278,7 +278,7 @@ function KpiCalendarField({ label, value, onChange }) {
           className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-bold text-slate-900 text-left hover:bg-slate-50"
           style={{ fontFamily: "'Aptos', 'Segoe UI Variable Text', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" }}
         >
-          {selectedDate ? formatMMDDYYYY(selectedDate) : "Select date"}
+          {selectedDate ? formatMMDDYYYY(selectedDate) : (value === "latest" ? "Latest" : "Select date")}
         </button>
       </label>
       {open && (
@@ -341,16 +341,26 @@ function KpiCalendarField({ label, value, onChange }) {
               );
             })}
           </div>
-          <div className="mt-2">
+          <div className="mt-2 flex gap-1">
             <button
               type="button"
-              className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-[10px] font-bold text-slate-700 hover:bg-slate-50"
+              className="flex-1 rounded border border-slate-300 bg-white px-2 py-1 text-[10px] font-bold text-slate-700 hover:bg-slate-50"
               onClick={() => {
                 onChange("");
                 setOpen(false);
               }}
             >
               Clear
+            </button>
+            <button
+              type="button"
+              className="flex-1 rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-[10px] font-bold text-indigo-700 hover:bg-indigo-100 transition-colors"
+              onClick={() => {
+                onChange("latest");
+                setOpen(false);
+              }}
+            >
+              Latest
             </button>
           </div>
         </div>
@@ -528,14 +538,6 @@ export default function DashboardHome({
     pinnedConfigRef.current = pinnedConfig;
   }, [pinnedConfig]);
 
-  const activeFilterCount = Object.entries(columnFilters).filter(([, v]) => {
-    if (!v) return false;
-    if (v instanceof Set) return v.size > 0;
-    if (Array.isArray(v)) return v.length > 0;
-    if (typeof v === "object" && v.type === "contains") return !!v.value;
-    return true;
-  }).length;
-
   const { metricCol, dateCol, categoryCol, profitCol, incomeCol, revenueCol, expenseCol } = React.useMemo(
     () => detectColumns(headers, sortedData),
     [headers, sortedData]
@@ -543,10 +545,43 @@ export default function DashboardHome({
   const revenueMetricCol = revenueCol || metricCol;
   const incomeMetricCol = incomeCol || profitCol;
   const canDeriveExpense = !expenseCol && !!revenueMetricCol && !!incomeMetricCol;
+
   const sheetStructureSignature = React.useMemo(
     () => headers.map((h) => String(h || "").trim().toLowerCase()).join("|"),
     [headers]
   );
+
+  React.useEffect(() => {
+    if (!headers.length) return;
+    setKpiOverrides((prev) => {
+        const next = { ...prev };
+        const ids = ["metricAvg", "incomeTotal", "incomeAvg", "incomeMargin", "latestPeriod", "topValue", "topShare"];
+        
+        ids.forEach(id => {
+            // If this card is new to this sheet structure, or if it contains an AI override, reset it
+            if (!next[id]?.column || next[id]?.aiOverride || next[id]?.manualOverride) {
+                const defaultCol = (id === "metricAvg") ? (metricCol || "") :
+                                 (id === "incomeTotal" || id === "incomeAvg" || id === "incomeMargin") ? (incomeMetricCol || "") :
+                                 (revenueMetricCol || "");
+                
+                const defaultCat = (id === "topValue" || id === "topShare") ? (categoryCol || "") : "";
+
+                next[id] = { 
+                    ...next[id], 
+                    column: defaultCol, 
+                    categoryColumn: defaultCat,
+                    label: "", 
+                    subtitle: "",
+                    aiValue: "", 
+                    manualOverride: false, 
+                    aiOverride: false 
+                };
+            }
+        });
+
+        return next;
+    });
+  }, [headers, metricCol, incomeMetricCol, revenueMetricCol, categoryCol, sheetStructureSignature]);
 
   const numericHeaderOptions = React.useMemo(() => {
     return headers.filter((h) => {
@@ -1052,6 +1087,40 @@ export default function DashboardHome({
         },
       }));
     }
+  }, [sheetId]);
+
+  // Handle AI Responses for Pinned Metrics & Tickets
+  React.useEffect(() => {
+    const onAiResponse = (event) => {
+      const { sheetId: resSheetId, answer, meta } = event.detail || {};
+      if (String(resSheetId) !== String(sheetId)) return;
+      if (!meta || (!Number.isInteger(meta.index) && !meta.ticketId)) return;
+
+      // Extract number from answer: "The value is $1,234.56" -> "1234.56"
+      const cleaned = String(answer || "").replace(/[^\d.-]/g, "");
+      const numeric = parseFloat(cleaned);
+      if (Number.isNaN(numeric)) return;
+
+      if (Number.isInteger(meta.index)) {
+        // Update Pinned Metric
+        setPinnedInput((prev) => {
+          const nextItems = [...prev.items];
+          if (nextItems[meta.index]) {
+            nextItems[meta.index] = { ...nextItems[meta.index], value: String(numeric) };
+          }
+          return { ...prev, items: nextItems };
+        });
+      } else if (meta.ticketId) {
+        // Update Ticket/KPI Override
+        setKpiOverrides((prev) => ({
+          ...prev,
+          [meta.ticketId]: { ...(prev[meta.ticketId] || {}), aiValue: String(numeric), aiOverride: true, manualOverride: true }
+        }));
+      }
+    };
+
+    window.addEventListener("dashboard:chat-response", onAiResponse);
+    return () => window.removeEventListener("dashboard:chat-response", onAiResponse);
   }, [sheetId]);
 
   // Auto AI refresh is intentionally disabled: pinned values update only on manual "Submit to AI".
@@ -1580,8 +1649,17 @@ export default function DashboardHome({
 
     let rows = effectiveRows;
     if (dateCol && (from || to)) {
-      const fromDate = from ? parseDate(from) : null;
-      const toDate = to ? parseDate(to) : null;
+      let latestInSheet = null;
+      if (from === "latest" || to === "latest") {
+          effectiveRows.forEach(r => {
+              const d = parseDate(r[dateCol]);
+              if (d && (!latestInSheet || d > latestInSheet)) latestInSheet = d;
+          });
+      }
+
+      const fromDate = from === "latest" ? latestInSheet : (from ? parseDate(from) : null);
+      const toDate = to === "latest" ? latestInSheet : (to ? parseDate(to) : null);
+
       rows = effectiveRows.filter((r) => {
         const d = parseDate(r?.[dateCol]);
         if (!d) return false;
@@ -1593,12 +1671,30 @@ export default function DashboardHome({
 
     const manualOverride = !!override?.manualOverride;
     const aiParsed = Number(String(override?.aiValue ?? "").replace(/,/g, ""));
-    const forcedValue = manualOverride && Number.isFinite(aiParsed) ? aiParsed : null;
+    const forcedValue = (manualOverride && Number.isFinite(aiParsed)) ? aiParsed : null;
+
+    // Recalculate subtitle if it's a category card
+    let finalSubtitle = card.subtitle;
+    const categoryColumnOverride = String(override.categoryColumn || "").trim();
+    const finalCategoryCol = categoryColumnOverride || categoryCol;
+
+    if ((card.id === "topValue" || card.id === "topShare") && finalCategoryCol) {
+        const map = new Map();
+        rows.forEach(r => {
+            const k = String(r[finalCategoryCol] || "").trim();
+            if (!k) return;
+            const v = parseNumber(r[column || metricCol]);
+            map.set(k, (map.get(k) || 0) + (v || 0));
+        });
+        const sorted = Array.from(map.entries()).sort((a,b) => b[1] - a[1]);
+        finalSubtitle = sorted.length ? sorted[0][0] : ui.noCategory;
+    }
 
     if (!column || !headers.includes(column)) {
       return {
         ...card,
         label: labelOverride || card.label,
+        subtitle: finalSubtitle,
         value: forcedValue !== null ? forcedValue : card.value,
       };
     }

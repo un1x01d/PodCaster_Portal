@@ -203,6 +203,38 @@ export default function UserManagement({ token, user, sheetId }) {
   const [editingUserForm, setEditingUserForm] = useState({ firstName: "", lastName: "", company: "", email: "" });
   const [deleteUserId, setDeleteUserId] = useState("");
 
+  const userById = useMemo(() => {
+    const m = new Map();
+    (users || []).forEach((u) => {
+        if (u && u.id) m.set(u.id, u);
+    });
+    return m;
+  }, [users]);
+
+  const folderById = useMemo(() => {
+    const m = new Map();
+    (folders || []).forEach((f) => {
+        if (f && f.id) m.set(f.id, f);
+    });
+    return m;
+  }, [folders]);
+
+  const uniqueGroupMembers = useMemo(() => {
+    const m = new Map();
+    (groupMembers || []).forEach((mem) => {
+        if (mem && mem.id) m.set(mem.id, mem);
+    });
+    return Array.from(m.values());
+  }, [groupMembers]);
+
+  const uniqueUsers = useMemo(() => {
+    const m = new Map();
+    (users || []).forEach((u) => {
+        if (u && u.id) m.set(u.id, u);
+    });
+    return Array.from(m.values());
+  }, [users]);
+
   const fetchAllSheets = async () => {
     try {
       const res = await axios.get(`${API}/sheets/all`, {
@@ -533,6 +565,21 @@ export default function UserManagement({ token, user, sheetId }) {
   };
 
   // latest 10 sheets for the SELECTED USER (based on their groups)
+  const fetchUserGroupMap = async () => {
+    if (!uniqueUsers.length) {
+      setUserGroupMap({});
+      return;
+    }
+    const pairs = await Promise.all(uniqueUsers.map(async (u) => {
+      const gids = await getGroupsForUser(u.id);
+      const names = gids
+        .map((gid) => Array.isArray(groups) && groups.find((g) => Number(g.id) === Number(gid))?.name || String(gid))
+        .filter(Boolean);
+      return [u.id, names];
+    }));
+    setUserGroupMap(Object.fromEntries(pairs));
+  };
+
   const fetchUserSheets = async (uid) => {
     if (!uid) { setUserSheets([]); return; }
     try {
@@ -1160,17 +1207,6 @@ export default function UserManagement({ token, user, sheetId }) {
     setGroupRowFilters(filterArray.length > 0 ? filterArray : [{ key: "", value: "" }]);
   }, [selectedUserSheetId, selectedTplGroup, groupSheetHeaders, templates]);
 
-  const userById = useMemo(() => {
-    const m = new Map();
-    users.forEach(u => m.set(u.id, u));
-    return m;
-  }, [users]);
-  const folderById = useMemo(() => {
-    const m = new Map();
-    (folders || []).forEach((f) => m.set(Number(f.id), f));
-    return m;
-  }, [folders]);
-
   const overrideSheetOptions = useMemo(() => {
     const source = (allSheets && allSheets.length > 0) ? allSheets : userSheets;
     const seen = new Set();
@@ -1200,28 +1236,6 @@ export default function UserManagement({ token, user, sheetId }) {
   }, [visibleFolders, selectedFolderId]);
 
 
-
-  // Deduplicate group members to prevent key warnings if backend returns duplicates (handling string vs number)
-  const uniqueGroupMembers = useMemo(() => {
-    const seen = new Set();
-    return groupMembers.filter(m => {
-      const sid = String(m.id);
-      if (seen.has(sid)) return false;
-      seen.add(sid);
-      return true;
-    });
-  }, [groupMembers]);
-
-  // Deduplicate users (handling string vs number)
-  const uniqueUsers = useMemo(() => {
-    const seen = new Set();
-    return users.filter(u => {
-      const sid = String(u.id);
-      if (seen.has(sid)) return false;
-      seen.add(sid);
-      return true;
-    });
-  }, [users]);
 
   const authBadgeClass = (provider) => (
     provider === "google"
@@ -1420,7 +1434,7 @@ export default function UserManagement({ token, user, sheetId }) {
           {selectedGroupId && (
             <div className="mt-3 rounded-md border border-slate-200 bg-white p-3">
               <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500 mb-2">
-                Group Members: {groups.find((g) => Number(g.id) === Number(selectedGroupId))?.name || selectedGroupId}
+                Group Members: {(Array.isArray(groups) && groups.find((g) => Number(g.id) === Number(selectedGroupId))?.name) || selectedGroupId}
               </div>
               <div className="flex gap-2 mb-2">
                 <select
@@ -1506,11 +1520,11 @@ export default function UserManagement({ token, user, sheetId }) {
                   <input
                     type="number"
                     className="input-premium py-1.5"
-                    defaultValue={groups.find((g) => Number(g.id) === Number(selectedGroupId))?.max_file_size_mb || 100}
+                    defaultValue={(Array.isArray(groups) && groups.find((g) => Number(g.id) === Number(selectedGroupId))?.max_file_size_mb) || 100}
                     onBlur={(e) => {
                       const val = parseInt(e.target.value, 10);
                       if (!Number.isNaN(val)) {
-                        const g = groups.find((x) => Number(x.id) === Number(selectedGroupId));
+                        const g = Array.isArray(groups) && groups.find((x) => Number(x.id) === Number(selectedGroupId));
                         updateGroup(selectedGroupId, { maxFileSizeMb: val, maxTotalStorageMb: g?.max_total_storage_mb || 10240 });
                       }
                     }}
@@ -1519,11 +1533,11 @@ export default function UserManagement({ token, user, sheetId }) {
                   <input
                     type="number"
                     className="input-premium py-1.5"
-                    defaultValue={groups.find((g) => Number(g.id) === Number(selectedGroupId))?.max_total_storage_mb || 10240}
+                    defaultValue={(Array.isArray(groups) && groups.find((g) => Number(g.id) === Number(selectedGroupId))?.max_total_storage_mb) || 10240}
                     onBlur={(e) => {
                       const val = parseInt(e.target.value, 10);
                       if (!Number.isNaN(val)) {
-                        const g = groups.find((x) => Number(x.id) === Number(selectedGroupId));
+                        const g = Array.isArray(groups) && groups.find((x) => Number(x.id) === Number(selectedGroupId));
                         updateGroup(selectedGroupId, { maxFileSizeMb: g?.max_file_size_mb || 100, maxTotalStorageMb: val });
                       }
                     }}
@@ -1895,7 +1909,7 @@ export default function UserManagement({ token, user, sheetId }) {
           <summary className="flex items-center justify-between cursor-pointer px-3 py-2 text-sm font-semibold text-slate-800">
             <span>Permissions</span>
             <span className="text-[10px] font-semibold text-slate-500">
-              {selectedUserId ? `User: ${userById.get(selectedUserId)?.email || selectedUserId}` : `Group: ${groups.find(g => g.id === selectedGroupId)?.name || selectedGroupId}`}
+              {selectedUserId ? `User: ${userById instanceof Map ? (userById.get(selectedUserId)?.email || selectedUserId) : selectedUserId}` : `Group: ${(Array.isArray(groups) && groups.find(g => g.id === selectedGroupId)?.name) || selectedGroupId}`}
             </span>
           </summary>
           <div className="px-3 pb-3">
@@ -2031,16 +2045,16 @@ export default function UserManagement({ token, user, sheetId }) {
                   <h4 className="font-bold text-sm text-slate-700">Locked Views (Data Restrictions)</h4>
                   <p className="text-[10px] text-slate-500 italic mb-2">Assigning a Locked View will strictly limit this user to the specific columns and row filters defined in that view.</p>
                   <div className="space-y-1.5">
-                    {views.filter(v => String(v.sheet_id) === String(selectedUserSheetId)).map(v => (
-                      <label key={v.id} className={`flex items-center justify-between p-2 rounded-md border cursor-pointer ${userViews.has(v.id) ? "bg-emerald-50 border-emerald-200" : "bg-white border-slate-200"}`}>
+                    {Array.isArray(views) && views.filter(v => String(v.sheet_id) === String(selectedUserSheetId)).map(v => (
+                      <label key={v.id} className={`flex items-center justify-between p-2 rounded-md border cursor-pointer ${(userViews instanceof Set && userViews.has(v.id)) ? "bg-emerald-50 border-emerald-200" : "bg-white border-slate-200"}`}>
                         <div className="flex items-center gap-2">
-                          <input type="checkbox" checked={userViews.has(v.id)} onChange={() => toggleUserViewPerm(v.id)} className="w-3.5 h-3.5 rounded text-emerald-600" />
+                          <input type="checkbox" checked={userViews instanceof Set && userViews.has(v.id)} onChange={() => toggleUserViewPerm(v.id)} className="w-3.5 h-3.5 rounded text-emerald-600" />
                           <span className="text-[11px] font-semibold text-slate-700">{v.name}</span>
                         </div>
                         <span className="text-[9px] text-slate-400 italic">by {v.created_by}</span>
                       </label>
                     ))}
-                    {!views.filter(v => String(v.sheet_id) === String(selectedUserSheetId)).length && (
+                    {Array.isArray(views) && !views.filter(v => String(v.sheet_id) === String(selectedUserSheetId)).length && (
                       <div className="text-[10px] text-slate-400 italic">No views created for this sheet yet.</div>
                     )}
                   </div>
@@ -2056,7 +2070,7 @@ export default function UserManagement({ token, user, sheetId }) {
                       onChange={(e) => setUserDefaultViewId(e.target.value)}
                     >
                       <option value="">(None)</option>
-                      {views.filter(v => userViews.has(v.id)).map((v) => (
+                      {Array.isArray(views) && views.filter(v => userViews instanceof Set && userViews.has(v.id)).map((v) => (
                         <option key={v.id} value={v.id}>{v.name}</option>
                       ))}
                     </select>
@@ -2203,16 +2217,16 @@ export default function UserManagement({ token, user, sheetId }) {
                         <h4 className="font-bold text-sm text-slate-700">Locked Views (Data Restrictions)</h4>
                         <p className="text-[10px] text-slate-500 italic mb-2">Assigning a Locked View will strictly limit all members of this group to the specific columns and row filters defined in that view.</p>
                         <div className="space-y-1.5">
-                          {views.filter(v => String(v.sheet_id) === String(selectedUserSheetId)).map(v => (
-                            <label key={v.id} className={`flex items-center justify-between p-2 rounded-md border cursor-pointer ${groupViews.has(v.id) ? "bg-emerald-50 border-emerald-200" : "bg-white border-slate-200"}`}>
+                          {Array.isArray(views) && views.filter(v => String(v.sheet_id) === String(selectedUserSheetId)).map(v => (
+                            <label key={v.id} className={`flex items-center justify-between p-2 rounded-md border cursor-pointer ${(groupViews instanceof Set && groupViews.has(v.id)) ? "bg-emerald-50 border-emerald-200" : "bg-white border-slate-200"}`}>
                               <div className="flex items-center gap-2">
-                                <input type="checkbox" checked={groupViews.has(v.id)} onChange={() => toggleGroupViewPerm(v.id)} className="w-3.5 h-3.5 rounded text-emerald-600" />
+                                <input type="checkbox" checked={groupViews instanceof Set && groupViews.has(v.id)} onChange={() => toggleGroupViewPerm(v.id)} className="w-3.5 h-3.5 rounded text-emerald-600" />
                                 <span className="text-[11px] font-semibold text-slate-700">{v.name}</span>
                               </div>
                               <span className="text-[9px] text-slate-400 italic">by {v.created_by}</span>
                             </label>
                           ))}
-                          {!views.filter(v => String(v.sheet_id) === String(selectedUserSheetId)).length && (
+                          {Array.isArray(views) && !views.filter(v => String(v.sheet_id) === String(selectedUserSheetId)).length && (
                             <div className="text-[10px] text-slate-400 italic">No views created for this sheet yet.</div>
                           )}
                         </div>

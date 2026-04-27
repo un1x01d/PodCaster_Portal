@@ -95,7 +95,7 @@ export default function DataGrid({
                                     <span className="flex-1 font-semibold whitespace-nowrap leading-tight flex items-center gap-1">
                                         <span>{h}</span>
                                         {sortConfig?.key === h && (
-                                            <span className="text-yellow-300 font-bold whitespace-nowrap">
+                                            <span className="text-black font-bold whitespace-nowrap">
                                                 {sortConfig.direction === "asc" ? "▲" : "▼"}
                                             </span>
                                         )}
@@ -122,7 +122,7 @@ export default function DataGrid({
                                     {/* Filter Menu Rendering */}
                                     {openFilterCol === h && (
                                         <ColumnFilterMenu
-                                            anchorMapRef={filterBtnRefs}
+                                            anchorMapRef={filterAnchorRefs}
                                             columnKey={h}
                                             column={h}
                                             allValues={uniqueValuesByColumn[h] || []}

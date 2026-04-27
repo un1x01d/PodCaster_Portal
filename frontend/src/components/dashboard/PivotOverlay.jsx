@@ -29,7 +29,7 @@ export default function PivotOverlay({
                     <button onClick={() => setPivotOn(false)} className="text-gray-400 hover:text-gray-600">✕ Close</button>
                 </div>
                 <div className="flex flex-wrap items-end gap-3">
-                    {Array.isArray(tabs) && tabs.length > 0 && (
+                    {Array.isArray(tabs) && tabs.length > 1 && (
                         <div className="flex items-center gap-2">
                             <span className="text-xs font-bold uppercase tracking-wider text-gray-500">Tab</span>
                             <select

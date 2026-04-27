@@ -127,75 +127,58 @@ export function useChatbotLogic({
     }
   }, [messages, sheetId, activeTab]);
 
+  // Update initial message when copy/language changes
   useEffect(() => {
     setMessages((prev) => {
-      if (prev.length !== 1 || !prev[0]?.isSystem) return prev;
-      return [{
-        ...prev[0],
-        text: copy.chatInitialMessage || prev[0].text,
-      }];
+      if (prev.length === 0) return [getInitialSystemMessage(copy)];
+      return prev.map(m => {
+        if (m.isSystem) {
+          return {
+            ...m,
+            text: copy.chatInitialMessage || m.text
+          };
+        }
+        return m;
+      });
     });
   }, [copy.chatInitialMessage]);
 
+  // Translate existing messages when locale changes (except English)
   useEffect(() => {
-    if (prevLocaleRef.current === locale) return;
-    prevLocaleRef.current = locale;
-    if (!Array.isArray(messages) || !messages.length) return;
     const normalizedLocale = String(locale || "").toLowerCase();
     if (!normalizedLocale || normalizedLocale.startsWith("en")) return;
+    if (!messages.length) return;
 
-    let cancelled = false;
+    // We only translate if the locale actually changed from what's currently in messages
+    // To keep it simple and avoid loops, we check a ref
+    if (prevLocaleRef.current === locale) return;
+    prevLocaleRef.current = locale;
+
     const items = messages
+      .filter(m => !m.isSystem) // System message is already handled above
       .map((m, idx) => ({
-        key: `m_${idx}`,
-        text: String(m?.text || ""),
-      }))
-      .filter((item) => item.text);
+        key: `msg_${idx}`,
+        text: m.text,
+      }));
 
-    if (!items.length) return undefined;
-    const requestKey = `${normalizedLocale}|${items.map((item) => `${item.key}:${item.text}`).join("||")}`;
-    const applyTranslations = (translations) => {
-      if (cancelled) return;
-      setMessages((prev) => prev.map((m, idx) => ({
-        ...m,
-        text: translations[`m_${idx}`] || m.text,
-      })));
-    };
+    if (!items.length) return;
 
-    const cached = CHAT_TRANSLATE_CACHE.get(requestKey);
-    if (cached && typeof cached === "object") {
-      applyTranslations(cached);
-      return undefined;
-    }
-
-    const inFlight = CHAT_TRANSLATE_IN_FLIGHT.get(requestKey);
-    if (inFlight) {
-      inFlight.then((translations) => applyTranslations(translations || {}));
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    const request = api.post("/dashboard/translate", { locale: normalizedLocale, items })
+    api.post("/dashboard/translate", { locale: normalizedLocale, items })
       .then((res) => {
         const translations = res?.data?.translations || {};
-        CHAT_TRANSLATE_CACHE.set(requestKey, translations);
-        return translations;
+        setMessages((prev) => {
+          const next = [...prev];
+          let itemIdx = 0;
+          return next.map(m => {
+            if (m.isSystem) return m;
+            const translatedText = translations[`msg_${itemIdx}`];
+            itemIdx++;
+            return translatedText ? { ...m, text: translatedText } : m;
+          });
+        });
       })
-      .catch(() => {
-        // no-op: keep existing text if translation fails
-        return {};
-      })
-      .finally(() => {
-        CHAT_TRANSLATE_IN_FLIGHT.delete(requestKey);
-      });
-    CHAT_TRANSLATE_IN_FLIGHT.set(requestKey, request);
-    request.then((translations) => applyTranslations(translations || {}));
-
-    return () => {
-      cancelled = true;
-    };
-  }, [locale, messages]);
+      .catch(err => console.error("Chat translation failed:", err));
+  }, [locale]); // Only re-run when locale changes
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -301,23 +284,32 @@ export function useChatbotLogic({
     await sendMessage(q);
   }, [input, sendMessage]);
 
+  // Keep state refs for the event listener to avoid re-binding
+  const stateRef = useRef({ sheetId, activeTab, activeFilters, messages, locale });
+  useEffect(() => {
+    stateRef.current = { sheetId, activeTab, activeFilters, messages, locale };
+  }, [sheetId, activeTab, activeFilters, messages, locale]);
+
   useEffect(() => {
     const onExternalSubmit = (event) => {
       const payload = event?.detail || {};
-      if (!payload?.sheetId || String(payload.sheetId) !== String(sheetId)) return;
+      const current = stateRef.current;
+      
+      if (!payload?.sheetId || String(payload.sheetId) !== String(current.sheetId)) return;
       const message = String(payload?.message || "").trim();
       if (!message) return;
       const meta = payload?.meta || null;
+      
       if (meta?.silent) {
         (async () => {
           try {
             const res = await api.post("/chat/query", {
-              sheetId,
-              activeTab: activeTab || null,
+              sheetId: current.sheetId,
+              activeTab: current.activeTab || null,
               message,
-              activeFilters: serializeActiveFilters(activeFilters),
-              conversationHistory: buildConversationHistory(messages),
-              locale,
+              activeFilters: serializeActiveFilters(current.activeFilters),
+              conversationHistory: buildConversationHistory(current.messages),
+              locale: current.locale,
             });
             const result = res?.data || {};
             const answer = typeof result.answer === "string" && result.answer.trim()
@@ -326,7 +318,7 @@ export function useChatbotLogic({
             if (typeof window !== "undefined") {
               window.dispatchEvent(new CustomEvent("dashboard:chat-response", {
                 detail: {
-                  sheetId,
+                  sheetId: current.sheetId,
                   answer,
                   meta,
                 },
@@ -342,7 +334,7 @@ export function useChatbotLogic({
     };
     window.addEventListener("dashboard:submit-chat", onExternalSubmit);
     return () => window.removeEventListener("dashboard:submit-chat", onExternalSubmit);
-  }, [sheetId, sendMessage, activeTab, activeFilters, messages, locale]);
+  }, [sendMessage]); // Stable dependencies
 
   return {
     messages,

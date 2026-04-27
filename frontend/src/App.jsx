@@ -166,9 +166,27 @@ export default function App() {
     return headers;
   }, [headers]);
 
+  const [uniqueValuesByColumn, setUniqueValuesByColumn] = useState({});
+
+  const fetchUniqueValues = async (col, sid = sheetId, tabName = activeTab) => {
+    if (!sid || !col) return;
+    try {
+      const url = `${API}/sheets/${sid}/unique-values?col=${encodeURIComponent(col)}${tabName ? `&tab=${encodeURIComponent(tabName)}` : ""}`;
+      const res = await axios.get(url, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setUniqueValuesByColumn(prev => ({
+        ...prev,
+        [col]: res.data || []
+      }));
+    } catch (e) {
+      console.error("fetchUniqueValues failed", e);
+    }
+  };
+
   /* -------- Derived: Filtered & Sorted Data -------- */
-  const { sortedData, uniqueValuesByColumn } = React.useMemo(() => {
-    if (!data || !data.length) return { sortedData: [], uniqueValuesByColumn: {} };
+  const { sortedData } = React.useMemo(() => {
+    if (!data || !data.length) return { sortedData: [] };
 
     let processed = [...data];
 
@@ -232,14 +250,7 @@ export default function App() {
       });
     }
 
-    const uniques = {};
-    headers.forEach(h => {
-      const set = new Set();
-      data.forEach(r => set.add(r[h]));
-      uniques[h] = Array.from(set).sort();
-    });
-
-    return { sortedData: processed, uniqueValuesByColumn: uniques };
+    return { sortedData: processed };
   }, [data, columnFilters, sortConfig, headers]);
 
   // Available Years for Dropdown
@@ -1537,6 +1548,7 @@ export default function App() {
                       onInsightApplyFilter={applyContainsFilter}
                       onInsightOpenChart={applyChartConfig}
                       onInsightSaveView={saveInsightView}
+                      fetchUniqueValues={fetchUniqueValues}
                     />
                     {sheetId && (
                     <SpreadsheetChatbot
@@ -1557,7 +1569,11 @@ export default function App() {
             } />
             <Route path="/users" element={
               user?.role === "admin"
-                ? <div className="pt-0"><UserManagement token={token} user={user} sheetId={sheetId} /></div>
+                ? (
+                  <ErrorBoundary>
+                    <div className="pt-0"><UserManagement token={token} user={user} sheetId={sheetId} /></div>
+                  </ErrorBoundary>
+                )
                 : <div className="p-8 text-center text-gray-500">Access denied. Admin only.</div>
             } />
           </Routes>

@@ -19,12 +19,19 @@ export default function ColumnFilterMenu({
 
     const values = Array.isArray(allValues) ? allValues : [];
 
-    const [localSet, setLocalSet] = useState(() => {
-        if (appliedSelected && appliedSelected.size > 0) {
-            return new Set([...appliedSelected]);
+    const [localSet, setLocalSet] = useState(new Set());
+    const [initialized, setInitialized] = useState(false);
+
+    useEffect(() => {
+        if (values.length > 0 && !initialized) {
+            if (appliedSelected && appliedSelected.size > 0) {
+                setLocalSet(new Set([...appliedSelected]));
+            } else {
+                setLocalSet(new Set(values.map((v) => String(v))));
+            }
+            setInitialized(true);
         }
-        return new Set(values.map((v) => String(v)));
-    });
+    }, [values, appliedSelected, initialized]);
 
     const [allChecked, setAllChecked] = useState(
         !appliedSelected || appliedSelected.size === values.length
@@ -128,55 +135,59 @@ export default function ColumnFilterMenu({
         onClose?.();
     };
 
+    if (!measured) return null;
+
     return createPortal(
         <div
             ref={panelRef}
-            className="fixed z-[9999] bg-white border border-slate-200 rounded-xl shadow-2xl p-3 w-64 ring-1 ring-black/5"
-            style={{ top: coords.top, left: coords.left, visibility: measured ? "visible" : "hidden" }}
+            className="fixed z-[9999] bg-white border border-slate-200 rounded-2xl shadow-2xl p-4 w-64 ring-1 ring-black/5 animate-in fade-in zoom-in-95 duration-200 origin-top"
+            style={{ top: coords.top, left: coords.left }}
             role="dialog"
             aria-label={`Filter ${column}`}
         >
-            <div className="mb-2 font-semibold text-sm text-gray-800">Filter: {column}</div>
+            <div className="mb-3 font-bold text-[10px] uppercase tracking-widest text-slate-500 ml-1">Filter: {column}</div>
 
             <input
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
                 placeholder="Search values…"
-                className="w-full border border-slate-200 rounded-lg px-3 py-2 mb-2 text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all text-sm"
+                className="w-full border border-slate-200 rounded-xl px-3 py-2 mb-3 text-black placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all text-[11px] font-medium"
             />
 
-            <div className="flex gap-2 mb-2">
+            <div className="flex gap-2 mb-3">
                 <button
-                    className="text-[11px] px-2 py-1 rounded-md bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 transition-colors"
+                    className="text-[9px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200 hover:bg-slate-200 text-slate-700 transition-all flex-1"
                     onClick={handleSelectAll}
-                    title="Select all values"
                 >
                     Select All
                 </button>
                 <button
-                    className="text-[11px] px-2 py-1 rounded-md bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 transition-colors"
+                    className="text-[9px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200 hover:bg-slate-200 text-slate-700 transition-all flex-1"
                     onClick={handleClearAll}
-                    title="Clear all selections"
                 >
-                    Clear
+                    None
                 </button>
             </div>
 
-            <div className="max-h-56 overflow-auto border border-slate-200 rounded-lg">
-                {shown.length ? (
-                    <>
+            <div className="max-h-48 overflow-auto border border-slate-100 rounded-xl bg-slate-50/50 custom-scrollbar">
+                {!values.length ? (
+                    <div className="text-slate-400 text-[10px] font-bold uppercase p-8 text-center animate-pulse">Loading values…</div>
+                ) : shown.length ? (
+                    <div className="p-1">
                         {shown.slice(0, 100).map((v, i) => {
                             const sv = String(v);
                             const checked = localSet.has(sv);
                             return (
                                 <label
                                     key={i}
-                                    className="flex items-center gap-2 px-2 py-1 text-sm hover:bg-blue-50 cursor-pointer text-gray-900"
+                                    className={`flex items-center gap-2 px-2 py-1.5 rounded-lg text-[11px] font-medium transition-colors cursor-pointer ${
+                                        checked ? "bg-indigo-50 text-indigo-700" : "hover:bg-white text-slate-600 hover:shadow-sm"
+                                    }`}
                                     title={sv}
                                 >
                                     <input
                                         type="checkbox"
-                                        className="cursor-pointer accent-blue-600"
+                                        className="w-3.5 h-3.5 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300 transition-all"
                                         checked={checked}
                                         onChange={() => toggleValue(v)}
                                     />
@@ -185,32 +196,32 @@ export default function ColumnFilterMenu({
                             );
                         })}
                         {shown.length > 100 && (
-                            <div className="text-xs text-gray-400 p-2 text-center border-t border-gray-100 bg-gray-50 italic">
-                                Showing top 100 of {shown.length} values. Search to find others.
+                            <div className="text-[9px] font-bold text-slate-400 p-2 text-center border-t border-slate-100 mt-1 uppercase tracking-tighter">
+                                +{shown.length - 100} more… search to refine
                             </div>
                         )}
-                    </>
+                    </div>
                 ) : (
-                    <div className="text-gray-500 text-xs p-2">No values</div>
+                    <div className="text-slate-400 text-[10px] font-bold uppercase p-4 text-center">No matches</div>
                 )}
             </div>
 
-            <div className="mt-3 flex justify-between items-center">
-                <div className="text-xs text-gray-600">
-                    {allChecked ? "All selected" : `${localSet.size} selected`}
+            <div className="mt-4 flex justify-between items-center pt-3 border-t border-slate-100">
+                <div className="text-[9px] font-bold text-slate-400 uppercase tracking-tight">
+                    {allChecked ? "All active" : `${localSet.size} selected`}
                 </div>
                 <div className="flex gap-2">
                     <button
-                        className="px-3 py-1.5 text-sm rounded-lg bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 transition-all font-medium"
+                        className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 transition-all"
                         onClick={() => {
                             onClear(column);
                             onClose?.();
                         }}
                     >
-                        Clear
+                        Reset
                     </button>
                     <button
-                        className="px-3 py-1.5 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 shadow-sm transition-all font-semibold"
+                        className="px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-xl bg-indigo-600 text-white hover:bg-indigo-700 shadow-md shadow-indigo-100 transition-all hover:scale-105 active:scale-95"
                         onClick={handleApply}
                     >
                         Apply

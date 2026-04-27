@@ -4,7 +4,12 @@ import { isEnglishLocale, normalizeLocale, translateDashboardItems } from "../ut
 
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
-const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "35000", 10);
+const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10);
+
+let SEMANTIC_CACHE = null;
+let RATIO_CACHE = null;
+let CACHE_TS = 0;
+const CACHE_TTL = 30000;
 
 const CHAT_SAMPLE_ROWS = 600;
 
@@ -62,41 +67,52 @@ function quarterFromDate(date) {
 function augmentRowsWithQuarter(rows = [], headers = []) {
   if (!Array.isArray(rows) || !rows.length) return { rows, headers };
   const baseHeaders = Array.isArray(headers) ? [...headers] : [];
-  const quarterLike = baseHeaders.filter((h) => /quarter|qtr|квартал/i.test(String(h)));
   const dateLike = baseHeaders.filter((h) => /date|time|period|month|year|дата|період/i.test(String(h)));
-  const quarterCol = quarterLike[0] || null;
-  const dateCol = !quarterCol ? dateLike[0] : null;
+  const dateCol = dateLike[0] || null;
 
   const enriched = rows.map((r) => {
     const row = typeof r === "object" && r ? { ...r } : {};
     let q = null;
-    if (quarterCol) q = detectQuarterFromText(row[quarterCol]);
-    if (!q && dateCol) {
+    let y = null;
+    let m = null;
+
+    if (dateCol) {
       const d = parseDateValue(row[dateCol]);
-      if (d) q = quarterFromDate(d);
+      if (d) {
+        q = quarterFromDate(d);
+        y = String(d.getFullYear());
+        m = d.toLocaleString('en-US', { month: 'long' });
+      }
     }
+
     if (!q) {
       for (const h of baseHeaders) {
         if (q) break;
         q = detectQuarterFromText(row[h]);
       }
     }
+
     if (q) row.Quarter = q;
+    if (y) row.Year = y;
+    if (m) row.Month = m;
     return row;
   });
 
-  const hasQuarter = enriched.some((r) => r && r.Quarter);
-  const outHeaders = hasQuarter && !baseHeaders.includes("Quarter")
-    ? [...baseHeaders, "Quarter"]
-    : baseHeaders;
+  const hasExtra = enriched.some((r) => r && (r.Quarter || r.Year));
+  const outHeaders = [...baseHeaders];
+  if (hasExtra) {
+    if (!outHeaders.includes("Quarter")) outHeaders.push("Quarter");
+    if (!outHeaders.includes("Year")) outHeaders.push("Year");
+    if (!outHeaders.includes("Month")) outHeaders.push("Month");
+  }
   return { rows: enriched, headers: outHeaders };
 }
 
 function formatValue(v, locale = "en", col = "", forSpeech = false) {
   if (typeof v !== "number" || !Number.isFinite(v)) return String(v ?? "");
   
-  const isCurrency = col && /price|cost|revenue|income|profit|earnings|salary|wage|amount|balance|total|summ/i.test(String(col));
-  const isPercent = col && /percent|margin|rate|ratio|%/i.test(String(col));
+  const isCurrency = col && /price|cost|revenue|income|profit|earnings|salary|wage|amount|balance|total|summ|ebitda|val|fee|tax|debt|loan|payment|capital|asset|liability|equity|budget|spend|cash|funding|sales|purchase/i.test(String(col));
+  const isPercent = col && /percent|margin|rate|ratio|%|markup|yield|growth|change|variance|contribution|roi|roe|roa|discount|utilization/i.test(String(col));
 
   try {
     const abs = Math.abs(v);
@@ -137,15 +153,143 @@ function normalizeUkrainianSpeechNumbers(text = "") {
   return out;
 }
 
-function computeDeterministicAnswer(operation, rows, targetColumn, groupBy, limit = 5, locale = "en") {
+async function computeDeterministicAnswer(operation, rows, targetColumn, groupBy, limit = 5, locale = "en", queryText = "") {
   const op = (operation || "none").toLowerCase();
+  const q = String(queryText || "").toLowerCase();
   const nLimit = Number.isFinite(Number(limit)) ? Math.max(1, Number(limit)) : 5;
-  if (op === "count") return { answer: `Count: ${rows.length} rows`, previewRows: rows.slice(0, 15) };
 
-  if (!targetColumn) return { answer: "", previewRows: rows.slice(0, 15) };
+  if (!rows || rows.length === 0) {
+    return { answer: "No data matched those criteria.", previewRows: [] };
+  }
+
+  if (op === "count") return { answer: `Count: ${rows.length} rows`, previewRows: rows.slice(0, 15) };
+  
+  // --- Financial Ratio & Analysis Engine (Loaded from DB) ---
+  const { ratios } = await loadSemanticBrain();
+
+  const matchedRatio = ratios.find(r => r.match.test(q));
+  if (matchedRatio) {
+    const resolvedCols = matchedRatio.cols.map(c => resolveColumn(headers, c, rows.slice(0, 10)));
+    if (resolvedCols.every(c => !!c)) {
+        const sums = resolvedCols.map(c => rows.reduce((acc, r) => acc + (toNum(r[c]) || 0), 0));
+        if (sums.every(s => s !== 0 || matchedRatio.key === "rainy_day")) {
+            const result = matchedRatio.calc(sums);
+            let ans = "";
+            if (matchedRatio.format === "percent") ans = `${matchedRatio.label}: ${result.toFixed(2)}%`;
+            else if (matchedRatio.format === "ratio") ans = `${matchedRatio.label}: ${result.toFixed(2)}x`;
+            else if (matchedRatio.format === "months") ans = `${matchedRatio.label}: ${result.toFixed(1)} months remaining`;
+            else if (matchedRatio.format === "weeks") ans = `${matchedRatio.label}: ${result.toFixed(1)} weeks remaining`;
+            else if (matchedRatio.format === "days") ans = `${matchedRatio.label}: ${Math.round(result)} days`;
+            else ans = `${matchedRatio.label}: ${formatValue(result, locale, resolvedCols[0])}`;
+            
+            // Add custom pragmatic flavor to the answer
+            if (matchedRatio.key === "rainy_day") {
+                ans += result > 12 ? ". You can sleep well at night!" : ". This is a tight buffer, watch your expenses.";
+            } else if (matchedRatio.key === "headache_ratio") {
+                ans += result > 10 ? ". This category might be more trouble than it's worth." : ". This is a very healthy relationship.";
+            }
+            
+            return { answer: ans, previewRows: rows.slice(0, 5) };
+        }
+    }
+  }
+
+  if (!targetColumn) return { answer: "I found the matching records, but no specific metric column was identified for calculation.", previewRows: rows.slice(0, 15) };
 
   const isPercentageCol = /percent|margin|rate|ratio|%/i.test(String(targetColumn));
   const effectiveOp = (op === "sum" && isPercentageCol) ? "avg" : op;
+
+  // --- Year Over Year / Same Period Logic ---
+  const isYoYQuery = effectiveOp === "year_over_year" || 
+                    (groupBy && /year|дата|рік|год/i.test(String(groupBy)) && (effectiveOp === "sum" || effectiveOp === "top_n")) ||
+                    (/previous year|last year|прошлый год|минулий рік/i.test(String(targetColumn || ""))) ||
+                    (q.includes("previous year") || q.includes("last year") || q.includes("минулого року") || q.includes("прошлого года"));
+
+  if (isYoYQuery) {
+    const keys = Object.keys(rows[0] || {});
+    let dateCol = keys.find(k => /date|period|month|year|дата|період|час/i.test(String(k))) || groupBy;
+    
+    let targetRows = rows;
+
+    // Special: "Latest Month" YoY
+    if (q.includes("latest month") || q.includes("останній місяць") || q.includes("последний месяц")) {
+        // Find latest month in the full set
+        let latestDate = null;
+        rows.forEach(r => {
+            const d = parseDateValue(r[dateCol]);
+            if (d && (!latestDate || d > latestDate)) latestDate = d;
+        });
+        if (latestDate) {
+            const targetMonth = latestDate.getMonth();
+            const monthName = latestDate.toLocaleString('en-US', { month: 'long' });
+            targetRows = rows.filter(r => {
+                const d = parseDateValue(r[dateCol]);
+                return d && d.getMonth() === targetMonth;
+            });
+            // Adjust title
+            targetColumn = `${targetColumn} for ${monthName}`;
+        }
+    }
+
+    const yearlySums = {};
+    targetRows.forEach(r => {
+      const d = parseDateValue(r[dateCol]);
+      const year = d ? d.getFullYear() : (Number.isInteger(Number(r[dateCol])) ? Number(r[dateCol]) : null);
+      if (!year) return;
+      const val = toNum(r[targetColumn]);
+      if (val !== null) yearlySums[year] = (yearlySums[year] || 0) + val;
+    });
+
+    const years = Object.keys(yearlySums).map(Number).sort((a, b) => a - b);
+    if (years.length >= 2) {
+      let comparisonText = "";
+      if (locale.startsWith("uk")) {
+        comparisonText = `Аналіз року до року для ${targetColumn}:\n`;
+      } else if (locale.startsWith("ru")) {
+        comparisonText = `Анализ год к году для ${targetColumn}:\n`;
+      } else {
+        comparisonText = `Year over Year analysis for ${targetColumn}:\n`;
+      }
+      
+      const previewRows = [];
+      const growthPercentages = [];
+      
+      for (let i = 1; i < years.length; i++) {
+        const currentYear = years[i];
+        const prevYear = years[i - 1];
+        const currentVal = yearlySums[currentYear];
+        const prevVal = yearlySums[prevYear];
+        const diff = currentVal - prevVal;
+        const pct = prevVal !== 0 ? (diff / Math.abs(prevVal)) * 100 : 0;
+        growthPercentages.push(pct);
+        
+        comparisonText += `• ${currentYear} vs ${prevYear}: ${formatValue(currentVal, locale, targetColumn)} vs ${formatValue(prevVal, locale, targetColumn)} `;
+        comparisonText += `(${diff >= 0 ? "+" : ""}${formatValue(diff, locale, targetColumn)}, ${diff >= 0 ? "+" : ""}${pct.toFixed(2)}%)\n`;
+        
+        previewRows.push({ year: currentYear, value: currentVal, previous_year: prevYear, previous_value: prevVal, change: diff, change_percent: pct });
+      }
+
+      // Add Summary Insights
+      const avgGrowth = growthPercentages.reduce((a, b) => a + b, 0) / growthPercentages.length;
+      const bestYear = [...previewRows].sort((a, b) => b.change_percent - a.change_percent)[0];
+      
+      if (locale.startsWith("uk")) {
+        comparisonText += `\n**Підсумок:**\n`;
+        comparisonText += `• Середньорічне зростання: ${avgGrowth >= 0 ? "+" : ""}${avgGrowth.toFixed(2)}%\n`;
+        comparisonText += `• Кращий рік: ${bestYear.year} (${avgGrowth >= 0 ? "+" : ""}${bestYear.change_percent.toFixed(2)}% зростання)`;
+      } else if (locale.startsWith("ru")) {
+        comparisonText += `\n**Итог:**\n`;
+        comparisonText += `• Среднегодовой рост: ${avgGrowth >= 0 ? "+" : ""}${avgGrowth.toFixed(2)}%\n`;
+        comparisonText += `• Лучший год: ${bestYear.year} (${avgGrowth >= 0 ? "+" : ""}${bestYear.change_percent.toFixed(2)}% роста)`;
+      } else {
+        comparisonText += `\n**Summary:**\n`;
+        comparisonText += `• Average Annual Growth: ${avgGrowth >= 0 ? "+" : ""}${avgGrowth.toFixed(2)}%\n`;
+        comparisonText += `• Best Performing Year: ${bestYear.year} (${avgGrowth >= 0 ? "+" : ""}${bestYear.change_percent.toFixed(2)}% growth)`;
+      }
+
+      return { answer: comparisonText.trim(), previewRows };
+    }
+  }
 
   if (groupBy && ["max", "min", "top_n", "sum", "avg"].includes(effectiveOp)) {
     const grouped = {};
@@ -175,14 +319,22 @@ function computeDeterministicAnswer(operation, rows, targetColumn, groupBy, limi
     if (!sorted.length) return { answer: "No matching data.", previewRows: [] };
 
     if (effectiveOp === "max") {
-      return { answer: `Highest ${targetColumn}: **${sorted[0].label}** with ${formatValue(sorted[0].value, locale, targetColumn)}`, previewRows: sorted.slice(0, 10) };
+      return { answer: `Highest ${targetColumn}: ${sorted[0].label} with ${formatValue(sorted[0].value, locale, targetColumn)}`, previewRows: sorted.slice(0, 10) };
     }
     if (effectiveOp === "min") {
       const bottom = [...sorted].sort((a, b) => a.value - b.value)[0];
-      return { answer: `Lowest ${targetColumn}: **${bottom.label}** with ${formatValue(bottom.value, locale, targetColumn)}`, previewRows: [...sorted].sort((a, b) => a.value - b.value).slice(0, 10) };
+      return { answer: `Lowest ${targetColumn}: ${bottom.label} with ${formatValue(bottom.value, locale, targetColumn)}`, previewRows: [...sorted].sort((a, b) => a.value - b.value).slice(0, 10) };
     }
+
+    if (nLimit === 1) {
+      return { 
+        answer: `The top ${groupBy} by ${targetColumn} is ${sorted[0].label} with ${formatValue(sorted[0].value, locale, targetColumn)}.`,
+        previewRows: sorted.slice(0, 1)
+      };
+    }
+
     return {
-      answer: `Top ${nLimit} ${groupBy} by ${targetColumn}:\n` + sorted.slice(0, nLimit).map((x, i) => `${i + 1}. **${x.label}**: ${formatValue(x.value, locale, targetColumn)}`).join("\n"),
+      answer: `Top ${nLimit} ${groupBy} by ${targetColumn}:\n` + sorted.slice(0, nLimit).map((x, i) => `${i + 1}. ${x.label}: ${formatValue(x.value, locale, targetColumn)}`).join("\n"),
       previewRows: sorted.slice(0, nLimit)
     };
   }
@@ -206,12 +358,90 @@ function computeDeterministicAnswer(operation, rows, targetColumn, groupBy, limi
   return { answer: "", previewRows: rows.slice(0, 15) };
 }
 
-function resolveColumn(headers, aiName) {
-  if (!aiName || !headers.length) return null;
-  const direct = headers.find(h => String(h).toLowerCase() === String(aiName).toLowerCase());
-  if (direct) return direct;
-  return headers.find(h => String(h).toLowerCase().includes(String(aiName).toLowerCase())) || null;
+const CACHE_TTL = 300000; // 5 minutes
+
+async function loadSemanticBrain() {
+    const now = Date.now();
+    if (SEMANTIC_CACHE && RATIO_CACHE && (now - CACHE_TS < CACHE_TTL)) {
+        return { buckets: SEMANTIC_CACHE, ratios: RATIO_CACHE };
+    }
+
+    try {
+        const dictRows = await query(`SELECT category, synonym FROM semantic_dictionary WHERE group_id IS NULL`, []);
+        const ratioRows = await query(`SELECT name, match_pattern as match, formula_type as format, required_buckets as buckets FROM financial_ratios WHERE group_id IS NULL`, []);
+
+        const bucketsMap = {};
+        dictRows.forEach(r => {
+            const cat = String(r.category || "").toLowerCase();
+            if (!bucketsMap[cat]) bucketsMap[cat] = { key: cat, synonyms: [] };
+            bucketsMap[cat].synonyms.push(String(r.synonym || "").toLowerCase());
+        });
+
+        SEMANTIC_CACHE = Object.values(bucketsMap);
+        RATIO_CACHE = ratioRows.map(r => ({
+            ...r,
+            match: new RegExp(r.match, 'i'),
+            calc: (vals) => {
+                if (r.name === 'Gross Margin') return ((vals[0] - vals[1]) / (vals[0] || 1)) * 100;
+                if (r.name === 'Free Cash Flow') return vals[0] - vals[1];
+                if (r.name === 'Burn Rate') return vals[0] / (vals[1] || 1);
+                if (r.name === 'DSO') return (vals[0] / (vals[1] || 1)) * 365;
+                if (r.name === 'Current Ratio') return vals[0] / (vals[1] || 1);
+                if (r.name === 'Revenue per Employee') return vals[0] / (vals[1] || 1);
+                return 0;
+            }
+        }));
+        CACHE_TS = now;
+        return { buckets: SEMANTIC_CACHE, ratios: RATIO_CACHE };
+    } catch (e) {
+        console.error("Failed to load semantic brain:", e);
+        return { buckets: SEMANTIC_CACHE || [], ratios: RATIO_CACHE || [] };
+    }
 }
+
+async function resolveColumn(headers, aiName, sampleRows = []) {
+  if (!aiName || !headers.length) return null;
+  const target = String(aiName).toLowerCase().trim();
+
+  const direct = headers.find(h => String(h).toLowerCase() === target);
+  if (direct) return direct;
+
+  const { buckets } = await loadSemanticBrain();
+
+  for (const bucket of buckets) {
+    if (bucket.synonyms.some(s => target.includes(s) || s.includes(target))) {
+        for (const synonym of bucket.synonyms) {
+            const found = headers.find(h => String(h).toLowerCase().includes(synonym));
+            if (found) return found;
+        }
+    }
+  }
+
+  // 3. Smart Fallback: If AI is asking for a date/number and we found no name match, check data patterns
+  if (sampleRows.length > 0) {
+    const isTargetDate = /date|year|period|month|рік|год|дата/i.test(target);
+    const isTargetNumeric = /revenue|income|cost|expense|profit|amount|value|доход|расход|витрати/i.test(target);
+
+    if (isTargetDate) {
+      const bestDateCol = headers.find(h => {
+        const sample = sampleRows.slice(0, 10).map(r => r[h]);
+        return sample.filter(v => parseDateValue(v) !== null).length > sample.length / 2;
+      });
+      if (bestDateCol) return bestDateCol;
+    }
+
+    if (isTargetNumeric) {
+      const bestNumCol = headers.find(h => {
+        const sample = sampleRows.slice(0, 10).map(r => r[h]);
+        return sample.filter(v => toNum(v) !== null).length > sample.length / 2;
+      });
+      if (bestNumCol) return bestNumCol;
+    }
+  }
+
+  return headers.find(h => String(h).toLowerCase().includes(target)) || null;
+}
+
 
 function applyFilters(rows, filters) {
     if (!filters?.length) return rows;
@@ -232,6 +462,17 @@ function applyFilters(rows, filters) {
             }
         });
     });
+}
+
+function cleanAITechnicalNoise(text = "") {
+  let out = String(text || "");
+  // Remove technical sheet references only if they match exactly (e.g., Sheet1, Sheet2.00)
+  out = out.replace(/\bSheet\d+(\.00)?\b/gi, "");
+  // Remove specific technical version suffix .00 if it's isolated (not part of a currency/number)
+  out = out.replace(/\s\.00\b/g, "");
+  
+  // Clean up any double spaces or isolated punctuation left behind
+  return out.replace(/\s{2,}/g, " ").replace(/\s\./g, ".").trim();
 }
 
 function formatAnswerWithBullets(answer = "") {
@@ -301,13 +542,25 @@ function normalizeDatesAndRemoveTime(answer = "") {
 
 function enforceTwoDecimals(answer = "") {
   const text = String(answer || "");
-  // Format standalone numeric tokens (including currency/percent) to 2 decimals.
-  return text.replace(/([$-]?\d[\d,]*)(\.\d+)?(%?)/g, (raw, intPart, decPart, suffix) => {
-    // Skip 4-digit years and parts of dates like 04-26-2026.
+  // Format numeric tokens (currency/percent/decimals) to 2 decimals.
+  // We use a negative lookbehind (if supported) or logic to skip list indices like "1. "
+  return text.replace(/([$-]?\d[\d,]*)(\.\d+)?(%?)/g, (raw, intPart, decPart, suffix, offset, fullString) => {
+    // 1. Skip if it's a list index: check if it's at start of string or preceded by newline/bullet AND followed by a dot + space
+    const before = fullString.slice(Math.max(0, offset - 2), offset);
+    const after = fullString.slice(offset + intPart.length, offset + intPart.length + 2);
+    const isAtLineStart = offset === 0 || /[\n•]/.test(before);
+    if (isAtLineStart && after === ". ") return raw;
+
+    // 2. Skip 4-digit years (isolated)
     const compact = String(intPart).replace(/[$,]/g, "");
     if (/^\d{4}$/.test(compact) && !decPart && !suffix) return raw;
-    const n = Number(String(intPart).replace(/[$,]/g, "") + (decPart || ""));
+
+    const n = Number(compact + (decPart || ""));
     if (!Number.isFinite(n)) return raw;
+    
+    // Only apply if it's monetary, a percentage, or already has a decimal
+    if (!String(intPart).includes("$") && !suffix && !decPart) return raw;
+
     const sign = n < 0 ? "-" : "";
     const abs = Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const currency = String(intPart).includes("$") ? "$" : "";
@@ -381,6 +634,14 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
 
   const system = [
     "You are a spreadsheet analysis assistant.",
+    "Autonomous Self-Teaching: If a user query is vague, missing a metric, or you 'do not know' the question (e.g., 'What's the biggest?'):",
+    " 1. Discovery: Scan 'available_columns' and 'sample_rows' for the most significant numeric column (the 'Primary Metric') and the most descriptive text column (the 'Primary Dimension').",
+    " 2. Deduction: Assume the user is asking for the Top N or Sum of that Primary Metric grouped by that Primary Dimension.",
+    " 3. Explanation: In your 'answer', briefly state: 'I assumed you were asking about [Metric] by [Dimension] based on the data structure.'",
+    " 4. Never Fail: Do not ask for clarification if a reasonable business assumption can be made from the data DNA.",
+    "User Input: You may receive queries in ANY language (English, Russian, Ukrainian, Spanish, etc.).",
+    "Conversational Context: Use the 'conversation_history' to understand follow-up questions. If a user asks 'what about 2022?', use previous context to know they mean 'Total Revenue' or whatever was previously discussed.",
+    "Internal Mapping: Regardless of the query language, map the user's concepts to the 'available_columns'.",
     "Return ONLY valid JSON.",
     "Language: Always provide 'answer' in the requested output_locale, regardless of the user's message language.",
     "Internal Logic: Map user terms to available_columns for operations, but keep final explanation in output_locale.",
@@ -388,17 +649,25 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
     "Date handling: Never include time values or timezone references.",
     "Quarter handling: Interpret Q1/Q2/Q3/Q4 as quarter periods.",
     "Quarter handling: Also interpret localized quarter aliases as Q1..Q4 (e.g., квартал 1/2/3/4, 1 квартал, I/II/III/IV квартал).",
+    "Conversational Rule: ALWAYS include the filter context (e.g., the year, category, or period) in your final 'answer' string. Never just say 'Total Revenue: $X', say 'Total Revenue for 2023: $X'.",
     "Language rule for quarter wording: use the English word 'quarter' only in English output.",
     "Language rule for quarter wording: in Russian use 'квартал', in Ukrainian use 'квартал/кварталу' as grammatically appropriate.",
     "Number formatting: Use grouped numbers with thousands separators in the final answer (example: 12,345.67).",
     "Rounding rule: Always present numeric calculation results with exactly 2 decimal places.",
     "Do not describe numeric values as approximate.",
+    "Do not mention tab names (e.g., 'Sheet1'), row counts, internal indices, or '.00' version suffixes in your answer.",
     "Do not shorten values into compact forms like K/M/B unless user explicitly asks.",
     "Use only numeric values that can be derived from the provided spreadsheet rows.",
     "Never invent numbers, never estimate, and never substitute generic sample values.",
     "If exact numeric evidence is unavailable, clearly say data is unavailable instead of guessing.",
-    "Supported operations: none, filter, reset, count, sum, avg, max, min, top_n.",
+    "Semantic Operations Map:",
+    " - 'top_n': Use for 'drivers', 'who spent most', 'biggest segments', 'which category is highest'. Requires 'group_by'.",
+    " - 'sum': Use for 'totals', 'all revenue', 'combined cost'.",
+    " - 'avg': Use for 'averages', 'mean', 'per transaction'.",
+    " - 'year_over_year': Use for YoY, annual growth, comparison with prior year, 'годовое исчисление', 'річне обчислення', 'г/г', 'р/р'.",
+    "Supported operations: none, filter, reset, count, sum, avg, max, min, top_n, year_over_year.",
     "IMPORTANT: Only use operation: 'filter' when user explicitly says 'Show', 'Filter', 'Find', or 'View only'.",
+    "IMPORTANT: Always use operation: 'year_over_year' for any annual comparison, YoY analysis, or growth metrics between years.",
     "Use bullet points for multiple findings or drivers.",
     "Include concrete numbers and business names in explanations.",
   ].join(" ");
@@ -423,7 +692,7 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
     sample_rows: sampleRows,
     output_schema: {
       answer: "string",
-      operation: "none|filter|reset|count|sum|avg|max|min|top_n",
+      operation: "none|filter|reset|count|sum|avg|max|min|top_n|year_over_year",
       target_tab: "string|null",
       target_column: "string|null",
       group_by: "string|null",
@@ -435,6 +704,8 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
+  const isReasoningModel = OPENAI_MODEL.startsWith("o");
+
   let resp;
   try {
     resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
@@ -442,7 +713,7 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: OPENAI_MODEL,
-        temperature: 0.1,
+        temperature: isReasoningModel ? 1 : 0.1,
         response_format: { type: "json_object" },
         messages: [{ role: "system", content: system }, { role: "user", content: JSON.stringify(userPrompt) }]
       }),
@@ -531,6 +802,59 @@ function normalizeSlavicGroupedNumbers(text = "") {
   });
 }
 
+function naturalizeNumbersForTTS(text = "", locale = "en") {
+  let out = String(text || "");
+  const lang = (locale || "en").split("-")[0].toLowerCase();
+
+  // 1. Expand growth/change indicators and common abbreviations with native words
+  if (lang === "en") {
+    out = out.replace(/\bvs\b/gi, "versus");
+    out = out.replace(/\(\+/g, "(plus ");
+    out = out.replace(/\(\-/g, "(minus ");
+  } else if (lang === "uk") {
+    out = out.replace(/\bvs\b/gi, "проти");
+    out = out.replace(/\(\+/g, "(плюс ");
+    out = out.replace(/\(\-/g, "(мінус ");
+    out = out.replace(/\b(20\d{2})\b/g, "$1 року");
+    out = out.replace(/\bRevenue\b/gi, "Виручка");
+    out = out.replace(/\bAnalysis\b/gi, "Аналіз");
+    out = out.replace(/\bYear over Year\b/gi, "Рік до року");
+    out = out.replace(/\bSummary\b/gi, "Підсумок");
+  } else if (lang === "ru") {
+    out = out.replace(/\bvs\b/gi, "против");
+    out = out.replace(/\(\+/g, "(плюс ");
+    out = out.replace(/\(\-/g, "(минус ");
+    out = out.replace(/\b(20\d{2})\b/g, "$1 года");
+    out = out.replace(/\bRevenue\b/gi, "Выручка");
+    out = out.replace(/\bAnalysis\b/gi, "Анализ");
+    out = out.replace(/\bYear over Year\b/gi, "Год к году");
+    out = out.replace(/\bSummary\b/gi, "Итог");
+  }
+
+  // 2. Currency expansion: handle commas and add a pause after dollars
+  if (lang === "en") {
+    out = out.replace(/\$([\d,]+)\.(\d{2})\b/g, "$1 dollars, and $2 cents");
+    out = out.replace(/\$([\d,]+)\b/g, "$1 dollars,");
+  } else if (lang === "uk") {
+    out = out.replace(/\$([\d,]+)\.(\d{2})\b/g, "$1 доларів, та $2 центів");
+    out = out.replace(/\$([\d,]+)\b/g, "$1 доларів,");
+  } else if (lang === "ru") {
+    out = out.replace(/\$([\d,]+)\.(\d{2})\b/g, "$1 долларов, и $2 центов");
+    out = out.replace(/\$([\d,]+)\b/g, "$1 долларов,");
+  }
+
+  // 3. Percent expansion: 12.34% -> 12.34 percent
+  if (lang === "en") {
+    out = out.replace(/(\d+(?:\.\d+)?)%/g, "$1 percent");
+  } else if (lang === "uk") {
+    out = out.replace(/(\d+(?:\.\d+)?)%/g, "$1 відсоток");
+  } else if (lang === "ru") {
+    out = out.replace(/(\d+(?:\.\d+)?)%/g, "$1 процент");
+  }
+
+  return out;
+}
+
 export async function getChatAudio(req, res) {
   const { text, locale } = req.body;
   const apiKey = process.env.OPENAI_API_KEY;
@@ -539,20 +863,25 @@ export async function getChatAudio(req, res) {
   let voice = "nova"; 
   const lang = (locale || "en").split("-")[0].toLowerCase();
   if (lang === "es") voice = "shimmer"; 
-  if (lang === "uk") voice = "nova";
+  if (lang === "uk") voice = "alloy";
   if (lang === "ru") voice = "alloy";
   
-  let cleanedText = text;
-  if (lang === "uk") cleanedText = normalizeUkrainianSpeechNumbers(normalizeSlavicGroupedNumbers(text));
+  let cleanedText = naturalizeNumbersForTTS(text, locale);
+  if (lang === "uk") cleanedText = normalizeUkrainianSpeechNumbers(normalizeSlavicGroupedNumbers(cleanedText));
   if (lang === "ru") {
-    cleanedText = normalizeSlavicGroupedNumbers(text);
+    cleanedText = normalizeSlavicGroupedNumbers(cleanedText);
   }
 
   try {
     const response = await fetch(`${OPENAI_BASE_URL}/audio/speech`, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: lang === "en" ? "tts-1" : "tts-1-hd", input: cleanedText, voice }),
+      body: JSON.stringify({ 
+        model: lang === "en" ? "tts-1" : "tts-1-hd", 
+        input: cleanedText, 
+        voice,
+        speed: 0.9
+      }),
     });
 
     res.setHeader("Content-Type", "audio/mpeg");
@@ -608,76 +937,136 @@ export async function chatQuery(req, res) {
       dateFormatHints,
       schemaProfile: { available_tabs: tabNames, tab_profiles: tabProfiles }
     });
-  } catch (e) { return res.status(502).json({ error: "ai_unavailable" }); }
-
-  const aiTab = resolveTabName(tabNames, ai?.target_tab);
-  const selectedTab = aiTab || initialTab || null;
-  const selectedDataset = selectedTab ? tabDatasets[selectedTab] : {
-    headers: Array.from(new Set(tabNames.flatMap((t) => tabDatasets[t]?.headers || []))),
-    rows: tabNames.flatMap((t) => (tabDatasets[t]?.rows || []).map((r) => ({ ...r, Tab: t }))),
-  };
-  const selectedAugmented = augmentRowsWithQuarter(selectedDataset.rows || [], selectedDataset.headers || []);
-  const headers = selectedAugmented.headers || [];
-  const baseRows = selectedAugmented.rows || [];
-
-  const aiFilters = (ai?.filters || []).map(f => ({
-    column: resolveColumn(headers, f.column),
-    operator: f.operator || "contains",
-    value: f.value
-  })).filter(f => f.column);
-
-  const matchedRows = applyFilters(baseRows, aiFilters);
-  const resolvedTarget = resolveColumn(headers, ai?.target_column);
-  const resolvedGroupBy = resolveColumn(headers, ai?.group_by);
-  const exec = computeDeterministicAnswer(ai?.operation, matchedRows, resolvedTarget, resolvedGroupBy, ai?.limit, locale);
-
-  const isChartOp = ["chart", "plot", "trend"].includes(ai?.operation);
-  const chart = (isChartOp && ai?.chart) ? {
-    dateColumn: resolveColumn(headers, ai.chart.date_column),
-    valueColumn: resolveColumn(headers, ai.chart.value_column),
-    segmentBy: resolveColumn(headers, ai.chart.segment_by),
-    aggregation: ai.chart.aggregation || "sum"
-  } : null;
-
-  const numericOps = new Set(["count", "sum", "avg", "max", "min", "top_n"]);
-  const op = String(ai?.operation || "none").toLowerCase();
-  let answer = (numericOps.has(op) && exec.answer)
-    ? exec.answer
-    : (ai?.answer || exec.answer || "Done.");
-  if (exec.answer && (/\d/.test(String(answer)) || /(?:approximately|approx\.?|about|примерно|около|приблизно|близько)/i.test(String(answer)))) {
-    answer = exec.answer;
+  } catch (e) {
+    console.error("OpenAI call failed:", e);
+    return res.status(502).json({ error: "ai_unavailable" }); 
   }
-  answer = formatAnswerWithBullets(answer);
-  if (!isEnglishLocale(locale) && answer) {
-    try {
-      const preserveTerms = dateFormatHints
-        .flatMap((h) => [h?.column, h?.example, h?.syntax])
-        .map((t) => String(t || "").trim())
-        .filter(Boolean);
-      const translated = await translateDashboardItems({
-        locale,
-        items: [{ key: "chat_answer", text: answer, preserveTerms }],
-        context: "chat-answer",
-      });
-      answer = translated?.[0]?.text || answer;
-    } catch (_) {
-      // keep original answer if translation fails
+
+  try {
+    const aiTab = resolveTabName(tabNames, ai?.target_tab);
+    const selectedTab = aiTab || initialTab || null;
+    const selectedDataset = selectedTab ? tabDatasets[selectedTab] : {
+      headers: Array.from(new Set(tabNames.flatMap((t) => tabDatasets[t]?.headers || []))),
+      rows: tabNames.flatMap((t) => (tabDatasets[t]?.rows || []).map((r) => ({ ...r, Tab: t }))),
+    };
+    const selectedAugmented = augmentRowsWithQuarter(selectedDataset.rows || [], selectedDataset.headers || []);
+    const headers = selectedAugmented.headers || [];
+    const baseRows = selectedAugmented.rows || [];
+
+    const aiFilters = (ai?.filters || []).map(f => ({
+      column: resolveColumn(headers, f.column, sampleRows),
+      operator: f.operator || "contains",
+      value: f.value
+    })).filter(f => f.column);
+
+    const matchedRows = applyFilters(baseRows, aiFilters);
+    
+    // Contextual Inheritance: Inherit Operation, Target & GroupBy
+    let resolvedOperation = (ai?.operation || "none").toLowerCase();
+    let resolvedTarget = resolveColumn(headers, ai?.target_column, sampleRows);
+    let resolvedGroupBy = resolveColumn(headers, ai?.group_by, sampleRows);
+    
+    if (Array.isArray(conversationHistory) && conversationHistory.length > 0) {
+        const lastTurn = conversationHistory[conversationHistory.length - 1];
+        const lastMeta = lastTurn.meta || {};
+        
+        // 1. Inherit Operation if current is generic (none/filter) and user just provided a filter/location
+        if ((resolvedOperation === "none" || resolvedOperation === "filter") && lastMeta.operation && lastMeta.operation !== "none") {
+            resolvedOperation = lastMeta.operation;
+        }
+
+        // 2. Inherit Target if missing
+        if (!resolvedTarget) {
+            const lastWithTarget = [...conversationHistory].reverse().find(h => h.target_column || h.meta?.resolvedTarget);
+            if (lastWithTarget) {
+                const rawTarget = lastWithTarget.target_column || lastWithTarget.meta?.resolvedTarget;
+                resolvedTarget = resolveColumn(headers, rawTarget, sampleRows);
+            }
+        }
+
+        // 3. Inherit GroupBy if missing
+        if (!resolvedGroupBy) {
+            const lastWithGroupBy = [...conversationHistory].reverse().find(h => h.group_by || h.meta?.resolvedGroupBy);
+            if (lastWithGroupBy) {
+                const rawGroupBy = lastWithGroupBy.group_by || lastWithGroupBy.meta?.resolvedGroupBy;
+                resolvedGroupBy = resolveColumn(headers, rawGroupBy, sampleRows);
+            }
+        }
     }
+
+    const exec = await computeDeterministicAnswer(resolvedOperation, matchedRows, resolvedTarget, resolvedGroupBy, ai?.limit, locale, message);
+
+    const isChartOp = ["chart", "plot", "trend"].includes(ai?.operation);
+    const chart = (isChartOp && ai?.chart) ? {
+      dateColumn: resolveColumn(headers, ai.chart.date_column, sampleRows),
+      valueColumn: resolveColumn(headers, ai.chart.value_column, sampleRows),
+      segmentBy: resolveColumn(headers, ai.chart.segment_by, sampleRows),
+      aggregation: ai.chart.aggregation || "sum"
+    } : null;
+
+    const numericOps = new Set(["count", "sum", "avg", "max", "min", "top_n", "year_over_year"]);
+    const op = String(ai?.operation || "none").toLowerCase();
+    const hasDataTarget = !!(ai?.target_column || ai?.filters?.length);
+    
+    let answer = ai?.answer || exec.answer || "Done.";
+    
+    // If it's a numeric operation OR specifically targeting data via filters, 
+    // the code-calculated 'exec.answer' must be the only source of truth...
+    if ((numericOps.has(op) || (op === "filter" && hasDataTarget)) && exec.answer) {
+        // ...UNLESS the code result is a generic 'No data' message and the AI actually found something in its window.
+        const isGenericNoData = exec.answer.includes("No data matched") || exec.answer.includes("no specific metric column");
+        if (isGenericNoData && ai?.answer && ai.answer.length > 5) {
+            answer = ai.answer;
+        } else {
+            answer = exec.answer;
+        }
+    }
+
+    answer = formatAnswerWithBullets(answer);
+    answer = cleanAITechnicalNoise(answer);
+
+    if (!isEnglishLocale(locale) && answer) {
+      try {
+        const preserveTerms = dateFormatHints
+          .flatMap((h) => [h?.column, h?.example, h?.syntax])
+          .map((t) => String(t || "").trim())
+          .filter(Boolean);
+        const translated = await translateDashboardItems({
+          locale,
+          items: [{ key: "chat_answer", text: answer, preserveTerms }],
+          context: "chat-answer",
+        });
+        answer = translated?.[0]?.text || answer;
+      } catch (_) { }
+    }
+
+    answer = stripApproximationWords(answer);
+    answer = normalizeDatesAndRemoveTime(answer);
+    answer = enforceCommaThousands(answer);
+    answer = enforceTwoDecimals(answer);
+
+    const isReset = ai?.operation === "reset" || /reset|clear|all records/i.test(ai?.answer || "");
+    const uiFilters = (ai?.operation === "filter" || ai?.operation === "apply_filter") ? aiFilters : [];
+
+    res.json({
+      answer,
+      actions: { reset_filters: isReset, filters: uiFilters, chart },
+      preview_rows: exec.previewRows || [],
+      meta: { 
+          totalRows: baseRows.length, 
+          matchedRows: matchedRows.length, 
+          operation: ai?.operation || "none", 
+          locale, 
+          selectedTab, 
+          availableTabs: tabNames,
+          resolvedTarget,
+          resolvedGroupBy
+      }
+    });
+  } catch (err) {
+    console.error("Chat processing failed:", err);
+    res.status(500).json({ error: "internal_server_error", message: "Failed to process your request." });
   }
-  answer = stripApproximationWords(answer);
-  answer = normalizeDatesAndRemoveTime(answer);
-  answer = enforceCommaThousands(answer);
-  answer = enforceTwoDecimals(answer);
-
-  const isReset = ai?.operation === "reset" || /reset|clear|all records/i.test(ai?.answer || "");
-  const uiFilters = (ai?.operation === "filter" || ai?.operation === "apply_filter") ? aiFilters : [];
-
-  res.json({
-    answer,
-    actions: { reset_filters: isReset, filters: uiFilters, chart },
-    preview_rows: exec.previewRows || [],
-    meta: { totalRows: baseRows.length, matchedRows: matchedRows.length, operation: ai?.operation || "none", locale, selectedTab, availableTabs: tabNames }
-  });
 }
 
 export async function checkSheetAccess(sheetId, user) {

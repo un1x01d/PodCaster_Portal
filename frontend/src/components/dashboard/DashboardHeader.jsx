@@ -19,8 +19,8 @@ export default function DashboardHeader({
 }) {
     const location = useLocation();
     const isDashboardRoute = location.pathname === "/";
-    const ui = isDashboardRoute ? copy : DASHBOARD_COPY_EN;
-    const effectiveLocale = isDashboardRoute ? normalizeDashboardLocale(locale) : "en";
+    const ui = copy || DASHBOARD_COPY_EN;
+    const effectiveLocale = normalizeDashboardLocale(locale) || "en";
     const [languageMenuOpen, setLanguageMenuOpen] = React.useState(false);
     const languageMenuRef = React.useRef(null);
 
@@ -118,7 +118,19 @@ export default function DashboardHeader({
                             panelWidth={"48ch"}
                         />
                     </div>
-                    {isDashboardRoute && setLocale && (
+
+                    {/* Admin Link (Gear) */}
+                    {user?.role === 'admin' && (
+                        <a
+                            href="/users"
+                            className="w-10 h-10 rounded-2xl bg-indigo-600 border border-indigo-500 text-white hover:bg-indigo-700 hover:scale-105 transition-all flex items-center justify-center shadow-lg shadow-indigo-200 shrink-0"
+                            title="Administration"
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.1a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+                        </a>
+                    )}
+
+                    {setLocale && (
                         <div className="relative" ref={languageMenuRef}>
                             <button
                                 type="button"
@@ -133,11 +145,11 @@ export default function DashboardHeader({
                                 </svg>
                             </button>
                             {languageMenuOpen && (
-                                <div className="absolute right-0 mt-2 w-52 rounded-2xl border border-slate-200 bg-white shadow-xl overflow-hidden z-50">
-                                    <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-500 border-b border-slate-100">
+                                <div className="absolute right-0 mt-2 w-56 rounded-2xl border border-slate-200 bg-white shadow-xl overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-200 origin-top-right">
+                                    <div className="px-4 py-2.5 text-[10px] font-bold uppercase tracking-widest text-slate-400 border-b border-slate-100 bg-slate-50/50">
                                         {ui.language}
                                     </div>
-                                    <div className="p-1">
+                                    <div className="p-1.5 space-y-0.5">
                                         {supportedLanguages.map((lang) => (
                                             <button
                                                 key={lang.code}
@@ -146,32 +158,29 @@ export default function DashboardHeader({
                                                     setLocale(lang.code);
                                                     setLanguageMenuOpen(false);
                                                 }}
-                                                className={`w-full text-left px-3 py-2 rounded-xl text-sm font-medium transition-colors ${
+                                                className={`w-full flex items-center justify-between px-3 py-2 rounded-xl transition-all ${
                                                     normalizeDashboardLocale(lang.code) === normalizeDashboardLocale(locale)
-                                                        ? "bg-indigo-50 text-indigo-700"
-                                                        : "text-slate-700 hover:bg-slate-50"
+                                                        ? "bg-indigo-50 text-indigo-700 font-bold"
+                                                        : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
                                                 }`}
                                             >
-                                                {lang.label}
+                                                <div className="flex items-center gap-3">
+                                                    <img 
+                                                        src={lang.flag} 
+                                                        alt={lang.label} 
+                                                        className="w-5 h-5 rounded-full object-cover border border-slate-200 shadow-sm"
+                                                    />
+                                                    <span className="text-xs">{lang.label}</span>
+                                                </div>
+                                                {normalizeDashboardLocale(lang.code) === normalizeDashboardLocale(locale) && (
+                                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-indigo-500"><polyline points="20 6 9 17 4 12"/></svg>
+                                                )}
                                             </button>
                                         ))}
                                     </div>
                                 </div>
                             )}
                         </div>
-                    )}
-                    {/* Admin Link (Gear) */}
-                    {user?.role === 'admin' && (
-                        <Link
-                            to="/users"
-                            className="w-10 h-10 rounded-2xl bg-indigo-600 border border-indigo-500 text-white hover:bg-indigo-700 hover:scale-105 transition-all flex items-center justify-center shadow-lg shadow-indigo-200"
-                            title="Administration"
-                        >
-                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.1a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
-                                <circle cx="12" cy="12" r="3"></circle>
-                            </svg>
-                        </Link>
                     )}
 
                     <div className="text-right hidden xl:block">

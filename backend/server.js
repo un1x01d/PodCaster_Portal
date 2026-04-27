@@ -97,11 +97,37 @@ app.use((err, req, res, next) => {
   const isDev = process.env.NODE_ENV !== "production";
   res.status(500).json({
     error: "internal_server_error",
-    // Only expose details in dev — never leak them in production
     message: isDev ? err.message : undefined,
     stack: isDev ? err.stack : undefined
   });
 });
+
+// Serve frontend in production
+const frontendDist = path.join(__dirname, "..", "frontend", "dist");
+if (fs.existsSync(frontendDist)) {
+  app.use(express.static(frontendDist));
+  app.get("*", (req, res, next) => {
+    // Skip if it's an API call or health check
+    if (req.path.startsWith("/auth") || 
+        req.path.startsWith("/sheets") || 
+        req.path.startsWith("/users") || 
+        req.path.startsWith("/groups") || 
+        req.path.startsWith("/folders") || 
+        req.path.startsWith("/permissions") || 
+        req.path.startsWith("/views") || 
+        req.path.startsWith("/chat") || 
+        req.path.startsWith("/insights") || 
+        req.path.startsWith("/dashboard") || 
+        req.path.startsWith("/google") || 
+        req.path.startsWith("/dropbox") || 
+        req.path.startsWith("/onedrive") || 
+        req.path.startsWith("/healthz") || 
+        req.path.startsWith("/readyz")) {
+      return next();
+    }
+    res.sendFile(path.join(frontendDist, "index.html"));
+  });
+}
 
 // Init & Start
 try {

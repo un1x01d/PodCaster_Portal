@@ -3,6 +3,26 @@ import React from "react";
 export default function TrendTooltip({ active, payload, label }) {
     if (!active || !payload || !payload.length) return null;
 
+    // Filter duplicates strictly by normalized name, or by dataKey as fallback
+    const uniquePayload = payload.reduce((acc, current) => {
+        const name = String(current.name || "").trim().toLowerCase();
+        const dataKey = String(current.dataKey || "");
+        
+        // Find if we already have an entry with this name or dataKey
+        const duplicateIndex = acc.findIndex(item => {
+            const itemName = String(item.name || "").trim().toLowerCase();
+            const itemDataKey = String(item.dataKey || "");
+            
+            if (name && itemName) return name === itemName;
+            return dataKey === itemDataKey;
+        });
+
+        if (duplicateIndex === -1) {
+            acc.push(current);
+        }
+        return acc;
+    }, []);
+
     return (
         <div className="bg-white/95 backdrop-blur-sm border border-slate-200/60 rounded-xl shadow-2xl p-3 min-w-[180px] animate-in fade-in zoom-in-95 duration-200 ring-1 ring-black/5">
             {label && (
@@ -11,7 +31,7 @@ export default function TrendTooltip({ active, payload, label }) {
                 </div>
             )}
             <div className="space-y-2">
-                {payload.map((p, i) => {
+                {uniquePayload.map((p, i) => {
                     const isPercent = p.name && /(pct|percent|rate|ratio|%)/i.test(p.name);
                     const isCurrency = !isPercent && p.name && /(price|cost|expense|income|budget|fee|amount|revenue|sales|total|value|profit|margin|\$)/i.test(p.name);
 
