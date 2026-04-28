@@ -11,7 +11,8 @@ import {
     listGroups, createGroup, updateGroup, deleteGroup, getGroupMembers, updateGroupMembers, getGroupSheets,
     addUserToGroup, removeUserFromGroup, toggleGroupAdmin,
     listFolders, createFolder, updateFolder, deleteFolder,
-    setPermissions, getPermissions, setGroupPermissions, getGroupPermissions
+    setPermissions, getPermissions, setGroupPermissions, getGroupPermissions,
+    getUserKpiOverrides, setUserKpiOverrides
 } from "../controllers/userController.js";
 import { auth } from "../middleware/auth.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
@@ -63,5 +64,7 @@ router.post("/permissions", asyncHandler(setPermissions)); // User perms
 router.get("/permissions", asyncHandler(getPermissions));
 router.post("/group-permissions", asyncHandler(setGroupPermissions));
 router.get("/group-permissions", asyncHandler(getGroupPermissions));
+router.get("/users/me/kpi-overrides", asyncHandler(getUserKpiOverrides));
+router.put("/users/me/kpi-overrides", asyncHandler(setUserKpiOverrides));
 
 export default router;

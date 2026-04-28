@@ -1386,6 +1386,15 @@ export default function DashboardBody(props) {
                                             </div>
                                         )}
                                     </div>
+                                    {tabs && tabs.length > 1 && (
+                                        <div className="sticky bottom-0 z-30 bg-white border-t border-slate-200">
+                                            <SheetTabBar
+                                                tabs={tabs}
+                                                activeTab={activeTab}
+                                                onTabClick={onTabChange}
+                                            />
+                                        </div>
+                                    )}
                                 </div>
                             </>
                         ) : (

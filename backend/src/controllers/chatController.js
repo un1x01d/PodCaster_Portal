@@ -190,6 +190,9 @@ function formatValue(v, locale = "en", col = "", forSpeech = false) {
  */
 async function computeSqlAggregation({ sheetId, user, operation, targetColumn, groupBy, filters = [], limit = 5, locale = "en", tabName = null }) {
     const op = String(operation || "none").toLowerCase();
+    const lang = String(locale || "en").toLowerCase();
+    const isUk = lang.startsWith("uk");
+    const isRu = lang.startsWith("ru");
     const nLimit = Number.isInteger(limit) ? limit : 5;
     
     // 1. Build Base Where Clause (RBAC + Tab + AI Filters)
@@ -274,7 +277,7 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
     try {
         if (op === "count") {
             const res = await query(`SELECT COUNT(*) as c FROM sheet_rows ${where}`, params);
-            return { answer: `Count: ${res[0].c} rows`, previewRows: [] };
+            return { answer: isUk ? `Кількість: ${res[0].c} рядків` : (isRu ? `Количество: ${res[0].c} строк` : `Count: ${res[0].c} rows`), previewRows: [] };
         }
 
         if (!targetColumn) return null;
@@ -302,9 +305,9 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
             `;
             params.push(nLimit);
             const rows = await query(groupSql, params);
-            if (!rows.length) return { answer: "No matching data found.", previewRows: [] };
+            if (!rows.length) return { answer: isUk ? "Відповідних даних не знайдено." : (isRu ? "Подходящие данные не найдены." : "No matching data found."), previewRows: [] };
 
-            const answer = `Top ${rows.length} ${groupBy} by ${targetColumn}:\n` + 
+            const answer = (isUk ? `Топ ${rows.length} ${groupBy} за ${targetColumn}:\n` : (isRu ? `Топ ${rows.length} ${groupBy} по ${targetColumn}:\n` : `Top ${rows.length} ${groupBy} by ${targetColumn}:\n`)) +
                 rows.map((r, i) => `${i+1}. ${r.label}: ${formatValue(Number(r.value), locale, targetColumn)}`).join("\n");
             
             return { answer, previewRows: rows };
@@ -314,7 +317,9 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
             const aggOp = op.toUpperCase();
             const res = await query(`SELECT ${aggOp}(${valSql}) as v FROM sheet_rows ${where}`, params);
             const val = Number(res[0].v || 0);
-            const labels = { SUM: "Total", AVG: "Average", MAX: "Max", MIN: "Min" };
+            const labels = isUk
+              ? { SUM: "Сума", AVG: "Середнє", MAX: "Максимум", MIN: "Мінімум" }
+              : (isRu ? { SUM: "Сумма", AVG: "Среднее", MAX: "Максимум", MIN: "Минимум" } : { SUM: "Total", AVG: "Average", MAX: "Max", MIN: "Min" });
             return { answer: `${labels[aggOp]} ${targetColumn}: ${formatValue(val, locale, targetColumn)}`, previewRows: [] };
         }
 
@@ -328,14 +333,17 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
 
 async function computeDeterministicAnswer(operation, rows, targetColumn, groupBy, limit = 5, locale = "en", queryText = "") {
   const op = (operation || "none").toLowerCase();
+  const lang = String(locale || "en").toLowerCase();
+  const isUk = lang.startsWith("uk");
+  const isRu = lang.startsWith("ru");
   const q = String(queryText || "").toLowerCase();
   const nLimit = Number.isFinite(Number(limit)) ? Math.max(1, Number(limit)) : 5;
 
   if (!rows || rows.length === 0) {
-    return { answer: "No data matched those criteria.", previewRows: [] };
+    return { answer: isUk ? "Дані за цими критеріями не знайдено." : (isRu ? "Данные по этим критериям не найдены." : "No data matched those criteria."), previewRows: [] };
   }
 
-  if (op === "count") return { answer: `Count: ${rows.length} rows`, previewRows: rows.slice(0, 15) };
+  if (op === "count") return { answer: isUk ? `Кількість: ${rows.length} рядків` : (isRu ? `Количество: ${rows.length} строк` : `Count: ${rows.length} rows`), previewRows: rows.slice(0, 15) };
   
   // --- Financial Ratio & Analysis Engine (Loaded from DB) ---
   const { ratios } = await loadSemanticBrain();
@@ -367,7 +375,7 @@ async function computeDeterministicAnswer(operation, rows, targetColumn, groupBy
     }
   }
 
-  if (!targetColumn) return { answer: "I found the matching records, but no specific metric column was identified for calculation.", previewRows: rows.slice(0, 15) };
+  if (!targetColumn) return { answer: isUk ? "Записи знайдено, але відповідну метрику для розрахунку не визначено." : (isRu ? "Записи найдены, но подходящий столбец метрики для расчета не определен." : "I found the matching records, but no specific metric column was identified for calculation."), previewRows: rows.slice(0, 15) };
 
   const isPercentageCol = /percent|margin|rate|ratio|%/i.test(String(targetColumn));
   const effectiveOp = (op === "sum" && isPercentageCol) ? "avg" : op;
@@ -381,6 +389,12 @@ async function computeDeterministicAnswer(operation, rows, targetColumn, groupBy
   if (isYoYQuery) {
     const keys = Object.keys(rows[0] || {});
     let dateCol = keys.find(k => /date|period|month|year|дата|період|час/i.test(String(k))) || groupBy;
+    const explicitYearCol = keys.find((k) => /\byear\b|рік|год/i.test(String(k)));
+    const profitCandidates = [
+      targetColumn,
+      ...keys.filter((k) => /(^|\b)(net\s*profit|чист(ий|ая)\s+прибут(ок|ь))(\b|$)/i.test(String(k))),
+      ...keys.filter((k) => /profit|прибут/i.test(String(k))),
+    ].filter(Boolean);
     
     let targetRows = rows;
 
@@ -406,10 +420,30 @@ async function computeDeterministicAnswer(operation, rows, targetColumn, groupBy
 
     const yearlySums = {};
     targetRows.forEach(r => {
-      const d = parseDateValue(r[dateCol]);
-      const year = d ? d.getFullYear() : (Number.isInteger(Number(r[dateCol])) ? Number(r[dateCol]) : null);
+      const yearSources = [dateCol, explicitYearCol, ...keys.filter((k) => /year|рік|год|date|period|month|дата|період|час/i.test(String(k)))].filter(Boolean);
+      let year = null;
+      for (const ys of yearSources) {
+        const d = parseDateValue(r[ys]);
+        year = d ? d.getFullYear() : (Number.isInteger(Number(r[ys])) ? Number(r[ys]) : null);
+        if (!year && ys) {
+          const yv = Number(String(r?.[ys] ?? "").replace(/[^\d]/g, ""));
+          if (Number.isInteger(yv) && yv >= 1900 && yv <= 2200) year = yv;
+        }
+        if (year) break;
+      }
+      if (!year && explicitYearCol) {
+        const yv = Number(String(r?.[explicitYearCol] ?? "").replace(/[^\d]/g, ""));
+        if (Number.isInteger(yv) && yv >= 1900 && yv <= 2200) year = yv;
+      }
       if (!year) return;
-      const val = toNum(r[targetColumn]);
+      let val = null;
+      for (const col of profitCandidates) {
+        const parsed = toNum(r[col]);
+        if (parsed !== null) {
+          val = parsed;
+          break;
+        }
+      }
       if (val !== null) yearlySums[year] = (yearlySums[year] || 0) + val;
     });
 
@@ -489,44 +523,49 @@ async function computeDeterministicAnswer(operation, rows, targetColumn, groupBy
       })
       .sort((a, b) => b.value - a.value);
 
-    if (!sorted.length) return { answer: "No matching data.", previewRows: [] };
+    if (!sorted.length) return { answer: isUk ? "Відповідних даних не знайдено." : (isRu ? "Подходящие данные не найдены." : "No matching data."), previewRows: [] };
 
     if (effectiveOp === "max") {
-      return { answer: `Highest ${targetColumn}: ${sorted[0].label} with ${formatValue(sorted[0].value, locale, targetColumn)}`, previewRows: sorted.slice(0, 10) };
+      return { answer: isUk ? `Найвище значення ${targetColumn}: ${sorted[0].label} — ${formatValue(sorted[0].value, locale, targetColumn)}` : (isRu ? `Максимум по ${targetColumn}: ${sorted[0].label} — ${formatValue(sorted[0].value, locale, targetColumn)}` : `Highest ${targetColumn}: ${sorted[0].label} with ${formatValue(sorted[0].value, locale, targetColumn)}`), previewRows: sorted.slice(0, 10) };
     }
     if (effectiveOp === "min") {
       const bottom = [...sorted].sort((a, b) => a.value - b.value)[0];
-      return { answer: `Lowest ${targetColumn}: ${bottom.label} with ${formatValue(bottom.value, locale, targetColumn)}`, previewRows: [...sorted].sort((a, b) => a.value - b.value).slice(0, 10) };
+      return { answer: isUk ? `Найнижче значення ${targetColumn}: ${bottom.label} — ${formatValue(bottom.value, locale, targetColumn)}` : (isRu ? `Минимум по ${targetColumn}: ${bottom.label} — ${formatValue(bottom.value, locale, targetColumn)}` : `Lowest ${targetColumn}: ${bottom.label} with ${formatValue(bottom.value, locale, targetColumn)}`), previewRows: [...sorted].sort((a, b) => a.value - b.value).slice(0, 10) };
     }
 
     if (nLimit === 1) {
       return { 
-        answer: `The top ${groupBy} by ${targetColumn} is ${sorted[0].label} with ${formatValue(sorted[0].value, locale, targetColumn)}.`,
+        answer: isUk
+          ? `Топ ${groupBy} за ${targetColumn}: ${sorted[0].label} — ${formatValue(sorted[0].value, locale, targetColumn)}.`
+          : (isRu
+            ? `Топ ${groupBy} по ${targetColumn}: ${sorted[0].label} — ${formatValue(sorted[0].value, locale, targetColumn)}.`
+            : `The top ${groupBy} by ${targetColumn} is ${sorted[0].label} with ${formatValue(sorted[0].value, locale, targetColumn)}.`),
         previewRows: sorted.slice(0, 1)
       };
     }
 
     return {
-      answer: `Top ${nLimit} ${groupBy} by ${targetColumn}:\n` + sorted.slice(0, nLimit).map((x, i) => `${i + 1}. ${x.label}: ${formatValue(x.value, locale, targetColumn)}`).join("\n"),
+      answer: (isUk ? `Топ ${nLimit} ${groupBy} за ${targetColumn}:\n` : (isRu ? `Топ ${nLimit} ${groupBy} по ${targetColumn}:\n` : `Top ${nLimit} ${groupBy} by ${targetColumn}:\n`))
+        + sorted.slice(0, nLimit).map((x, i) => `${i + 1}. ${x.label}: ${formatValue(x.value, locale, targetColumn)}`).join("\n"),
       previewRows: sorted.slice(0, nLimit)
     };
   }
 
   const nums = rows.map((r) => toNum(r?.[targetColumn])).filter((n) => n !== null);
-  if (!nums.length) return { answer: `No numeric data found in ${targetColumn}.`, previewRows: rows.slice(0, 15) };
+  if (!nums.length) return { answer: isUk ? `У стовпці ${targetColumn} не знайдено числових даних.` : (isRu ? `В столбце ${targetColumn} не найдено числовых данных.` : `No numeric data found in ${targetColumn}.`), previewRows: rows.slice(0, 15) };
   
-  if (effectiveOp === "sum") return { answer: `Total ${targetColumn}: ${formatValue(nums.reduce((a, b) => a + b, 0), locale, targetColumn)}`, previewRows: rows.slice(0, 15) };
-  if (effectiveOp === "avg") return { answer: `Average ${targetColumn}: ${formatValue(nums.reduce((a, b) => a + b, 0) / nums.length, locale, targetColumn)}`, previewRows: rows.slice(0, 15) };
+  if (effectiveOp === "sum") return { answer: isUk ? `Сума ${targetColumn}: ${formatValue(nums.reduce((a, b) => a + b, 0), locale, targetColumn)}` : (isRu ? `Сумма ${targetColumn}: ${formatValue(nums.reduce((a, b) => a + b, 0), locale, targetColumn)}` : `Total ${targetColumn}: ${formatValue(nums.reduce((a, b) => a + b, 0), locale, targetColumn)}`), previewRows: rows.slice(0, 15) };
+  if (effectiveOp === "avg") return { answer: isUk ? `Середнє ${targetColumn}: ${formatValue(nums.reduce((a, b) => a + b, 0) / nums.length, locale, targetColumn)}` : (isRu ? `Среднее ${targetColumn}: ${formatValue(nums.reduce((a, b) => a + b, 0) / nums.length, locale, targetColumn)}` : `Average ${targetColumn}: ${formatValue(nums.reduce((a, b) => a + b, 0) / nums.length, locale, targetColumn)}`), previewRows: rows.slice(0, 15) };
   
   if (effectiveOp === "max") {
     let max = -Infinity;
     for (let i = 0; i < nums.length; i++) if (nums[i] > max) max = nums[i];
-    return { answer: `Max ${targetColumn}: ${formatValue(max, locale, targetColumn)}`, previewRows: rows.slice(0, 15) };
+    return { answer: isUk ? `Максимум ${targetColumn}: ${formatValue(max, locale, targetColumn)}` : (isRu ? `Максимум ${targetColumn}: ${formatValue(max, locale, targetColumn)}` : `Max ${targetColumn}: ${formatValue(max, locale, targetColumn)}`), previewRows: rows.slice(0, 15) };
   }
   if (effectiveOp === "min") {
     let min = Infinity;
     for (let i = 0; i < nums.length; i++) if (nums[i] < min) min = nums[i];
-    return { answer: `Min ${targetColumn}: ${formatValue(min, locale, targetColumn)}`, previewRows: rows.slice(0, 15) };
+    return { answer: isUk ? `Мінімум ${targetColumn}: ${formatValue(min, locale, targetColumn)}` : (isRu ? `Минимум ${targetColumn}: ${formatValue(min, locale, targetColumn)}` : `Min ${targetColumn}: ${formatValue(min, locale, targetColumn)}`), previewRows: rows.slice(0, 15) };
   }
   return { answer: "", previewRows: rows.slice(0, 15) };
 }
@@ -575,6 +614,16 @@ async function loadSemanticBrain() {
 async function resolveColumn(headers, aiName, sampleRows = []) {
   if (!aiName || !headers.length) return null;
   const target = String(aiName).toLowerCase().trim();
+  const normalizedTarget = target.replace(/\s+/g, " ");
+
+  // High-priority deterministic mapping for key finance terms.
+  const hasNetProfitIntent = /(^|\b)(net\s*profit|чист(ий|ая)\s+прибут(ок|ь))(\b|$)/i.test(normalizedTarget);
+  if (hasNetProfitIntent) {
+    const strict = headers.find((h) => /(^|\b)(net\s*profit|чист(ий|ая)\s+прибут(ок|ь))(\b|$)/i.test(String(h || "").toLowerCase()));
+    if (strict) return strict;
+    const loose = headers.find((h) => /profit|прибут/i.test(String(h || "").toLowerCase()));
+    if (loose) return loose;
+  }
 
   const direct = headers.find(h => String(h).toLowerCase() === target);
   if (direct) return direct;
@@ -954,6 +1003,13 @@ function inferTabFromMessage(tabNames = [], message = "") {
   return best;
 }
 
+function findProductLikeColumn(headers = []) {
+  const list = Array.isArray(headers) ? headers : [];
+  const strong = list.find((h) => /\b(product|item|sku)\b/i.test(String(h || "")));
+  if (strong) return strong;
+  return list.find((h) => /product|item|sku|товар|продукт/i.test(String(h || ""))) || null;
+}
+
 function buildTabDatasets(rows = [], fallbackHeaders = [], tabNames = []) {
   const byTab = new Map();
   rows.forEach((row) => {
@@ -990,26 +1046,32 @@ function normalizeSlavicGroupedNumbers(text = "") {
 }
 
 function expandLargeIntForEnglishSpeech(rawDigits = "") {
-  const digits = String(rawDigits || "").replace(/[^\d]/g, "");
-  if (!digits) return "0";
-  const n = Number(digits);
-  if (!Number.isFinite(n)) return digits;
-  if (n >= 1_000_000_000) {
-    const b = Math.floor(n / 1_000_000_000);
-    const m = Math.floor((n % 1_000_000_000) / 1_000_000);
-    const k = Math.floor((n % 1_000_000) / 1_000);
-    const r = n % 1_000;
+  const digits = String(rawDigits || "").replace(/[^\d]/g, "").replace(/^0+/, "") || "0";
+  const n = BigInt(digits);
+  if (n >= 1_000_000_000_000n) {
+    const t = n / 1_000_000_000_000n;
+    const b = (n % 1_000_000_000_000n) / 1_000_000_000n;
+    const m = (n % 1_000_000_000n) / 1_000_000n;
+    const k = (n % 1_000_000n) / 1_000n;
+    const r = n % 1_000n;
+    return [t ? `${t} trillion` : "", b ? `${b} billion` : "", m ? `${m} million` : "", k ? `${k} thousand` : "", r ? `${r}` : ""].filter(Boolean).join(" ");
+  }
+  if (n >= 1_000_000_000n) {
+    const b = n / 1_000_000_000n;
+    const m = (n % 1_000_000_000n) / 1_000_000n;
+    const k = (n % 1_000_000n) / 1_000n;
+    const r = n % 1_000n;
     return [b ? `${b} billion` : "", m ? `${m} million` : "", k ? `${k} thousand` : "", r ? `${r}` : ""].filter(Boolean).join(" ");
   }
-  if (n >= 1_000_000) {
-    const m = Math.floor(n / 1_000_000);
-    const k = Math.floor((n % 1_000_000) / 1_000);
-    const r = n % 1_000;
+  if (n >= 1_000_000n) {
+    const m = n / 1_000_000n;
+    const k = (n % 1_000_000n) / 1_000n;
+    const r = n % 1_000n;
     return [m ? `${m} million` : "", k ? `${k} thousand` : "", r ? `${r}` : ""].filter(Boolean).join(" ");
   }
-  if (n >= 1_000) {
-    const k = Math.floor(n / 1_000);
-    const r = n % 1_000;
+  if (n >= 1_000n) {
+    const k = n / 1_000n;
+    const r = n % 1_000n;
     return [k ? `${k} thousand` : "", r ? `${r}` : ""].filter(Boolean).join(" ");
   }
   return String(n);
@@ -1112,7 +1174,9 @@ function slavicNumberToWords(n, lang = "ru", gender = "m") {
       tens: ["", "", "двадцять", "тридцять", "сорок", "п'ятдесят", "шістдесят", "сімдесят", "вісімдесят", "дев'яносто"],
       hundreds: ["", "сто", "двісті", "триста", "чотириста", "п'ятсот", "шістсот", "сімсот", "вісімсот", "дев'ятсот"],
       thousandForms: ["тисяча", "тисячі", "тисяч"],
-      millionForms: ["мільйон", "мільйони", "мільйонів"]
+      millionForms: ["мільйон", "мільйони", "мільйонів"],
+      billionForms: ["мільярд", "мільярди", "мільярдів"],
+      trillionForms: ["трильйон", "трильйони", "трильйонів"]
     }
     : {
       zero: "ноль",
@@ -1122,7 +1186,9 @@ function slavicNumberToWords(n, lang = "ru", gender = "m") {
       tens: ["", "", "двадцать", "тридцать", "сорок", "пятьдесят", "шестьдесят", "семьдесят", "восемьдесят", "девяносто"],
       hundreds: ["", "сто", "двести", "триста", "четыреста", "пятьсот", "шестьсот", "семьсот", "восемьсот", "девятьсот"],
       thousandForms: ["тысяча", "тысячи", "тысяч"],
-      millionForms: ["миллион", "миллиона", "миллионов"]
+      millionForms: ["миллион", "миллиона", "миллионов"],
+      billionForms: ["миллиард", "миллиарда", "миллиардов"],
+      trillionForms: ["триллион", "триллиона", "триллионов"]
     };
 
   const tripleToWords = (value, tripleGender = "m") => {
@@ -1143,11 +1209,21 @@ function slavicNumberToWords(n, lang = "ru", gender = "m") {
 
   if (num === 0) return dict.zero;
 
-  const millions = Math.floor(num / 1_000_000);
+  const trillions = Math.floor(num / 1_000_000_000_000);
+  const billions = Math.floor((num % 1_000_000_000_000) / 1_000_000_000);
+  const millions = Math.floor((num % 1_000_000_000) / 1_000_000);
   const thousands = Math.floor((num % 1_000_000) / 1_000);
   const rest = num % 1_000;
   const parts = [];
 
+  if (trillions) {
+    parts.push(tripleToWords(trillions, "m"));
+    parts.push(getSlavicPlural(trillions, dict.trillionForms));
+  }
+  if (billions) {
+    parts.push(tripleToWords(billions, "m"));
+    parts.push(getSlavicPlural(billions, dict.billionForms));
+  }
   if (millions) {
     parts.push(tripleToWords(millions, "m"));
     parts.push(getSlavicPlural(millions, dict.millionForms));
@@ -1337,6 +1413,18 @@ export async function chatQuery(req, res) {
     let resolvedOperation = (ai?.operation || "none").toLowerCase();
     let resolvedTarget = await resolveColumn(aiHeaders, ai?.target_column, sampleRows);
     let resolvedGroupBy = await resolveColumn(aiHeaders, ai?.group_by, sampleRows);
+    const msgLower = String(message || "").toLowerCase();
+    const asksProductRanking = /\b(top|highest|best|selling|sold|product|products)\b/.test(msgLower)
+      || /топ|продаж|продукт|товар/i.test(msgLower);
+    if (asksProductRanking) {
+      const productCol = findProductLikeColumn(aiHeaders);
+      if (productCol) {
+        resolvedGroupBy = productCol;
+        if (resolvedOperation === "none" || resolvedOperation === "filter") {
+          resolvedOperation = "top_n";
+        }
+      }
+    }
 
     const opNeedsTarget = new Set(["sum", "avg", "max", "min", "top_n"]);
     if (opNeedsTarget.has(resolvedOperation) && !resolvedTarget) {

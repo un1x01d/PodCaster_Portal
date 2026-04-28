@@ -1143,3 +1143,30 @@ export async function getGroupPermissions(req, res) {
     if (!rows.length) return res.json({});
     res.json(rows[0]);
 }
+
+export async function getUserKpiOverrides(req, res) {
+    const sheetSignature = String(req.query?.sheetSignature || "").trim();
+    if (!sheetSignature) return res.status(400).json({ error: "sheet_signature_required" });
+    const key = `kpi_overrides:user:${req.user.id}:sheet:${sheetSignature}`;
+    const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [key]);
+    const value = rows?.[0]?.value;
+    return res.json({ ok: true, key, value: value && typeof value === "object" ? value : {} });
+}
+
+export async function setUserKpiOverrides(req, res) {
+    const sheetSignature = String(req.body?.sheetSignature || "").trim();
+    const value = req.body?.value;
+    if (!sheetSignature) return res.status(400).json({ error: "sheet_signature_required" });
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return res.status(400).json({ error: "invalid_value" });
+    }
+    const key = `kpi_overrides:user:${req.user.id}:sheet:${sheetSignature}`;
+    await query(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+         ON CONFLICT (key)
+         DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+        [key, JSON.stringify(value)]
+    );
+    return res.json({ ok: true, key });
+}

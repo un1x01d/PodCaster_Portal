@@ -517,6 +517,7 @@ export default function DashboardHome({
   const [queryOpen, setQueryOpen] = React.useState(false);
   const [pinnedLoaded, setPinnedLoaded] = React.useState(false);
   const [kpiOverrides, setKpiOverrides] = React.useState({});
+  const [kpiDraftOverrides, setKpiDraftOverrides] = React.useState({});
   const [kpiEditorOpen, setKpiEditorOpen] = React.useState({});
   const [kpiOverridesLoaded, setKpiOverridesLoaded] = React.useState(false);
   const [topCategoriesConfig, setTopCategoriesConfig] = React.useState({
@@ -1089,25 +1090,45 @@ export default function DashboardHome({
   React.useEffect(() => {
     if (!sheetStructureSignature) return;
     setKpiOverridesLoaded(false);
-    try {
-      const raw = localStorage.getItem(KPI_OVERRIDES_KEY);
-      if (!raw) {
-        setKpiOverrides({});
-        setKpiOverridesLoaded(true);
-        return;
+    (async () => {
+      try {
+        const dbRes = await api.get("/users/me/kpi-overrides", { params: { sheetSignature: sheetStructureSignature } });
+        const dbValue = dbRes?.data?.value;
+        if (dbValue && typeof dbValue === "object") {
+          setKpiOverrides(dbValue);
+          setKpiDraftOverrides(dbValue);
+          setKpiOverridesLoaded(true);
+          return;
+        }
+      } catch (_) {
+        // fallback to local storage
       }
-      const parsed = JSON.parse(raw);
-      const bySignature = parsed?.bySignature && typeof parsed.bySignature === "object" ? parsed.bySignature : {};
-      const current = bySignature[sheetStructureSignature];
-      setKpiOverrides(current && typeof current === "object" ? current : {});
-      setKpiOverridesLoaded(true);
-    } catch (_) {
-      setKpiOverrides({});
-      setKpiOverridesLoaded(true);
-    }
+      try {
+        const raw = localStorage.getItem(KPI_OVERRIDES_KEY);
+        if (!raw) {
+          setKpiOverrides({});
+          setKpiDraftOverrides({});
+          setKpiOverridesLoaded(true);
+          return;
+        }
+        const parsed = JSON.parse(raw);
+        const bySignature = parsed?.bySignature && typeof parsed.bySignature === "object" ? parsed.bySignature : {};
+        const current = bySignature[sheetStructureSignature];
+        const next = current && typeof current === "object" ? current : {};
+        setKpiOverrides(next);
+        setKpiDraftOverrides(next);
+        setKpiOverridesLoaded(true);
+      } catch (_) {
+        setKpiOverrides({});
+        setKpiDraftOverrides({});
+        setKpiOverridesLoaded(true);
+      }
+    })();
   }, [sheetStructureSignature]);
 
-  React.useEffect(() => {
+  const persistKpiOverrides = React.useCallback(async (nextOverrides) => {
+    if (!sheetStructureSignature) return;
+    setKpiOverrides(nextOverrides);
     if (!sheetStructureSignature || !kpiOverridesLoaded) return;
     try {
       const raw = localStorage.getItem(KPI_OVERRIDES_KEY);
@@ -1118,12 +1139,17 @@ export default function DashboardHome({
           bySignature = parsed.bySignature;
         }
       }
-      bySignature[sheetStructureSignature] = kpiOverrides;
+      bySignature[sheetStructureSignature] = nextOverrides;
       localStorage.setItem(KPI_OVERRIDES_KEY, JSON.stringify({ version: 1, bySignature }));
     } catch (_) {
       // ignore storage failures
     }
-  }, [sheetStructureSignature, kpiOverrides, kpiOverridesLoaded]);
+    try {
+      await api.put("/users/me/kpi-overrides", { sheetSignature: sheetStructureSignature, value: nextOverrides });
+    } catch (_) {
+      // keep local fallback even if DB save fails
+    }
+  }, [sheetStructureSignature, kpiOverridesLoaded]);
 
   const normalizedLocale = React.useMemo(() => normalizeDashboardLocale(locale), [locale]);
   const pinnedTitleDisplayMap = React.useMemo(() => {
@@ -1974,7 +2000,21 @@ export default function DashboardHome({
               Hello {user?.name?.split(' ')[0] || user?.email?.split('@')[0]}!
             </h2>
           </div>
-          <div className="flex gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            {hasMultipleTabs && (
+              <div className="inline-flex items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 shadow-sm">
+                <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">Tab</span>
+                <select
+                  value={String(activeTab || tabs[0] || "")}
+                  onChange={(e) => onTabChange && onTabChange(e.target.value)}
+                  className="rounded-md border border-slate-300 bg-white px-2 py-1 text-sm font-semibold text-slate-900"
+                >
+                  {tabs.map((t) => (
+                    <option key={`global-tab-${t}`} value={t}>{t}</option>
+                  ))}
+                </select>
+              </div>
+            )}
             <Link
               to="/workspace"
               className="inline-flex items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 shadow-sm transition-all duration-150 hover:-translate-y-px hover:border-slate-400 hover:bg-slate-50 hover:shadow focus:outline-none focus:ring-2 focus:ring-slate-200"
@@ -2166,10 +2206,10 @@ export default function DashboardHome({
                   <div className="mt-1 rounded-md border border-slate-200 bg-slate-50 p-2">
                     <input
                       type="text"
-                      value={String(kpiOverrides?.[card.id]?.labelCustom ? (kpiOverrides?.[card.id]?.label || "") : (card.label || ""))}
+                      value={String(kpiDraftOverrides?.[card.id]?.labelCustom ? (kpiDraftOverrides?.[card.id]?.label || "") : (kpiOverrides?.[card.id]?.label || card.label || ""))}
                       onChange={(e) => {
                         const value = e.target.value;
-                        setKpiOverrides((prev) => ({
+                        setKpiDraftOverrides((prev) => ({
                           ...prev,
                           [card.id]: { ...(prev?.[card.id] || {}), label: value, labelCustom: true },
                         }));
@@ -2193,10 +2233,10 @@ export default function DashboardHome({
                     )}
                     <div className="mt-1 grid grid-cols-2 gap-1">
                       <select
-                        value={String(kpiOverrides?.[card.id]?.column || "")}
+                        value={String(kpiDraftOverrides?.[card.id]?.column || "")}
                         onChange={(e) => {
                           const value = e.target.value;
-                          setKpiOverrides((prev) => ({
+                          setKpiDraftOverrides((prev) => ({
                             ...prev,
                             [card.id]: { ...(prev?.[card.id] || {}), column: value },
                           }));
@@ -2209,10 +2249,10 @@ export default function DashboardHome({
                         ))}
                       </select>
                       <select
-                        value={String(kpiOverrides?.[card.id]?.agg || "sum")}
+                        value={String(kpiDraftOverrides?.[card.id]?.agg || "sum")}
                         onChange={(e) => {
                           const value = e.target.value;
-                          setKpiOverrides((prev) => ({
+                          setKpiDraftOverrides((prev) => ({
                             ...prev,
                             [card.id]: { ...(prev?.[card.id] || {}), agg: value },
                           }));
@@ -2231,9 +2271,9 @@ export default function DashboardHome({
                       <div className="grid grid-cols-2 gap-1">
                         <KpiCalendarField
                           label="From"
-                          value={String(kpiOverrides?.[card.id]?.from || "")}
+                          value={String(kpiDraftOverrides?.[card.id]?.from || "")}
                           onChange={(nextValue) => {
-                            setKpiOverrides((prev) => ({
+                            setKpiDraftOverrides((prev) => ({
                               ...prev,
                               [card.id]: { ...(prev?.[card.id] || {}), from: nextValue },
                             }));
@@ -2241,9 +2281,9 @@ export default function DashboardHome({
                         />
                         <KpiCalendarField
                           label="To"
-                          value={String(kpiOverrides?.[card.id]?.to || "")}
+                          value={String(kpiDraftOverrides?.[card.id]?.to || "")}
                           onChange={(nextValue) => {
-                            setKpiOverrides((prev) => ({
+                            setKpiDraftOverrides((prev) => ({
                               ...prev,
                               [card.id]: { ...(prev?.[card.id] || {}), to: nextValue },
                             }));
@@ -2255,7 +2295,7 @@ export default function DashboardHome({
                           type="button"
                           className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
                           onClick={() => {
-                            setKpiOverrides((prev) => ({
+                            setKpiDraftOverrides((prev) => ({
                               ...prev,
                               [card.id]: { ...(prev?.[card.id] || {}), from: "", to: "" },
                             }));
@@ -2268,10 +2308,10 @@ export default function DashboardHome({
                     <div className="mt-1 grid grid-cols-2 gap-1">
                       <input
                         type="text"
-                        value={String(kpiOverrides?.[card.id]?.aiQuery || "")}
+                        value={String(kpiDraftOverrides?.[card.id]?.aiQuery || "")}
                         onChange={(e) => {
                           const value = e.target.value;
-                          setKpiOverrides((prev) => ({
+                          setKpiDraftOverrides((prev) => ({
                             ...prev,
                             [card.id]: { ...(prev?.[card.id] || {}), aiQuery: value },
                           }));
@@ -2281,10 +2321,10 @@ export default function DashboardHome({
                       />
                       <button
                         type="button"
-                        onClick={() => submitTicketPromptToAI(card.id, kpiOverrides?.[card.id]?.aiQuery || "")}
-                        disabled={!String(kpiOverrides?.[card.id]?.aiQuery || "").trim() || !!dashboardAiState.pendingByKey?.[`ticket:${card.id}`]}
+                        onClick={() => submitTicketPromptToAI(card.id, kpiDraftOverrides?.[card.id]?.aiQuery || "")}
+                        disabled={!String(kpiDraftOverrides?.[card.id]?.aiQuery || "").trim() || !!dashboardAiState.pendingByKey?.[`ticket:${card.id}`]}
                         className={`col-span-2 rounded-md border px-2 py-1 text-[11px] font-semibold ${
-                          (!String(kpiOverrides?.[card.id]?.aiQuery || "").trim() || !!dashboardAiState.pendingByKey?.[`ticket:${card.id}`])
+                          (!String(kpiDraftOverrides?.[card.id]?.aiQuery || "").trim() || !!dashboardAiState.pendingByKey?.[`ticket:${card.id}`])
                             ? "border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed"
                             : "border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100"
                         }`}
@@ -2301,10 +2341,10 @@ export default function DashboardHome({
                       <label className="col-span-2 inline-flex items-center gap-1.5 text-[10px] font-semibold text-slate-700">
                         <input
                           type="checkbox"
-                          checked={!!kpiOverrides?.[card.id]?.manualOverride}
+                          checked={!!kpiDraftOverrides?.[card.id]?.manualOverride}
                           onChange={(e) => {
                             const value = e.target.checked;
-                            setKpiOverrides((prev) => ({
+                            setKpiDraftOverrides((prev) => ({
                               ...prev,
                               [card.id]: { ...(prev?.[card.id] || {}), manualOverride: value },
                             }));
@@ -2313,6 +2353,27 @@ export default function DashboardHome({
                         />
                         <span>AI override calculated value</span>
                       </label>
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-1">
+                      <button
+                        type="button"
+                        className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+                        onClick={() => {
+                          setKpiDraftOverrides((prev) => ({ ...prev, [card.id]: { ...(kpiOverrides?.[card.id] || {}) } }));
+                        }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-md border border-emerald-300 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-100"
+                        onClick={() => {
+                          const next = { ...kpiOverrides, [card.id]: { ...(kpiDraftOverrides?.[card.id] || {}) } };
+                          persistKpiOverrides(next);
+                        }}
+                      >
+                        Save
+                      </button>
                     </div>
                   </div>
                 )}

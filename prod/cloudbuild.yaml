@@ -1,0 +1,77 @@
+substitutions:
+  _REGION: us-central1
+  _REPO: podcaster-portal
+  _BACKEND_SERVICE: podcaster-backend
+  _FRONTEND_SERVICE: podcaster-frontend
+  _DB_INSTANCE: podcaster-pg
+  _DB_NAME: portaldb
+  _DB_USER: portal
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - backend/Dockerfile
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/backend:$COMMIT_SHA
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/backend:$COMMIT_SHA
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - frontend/Dockerfile
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/frontend:$COMMIT_SHA
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/frontend:$COMMIT_SHA
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -lc
+      - |
+        set -euo pipefail
+        CLOUDSQL_CONN="$(gcloud sql instances describe "${_DB_INSTANCE}" --format='value(connectionName)')"
+        DB_PASSWORD="$(gcloud secrets versions access latest --secret=DB_PASSWORD)"
+        DATABASE_URL="postgresql://${_DB_USER}:${DB_PASSWORD}@/${_DB_NAME}?host=/cloudsql/${CLOUDSQL_CONN}"
+        gcloud run deploy "${_BACKEND_SERVICE}" \
+          --image "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/backend:$COMMIT_SHA" \
+          --region "${_REGION}" \
+          --platform managed \
+          --allow-unauthenticated \
+          --add-cloudsql-instances "${CLOUDSQL_CONN}" \
+          --set-env-vars "NODE_ENV=production,PORT=8080,OPENAI_MODEL=gpt-4o-mini,OPENAI_BASE_URL=https://api.openai.com/v1,OPENAI_TIMEOUT_MS=60000,CHAT_AUDIO_MAX_CHARS=8000,POSTGRES_USER=${_DB_USER},POSTGRES_DB=${_DB_NAME},DATABASE_URL=${DATABASE_URL}" \
+          --set-secrets "POSTGRES_PASSWORD=DB_PASSWORD:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,JWT_SECRET=JWT_SECRET:latest,JWT_ISSUER=JWT_ISSUER:latest,JWT_AUDIENCE=JWT_AUDIENCE:latest,SETTINGS_CRYPTO_KEY=SETTINGS_CRYPTO_KEY:latest"
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -lc
+      - |
+        set -euo pipefail
+        BACKEND_URL="$(gcloud run services describe "${_BACKEND_SERVICE}" --region "${_REGION}" --format='value(status.url)')"
+        gcloud run deploy "${_FRONTEND_SERVICE}" \
+          --image "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/frontend:$COMMIT_SHA" \
+          --region "${_REGION}" \
+          --platform managed \
+          --allow-unauthenticated \
+          --set-env-vars "VITE_API_URL=${BACKEND_URL}"
+        FRONTEND_URL="$(gcloud run services describe "${_FRONTEND_SERVICE}" --region "${_REGION}" --format='value(status.url)')"
+        gcloud run services update "${_BACKEND_SERVICE}" \
+          --region "${_REGION}" \
+          --set-env-vars "ALLOWED_ORIGINS=${FRONTEND_URL}"
+
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/backend:$COMMIT_SHA
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/frontend:$COMMIT_SHA
