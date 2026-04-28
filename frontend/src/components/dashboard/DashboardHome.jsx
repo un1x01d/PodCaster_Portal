@@ -595,11 +595,12 @@ export default function DashboardHome({
     window.dispatchEvent(new CustomEvent("dashboard:submit-chat", {
       detail: {
         sheetId: sheetKey,
+        locale,
         message: text,
-        meta: { ...(meta || {}), silent: true, pendingKey: key || null },
+        meta: { ...(meta || {}), source: "dashboard-ai", silent: true, pendingKey: key || null },
       },
     }));
-  }, [sheetId, dashboardAiState.pendingByKey, markAiPending]);
+  }, [sheetId, locale, dashboardAiState.pendingByKey, markAiPending]);
 
   const submitPinnedPromptToAI = React.useCallback((index) => {
     const idx = Number(index);
@@ -756,8 +757,8 @@ export default function DashboardHome({
                              (revenueMetricCol || "");
             const current = next[id] || {};
 
-            // If this card is new to this sheet structure, or if it contains an AI override, reset it
-            if (!current?.column || current?.aiOverride || current?.manualOverride) {
+            // Initialize only missing cards/columns; do not wipe active AI/manual overrides.
+            if (!current?.column) {
 
                 next[id] = { 
                     ...current, 
@@ -766,9 +767,9 @@ export default function DashboardHome({
                     label: current?.label || "",
                     subtitle: "",
                     aiQuery: current?.aiQuery || defaults.aiQuery || "",
-                    aiValue: "", 
-                    manualOverride: false, 
-                    aiOverride: false 
+                    aiValue: current?.aiValue || "",
+                    manualOverride: !!current?.manualOverride,
+                    aiOverride: !!current?.aiOverride
                 };
                 return;
             }
@@ -1215,6 +1216,7 @@ export default function DashboardHome({
       const detail = event?.detail || {};
       if (!detail?.sheetId || String(detail.sheetId) !== String(sheetId)) return;
       const meta = detail?.meta || {};
+      const isDashboardAiEvent = meta?.source === "dashboard-ai";
       const pendingKey = String(meta?.pendingKey || "").trim();
       if (pendingKey) {
         markAiPending(pendingKey, false);
@@ -1226,6 +1228,8 @@ export default function DashboardHome({
       const answer = String(detail.answer || "").trim();
       if (!answer) return;
       if (pendingKey) clearAiError(pendingKey);
+
+      if (!isDashboardAiEvent) return;
 
       // 1. KPI / Ticket Update
       if (meta.ticketId) {
@@ -1821,9 +1825,10 @@ export default function DashboardHome({
       });
     }
 
-    const manualOverride = !!override?.manualOverride;
     const aiParsed = Number(String(override?.aiValue ?? "").replace(/,/g, ""));
-    const forcedValue = (manualOverride && Number.isFinite(aiParsed)) ? aiParsed : null;
+    const hasValidAiOverride = Number.isFinite(aiParsed);
+    const manualOverride = !!override?.manualOverride && hasValidAiOverride;
+    const forcedValue = manualOverride ? aiParsed : null;
 
     // Recalculate subtitle if it's a category card
     let finalSubtitle = card.subtitle;

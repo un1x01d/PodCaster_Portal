@@ -296,6 +296,19 @@ export async function initDb() {
     VALUES ('onedrive_integration', '{"enabled": true}'::jsonb, CURRENT_TIMESTAMP)
     ON CONFLICT (key) DO NOTHING;
   `);
+  await pool.query(`
+    INSERT INTO app_settings (key, value, updated_at)
+    VALUES (
+      'chat_tts_settings',
+      '{
+        "voices": {"default":"nova","es":"shimmer","uk":"nova","ru":"nova"},
+        "models": {"en":"tts-1","default":"tts-1-hd"},
+        "speed": {"default":0.9}
+      }'::jsonb,
+      CURRENT_TIMESTAMP
+    )
+    ON CONFLICT (key) DO NOTHING;
+  `);
   const googleOauthSeed = {
     clientId: encryptSettingValue(""),
     clientSecret: encryptSettingValue(""),

@@ -6,12 +6,35 @@ const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10);
 const CHAT_AUDIO_MAX_CHARS = Number.parseInt(process.env.CHAT_AUDIO_MAX_CHARS || "8000", 10);
+const CHAT_TTS_SETTINGS_KEY = "chat_tts_settings";
+const CHAT_TTS_DEFAULTS = {
+  voices: { default: "nova", es: "shimmer", uk: "nova", ru: "nova" },
+  models: { en: "tts-1", default: "tts-1-hd" },
+  speed: { default: 0.9 },
+};
 
 let SEMANTIC_CACHE = null;
 let RATIO_CACHE = null;
 let CACHE_TS = 0;
 
 const CHAT_SAMPLE_ROWS = 600;
+
+async function loadChatTtsSettings() {
+  try {
+    const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [CHAT_TTS_SETTINGS_KEY]);
+    const raw = rows?.[0]?.value;
+    const dbCfg = raw && typeof raw === "object" ? raw : {};
+    return {
+      ...CHAT_TTS_DEFAULTS,
+      ...dbCfg,
+      voices: { ...(CHAT_TTS_DEFAULTS.voices || {}), ...(dbCfg.voices || {}) },
+      models: { ...(CHAT_TTS_DEFAULTS.models || {}), ...(dbCfg.models || {}) },
+      speed: { ...(CHAT_TTS_DEFAULTS.speed || {}), ...(dbCfg.speed || {}) },
+    };
+  } catch (e) {
+    return CHAT_TTS_DEFAULTS;
+  }
+}
 
 function toNum(v) {
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
@@ -801,6 +824,9 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
     "User Input: You may receive queries in ANY language (English, Russian, Ukrainian, Spanish, etc.).",
     "Conversational Context: Use the 'conversation_history' to understand follow-up questions. If a user asks 'what about 2022?', use previous context to know they mean 'Total Revenue' or whatever was previously discussed.",
     "Internal Mapping: Regardless of the query language, map the user's concepts to the 'available_columns'.",
+    "Column matching rule: You must first map requested business meaning to the closest available column from available_columns/sample_rows.",
+    "Column matching rule: If no close semantic match exists, do NOT guess and do NOT invent a pseudo-column.",
+    "Column matching rule: In that case set operation='none' and answer with a clear 'cannot find a close matching column' message in output_locale.",
     "Return ONLY valid JSON.",
     "Language: Always provide 'answer' in the requested output_locale, regardless of the user's message language.",
     "Internal Logic: Map user terms to available_columns for operations, but keep final explanation in output_locale.",
@@ -992,6 +1018,11 @@ function expandLargeIntForEnglishSpeech(rawDigits = "") {
 function naturalizeNumbersForTTS(text = "", locale = "en") {
   let out = String(text || "");
   const lang = (locale || "en").split("-")[0].toLowerCase();
+  const roundCurrencyToWhole = (priceRaw, centsRaw) => {
+    const units = parseInt(String(priceRaw || "").replace(/,/g, ""), 10) || 0;
+    const cents = parseInt(String(centsRaw || "").padEnd(2, "0").slice(0, 2), 10) || 0;
+    return cents >= 50 ? units + 1 : units;
+  };
 
   // 1. Strip technical noise and formatting
   out = out.replace(/[•*]/g, ""); // bullets
@@ -1002,8 +1033,8 @@ function naturalizeNumbersForTTS(text = "", locale = "en") {
   if (lang === "uk") {
     // Normalize currency without cents for cleaner speech output.
     out = out.replace(/\$([\d,]+)\.(\d{1,2})\b/g, (m, price, centsRaw) => {
-      const p = String(price || "").replace(/,/g, "");
-      return `${p} доларів`;
+      const rounded = roundCurrencyToWhole(price, centsRaw);
+      return `${rounded} доларів`;
     });
     // Drop decimal tails in spoken output (e.g. 1,927,022.22 -> 1,927,022)
     out = out.replace(/(\d[\d,\s]*)[.,]\d{1,2}\b/g, "$1");
@@ -1016,8 +1047,8 @@ function naturalizeNumbersForTTS(text = "", locale = "en") {
   } else if (lang === "ru") {
     // Normalize currency without cents for cleaner speech output.
     out = out.replace(/\$([\d,]+)\.(\d{1,2})\b/g, (m, price, centsRaw) => {
-      const p = String(price || "").replace(/,/g, "");
-      return `${p} долларов`;
+      const rounded = roundCurrencyToWhole(price, centsRaw);
+      return `${rounded} долларов`;
     });
     // Drop decimal tails in spoken output (e.g. 1,927,022.22 -> 1,927,022)
     out = out.replace(/(\d[\d,\s]*)[.,]\d{1,2}\b/g, "$1");
@@ -1032,9 +1063,9 @@ function naturalizeNumbersForTTS(text = "", locale = "en") {
     out = out.replace(/\bvs\b/gi, "versus");
     // Handle currency with cents: $1,234.56 or $1234.56
     out = out.replace(/\$([\d,]+)\.(\d{2})\b/g, (m, price, cents) => {
-        const p = price.replace(/,/g, "");
-        const spoken = expandLargeIntForEnglishSpeech(p);
-        return `${spoken} dollars and ${parseInt(cents, 10)} cents`;
+        const rounded = roundCurrencyToWhole(price, cents);
+        const spoken = expandLargeIntForEnglishSpeech(String(rounded));
+        return `${spoken} dollars`;
     });
     // Handle currency without cents: $1,234
     out = out.replace(/\$([\d,.]+)\b/g, (m, price) => {
@@ -1166,7 +1197,6 @@ function expandFinancialTextPhonetically(text = "", lang = "ru") {
     // 4. Handle all other standalone numbers (except years)
     out = out.replace(/\b(\d{1,3}|\d{5,})\b/g, (m, num) => {
         const n = parseInt(num, 10);
-        if (n > 2000 && n < 2100) return m; // leave years alone
         return slavicNumberToWords(n, lang, "m");
     });
 
@@ -1184,19 +1214,20 @@ export async function getChatAudio(req, res) {
   // Strip Markdown markers before TTS
   text = text.replace(/\*/g, "");
 
-  let voice = "nova"; 
+  const ttsCfg = await loadChatTtsSettings();
   const lang = (locale || "en").split("-")[0].toLowerCase();
-  if (lang === "es") voice = "shimmer"; 
-  if (lang === "uk") voice = "nova";
-  if (lang === "ru") voice = "nova";
+  const voice = String(ttsCfg?.voices?.[lang] || ttsCfg?.voices?.default || "nova");
+  const model = String(lang === "en"
+    ? (ttsCfg?.models?.en || "tts-1")
+    : (ttsCfg?.models?.[lang] || ttsCfg?.models?.default || "tts-1-hd"));
+  const speedNum = Number(ttsCfg?.speed?.[lang] ?? ttsCfg?.speed?.default ?? 0.9);
+  const speed = Number.isFinite(speedNum) && speedNum > 0 ? speedNum : 0.9;
   
   let cleanedText = naturalizeNumbersForTTS(text, locale);
   
   if (lang === "uk" || lang === "ru") {
       // Convert all remaining digits to Cyrillic words to force native accent
       cleanedText = expandFinancialTextPhonetically(cleanedText, lang);
-      // Absolute final safety: remove ALL Latin characters so TTS engine can't switch to English accent
-      cleanedText = cleanedText.replace(/[a-zA-Z]/g, "");
   }
 
   const controller = new AbortController();
@@ -1208,10 +1239,10 @@ export async function getChatAudio(req, res) {
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       signal: controller.signal,
       body: JSON.stringify({ 
-        model: lang === "en" ? "tts-1" : "tts-1-hd", 
+        model,
         input: cleanedText, 
         voice,
-        speed: 0.9
+        speed
       }),
     });
     if (!response.ok) {
@@ -1306,6 +1337,26 @@ export async function chatQuery(req, res) {
     let resolvedOperation = (ai?.operation || "none").toLowerCase();
     let resolvedTarget = await resolveColumn(aiHeaders, ai?.target_column, sampleRows);
     let resolvedGroupBy = await resolveColumn(aiHeaders, ai?.group_by, sampleRows);
+
+    const opNeedsTarget = new Set(["sum", "avg", "max", "min", "top_n"]);
+    if (opNeedsTarget.has(resolvedOperation) && !resolvedTarget) {
+      const notFoundText = isEnglishLocale(locale)
+        ? "I can't find a close matching column for this metric in the current data."
+        : (
+          (await translateDashboardItems({
+            locale,
+            items: [{ key: "not_found", value: "I can't find a close matching column for this metric in the current data." }],
+            context: "chat-answer",
+          }))?.not_found
+          || "I can't find a close matching column for this metric in the current data."
+        );
+      return res.json({
+        answer: formatAnswerWithBullets(String(notFoundText || "").trim()),
+        actions: { reset_filters: false, filters: [], chart: null },
+        preview_rows: [],
+        meta: { operation: "none", locale, selectedTab, resolvedTarget: null, resolvedGroupBy },
+      });
+    }
     
     // --- CROSS-TALK SYNTHESIS ---
     if (ai?.cross_talk && Array.isArray(ai.cross_targets) && ai.cross_targets.length >= 2) {
@@ -1395,6 +1446,18 @@ export async function chatQuery(req, res) {
         } else {
             answer = exec.answer;
         }
+    }
+
+    if (!isEnglishLocale(locale) && answer) {
+      const translated = await translateDashboardItems({
+        locale,
+        items: [{ key: "chat_answer", value: String(answer) }],
+        context: "chat-answer",
+      });
+      const translatedText = translated?.chat_answer;
+      if (typeof translatedText === "string" && translatedText.trim()) {
+        answer = translatedText.trim();
+      }
     }
 
     answer = formatAnswerWithBullets(answer);

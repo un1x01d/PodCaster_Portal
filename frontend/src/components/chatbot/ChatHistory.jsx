@@ -229,16 +229,10 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
         window._stopPlayback = false;
         setSpeakingIndex(index);
 
-        // Prefer a minimal browser-native path for Slavic locales.
-        if (localeBase === "ru" || localeBase === "uk") {
-            const spoken = fallbackSpeak(text, index, { slavicSafe: true });
-            if (spoken) return;
-        }
-
         try {
             const played = await streamTextToAudio(text);
             if (played === false) {
-                fallbackSpeak(text, index);
+                fallbackSpeak(text, index, (localeBase === "ru" || localeBase === "uk") ? { slavicSafe: true } : {});
                 return;
             }
             if (!window._stopPlayback) setSpeakingIndex(null);

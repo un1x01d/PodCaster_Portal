@@ -289,6 +289,7 @@ export function useChatbotLogic({
       if (!payload?.sheetId || String(payload.sheetId) !== String(current.sheetId)) return;
       const message = String(payload?.message || "").trim();
       if (!message) return;
+      const requestLocale = String(payload?.locale || current.locale || "en");
       const meta = payload?.meta || null;
       
       if (meta?.silent) {
@@ -300,7 +301,7 @@ export function useChatbotLogic({
               message,
               activeFilters: serializeActiveFilters(current.activeFilters),
               conversationHistory: buildConversationHistory(current.messages),
-              locale: current.locale,
+              locale: requestLocale,
             });
             const result = res?.data || {};
             const answer = typeof result.answer === "string" && result.answer.trim()
