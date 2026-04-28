@@ -99,14 +99,14 @@ export default function SearchableSelect({
                                         `}
                                     title={o.label}
                                     style={String(o.value) === String(value) ? { ...optionStyle, ...selectedOptionStyle } : optionStyle}
+                                    onClick={() => {
+                                        onChange({ target: { value: o.value } });
+                                        setOpen(false);
+                                    }}
                                 >
                                     <div
                                         className={`flex-1 min-w-0 truncate mr-2 text-xs text-slate-800 ${optionTextClassName}`}
                                         style={optionTextStyle}
-                                        onClick={() => {
-                                            onChange({ target: { value: o.value } });
-                                            setOpen(false);
-                                        }}
                                     >
                                         {o.label}
                                     </div>
