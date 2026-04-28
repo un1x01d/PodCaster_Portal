@@ -8,6 +8,10 @@ dist
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+*.log
+transfer_bundle_*/
+transfer_bundle_*.tar.gz
+backend/uploads/
 .idea
 *.suo
 *.ntvs*

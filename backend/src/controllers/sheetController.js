@@ -65,6 +65,51 @@ function sanitizeDisplayName(value) {
     return text.slice(0, 120);
 }
 
+function sanitizeReportSourceName(value) {
+    return String(value || "").trim().replace(/\s+/g, " ").slice(0, 160);
+}
+
+export function buildHeaderDiff(previousHeaders = [], nextHeaders = []) {
+    const previous = normalizeStringArray(previousHeaders);
+    const next = normalizeStringArray(nextHeaders);
+    const previousSet = new Set(previous);
+    const nextSet = new Set(next);
+    return {
+        previous,
+        next,
+        added: next.filter((h) => !previousSet.has(h)),
+        removed: previous.filter((h) => !nextSet.has(h)),
+        unchanged: next.filter((h) => previousSet.has(h)),
+    };
+}
+
+function getSchemaStatus(diff) {
+    if (!diff.previous.length) return "new";
+    if (diff.added.length || diff.removed.length) return "changed";
+    return "matched";
+}
+
+function getExplicitViewColumns(config, fallbackHeaders = []) {
+    const parsed = parseJsonMaybe(config, {}) || {};
+    const explicit = normalizeStringArray(
+        parsed.visibleColumns ?? parsed.columns ?? parsed.allowedColumns ?? parsed.allowed_columns
+    );
+    if (explicit.length > 0) return explicit;
+    return normalizeStringArray(fallbackHeaders);
+}
+
+function freezeViewConfigForRefresh(config, previousHeaders = [], nextHeaders = []) {
+    const parsed = parseJsonMaybe(config, {}) || {};
+    const previous = normalizeStringArray(previousHeaders);
+    const next = normalizeStringArray(nextHeaders);
+    const nextSet = new Set(next);
+    const explicit = getExplicitViewColumns(parsed, previous);
+    return {
+        ...parsed,
+        visibleColumns: explicit.filter((h) => nextSet.has(h)),
+    };
+}
+
 function buildRowFilterWhereClause(rowFiltersList = [], startParamIndex = 1) {
     const normalized = Array.isArray(rowFiltersList) ? rowFiltersList : [];
     const hasAllowAll = normalized.some((f) => !f || Object.keys(f).length === 0);
@@ -87,6 +132,38 @@ function buildRowFilterWhereClause(rowFiltersList = [], startParamIndex = 1) {
     });
     if (!groups.length) return { sql: " AND 1 = 0", params };
     return { sql: ` AND (${groups.join(" OR ")})`, params };
+}
+
+function parseJsonMaybe(value, fallback) {
+    if (typeof value !== "string") return value ?? fallback;
+    try {
+        return JSON.parse(value);
+    } catch {
+        return fallback;
+    }
+}
+
+function normalizeStringArray(value) {
+    const parsed = parseJsonMaybe(value, value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((v) => String(v || "").trim()).filter(Boolean);
+}
+
+export function resolveViewColumnAllowlist(viewConfig, sheetHeaders = []) {
+    const config = parseJsonMaybe(viewConfig, {}) || {};
+    const explicitVisible = normalizeStringArray(
+        config.visibleColumns ?? config.columns ?? config.allowedColumns ?? config.allowed_columns
+    );
+    if (explicitVisible.length > 0) return explicitVisible;
+
+    const hiddenColumns = normalizeStringArray(config.hiddenColumns ?? config.hidden_columns);
+    const headers = normalizeStringArray(sheetHeaders);
+    if (hiddenColumns.length > 0 && headers.length > 0) {
+        const hidden = new Set(hiddenColumns);
+        return headers.filter((h) => !hidden.has(h));
+    }
+
+    return null;
 }
 
 export function canUploadSheetsByRole(role) {
@@ -125,6 +202,95 @@ async function canWriteToFolder(client, user, folderId) {
         [folderId, userId]
     );
     return res.rows.length > 0;
+}
+
+async function resolveReportSourceForUpload(client, { reportSourceId, reportSourceName, folderId, user }) {
+    const sourceId = Number.parseInt(reportSourceId, 10);
+    if (Number.isInteger(sourceId) && sourceId > 0) {
+        const source = await client.query(
+            `SELECT rs.id, rs.name, rs.folder_id, rs.current_sheet_id, s.headers AS current_headers
+             FROM report_sources rs
+             LEFT JOIN sheets s ON s.id = rs.current_sheet_id
+             WHERE rs.id = $1`,
+            [sourceId]
+        );
+        if (!source.rows.length) {
+            const err = new Error("report_source_not_found");
+            err.statusCode = 404;
+            throw err;
+        }
+        const row = source.rows[0];
+        if (Number.isInteger(row.folder_id)) {
+            const canWrite = await canWriteToFolder(client, user, row.folder_id);
+            if (!canWrite) {
+                const err = new Error("report_source_forbidden");
+                err.statusCode = 403;
+                throw err;
+            }
+        }
+        return {
+            id: row.id,
+            name: row.name,
+            folderId: row.folder_id ?? null,
+            previousSheetId: row.current_sheet_id || null,
+            previousHeaders: typeof row.current_headers === "string" ? JSON.parse(row.current_headers) : (row.current_headers || []),
+            isNew: false,
+        };
+    }
+
+    const name = sanitizeReportSourceName(reportSourceName);
+    if (!name) {
+        const err = new Error("report_source_name_required");
+        err.statusCode = 400;
+        throw err;
+    }
+    const inserted = await client.query(
+        `INSERT INTO report_sources (name, folder_id, created_by, is_inferred, updated_at)
+         VALUES ($1, $2, $3, FALSE, CURRENT_TIMESTAMP)
+         RETURNING id, name, folder_id`,
+        [name, folderId, user?.id || null]
+    );
+    return {
+        id: inserted.rows[0].id,
+        name: inserted.rows[0].name,
+        folderId: inserted.rows[0].folder_id ?? null,
+        previousSheetId: null,
+        previousHeaders: [],
+        isNew: true,
+    };
+}
+
+async function carryForwardSourceSecurity(client, { previousSheetId, nextSheetId, previousHeaders, nextHeaders }) {
+    if (!previousSheetId || !nextSheetId) return;
+    await client.query(
+        `INSERT INTO permissions (user_id, sheet_id, allowed_columns, row_filters)
+         SELECT user_id, $2, allowed_columns, row_filters
+           FROM permissions
+          WHERE sheet_id = $1
+         ON CONFLICT (sheet_id, user_id) DO UPDATE
+           SET allowed_columns = EXCLUDED.allowed_columns,
+               row_filters = EXCLUDED.row_filters`,
+        [previousSheetId, nextSheetId]
+    );
+    await client.query(
+        `INSERT INTO group_permissions (group_id, sheet_id, allowed_columns, row_filters)
+         SELECT group_id, $2, allowed_columns, row_filters
+           FROM group_permissions
+          WHERE sheet_id = $1
+         ON CONFLICT (sheet_id, group_id) DO UPDATE
+           SET allowed_columns = EXCLUDED.allowed_columns,
+               row_filters = EXCLUDED.row_filters`,
+        [previousSheetId, nextSheetId]
+    );
+
+    const views = await client.query("SELECT id, config FROM views WHERE sheet_id = $1", [previousSheetId]);
+    for (const view of views.rows) {
+        const config = freezeViewConfigForRefresh(view.config, previousHeaders, nextHeaders);
+        await client.query(
+            "UPDATE views SET sheet_id = $1, config = $2 WHERE id = $3",
+            [nextSheetId, JSON.stringify(config), view.id]
+        );
+    }
 }
 
 // Helper to determine active sheet versioning
@@ -216,10 +382,12 @@ export async function uploadSheet(req, res) {
         const originalName = req.file.originalname || "uploaded.xlsx";
         const displayName = sanitizeDisplayName(req.body?.display_name);
         const rawFolderId = req.body?.folderId ?? req.body?.folder_id;
+        const rawReportSourceId = req.body?.reportSourceId ?? req.body?.report_source_id;
+        const rawReportSourceName = req.body?.reportSourceName ?? req.body?.report_source_name;
         const folderId = rawFolderId ? parseInt(rawFolderId, 10) : null;
         if (!displayName) return res.status(400).json({ error: "display_name_required" });
 
-        console.log(`[upload] name=${originalName} size=${req.file.size} folderId=${folderId ?? "—"}`);
+        console.log(`[upload] name=${originalName} size=${req.file.size} folderId=${folderId ?? "—"} reportSourceId=${rawReportSourceId || "—"}`);
 
         // Read file into buffer and delete temporary file immediately to free disk space
         const fileBuffer = await fs.promises.readFile(filePath);
@@ -255,8 +423,18 @@ export async function uploadSheet(req, res) {
 
             const sheetId = `${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
 
-            // Folder Resolution & Group Limit Check
+            // Report Source / Folder Resolution & Group Limit Check
             let assignedFolderId = null;
+            let reportSource = null;
+            if (rawReportSourceId) {
+                reportSource = await resolveReportSourceForUpload(client, {
+                    reportSourceId: rawReportSourceId,
+                    reportSourceName: null,
+                    folderId: null,
+                    user: req.user,
+                });
+                assignedFolderId = Number.isInteger(reportSource.folderId) ? reportSource.folderId : null;
+            }
             if (Number.isInteger(folderId)) {
                 const canWrite = await canWriteToFolder(client, req.user, folderId);
                 if (!canWrite) {
@@ -284,6 +462,30 @@ export async function uploadSheet(req, res) {
                             error: "file_too_large", 
                             message: `File exceeds group limit of ${limitMb}MB`,
                             maxMB: limitMb 
+                        });
+                    }
+                }
+            } else if (Number.isInteger(assignedFolderId)) {
+                const f = await client.query(`
+                    SELECT
+                      f.id,
+                      COALESCE(MIN(g.max_file_size_mb), 100) AS max_file_size_mb
+                    FROM folders f
+                    LEFT JOIN folder_groups fg ON fg.folder_id = f.id
+                    LEFT JOIN groups g ON g.id = fg.group_id
+                    WHERE f.id = $1
+                    GROUP BY f.id
+                    LIMIT 1
+                `, [assignedFolderId]);
+
+                if (f.rows.length) {
+                    const limitMb = f.rows[0].max_file_size_mb || 100;
+                    if (req.file.size > limitMb * 1024 * 1024) {
+                        await client.query('ROLLBACK');
+                        return res.status(413).json({
+                            error: "file_too_large",
+                            message: `File exceeds group limit of ${limitMb}MB`,
+                            maxMB: limitMb
                         });
                     }
                 }
@@ -316,14 +518,30 @@ export async function uploadSheet(req, res) {
                 });
             }
 
+            if (!reportSource) {
+                reportSource = await resolveReportSourceForUpload(client, {
+                    reportSourceId: null,
+                    reportSourceName: rawReportSourceName,
+                    folderId: assignedFolderId,
+                    user: req.user,
+                });
+            }
+            const headerDiff = buildHeaderDiff(reportSource.previousHeaders, headers);
+            const schemaStatus = getSchemaStatus(headerDiff);
+            const versionRes = await client.query(
+                "SELECT COALESCE(MAX(import_version), 0)::int + 1 AS next_version FROM report_source_imports WHERE report_source_id = $1",
+                [reportSource.id]
+            );
+            const sourceVersion = Number(versionRes.rows?.[0]?.next_version || 1);
+
             // Deactivate other sheets (atomic within transaction)
             await client.query("UPDATE sheets SET active = FALSE WHERE active = TRUE");
 
             // Insert Sheet Record
             await client.query(
-                `INSERT INTO sheets (id, headers, active, filename, display_name, folder_id, stored_path, tab_name, tabs) 
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-                [sheetId, JSON.stringify(headers), true, versionedFilename, displayName, assignedFolderId, null, firstTabName, JSON.stringify(sheetNames)]
+                `INSERT INTO sheets (id, headers, active, filename, display_name, folder_id, stored_path, tab_name, tabs, report_source_id, source_version) 
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+                [sheetId, JSON.stringify(headers), true, versionedFilename, displayName, assignedFolderId, null, firstTabName, JSON.stringify(sheetNames), reportSource.id, sourceVersion]
             );
 
             // Insert Rows in Chunks per Tab
@@ -366,9 +584,36 @@ export async function uploadSheet(req, res) {
                 }
             }
 
+            await carryForwardSourceSecurity(client, {
+                previousSheetId: reportSource.previousSheetId,
+                nextSheetId: sheetId,
+                previousHeaders: reportSource.previousHeaders,
+                nextHeaders: headers,
+            });
+            await client.query(
+                `INSERT INTO report_source_imports
+                   (report_source_id, sheet_id, import_version, original_filename, imported_by, schema_status, schema_diff)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                [reportSource.id, sheetId, sourceVersion, originalName, req.user?.id || null, schemaStatus, JSON.stringify(headerDiff)]
+            );
+            await client.query(
+                `UPDATE report_sources
+                    SET current_sheet_id = $1,
+                        folder_id = COALESCE(folder_id, $2),
+                        updated_at = CURRENT_TIMESTAMP
+                  WHERE id = $3`,
+                [sheetId, assignedFolderId, reportSource.id]
+            );
+
             await client.query('COMMIT');
             res.json({
                 sheetId,
+                reportSourceId: reportSource.id,
+                report_source_id: reportSource.id,
+                report_source_name: reportSource.name,
+                source_version: sourceVersion,
+                schema_status: schemaStatus,
+                schema_diff: headerDiff,
                 headers,
                 rows: totalRows,
                 active: true,
@@ -389,6 +634,9 @@ export async function uploadSheet(req, res) {
         console.error("upload failed:", e);
         if (e?.code === "LIMIT_FILE_SIZE") {
             return res.status(413).json({ error: "file_too_large", maxMB: 100 });
+        }
+        if (e?.statusCode) {
+            return res.status(e.statusCode).json({ error: e.message || "upload_failed" });
         }
         res.status(500).json({ error: "upload_failed", message: e.message || "An unexpected error occurred during upload." });
     } finally {
@@ -479,12 +727,22 @@ export async function getUniqueValues(req, res) {
 export async function getActiveSheet(req, res) {
     let s = [];
     if (req.user.role === "admin") {
-        s = await query("SELECT id, headers, filename, display_name, totals_column FROM sheets WHERE active = TRUE LIMIT 1", []);
+        s = await query(
+            `SELECT s.id, s.headers, s.filename, s.display_name, s.totals_column,
+                    s.report_source_id, s.source_version, rs.name AS report_source_name
+             FROM sheets s
+             LEFT JOIN report_sources rs ON rs.id = s.report_source_id
+             WHERE s.active = TRUE
+             LIMIT 1`,
+            []
+        );
     } else {
         s = await query(
-            `SELECT DISTINCT s.id, s.headers, s.filename, s.display_name, s.totals_column
+            `SELECT DISTINCT s.id, s.headers, s.filename, s.display_name, s.totals_column,
+                    s.report_source_id, s.source_version, rs.name AS report_source_name
              FROM sheets s
              LEFT JOIN folders f ON f.id = s.folder_id
+             LEFT JOIN report_sources rs ON rs.id = s.report_source_id
              WHERE s.active = TRUE
                AND (
                  (
@@ -509,6 +767,9 @@ export async function getActiveSheet(req, res) {
         headers: s[0].headers,
         filename: s[0].filename,
         display_name: s[0].display_name || null,
+        report_source_id: s[0].report_source_id || null,
+        report_source_name: s[0].report_source_name || null,
+        source_version: s[0].source_version || null,
         totals_column: s[0].totals_column || null
     });
 }
@@ -523,9 +784,12 @@ export async function listMySheets(req, res) {
 
     if (req.user.role === "admin") {
         const rows = await query(
-            `SELECT s.id, s.filename, s.display_name, s.uploaded_at, s.folder_id, f.name AS folder_name, s.active
+            `SELECT s.id, s.filename, s.display_name, s.uploaded_at, s.folder_id, f.name AS folder_name,
+                    s.active, s.report_source_id, s.source_version, rs.name AS report_source_name,
+                    (rs.current_sheet_id = s.id) AS is_current_source_version
              FROM sheets s
              LEFT JOIN folders f ON f.id = s.folder_id
+             LEFT JOIN report_sources rs ON rs.id = s.report_source_id
              ORDER BY s.uploaded_at DESC${suffix}`,
             paginationParams
         );
@@ -533,9 +797,12 @@ export async function listMySheets(req, res) {
     }
 
     const rows = await query(
-        `SELECT DISTINCT s.id, s.filename, s.display_name, s.uploaded_at, s.folder_id, f.name AS folder_name, s.active
+        `SELECT DISTINCT s.id, s.filename, s.display_name, s.uploaded_at, s.folder_id, f.name AS folder_name,
+                s.active, s.report_source_id, s.source_version, rs.name AS report_source_name,
+                (rs.current_sheet_id = s.id) AS is_current_source_version
          FROM sheets s
          LEFT JOIN folders f ON f.id = s.folder_id
+         LEFT JOIN report_sources rs ON rs.id = s.report_source_id
          WHERE (
              (
                EXISTS (
@@ -562,11 +829,100 @@ export async function listAllSheets(req, res) {
     const pagination = parsePagination(req.query, { maxLimit: MAX_SHEET_DATA_LIMIT });
     if (pagination.error) return res.status(400).json({ error: pagination.error });
     const rows = await query(
-        `SELECT s.id, s.filename, s.display_name, s.uploaded_at, s.folder_id, f.name AS folder_name, s.active
+        `SELECT s.id, s.filename, s.display_name, s.uploaded_at, s.folder_id, f.name AS folder_name,
+                s.active, s.report_source_id, s.source_version, rs.name AS report_source_name,
+                (rs.current_sheet_id = s.id) AS is_current_source_version
          FROM sheets s
          LEFT JOIN folders f ON f.id = s.folder_id
+         LEFT JOIN report_sources rs ON rs.id = s.report_source_id
          ORDER BY s.uploaded_at DESC${pagination.hasPagination ? " LIMIT $1 OFFSET $2" : ""}`,
         pagination.hasPagination ? [pagination.limit, pagination.offset] : []
+    );
+    res.json(rows);
+}
+
+export async function listReportSources(req, res) {
+    const pagination = parsePagination(req.query, { maxLimit: MAX_SHEET_DATA_LIMIT });
+    if (pagination.error) return res.status(400).json({ error: pagination.error });
+
+    const limitSql = pagination.hasPagination ? " LIMIT $1 OFFSET $2" : "";
+    const limitParams = pagination.hasPagination ? [pagination.limit, pagination.offset] : [];
+
+    if (req.user.role === "admin") {
+        const rows = await query(
+            `SELECT rs.id, rs.name, rs.folder_id, f.name AS folder_name, rs.current_sheet_id, rs.is_inferred,
+                    rs.created_at, rs.updated_at,
+                    COALESCE(import_counts.import_count, 0)::int AS import_count
+             FROM report_sources rs
+             LEFT JOIN folders f ON f.id = rs.folder_id
+             LEFT JOIN (
+               SELECT report_source_id, COUNT(*) AS import_count
+               FROM report_source_imports
+               GROUP BY report_source_id
+             ) import_counts ON import_counts.report_source_id = rs.id
+             ORDER BY rs.updated_at DESC${limitSql}`,
+            limitParams
+        );
+        return res.json(rows);
+    }
+
+    const rows = await query(
+        `SELECT DISTINCT rs.id, rs.name, rs.folder_id, f.name AS folder_name, rs.current_sheet_id, rs.is_inferred,
+                rs.created_at, rs.updated_at,
+                COALESCE(import_counts.import_count, 0)::int AS import_count
+         FROM report_sources rs
+         JOIN sheets s ON s.id = rs.current_sheet_id
+         LEFT JOIN folders f ON f.id = rs.folder_id
+         LEFT JOIN (
+           SELECT report_source_id, COUNT(*) AS import_count
+           FROM report_source_imports
+           GROUP BY report_source_id
+         ) import_counts ON import_counts.report_source_id = rs.id
+         WHERE (
+           (
+             EXISTS (
+               SELECT 1
+               FROM folder_groups fg
+               JOIN user_groups ug ON ug.group_id = fg.group_id
+               WHERE fg.folder_id = f.id AND ug.user_id = $1
+             )
+             OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $1)
+           )
+           OR s.id IN (SELECT sheet_id FROM permissions WHERE user_id = $1)
+           OR s.id IN (
+             SELECT sheet_id
+             FROM group_permissions
+             WHERE group_id IN (SELECT group_id FROM user_groups WHERE user_id = $1)
+           )
+         )
+         ORDER BY rs.updated_at DESC${pagination.hasPagination ? " LIMIT $2 OFFSET $3" : ""}`,
+        pagination.hasPagination ? [req.user.id, pagination.limit, pagination.offset] : [req.user.id]
+    );
+    res.json(rows);
+}
+
+export async function getReportSourceImports(req, res) {
+    const sourceId = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(sourceId) || sourceId <= 0) {
+        return res.status(400).json({ error: "invalid_report_source_id" });
+    }
+    const [source] = await query("SELECT current_sheet_id FROM report_sources WHERE id = $1", [sourceId]);
+    if (!source) return res.status(404).json({ error: "not_found" });
+    if (source.current_sheet_id) {
+        const hasAccess = await checkSheetAccess(source.current_sheet_id, req.user);
+        if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
+    } else if (req.user.role !== "admin") {
+        return res.status(403).json({ error: "Forbidden" });
+    }
+    const rows = await query(
+        `SELECT rsi.id, rsi.report_source_id, rsi.sheet_id, rsi.import_version,
+                rsi.original_filename, rsi.schema_status, rsi.schema_diff, rsi.created_at,
+                s.display_name, s.filename, s.uploaded_at
+         FROM report_source_imports rsi
+         JOIN sheets s ON s.id = rsi.sheet_id
+         WHERE rsi.report_source_id = $1
+         ORDER BY rsi.import_version DESC`,
+        [sourceId]
     );
     res.json(rows);
 }
@@ -574,7 +930,14 @@ export async function listAllSheets(req, res) {
 export async function getSheetDetails(req, res) {
     const hasAccess = await checkSheetAccess(req.params.id, req.user);
     if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
-    const s = await query("SELECT id, headers, active, filename, display_name, totals_column FROM sheets WHERE id=$1", [req.params.id]);
+    const s = await query(
+        `SELECT s.id, s.headers, s.active, s.filename, s.display_name, s.totals_column,
+                s.report_source_id, s.source_version, rs.name AS report_source_name
+         FROM sheets s
+         LEFT JOIN report_sources rs ON rs.id = s.report_source_id
+         WHERE s.id=$1`,
+        [req.params.id]
+    );
     if (!s.length) return res.status(404).json({ error: "not_found" });
 
     // Enforce allowed_columns on the headers array returned
@@ -656,11 +1019,15 @@ export async function getSheetData(req, res) {
     let rowFiltersList = [];
     let hasFullAccess = false;
     let viewConfig = null;
+    let sheetHeaders = [];
+    let forceColumnProjection = false;
 
     // 1. Resolve Locked View if provided
     if (viewId) {
         const [view] = await query(
-            `SELECT v.config FROM views v
+            `SELECT v.config, s.headers
+             FROM views v
+             JOIN sheets s ON s.id = v.sheet_id
              WHERE v.id = $1 AND v.sheet_id = $2
                AND (
                  $3 = 'admin'
@@ -677,6 +1044,7 @@ export async function getSheetData(req, res) {
             return res.status(403).json({ error: "Forbidden", message: "You do not have permission to access this view." });
         }
         viewConfig = typeof view.config === 'string' ? JSON.parse(view.config) : view.config;
+        sheetHeaders = typeof view.headers === 'string' ? JSON.parse(view.headers) : (view.headers || []);
     }
 
     // 2. Resolve Base Permissions
@@ -737,13 +1105,19 @@ export async function getSheetData(req, res) {
 
     // 3. Merge View Restrictions with Base Permissions
     if (viewConfig) {
-        // If view has restricted columns, further restrict validCols
-        if (Array.isArray(viewConfig.visibleColumns) && viewConfig.visibleColumns.length > 0) {
+        const viewColumnAllowlist = resolveViewColumnAllowlist(viewConfig, sheetHeaders);
+        // If view has restricted columns, enforce them server-side as the final allowlist.
+        if (viewColumnAllowlist !== null) {
+            forceColumnProjection = true;
             if (hasFullAccess) {
-                validCols = viewConfig.visibleColumns;
+                validCols = viewColumnAllowlist;
                 hasFullAccess = false; // Now restricted by view
+            } else if (validCols.length > 0) {
+                validCols = validCols.filter(c => viewColumnAllowlist.includes(c));
             } else {
-                validCols = validCols.filter(c => viewConfig.visibleColumns.includes(c));
+                // A view permission is an explicit admin-granted locked view. Without separate
+                // sheet column permissions, the view's column allowlist is the accessible scope.
+                validCols = viewColumnAllowlist;
             }
         }
         // If view has forced filters, add them to rowFiltersList
@@ -758,16 +1132,18 @@ export async function getSheetData(req, res) {
         const sqlParams = [id];
 
         // RBAC: Data Stripping at Database Level
-        if (!hasFullAccess && validCols.length > 0) {
-            // Keep only keys in validCols. 
-            // PostgreSQL 9.5+ approach using JSONB subtraction or object_agg
-            // Using a subquery for object_agg is safest for keeping only allowed keys
-            columnSelection = `(
-                SELECT jsonb_object_agg(key, value)
-                FROM jsonb_each(row_data)
-                WHERE key = ANY($${sqlParams.length + 1}::text[])
-            )`;
-            sqlParams.push(validCols);
+        if (!hasFullAccess) {
+            if (validCols.length > 0) {
+                // Keep only keys in validCols in the database result, not only in application code.
+                columnSelection = `COALESCE((
+                    SELECT jsonb_object_agg(key, value)
+                    FROM jsonb_each(row_data)
+                    WHERE key = ANY($${sqlParams.length + 1}::text[])
+                ), '{}'::jsonb)`;
+                sqlParams.push(validCols);
+            } else if (forceColumnProjection || viewId) {
+                columnSelection = `'{}'::jsonb`;
+            }
         }
 
         let sql = `SELECT ${columnSelection} AS row_data FROM sheet_rows WHERE sheet_id = $1`;
@@ -779,7 +1155,7 @@ export async function getSheetData(req, res) {
         }
 
         // Apply RBAC + Locked View row filters
-        if (!hasFullAccess) {
+        if (!hasFullAccess && rowFiltersList.length > 0) {
             const filterClause = buildRowFilterWhereClause(rowFiltersList, params.length + 1);
             sql += filterClause.sql;
             params.push(...filterClause.params);
@@ -846,7 +1222,7 @@ export async function getSheetData(req, res) {
         // Strip unauthorized columns for non-admins (or view-restricted)
         if (!hasFullAccess) {
             rows = rows.map(r => {
-                const rowData = typeof r.row_data === 'string' ? JSON.parse(r.row_data) : r.row_data;
+                const rowData = (typeof r.row_data === 'string' ? JSON.parse(r.row_data) : r.row_data) || {};
                 Object.keys(rowData).forEach(k => {
                     if (!validCols.includes(k)) {
                         delete rowData[k];

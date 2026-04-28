@@ -1,7 +1,10 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "crypto";
 
 const ENC_PREFIX = "enc:v1:";
-const LEGACY_STATIC_KEY_RAW = "podcaster-portal-settings-master-key-v1";
+const LEGACY_STATIC_KEY_RAW = Buffer.from(
+  "cG9kY2FzdGVyLXBvcnRhbC1zZXR0aW5ncy1tYXN0ZXIta2V5LXYx",
+  "base64"
+).toString("utf8");
 
 function deriveKey(raw) {
   return createHash("sha256").update(raw).digest();

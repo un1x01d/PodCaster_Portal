@@ -6,10 +6,10 @@ set -euo pipefail
 
 # Staging defaults (override as needed)
 REGION="${REGION:-us-central1}"
-REPO="${REPO:-podcaster-portal}"
-BACKEND_SERVICE="${BACKEND_SERVICE:-podcaster-backend-staging}"
-FRONTEND_SERVICE="${FRONTEND_SERVICE:-podcaster-frontend-staging}"
-DB_INSTANCE="${DB_INSTANCE:-podcaster-pg-staging}"
+REPO="${REPO:-data-insights-portal}"
+BACKEND_SERVICE="${BACKEND_SERVICE:-data-insights-backend-staging}"
+FRONTEND_SERVICE="${FRONTEND_SERVICE:-data-insights-frontend-staging}"
+DB_INSTANCE="${DB_INSTANCE:-data-insights-pg-staging}"
 DB_NAME="${DB_NAME:-portaldb}"
 DB_USER="${DB_USER:-portal}"
 TAG="${TAG:-staging}"

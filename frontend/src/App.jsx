@@ -133,10 +133,13 @@ export default function App() {
   const [file, setFile] = useState(null);
   const [selectedFileName, setSelectedFileName] = useState("");
   const [uploadDisplayName, setUploadDisplayName] = useState("");
+  const [reportSourceName, setReportSourceName] = useState("");
 
   // My files (sheet selection)
   const [myFiles, setMyFiles] = useState([]);
   const [myFilesLoading, setMyFilesLoading] = useState(false);
+  const [reportSources, setReportSources] = useState([]);
+  const [reportSourceImports, setReportSourceImports] = useState({});
 
 
   // Admin folder files view
@@ -838,12 +841,46 @@ export default function App() {
     await loadData(sid, preserveFilters, resolvedTab, { preferCache });
   };
 
-  const handleUpload = async (uploadFile, folderId, displayName) => {
-    if (!uploadFile || !folderId || !String(displayName || "").trim()) return;
+  const refreshReportSources = React.useCallback(() => {
+    if (!token) return Promise.resolve([]);
+    return axios.get(`${API}/report-sources`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => {
+        const sources = r.data || [];
+        setReportSources(sources);
+        const explicitSources = sources.filter((source) => source && !source.is_inferred && source.id);
+        return Promise.all(
+          explicitSources.map((source) => (
+            axios.get(`${API}/report-sources/${source.id}/imports`, { headers: { Authorization: `Bearer ${token}` } })
+              .then((importsRes) => [String(source.id), importsRes.data || []])
+              .catch((e) => {
+                if (user) console.error("Fetch report source imports failed", source.id, e);
+                return [String(source.id), []];
+              })
+          ))
+        ).then((entries) => {
+          setReportSourceImports(Object.fromEntries(entries));
+          return sources;
+        });
+      })
+      .catch(e => {
+        if (user) console.error("Fetch report sources failed", e);
+        setReportSourceImports({});
+        return [];
+      });
+  }, [API, token, user]);
+
+  const handleUpload = async (uploadFile, folderId, displayName, reportSourceId = "", newReportSourceName = "") => {
+    if (!uploadFile || (!folderId && !reportSourceId) || !String(displayName || "").trim()) return;
+    if (!reportSourceId && !String(newReportSourceName || "").trim()) return;
     const formData = new FormData();
     formData.append("file", uploadFile);
-    formData.append("folder_id", folderId);
+    if (folderId) formData.append("folder_id", folderId);
     formData.append("display_name", String(displayName).trim());
+    if (reportSourceId) {
+      formData.append("report_source_id", reportSourceId);
+    } else {
+      formData.append("report_source_name", String(newReportSourceName).trim());
+    }
 
     try {
       const res = await axios.post(`${API}/upload`, formData, {
@@ -859,6 +896,7 @@ export default function App() {
         setActiveFilename(activeName);
         localStorage.setItem("activeFilename", activeName);
         setUploadDisplayName("");
+        setReportSourceName("");
         if (res.data.tabs && res.data.tabs.length > 0) {
           tabListCacheRef.current[String(res.data.sheetId)] = res.data.tabs;
           setTabs(res.data.tabs);
@@ -870,6 +908,7 @@ export default function App() {
         if (token) {
           axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } })
             .then(r => setMyFiles(r.data || []));
+          refreshReportSources();
         }
       }
     } catch (e) {
@@ -878,8 +917,9 @@ export default function App() {
     }
   };
 
-  const handleGoogleDriveImport = async ({ fileId, name, mimeType, folderId, displayName }) => {
-    if (!fileId || !folderId || !String(displayName || "").trim()) return;
+  const handleGoogleDriveImport = async ({ fileId, name, mimeType, folderId, displayName, reportSourceId = "", reportSourceName: newReportSourceName = "" }) => {
+    if (!fileId || (!folderId && !reportSourceId) || !String(displayName || "").trim()) return;
+    if (!reportSourceId && !String(newReportSourceName || "").trim()) return;
     try {
       const res = await axios.post(
         `${API}/google/drive/import`,
@@ -887,8 +927,9 @@ export default function App() {
           fileId,
           name,
           mimeType,
-          folder_id: folderId,
+          ...(folderId ? { folder_id: folderId } : {}),
           display_name: String(displayName).trim(),
+          ...(reportSourceId ? { report_source_id: reportSourceId } : { report_source_name: String(newReportSourceName).trim() }),
         },
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -900,6 +941,7 @@ export default function App() {
         setActiveFilename(activeName);
         localStorage.setItem("activeFilename", activeName);
         setUploadDisplayName("");
+        setReportSourceName("");
         if (res.data.tabs && res.data.tabs.length > 0) {
           tabListCacheRef.current[String(res.data.sheetId)] = res.data.tabs;
           setTabs(res.data.tabs);
@@ -910,6 +952,7 @@ export default function App() {
         if (token) {
           axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } })
             .then(r => setMyFiles(r.data || []));
+          refreshReportSources();
         }
       }
     } catch (e) {
@@ -918,16 +961,18 @@ export default function App() {
     }
   };
 
-  const handleDropboxImport = async ({ pathLower, name, folderId, displayName }) => {
-    if (!pathLower || !folderId || !String(displayName || "").trim()) return;
+  const handleDropboxImport = async ({ pathLower, name, folderId, displayName, reportSourceId = "", reportSourceName: newReportSourceName = "" }) => {
+    if (!pathLower || (!folderId && !reportSourceId) || !String(displayName || "").trim()) return;
+    if (!reportSourceId && !String(newReportSourceName || "").trim()) return;
     try {
       const res = await axios.post(
         `${API}/dropbox/import`,
         {
           pathLower,
           name,
-          folder_id: folderId,
+          ...(folderId ? { folder_id: folderId } : {}),
           display_name: String(displayName).trim(),
+          ...(reportSourceId ? { report_source_id: reportSourceId } : { report_source_name: String(newReportSourceName).trim() }),
         },
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -939,6 +984,7 @@ export default function App() {
         setActiveFilename(activeName);
         localStorage.setItem("activeFilename", activeName);
         setUploadDisplayName("");
+        setReportSourceName("");
         if (res.data.tabs && res.data.tabs.length > 0) {
           tabListCacheRef.current[String(res.data.sheetId)] = res.data.tabs;
           setTabs(res.data.tabs);
@@ -949,6 +995,7 @@ export default function App() {
         if (token) {
           axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } })
             .then(r => setMyFiles(r.data || []));
+          refreshReportSources();
         }
       }
     } catch (e) {
@@ -957,16 +1004,18 @@ export default function App() {
     }
   };
 
-  const handleOneDriveImport = async ({ itemId, name, folderId, displayName }) => {
-    if (!itemId || !folderId || !String(displayName || "").trim()) return;
+  const handleOneDriveImport = async ({ itemId, name, folderId, displayName, reportSourceId = "", reportSourceName: newReportSourceName = "" }) => {
+    if (!itemId || (!folderId && !reportSourceId) || !String(displayName || "").trim()) return;
+    if (!reportSourceId && !String(newReportSourceName || "").trim()) return;
     try {
       const res = await axios.post(
         `${API}/onedrive/import`,
         {
           itemId,
           name,
-          folder_id: folderId,
+          ...(folderId ? { folder_id: folderId } : {}),
           display_name: String(displayName).trim(),
+          ...(reportSourceId ? { report_source_id: reportSourceId } : { report_source_name: String(newReportSourceName).trim() }),
         },
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -978,6 +1027,7 @@ export default function App() {
         setActiveFilename(activeName);
         localStorage.setItem("activeFilename", activeName);
         setUploadDisplayName("");
+        setReportSourceName("");
         if (res.data.tabs && res.data.tabs.length > 0) {
           tabListCacheRef.current[String(res.data.sheetId)] = res.data.tabs;
           setTabs(res.data.tabs);
@@ -988,6 +1038,7 @@ export default function App() {
         if (token) {
           axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } })
             .then(r => setMyFiles(r.data || []));
+          refreshReportSources();
         }
       }
     } catch (e) {
@@ -1029,6 +1080,7 @@ export default function App() {
       await axios.delete(`${API}/sheets/${id}`, { headers: { Authorization: `Bearer ${token}` } });
       setMyFiles((prev) => prev.filter((f) => f.id !== id));
       setFolderFiles((prev) => prev.filter((f) => f.id !== id));
+      refreshReportSources();
 
       if (id === sheetId) {
         setSheetId(null);
@@ -1261,13 +1313,14 @@ export default function App() {
           });
         }
       })
-      .catch(() => { setToken(""); setUser(null); setMyFiles([]); });
+      .catch(() => { setToken(""); setUser(null); setMyFiles([]); setReportSources([]); setReportSourceImports({}); });
 
     axios.get(`${API}/my-sheets`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
       .then(r => setMyFiles(r.data || []))
       .catch(e => {
         if (user) console.error("Fetch files failed", e);
       });
+    if (token) refreshReportSources();
   }, [token]);
 
   // Helpers
@@ -1364,11 +1417,12 @@ export default function App() {
     setActiveFilename("");
   };
 
-  const handleSwitchSheet = (newSheetId) => {
+  const handleSwitchSheet = (newSheetId, selectedName = "") => {
     if (!newSheetId) return;
+    const source = reportSources.find(src => String(src.current_sheet_id) === String(newSheetId));
     const f = myFiles.find(file => String(file.id) === String(newSheetId));
-    if (f) {
-      const activeName = f.display_name || f.filename;
+    if (selectedName || source || f) {
+      const activeName = selectedName || source?.name || f.display_name || f.filename;
       setActiveFilename(activeName);
       localStorage.setItem("activeFilename", activeName);
       localStorage.removeItem("activeTab"); // Clear tab on sheet switch to prevent cross-sheet contamination
@@ -1390,6 +1444,8 @@ export default function App() {
             user={user}
             onLogout={handleLogout}
             myFiles={myFiles}
+            reportSources={reportSources}
+            reportSourceImports={reportSourceImports}
             sheetId={sheetId}
             activeFilename={activeFilename}
             onSwitchSheet={handleSwitchSheet}
@@ -1568,6 +1624,9 @@ export default function App() {
                       file={file} setFile={setFile}
                       selectedFileName={selectedFileName} setSelectedFileName={setSelectedFileName}
                       uploadDisplayName={uploadDisplayName} setUploadDisplayName={setUploadDisplayName}
+                      reportSourceName={reportSourceName}
+                      setReportSourceName={setReportSourceName}
+                      reportSources={reportSources}
                       handleUpload={handleUpload}
                       handleGoogleDriveImport={handleGoogleDriveImport}
                       handleDropboxImport={handleDropboxImport}

@@ -4,9 +4,11 @@ import cors from "cors";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
+import { randomUUID } from "crypto";
 import * as XLSX from "xlsx"; // Used in healthz
 
 import { initDb, query as dbQuery, closeDbPool } from "./src/config/db.js";
+import { validateProductionConfig } from "./src/config/runtime.js";
 import authRoutes from "./src/routes/authRoutes.js";
 import sheetRoutes from "./src/routes/sheetRoutes.js";
 import userRoutes from "./src/routes/userRoutes.js";
@@ -23,6 +25,13 @@ import { recordHttpRequest, renderPrometheusMetrics } from "./src/utils/metrics.
 const app = express();
 // Force restart
 const PORT = process.env.PORT || 4000;
+
+const configErrors = validateProductionConfig();
+if (configErrors.length) {
+  console.error("Production config validation failed:");
+  configErrors.forEach((err) => console.error(`- ${err}`));
+  process.exit(1);
+}
 
 // CORS – explicit allowlist (H5 fix)
 // Set ALLOWED_ORIGINS env var to a comma-separated list for production.
@@ -46,12 +55,19 @@ app.options("*", cors(corsOpts));
 app.use(express.json());
 app.use(csrfProtect);
 
+app.use((req, res, next) => {
+  const requestId = String(req.headers["x-request-id"] || "").trim() || randomUUID();
+  req.id = requestId;
+  res.setHeader("X-Request-ID", requestId);
+  next();
+});
+
 // Logging
 app.use((req, res, next) => {
   const t0 = Date.now();
   res.on("finish", () => {
     const durationMs = Date.now() - t0;
-    console.log(`[http] ${req.method} ${req.path} -> ${res.statusCode} (${durationMs}ms)`);
+    console.log(`[http] request_id=${req.id} ${req.method} ${req.path} -> ${res.statusCode} (${durationMs}ms)`);
     recordHttpRequest({
       method: req.method,
       route: req.path,

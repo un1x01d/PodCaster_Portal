@@ -1,4 +1,4 @@
-# PodCaster Portal: Production Deployment on GCP
+# Data Insights Portal: Production Deployment on GCP
 
 This guide deploys the app to Google Cloud with production-grade managed services.
 
@@ -23,10 +23,10 @@ Set variables:
 ```bash
 export PROJECT_ID="your-project-id"
 export REGION="us-central1"
-export REPO="podcaster-portal"
-export BACKEND_SERVICE="podcaster-backend"
-export FRONTEND_SERVICE="podcaster-frontend"
-export DB_INSTANCE="podcaster-pg"
+export REPO="data-insights-portal"
+export BACKEND_SERVICE="data-insights-backend"
+export FRONTEND_SERVICE="data-insights-frontend"
+export DB_INSTANCE="data-insights-pg"
 export DB_NAME="portaldb"
 export DB_USER="portal"
 ```
@@ -42,7 +42,7 @@ gcloud services enable run.googleapis.com sqladmin.googleapis.com secretmanager.
 gcloud artifacts repositories create "$REPO" \
   --repository-format=docker \
   --location="$REGION" \
-  --description="PodCaster Portal images"
+  --description="Data Insights Portal images"
 
 gcloud auth configure-docker "${REGION}-docker.pkg.dev"
 ```

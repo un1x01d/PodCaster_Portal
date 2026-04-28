@@ -226,7 +226,7 @@ export default function App() {
     return (
       <div className="w-screen h-screen flex items-center justify-center bg-gradient-to-br from-blue-100 to-indigo-200">
         <form onSubmit={handleLogin} className="bg-white shadow-lg rounded-xl p-8 w-96 border">
-          <h2 className="text-2xl font-bold mb-6 text-center text-gray-700">🔐 Podcaster Portal</h2>
+          <h2 className="text-2xl font-bold mb-6 text-center text-gray-700">🔐 Data Insights Portal</h2>
           <input className="w-full border p-3 mb-3 rounded" type="email" placeholder="Email"
             value={email} onChange={(e) => setEmail(e.target.value)} />
           <input className="w-full border p-3 mb-6 rounded" type="password" placeholder="Password"
@@ -256,7 +256,7 @@ export default function App() {
       {/* Top bar */}
       <div className="bg-blue-600 text-white px-6 py-4 flex justify-between items-center shadow">
         <div className="flex items-center gap-4">
-          <h1 className="text-xl font-bold">📊 Podcaster Dashboard</h1>
+          <h1 className="text-xl font-bold">📊 Data Insights Dashboard</h1>
           {sheetMeta?.filename && (
             <span className="px-2 py-1 bg-blue-500/40 rounded text-sm">
               {sheetMeta.filename}
@@ -684,7 +684,7 @@ export default function App() {
           className="bg-white shadow-lg rounded-xl p-8 w-96 border"
         >
           <h2 className="text-2xl font-bold mb-6 text-center text-gray-700">
-            🔐 Podcaster Portal
+            🔐 Data Insights Portal
           </h2>
           <input
             type="email"
@@ -716,7 +716,7 @@ export default function App() {
     <div className="w-screen h-screen flex flex-col bg-gray-50">
       {/* Top Bar */}
       <div className="bg-blue-600 text-white px-6 py-4 flex justify-between items-center shadow">
-        <h1 className="text-xl font-bold">📊 Podcaster Dashboard</h1>
+        <h1 className="text-xl font-bold">📊 Data Insights Dashboard</h1>
         <div className="flex items-center gap-4">
           <span className="italic">{user.email}</span>
           <button

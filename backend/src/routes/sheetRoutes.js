@@ -11,6 +11,8 @@ import {
     getSheetTabs,
     getSheetData,
     getUniqueValues,
+    listReportSources,
+    getReportSourceImports,
     deleteSheet
 } from "../controllers/sheetController.js";
 import { auth } from "../middleware/auth.js";
@@ -53,6 +55,8 @@ router.post("/upload", upload.single("file"), asyncHandler(uploadSheet));
 router.get("/sheets/active", asyncHandler(getActiveSheet));
 router.get("/my-sheets", asyncHandler(listMySheets));
 router.get("/sheets/all", asyncHandler(listAllSheets)); // For admin
+router.get("/report-sources", asyncHandler(listReportSources));
+router.get("/report-sources/:id/imports", asyncHandler(getReportSourceImports));
 router.get("/sheets/:id", asyncHandler(getSheetDetails));
 router.patch("/sheets/:id", asyncHandler(updateSheetDetails));
 router.get("/sheets/:id/tabs", asyncHandler(getSheetTabs));

@@ -38,6 +38,64 @@ test("sheet upload role guard allows only explicit admin role", async () => {
   assert.equal(mod.canUploadSheetsByRole(""), false);
 });
 
+test("saved view column allowlist strips hidden columns server-side", async () => {
+  const mod = await import(`../src/controllers/sheetController.js?t=${Date.now()}_view_columns`);
+  const headers = ["Client", "Revenue", "Total Profit", "Region"];
+
+  assert.deepEqual(
+    mod.resolveViewColumnAllowlist({ visibleColumns: ["Client", "Revenue", "Region"] }, headers),
+    ["Client", "Revenue", "Region"]
+  );
+  assert.deepEqual(
+    mod.resolveViewColumnAllowlist({ hiddenColumns: ["Total Profit"] }, headers),
+    ["Client", "Revenue", "Region"]
+  );
+  assert.equal(mod.resolveViewColumnAllowlist({ visibleColumns: [] }, headers), null);
+});
+
+test("report source refresh detects added and removed spreadsheet columns", async () => {
+  const mod = await import(`../src/controllers/sheetController.js?t=${Date.now()}_header_diff`);
+  const diff = mod.buildHeaderDiff(
+    ["Client", "Revenue", "Total Profit"],
+    ["Customer", "Revenue", "Gross Margin"]
+  );
+
+  assert.deepEqual(diff.added, ["Customer", "Gross Margin"]);
+  assert.deepEqual(diff.removed, ["Client", "Total Profit"]);
+  assert.deepEqual(diff.unchanged, ["Revenue"]);
+});
+
+test("sheet data viewId path projects allowed JSON keys in SQL before response", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const controllerPath = path.join(__dirname, "..", "src", "controllers", "sheetController.js");
+  const source = fs.readFileSync(controllerPath, "utf8");
+
+  assert.match(source, /SELECT v\.config, s\.headers/);
+  assert.match(source, /resolveViewColumnAllowlist\(viewConfig, sheetHeaders\)/);
+  assert.match(source, /SELECT jsonb_object_agg\(key, value\)/);
+  assert.match(source, /WHERE key = ANY\(\$/);
+  assert.match(source, /if \(!hasFullAccess && rowFiltersList\.length > 0\)/);
+});
+
+test("user management exposes report source permission endpoints backed by current sheet", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const controllerPath = path.join(__dirname, "..", "src", "controllers", "userController.js");
+  const routesPath = path.join(__dirname, "..", "src", "routes", "userRoutes.js");
+  const controllerSource = fs.readFileSync(controllerPath, "utf8");
+  const routeSource = fs.readFileSync(routesPath, "utf8");
+
+  assert.match(controllerSource, /function resolveReportSourceCurrentSheet\(reportSourceId\)/);
+  assert.match(controllerSource, /SELECT id, current_sheet_id FROM report_sources WHERE id = \$1/);
+  assert.match(controllerSource, /INSERT INTO permissions \(user_id, sheet_id, allowed_columns, row_filters\)/);
+  assert.match(controllerSource, /INSERT INTO group_permissions \(group_id, sheet_id, allowed_columns, row_filters\)/);
+  assert.match(routeSource, /router\.post\("\/report-source-permissions"/);
+  assert.match(routeSource, /router\.get\("\/report-source-permissions"/);
+  assert.match(routeSource, /router\.post\("\/report-source-group-permissions"/);
+  assert.match(routeSource, /router\.get\("\/report-source-group-permissions"/);
+});
+
 test("chat sheet access check always allows admin", async () => {
   const mod = await import(`../src/controllers/chatController.js?t=${Date.now()}`);
   const hasAccess = await mod.checkSheetAccess("any-sheet-id", { id: 1, role: "admin" });

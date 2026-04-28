@@ -105,6 +105,6 @@ On target PC:
   2) Run:
        ./$(basename "$BUNDLE_DIR")/restore_on_target.sh
      or pass project path:
-       ./$(basename "$BUNDLE_DIR")/restore_on_target.sh /path/to/PodCaster_Portal
+       ./$(basename "$BUNDLE_DIR")/restore_on_target.sh /path/to/Data_Insights_Portal
 
 MSG

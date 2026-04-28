@@ -151,6 +151,51 @@ export async function initDb() {
     ON CONFLICT (folder_id, group_id) DO NOTHING;
   `);
 
+  // REPORT SOURCES: stable business objects that can receive recurring imports.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS report_sources (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      folder_id INT,
+      created_by INT,
+      current_sheet_id TEXT UNIQUE,
+      is_inferred BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS folder_id INT;`);
+  await pool.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS created_by INT;`);
+  await pool.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS current_sheet_id TEXT UNIQUE;`);
+  await pool.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS is_inferred BOOLEAN NOT NULL DEFAULT FALSE;`);
+  await pool.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_report_sources_folder_id ON report_sources(folder_id);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_report_sources_created_by ON report_sources(created_by);`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_report_sources_current_sheet_id ON report_sources(current_sheet_id);`);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE table_name='report_sources' AND constraint_name='report_sources_folder_fk'
+      ) THEN
+        ALTER TABLE report_sources
+          ADD CONSTRAINT report_sources_folder_fk
+          FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE SET NULL;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE table_name='report_sources' AND constraint_name='report_sources_created_by_fk'
+      ) THEN
+        ALTER TABLE report_sources
+          ADD CONSTRAINT report_sources_created_by_fk
+          FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL;
+      END IF;
+    END $$;
+  `);
+
   // SHEETS
   await pool.query(`
     CREATE TABLE IF NOT EXISTS sheets (
@@ -167,6 +212,71 @@ export async function initDb() {
   await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS tab_name TEXT;`);
   await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS tabs JSONB DEFAULT '[]'::jsonb;`);
   await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS display_name TEXT;`);
+  await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS report_source_id INT;`);
+  await pool.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS source_version INT;`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_sheets_report_source_id ON sheets(report_source_id);`);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE table_name='sheets' AND constraint_name='sheets_report_source_fk'
+      ) THEN
+        ALTER TABLE sheets
+          ADD CONSTRAINT sheets_report_source_fk
+          FOREIGN KEY (report_source_id) REFERENCES report_sources(id) ON DELETE SET NULL NOT VALID;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE table_name='report_sources' AND constraint_name='report_sources_current_sheet_fk'
+      ) THEN
+        ALTER TABLE report_sources
+          ADD CONSTRAINT report_sources_current_sheet_fk
+          FOREIGN KEY (current_sheet_id) REFERENCES sheets(id) ON DELETE SET NULL NOT VALID;
+      END IF;
+    END $$;
+  `);
+
+  await pool.query(`
+    INSERT INTO report_sources (name, folder_id, current_sheet_id, is_inferred, created_at, updated_at)
+    SELECT COALESCE(NULLIF(s.display_name, ''), s.filename, s.id), s.folder_id, s.id, TRUE, s.uploaded_at, CURRENT_TIMESTAMP
+    FROM sheets s
+    WHERE s.report_source_id IS NULL
+    ON CONFLICT DO NOTHING;
+  `);
+  await pool.query(`
+    UPDATE report_sources
+       SET is_inferred = TRUE
+     WHERE created_by IS NULL
+       AND current_sheet_id IS NOT NULL
+       AND COALESCE(is_inferred, FALSE) = FALSE;
+  `);
+  await pool.query(`
+    UPDATE sheets s
+       SET report_source_id = rs.id,
+           source_version = COALESCE(s.source_version, 1)
+      FROM report_sources rs
+     WHERE s.report_source_id IS NULL
+       AND rs.current_sheet_id = s.id;
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS report_source_imports (
+      id SERIAL PRIMARY KEY,
+      report_source_id INT NOT NULL REFERENCES report_sources(id) ON DELETE CASCADE,
+      sheet_id TEXT NOT NULL UNIQUE REFERENCES sheets(id) ON DELETE CASCADE,
+      import_version INT NOT NULL,
+      original_filename TEXT,
+      imported_by INT REFERENCES users(id) ON DELETE SET NULL,
+      schema_status TEXT NOT NULL DEFAULT 'new',
+      schema_diff JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(report_source_id, import_version)
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_report_source_imports_source_id ON report_source_imports(report_source_id);`);
 
   // SHEET DATA (JSONB rows)
   await pool.query(`

@@ -6,10 +6,10 @@ set -euo pipefail
 
 # Optional overrides
 REGION="${REGION:-us-central1}"
-REPO="${REPO:-podcaster-portal}"
-BACKEND_SERVICE="${BACKEND_SERVICE:-podcaster-backend}"
-FRONTEND_SERVICE="${FRONTEND_SERVICE:-podcaster-frontend}"
-DB_INSTANCE="${DB_INSTANCE:-podcaster-pg}"
+REPO="${REPO:-data-insights-portal}"
+BACKEND_SERVICE="${BACKEND_SERVICE:-data-insights-backend}"
+FRONTEND_SERVICE="${FRONTEND_SERVICE:-data-insights-frontend}"
+DB_INSTANCE="${DB_INSTANCE:-data-insights-pg}"
 DB_NAME="${DB_NAME:-portaldb}"
 DB_USER="${DB_USER:-portal}"
 TAG="${TAG:-latest}"

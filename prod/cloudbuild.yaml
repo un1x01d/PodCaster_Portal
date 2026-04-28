@@ -1,9 +1,9 @@
 substitutions:
   _REGION: us-central1
-  _REPO: podcaster-portal
-  _BACKEND_SERVICE: podcaster-backend
-  _FRONTEND_SERVICE: podcaster-frontend
-  _DB_INSTANCE: podcaster-pg
+  _REPO: data-insights-portal
+  _BACKEND_SERVICE: data-insights-backend
+  _FRONTEND_SERVICE: data-insights-frontend
+  _DB_INSTANCE: data-insights-pg
   _DB_NAME: portaldb
   _DB_USER: portal
 

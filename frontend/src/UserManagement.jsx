@@ -81,6 +81,7 @@ export default function UserManagement({ token, user, sheetId }) {
   const [selectedUserId, setSelectedUserId] = useState(null);
   const [userSheets, setUserSheets] = useState([]);                // latest 10 for selected user
   const [selectedUserSheetId, setSelectedUserSheetId] = useState(null);
+  const [selectedReportSourceId, setSelectedReportSourceId] = useState(null);
   const [userSheetHeaders, setUserSheetHeaders] = useState([]);
   const [userAllowedCols, setUserAllowedCols] = useState(new Set());
   const [userRowFilters, setUserRowFilters] = useState([{ key: "", value: "" }]);
@@ -97,8 +98,8 @@ export default function UserManagement({ token, user, sheetId }) {
   const [groupAllowedCols, setGroupAllowedCols] = useState(new Set());
   const [groupRowFilters, setGroupRowFilters] = useState([{ key: "", value: "" }]);
 
-  // group sheet selection (shared with selectedUserSheetId in Overrides panel)
-  const [allSheets, setAllSheets] = useState([]); // all sheets (active or inactive) for selection
+  // report source selection drives the current sheet used by existing permission enforcement
+  const [reportSources, setReportSources] = useState([]);
   const [groupSheetHeaders, setGroupSheetHeaders] = useState([]);
 
   // Templates (now scoped by group)
@@ -235,14 +236,14 @@ export default function UserManagement({ token, user, sheetId }) {
     return Array.from(m.values());
   }, [users]);
 
-  const fetchAllSheets = async () => {
+  const fetchReportSources = async () => {
     try {
-      const res = await axios.get(`${API}/sheets/all`, {
+      const res = await axios.get(`${API}/report-sources`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      setAllSheets(res.data || []);
+      setReportSources(Array.isArray(res.data) ? res.data : []);
     } catch (e) {
-      console.error("fetchAllSheets failed", e);
+      console.error("fetchReportSources failed", e);
     }
   };
 
@@ -609,15 +610,19 @@ export default function UserManagement({ token, user, sheetId }) {
     }
   };
 
-  const loadUserPermissions = async (uid, sid) => {
+  const loadUserPermissions = async (uid, sid, reportSourceId = selectedReportSourceId) => {
     if (!uid || !sid) {
       setUserAllowedCols(new Set());
       setUserRowFilters([{ key: "", value: "" }]);
       return;
     }
-    const res = await axios.get(`${API}/permissions`, {
+    const endpoint = reportSourceId ? `${API}/report-source-permissions` : `${API}/permissions`;
+    const params = reportSourceId
+      ? { userId: uid, reportSourceId }
+      : { userId: uid, sheetId: sid };
+    const res = await axios.get(endpoint, {
       headers: { Authorization: `Bearer ${token}` },
-      params: { userId: uid, sheetId: sid }
+      params
     });
     const allowed = res.data?.allowed_columns || [];
     const filters = res.data?.row_filters || {};
@@ -638,15 +643,19 @@ export default function UserManagement({ token, user, sheetId }) {
   };
 
   // group perms helpers
-  const loadGroupPermissions = async (gid, sid) => {
+  const loadGroupPermissions = async (gid, sid, reportSourceId = selectedReportSourceId) => {
     if (!gid || !sid) {
       setGroupAllowedCols(new Set());
       setGroupRowFilters([{ key: "", value: "" }]);
       return;
     }
-    const res = await axios.get(`${API}/group-permissions`, {
+    const endpoint = reportSourceId ? `${API}/report-source-group-permissions` : `${API}/group-permissions`;
+    const params = reportSourceId
+      ? { groupId: gid, reportSourceId }
+      : { groupId: gid, sheetId: sid };
+    const res = await axios.get(endpoint, {
       headers: { Authorization: `Bearer ${token}` },
-      params: { groupId: gid, sheetId: sid }
+      params
     });
     const allowed = res.data?.allowed_columns || [];
     const filters = res.data?.row_filters || {};
@@ -670,7 +679,7 @@ export default function UserManagement({ token, user, sheetId }) {
       fetchUsers();
       fetchGroups();
       fetchAllViews();
-      fetchAllSheets(); // load on mount
+      fetchReportSources();
       fetchGoogleIntegrationSetting();
       fetchGoogleOauthSetting();
       fetchDropboxIntegrationSetting();
@@ -763,6 +772,7 @@ export default function UserManagement({ token, user, sheetId }) {
       fetchUserViews(selectedUserId);
       fetchSelectedUserGroups(selectedUserId);
       setSelectedUserSheetId(null);
+      setSelectedReportSourceId(null);
       setUserSheetHeaders([]);
       setUserAllowedCols(new Set());
       setUserRowFilters([{ key: "", value: "" }]);
@@ -779,13 +789,13 @@ export default function UserManagement({ token, user, sheetId }) {
   useEffect(() => {
     if (selectedUserSheetId && selectedUserId) {
       fetchUserSheetHeaders(selectedUserSheetId);
-      loadUserPermissions(selectedUserId, selectedUserSheetId);
+      loadUserPermissions(selectedUserId, selectedUserSheetId, selectedReportSourceId);
     } else {
       setUserSheetHeaders([]);
       setUserAllowedCols(new Set());
       setUserRowFilters([{ key: "", value: "" }]);
     }
-  }, [selectedUserSheetId, selectedUserId]);
+  }, [selectedUserSheetId, selectedUserId, selectedReportSourceId]);
 
   // when group changes, reload members & sheets, reset group-perms state
   useEffect(() => {
@@ -808,8 +818,8 @@ export default function UserManagement({ token, user, sheetId }) {
       return;
     }
     fetchGroupSheetHeaders(selectedUserSheetId);
-    loadGroupPermissions(selectedGroupId, selectedUserSheetId);
-  }, [selectedUserSheetId, selectedGroupId]);
+    loadGroupPermissions(selectedGroupId, selectedUserSheetId, selectedReportSourceId);
+  }, [selectedUserSheetId, selectedGroupId, selectedReportSourceId]);
 
   const toggleUserAllowed = (h) => {
     setUserAllowedCols(prev => {
@@ -952,7 +962,7 @@ export default function UserManagement({ token, user, sheetId }) {
 
   const saveUserPermissions = async () => {
     if (!selectedUserId || !selectedUserSheetId) {
-      alert("Pick a user and a sheet first.");
+      alert("Pick a user and a report source first.");
       return;
     }
     const allowed_columns = Array.from(userAllowedCols);
@@ -961,8 +971,9 @@ export default function UserManagement({ token, user, sheetId }) {
       if (f.key && f.value) row_filters[f.key] = f.value;
     });
     try {
-      await axios.post(`${API}/permissions`, {
-        sheetId: selectedUserSheetId,
+      const endpoint = selectedReportSourceId ? `${API}/report-source-permissions` : `${API}/permissions`;
+      await axios.post(endpoint, {
+        ...(selectedReportSourceId ? { reportSourceId: selectedReportSourceId } : { sheetId: selectedUserSheetId }),
         userId: selectedUserId,
         allowed: allowed_columns,
         rowFilters: row_filters,
@@ -1040,7 +1051,7 @@ export default function UserManagement({ token, user, sheetId }) {
 
   const saveGroupPermissions = async () => {
     if (!selectedGroupId || !selectedUserSheetId) {
-      alert("Pick a group and a sheet first.");
+      alert("Pick a group and a report source first.");
       return;
     }
     const allowed_columns = Array.from(groupAllowedCols);
@@ -1049,8 +1060,9 @@ export default function UserManagement({ token, user, sheetId }) {
     groupRowFilters.forEach(f => {
       if (f.key && f.value) row_filters[f.key] = f.value;
     });
-    await axios.post(`${API}/group-permissions`, {
-      sheetId: selectedUserSheetId,
+    const endpoint = selectedReportSourceId ? `${API}/report-source-group-permissions` : `${API}/group-permissions`;
+    await axios.post(endpoint, {
+      ...(selectedReportSourceId ? { reportSourceId: selectedReportSourceId } : { sheetId: selectedUserSheetId }),
       groupId: selectedGroupId,
       allowed: allowed_columns,
       rowFilters: row_filters,
@@ -1207,16 +1219,19 @@ export default function UserManagement({ token, user, sheetId }) {
     setGroupRowFilters(filterArray.length > 0 ? filterArray : [{ key: "", value: "" }]);
   }, [selectedUserSheetId, selectedTplGroup, groupSheetHeaders, templates]);
 
-  const overrideSheetOptions = useMemo(() => {
-    const source = (allSheets && allSheets.length > 0) ? allSheets : userSheets;
-    const seen = new Set();
-    return source.filter((s) => {
-      const sid = String(s.id);
-      if (seen.has(sid)) return false;
-      seen.add(sid);
-      return true;
-    });
-  }, [allSheets, userSheets]);
+  const reportSourceOptions = useMemo(() => {
+    return (reportSources || [])
+      .filter((source) => source && !source.is_inferred && source.current_sheet_id)
+      .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+  }, [reportSources]);
+  const selectedReportSource = useMemo(() => {
+    return reportSourceOptions.find((source) => String(source.id) === String(selectedReportSourceId)) || null;
+  }, [reportSourceOptions, selectedReportSourceId]);
+  const selectReportSourceForPermissions = (value) => {
+    const source = reportSourceOptions.find((item) => String(item.id) === String(value));
+    setSelectedReportSourceId(source ? String(source.id) : null);
+    setSelectedUserSheetId(source?.current_sheet_id || null);
+  };
   const visibleFolders = useMemo(
     () => folders.filter((f) => !selectedGroupId || (f.group_ids || []).includes(Number(selectedGroupId))),
     [folders, selectedGroupId]
@@ -1915,22 +1930,25 @@ export default function UserManagement({ token, user, sheetId }) {
           <div className="px-3 pb-3">
 
           <div className="flex-1 flex flex-col min-h-0">
-            {/* Sheet Selector */}
+            {/* Report Source Selector */}
             <div className="mb-4">
-              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Spreadsheet</label>
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Report Source</label>
               <select
                 className="input-premium py-2 w-full mt-2"
-                value={selectedUserSheetId || ""}
-                onChange={(e) => setSelectedUserSheetId(e.target.value || null)}
+                value={selectedReportSourceId || ""}
+                onChange={(e) => selectReportSourceForPermissions(e.target.value)}
               >
-                <option value="">Select a spreadsheet…</option>
-                {overrideSheetOptions.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {trunc(s.filename, 56)} · {formatBytes(folderById.get(Number(s.folder_id))?.total_size_bytes || 0)}
+                <option value="">Select a report source…</option>
+                {reportSourceOptions.map((source) => (
+                  <option key={source.id} value={source.id}>
+                    {source.name || `Report source ${source.id}`}
                   </option>
                 ))}
               </select>
-              <div className="text-[10px] text-slate-400 mt-1">This sheet is shared by user/group overrides below.</div>
+              <div className="text-[10px] text-slate-400 mt-1">
+                Access applies to the current import for this report source and is carried forward on refresh.
+                {selectedReportSource?.current_sheet_id ? ` Current sheet: ${selectedReportSource.current_sheet_id}` : ""}
+              </div>
             </div>
 
             {selectedUserSheetId ? (
@@ -2101,7 +2119,7 @@ export default function UserManagement({ token, user, sheetId }) {
 
                 {selectedGroupId && (
                 <div className="pt-6 border-t border-slate-200/40 space-y-4">
-                  <div className="text-[10px] font-bold uppercase tracking-widest text-emerald-600">Group Override (Same Spreadsheet)</div>
+                  <div className="text-[10px] font-bold uppercase tracking-widest text-emerald-600">Group Override (Same Report Source)</div>
 
                     <>
                       <div className="flex items-center justify-between">
@@ -2247,7 +2265,7 @@ export default function UserManagement({ token, user, sheetId }) {
               <div className="flex-1 flex items-center justify-center bg-white/30 rounded-lg border border-dashed border-slate-300">
                 <div className="text-center p-8">
                   <div className="text-4xl mb-4 opacity-20">🎯</div>
-                  <div className="text-slate-400 font-medium max-w-[260px] mx-auto">Select a spreadsheet to configure user/group override permissions.</div>
+                  <div className="text-slate-400 font-medium max-w-[260px] mx-auto">Select a report source to configure user/group override permissions.</div>
                 </div>
               </div>
             )}

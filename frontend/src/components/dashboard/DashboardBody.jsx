@@ -29,6 +29,9 @@ export default function DashboardBody(props) {
         setSelectedFileName,
         uploadDisplayName,
         setUploadDisplayName,
+        reportSourceName = "",
+        setReportSourceName = () => {},
+        reportSources = [],
 
         handleUpload,
         handleGoogleDriveImport,
@@ -163,6 +166,7 @@ export default function DashboardBody(props) {
     // Internal State for Folders (fetched here to ensure freshness)
     const [folders, setFolders] = useState([]);
     const [selectedFolderId, setSelectedFolderId] = useState("");
+    const [selectedReportSourceId, setSelectedReportSourceId] = useState("");
     const [menuOpen, setMenuOpen] = useState(false);
     const [expandedMenus, setExpandedMenus] = useState({
         view: true,
@@ -308,6 +312,25 @@ export default function DashboardBody(props) {
             folders.map((f) => ({ value: String(f.id), label: f.path || f.name }))
         );
     }, [folders]);
+
+    const reportSourceOptions = React.useMemo(() => {
+        return [{ value: "", label: "Create new report source" }].concat(
+            (reportSources || []).filter((source) => !source.is_inferred).map((source) => {
+                const name = source.name || source.report_source_name || `Report source ${source.id}`;
+                return { value: String(source.id), label: name };
+            })
+        );
+    }, [reportSources]);
+
+    const leftMenuSelectClasses = {
+        buttonClassName: "!bg-white/10 !border-white/25 !rounded-[0.6rem] !min-h-[2.05rem] !h-auto !px-2 !py-1.5 !text-[0.76rem] !font-bold !text-white hover:!bg-white/20 hover:!border-white/35 !shadow-none focus:!outline-none focus:!ring-2 focus:!ring-white/20",
+        labelClassName: "!text-white !font-bold",
+        panelClassName: "!bg-[#001f3f] !text-white !border-white/20 !shadow-2xl !rounded-[0.65rem] !mt-1",
+        optionClassName: "!rounded-[0.5rem] !text-white hover:!bg-white/20 !border !border-transparent",
+        optionTextClassName: "!font-bold !text-[0.72rem] !text-white",
+        selectedOptionClassName: "!bg-white/20 !border-white/25",
+        searchInputClassName: "!bg-white/10 !border-white/20 !text-white !placeholder-blue-200 !rounded-[0.5rem] !text-[0.72rem] !font-bold focus:!ring-white/20 focus:!border-white/35",
+    };
 
     const viewOptions = React.useMemo(() => {
         return [{ value: "", label: "Select a view…" }].concat(
@@ -752,18 +775,33 @@ export default function DashboardBody(props) {
                                                             onChange={(e) => setSelectedFolderId(e.target.value)}
                                                             placeholder="Select folder"
                                                             className="w-full"
-                                                            buttonClassName="!bg-white !border-slate-300 !rounded-none !h-8 !text-[11px] !font-bold !text-slate-800 hover:!border-slate-400 shadow-sm"
-                                                            panelClassName="!rounded-none !border-slate-200 !shadow-2xl"
-                                                            optionClassName="!rounded-none hover:!bg-slate-50"
-                                                            optionTextClassName="!font-bold !text-[11px] !text-slate-800"
-                                                            searchInputClassName="!text-[11px] !font-bold !text-slate-900 !rounded-none"
-                                                            panelWidth={210}
+                                                            {...leftMenuSelectClasses}
+                                                            panelWidth="100%"
+                                                        />
+                                                        <SearchableSelect
+                                                            options={reportSourceOptions}
+                                                            value={selectedReportSourceId}
+                                                            onChange={(e) => setSelectedReportSourceId(e.target.value)}
+                                                            placeholder="Report source"
+                                                            className="w-full"
+                                                            {...leftMenuSelectClasses}
+                                                            panelWidth="100%"
+                                                        />
+                                                        <input
+                                                            type="text"
+                                                            value={reportSourceName}
+                                                            onChange={(e) => setReportSourceName(e.target.value)}
+                                                            placeholder={selectedReportSourceId ? "Using selected report source" : "Report source name (required)"}
+                                                            className="left-menu-action"
+                                                            maxLength={160}
+                                                            disabled={!!selectedReportSourceId}
+                                                            required={!selectedReportSourceId}
                                                         />
                                                         <input
                                                             type="text"
                                                             value={uploadDisplayName}
                                                             onChange={(e) => setUploadDisplayName(e.target.value.replace(/\s+/g, "_"))}
-                                                            placeholder="Display_name (required)"
+                                                            placeholder="Import display name (required)"
                                                             className="left-menu-action"
                                                             maxLength={120}
                                                             required
@@ -771,15 +809,17 @@ export default function DashboardBody(props) {
                                                         <button
                                                             type="button"
                                                             onClick={() => {
-                                                                handleUpload(file, selectedFolderId, uploadDisplayName);
+                                                                handleUpload(file, selectedFolderId, uploadDisplayName, selectedReportSourceId, reportSourceName);
                                                             }}
-                                                            disabled={!file || !selectedFolderId || !String(uploadDisplayName || "").trim()}
-                                                            className={`left-menu-action ${!file || !selectedFolderId || !String(uploadDisplayName || "").trim() ? "left-menu-action-disabled" : ""}`}
+                                                            disabled={!file || (!selectedFolderId && !selectedReportSourceId) || !String(uploadDisplayName || "").trim() || (!selectedReportSourceId && !String(reportSourceName || "").trim())}
+                                                            className={`left-menu-action ${!file || (!selectedFolderId && !selectedReportSourceId) || !String(uploadDisplayName || "").trim() || (!selectedReportSourceId && !String(reportSourceName || "").trim()) ? "left-menu-action-disabled" : ""}`}
                                                             title={
                                                                 !file
                                                                     ? "Choose a file"
-                                                                    : !selectedFolderId
-                                                                        ? "Select a folder"
+                                                                    : (!selectedFolderId && !selectedReportSourceId)
+                                                                        ? "Select a folder or report source"
+                                                                        : (!selectedReportSourceId && !String(reportSourceName || "").trim())
+                                                                            ? "Enter a report source name"
                                                                         : !String(uploadDisplayName || "").trim()
                                                                             ? "Enter a display name"
                                                                             : "Upload & Load"
@@ -1017,7 +1057,7 @@ export default function DashboardBody(props) {
                             </button>
                             <button
                                 type="button"
-                                disabled={!selectedDriveFile || !selectedFolderId || !String(uploadDisplayName || "").trim()}
+                                disabled={!selectedDriveFile || (!selectedFolderId && !selectedReportSourceId) || !String(uploadDisplayName || "").trim() || (!selectedReportSourceId && !String(reportSourceName || "").trim())}
                                 onClick={() => {
                                     if (!selectedDriveFile) return;
                                     handleGoogleDriveImport({
@@ -1026,13 +1066,15 @@ export default function DashboardBody(props) {
                                         mimeType: selectedDriveFile.mimeType,
                                         folderId: selectedFolderId,
                                         displayName: uploadDisplayName,
+                                        reportSourceId: selectedReportSourceId,
+                                        reportSourceName,
                                     });
                                     closeDrivePicker();
                                 }}
-                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedDriveFile || !selectedFolderId || !String(uploadDisplayName || "").trim() ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
+                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedDriveFile || (!selectedFolderId && !selectedReportSourceId) || !String(uploadDisplayName || "").trim() || (!selectedReportSourceId && !String(reportSourceName || "").trim()) ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
                                 title={
-                                    !selectedFolderId
-                                        ? "Select a destination folder first"
+                                    (!selectedFolderId && !selectedReportSourceId)
+                                        ? "Select a folder or report source first"
                                         : !String(uploadDisplayName || "").trim()
                                             ? "Enter a display name"
                                             : !selectedDriveFile
@@ -1122,7 +1164,7 @@ export default function DashboardBody(props) {
                             </button>
                             <button
                                 type="button"
-                                disabled={!selectedDropboxFile || !selectedFolderId || !String(uploadDisplayName || "").trim()}
+                                disabled={!selectedDropboxFile || (!selectedFolderId && !selectedReportSourceId) || !String(uploadDisplayName || "").trim() || (!selectedReportSourceId && !String(reportSourceName || "").trim())}
                                 onClick={() => {
                                     if (!selectedDropboxFile) return;
                                     handleDropboxImport({
@@ -1130,13 +1172,15 @@ export default function DashboardBody(props) {
                                         name: selectedDropboxFile.name,
                                         folderId: selectedFolderId,
                                         displayName: uploadDisplayName,
+                                        reportSourceId: selectedReportSourceId,
+                                        reportSourceName,
                                     });
                                     closeDropboxPicker();
                                 }}
-                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedDropboxFile || !selectedFolderId || !String(uploadDisplayName || "").trim() ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
+                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedDropboxFile || (!selectedFolderId && !selectedReportSourceId) || !String(uploadDisplayName || "").trim() || (!selectedReportSourceId && !String(reportSourceName || "").trim()) ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
                                 title={
-                                    !selectedFolderId
-                                        ? "Select a destination folder first"
+                                    (!selectedFolderId && !selectedReportSourceId)
+                                        ? "Select a folder or report source first"
                                         : !String(uploadDisplayName || "").trim()
                                             ? "Enter a display name"
                                             : !selectedDropboxFile
@@ -1225,7 +1269,7 @@ export default function DashboardBody(props) {
                             </button>
                             <button
                                 type="button"
-                                disabled={!selectedOneDriveFile || !selectedFolderId || !String(uploadDisplayName || "").trim()}
+                                disabled={!selectedOneDriveFile || (!selectedFolderId && !selectedReportSourceId) || !String(uploadDisplayName || "").trim() || (!selectedReportSourceId && !String(reportSourceName || "").trim())}
                                 onClick={() => {
                                     if (!selectedOneDriveFile) return;
                                     handleOneDriveImport({
@@ -1233,13 +1277,15 @@ export default function DashboardBody(props) {
                                         name: selectedOneDriveFile.name,
                                         folderId: selectedFolderId,
                                         displayName: uploadDisplayName,
+                                        reportSourceId: selectedReportSourceId,
+                                        reportSourceName,
                                     });
                                     closeOneDrivePicker();
                                 }}
-                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedOneDriveFile || !selectedFolderId || !String(uploadDisplayName || "").trim() ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
+                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedOneDriveFile || (!selectedFolderId && !selectedReportSourceId) || !String(uploadDisplayName || "").trim() || (!selectedReportSourceId && !String(reportSourceName || "").trim()) ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
                                 title={
-                                    !selectedFolderId
-                                        ? "Select a destination folder first"
+                                    (!selectedFolderId && !selectedReportSourceId)
+                                        ? "Select a folder or report source first"
                                         : !String(uploadDisplayName || "").trim()
                                             ? "Enter a display name"
                                             : !selectedOneDriveFile

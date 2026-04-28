@@ -1102,6 +1102,21 @@ export async function deleteFolder(req, res) {
 
 // --- Permissions ---
 
+async function resolveReportSourceCurrentSheet(reportSourceId) {
+    const sourceId = Number.parseInt(reportSourceId, 10);
+    if (!Number.isInteger(sourceId) || sourceId <= 0) {
+        return { error: "invalid_report_source_id" };
+    }
+
+    const rows = await query(
+        "SELECT id, current_sheet_id FROM report_sources WHERE id = $1",
+        [sourceId]
+    );
+    if (!rows.length) return { error: "report_source_not_found", status: 404 };
+    if (!rows[0].current_sheet_id) return { error: "report_source_has_no_current_sheet", status: 400 };
+    return { reportSourceId: rows[0].id, sheetId: rows[0].current_sheet_id };
+}
+
 export async function setPermissions(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     const { userId, sheetId, allowed, rowFilters } = req.body;
@@ -1125,6 +1140,33 @@ export async function getPermissions(req, res) {
     res.json(rows[0]);
 }
 
+export async function setReportSourcePermissions(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const { userId, reportSourceId, allowed, rowFilters } = req.body;
+    const resolved = await resolveReportSourceCurrentSheet(reportSourceId);
+    if (resolved.error) return res.status(resolved.status || 400).json({ error: resolved.error });
+
+    await query(
+        `INSERT INTO permissions (user_id, sheet_id, allowed_columns, row_filters)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (sheet_id, user_id)
+         DO UPDATE SET allowed_columns=$3, row_filters=$4`,
+        [userId, resolved.sheetId, JSON.stringify(allowed || []), JSON.stringify(rowFilters || [])]
+    );
+    res.json({ success: true, report_source_id: resolved.reportSourceId, sheet_id: resolved.sheetId });
+}
+
+export async function getReportSourcePermissions(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const { userId, reportSourceId } = req.query;
+    const resolved = await resolveReportSourceCurrentSheet(reportSourceId);
+    if (resolved.error) return res.status(resolved.status || 400).json({ error: resolved.error });
+
+    const rows = await query("SELECT * FROM permissions WHERE user_id=$1 AND sheet_id=$2", [userId, resolved.sheetId]);
+    if (!rows.length) return res.json({ report_source_id: resolved.reportSourceId, sheet_id: resolved.sheetId });
+    res.json({ ...rows[0], report_source_id: resolved.reportSourceId, sheet_id: resolved.sheetId });
+}
+
 export async function setGroupPermissions(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     const { groupId, sheetId, allowed, rowFilters } = req.body;
@@ -1145,6 +1187,33 @@ export async function getGroupPermissions(req, res) {
     const rows = await query("SELECT * FROM group_permissions WHERE group_id=$1 AND sheet_id=$2", [groupId, sheetId]);
     if (!rows.length) return res.json({});
     res.json(rows[0]);
+}
+
+export async function setReportSourceGroupPermissions(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const { groupId, reportSourceId, allowed, rowFilters } = req.body;
+    const resolved = await resolveReportSourceCurrentSheet(reportSourceId);
+    if (resolved.error) return res.status(resolved.status || 400).json({ error: resolved.error });
+
+    await query(
+        `INSERT INTO group_permissions (group_id, sheet_id, allowed_columns, row_filters)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (sheet_id, group_id)
+         DO UPDATE SET allowed_columns=$3, row_filters=$4`,
+        [groupId, resolved.sheetId, JSON.stringify(allowed || []), JSON.stringify(rowFilters || [])]
+    );
+    res.json({ success: true, report_source_id: resolved.reportSourceId, sheet_id: resolved.sheetId });
+}
+
+export async function getReportSourceGroupPermissions(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const { groupId, reportSourceId } = req.query;
+    const resolved = await resolveReportSourceCurrentSheet(reportSourceId);
+    if (resolved.error) return res.status(resolved.status || 400).json({ error: resolved.error });
+
+    const rows = await query("SELECT * FROM group_permissions WHERE group_id=$1 AND sheet_id=$2", [groupId, resolved.sheetId]);
+    if (!rows.length) return res.json({ report_source_id: resolved.reportSourceId, sheet_id: resolved.sheetId });
+    res.json({ ...rows[0], report_source_id: resolved.reportSourceId, sheet_id: resolved.sheetId });
 }
 
 export async function getUserKpiOverrides(req, res) {
