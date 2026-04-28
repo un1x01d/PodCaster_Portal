@@ -1011,6 +1011,8 @@ export async function createFolder(req, res) {
         const normalizedGroupIds = Array.isArray(groupIds)
           ? groupIds.map((g) => parseInt(g, 10)).filter((g) => Number.isInteger(g))
           : (groupId ? [parseInt(groupId, 10)].filter((g) => Number.isInteger(g)) : []);
+        if (!String(name || "").trim()) return res.status(400).json({ error: "name_required" });
+        if (!normalizedGroupIds.length) return res.status(400).json({ error: "group_required" });
         const parent = parentId ? parseInt(parentId, 10) : null;
         const ownerUser = ownerUserId ? parseInt(ownerUserId, 10) : null;
         const maxFile = Number.isFinite(Number(maxFileSizeMb)) ? Number(maxFileSizeMb) : 100;
@@ -1053,6 +1055,7 @@ export async function updateFolder(req, res) {
         const normalizedGroupIds = Array.isArray(groupIds)
           ? groupIds.map((g) => parseInt(g, 10)).filter((g) => Number.isInteger(g))
           : [];
+        if (!normalizedGroupIds.length) return res.status(400).json({ error: "group_required" });
         const maxFile = Number.isFinite(Number(maxFileSizeMb)) ? Number(maxFileSizeMb) : 100;
         const maxTotal = Number.isFinite(Number(maxTotalSizeMb)) ? Number(maxTotalSizeMb) : 1024;
 

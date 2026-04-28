@@ -128,9 +128,7 @@ export default function UserManagement({ token, user, sheetId }) {
     if (!newFolderName.trim()) return;
     try {
       let effectiveGroupIds = [];
-      if (folderOwnershipType === "global") {
-        effectiveGroupIds = [];
-      } else if (folderOwnershipType === "group") {
+      if (folderOwnershipType === "group") {
         if (!folderOwnerGroupId) {
           alert("Select an owner group");
           return;
@@ -142,6 +140,13 @@ export default function UserManagement({ token, user, sheetId }) {
           return;
         }
         effectiveGroupIds = await getGroupsForUser(folderOwnerUserId);
+        if (!effectiveGroupIds.length) {
+          alert("Selected user does not belong to any groups");
+          return;
+        }
+      } else {
+        alert("Select a valid folder ownership mode");
+        return;
       }
       await axios.post(`${API}/folders`, {
         name: newFolderName,
@@ -1785,7 +1790,6 @@ export default function UserManagement({ token, user, sheetId }) {
             >
               <option value="group">Group-owned</option>
               <option value="user">User-owned (via user's groups)</option>
-              <option value="global">Global (no owner group)</option>
             </select>
             {folderOwnershipType === "group" && (
               <select

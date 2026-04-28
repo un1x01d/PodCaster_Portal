@@ -1,5 +1,6 @@
 import pg from "pg";
 import { encryptSettingValue } from "../utils/settingsCrypto.js";
+import { hashPassword } from "../utils/security.js";
 const { Pool } = pg;
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -38,6 +39,25 @@ export async function initDb() {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS company TEXT;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_required BOOLEAN DEFAULT FALSE;`);
   await pool.query(`ALTER TABLE users ALTER COLUMN role SET DEFAULT 'user';`);
+
+  if (process.env.NODE_ENV !== "production") {
+    const adminEmail = process.env.DEV_ADMIN_EMAIL || "admin@example.com";
+    const adminPassword = process.env.DEV_ADMIN_PASSWORD || "admin123";
+    const adminHash = await hashPassword(adminPassword);
+
+    await pool.query(
+      `
+        INSERT INTO users (email, password, role, password_reset_required)
+        VALUES ($1, $2, 'admin', FALSE)
+        ON CONFLICT (email)
+        DO UPDATE SET
+          password = EXCLUDED.password,
+          role = 'admin',
+          password_reset_required = FALSE
+      `,
+      [adminEmail, adminHash]
+    );
+  }
 
   // GROUPS
   await pool.query(`

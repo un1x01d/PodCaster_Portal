@@ -68,6 +68,7 @@ export const DASHBOARD_COPY_EN = {
   value: "Value",
   point: "Point",
   failedToLoadInsights: "Failed to load insights",
+  sheetTooLargeForInsights: "This sheet is too large for automatic insights. Limit: {maxRows} rows.",
   failedToSaveSettings: "Failed to save settings",
   dataAssistant: "Data Assistant",
   resetChat: "Reset Chat",
