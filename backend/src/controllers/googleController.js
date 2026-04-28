@@ -431,7 +431,7 @@ export async function importGoogleDriveFile(req, res) {
     const originalname = safeBase.endsWith(ext) ? safeBase : `${safeBase}${ext}`;
 
     const tmpPath = path.join(tmpdir(), `gdrive_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`);
-    fs.writeFileSync(tmpPath, downloaded.buffer);
+    await fs.promises.writeFile(tmpPath, downloaded.buffer);
 
     req.file = {
       path: tmpPath,

@@ -6,6 +6,14 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
     const containerRef = useRef(null);
     const [speakingIndex, setSpeakingIndex] = React.useState(null);
     const utteranceRef = useRef(null);
+    const formatMessageForDisplay = (text = "") => {
+        let out = String(text || "");
+        // Turn inline dash lists into real bullet lines:
+        // "... shows: - A - B - C" -> "... shows:\n- A\n- B\n- C"
+        out = out.replace(/([:])\s+-\s+/g, "$1\n- ");
+        out = out.replace(/\s+-\s+(?=\S)/g, "\n- ");
+        return out;
+    };
 
     useEffect(() => {
         if (containerRef.current) {
@@ -208,6 +216,7 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
 
     const handleSpeak = async (text, index) => {
         const synth = window.speechSynthesis;
+        const localeBase = String(locale || "en").toLowerCase().split("-")[0];
         if (synth) synth.cancel();
 
         if (speakingIndex === index) {
@@ -217,23 +226,21 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
         }
 
         stopCurrentAudio();
+        window._stopPlayback = false;
         setSpeakingIndex(index);
 
-        // Prefer native browser voices for Slavic languages to avoid English-accented TTS.
-        if (locale === "ru" || locale === "uk") {
-            const localVoices = voices.length > 0 ? voices : (synth ? synth.getVoices() : []);
-            const hasNativeVoice = localVoices.some(v => {
-                const lang = String(v.lang || "").toLowerCase();
-                return locale === "ru" ? lang.startsWith("ru") : lang.startsWith("uk");
-            });
-            if (hasNativeVoice) {
-                fallbackSpeak(text, index);
-                return;
-            }
+        // Prefer a minimal browser-native path for Slavic locales.
+        if (localeBase === "ru" || localeBase === "uk") {
+            const spoken = fallbackSpeak(text, index, { slavicSafe: true });
+            if (spoken) return;
         }
 
         try {
-            await streamTextToAudio(text);
+            const played = await streamTextToAudio(text);
+            if (played === false) {
+                fallbackSpeak(text, index);
+                return;
+            }
             if (!window._stopPlayback) setSpeakingIndex(null);
         } catch (err) {
             if (!window._stopPlayback) fallbackSpeak(text, index);
@@ -246,18 +253,25 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
         window._audioAbortControllers = [];
         const controller = new AbortController();
         window._audioAbortControllers.push(controller);
+        const token =
+            localStorage.getItem("token")
+            || localStorage.getItem("authToken")
+            || localStorage.getItem("jwt")
+            || localStorage.getItem("jwtToken")
+            || "";
 
         const response = await fetch(`${API}/chat/audio`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
+                ...(token ? { Authorization: `Bearer ${token}` } : {}),
             },
             body: JSON.stringify({ text, locale }),
             signal: controller.signal,
             credentials: "include",
         });
-        if (!response.ok) throw new Error(`audio_stream_failed_${response.status}`);
-        if (!response.body) throw new Error("audio_stream_missing_body");
+        if (!response.ok) return false;
+        if (!response.body) return false;
 
         if ("MediaSource" in window && MediaSource.isTypeSupported("audio/mpeg")) {
             const mediaSource = new MediaSource();
@@ -310,7 +324,7 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
 
             if (!started) {
                 URL.revokeObjectURL(objectUrl);
-                return;
+                return false;
             }
 
             await Promise.race([
@@ -321,7 +335,7 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
               new Promise((resolve) => setTimeout(resolve, 15000)),
             ]);
             URL.revokeObjectURL(objectUrl);
-            return;
+            return true;
         }
 
         const blob = await response.blob();
@@ -334,15 +348,22 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
             audio.onerror = reject;
             audio.play().catch(reject);
         });
+        return true;
     };
 
-    const fallbackSpeak = (text, index) => {
+    const fallbackSpeak = (text, index, opts = {}) => {
         const synth = window.speechSynthesis;
-        if (!synth) return;
+        if (!synth) {
+            setSpeakingIndex((prev) => (prev === index ? null : prev));
+            return false;
+        }
+        window._stopPlayback = false;
         const slavicLang = (locale || "en").split("-")[0].toLowerCase();
-        const speechText = (slavicLang === "ru" || slavicLang === "uk")
-            ? normalizeSlavicPronunciation(normalizeSlavicSpeechNumbers(text, slavicLang), slavicLang)
-            : text;
+        const speechText = opts?.slavicSafe
+            ? String(text || "")
+            : ((slavicLang === "ru" || slavicLang === "uk")
+                ? normalizeSlavicPronunciation(normalizeSlavicSpeechNumbers(text, slavicLang), slavicLang)
+                : text);
         const localeMap = { 'es': 'es-ES', 'uk': 'uk-UA', 'ru': 'ru-RU', 'en': 'en-US' };
         const targetLang = localeMap[locale] || locale || 'en-US';
         const utterance = new SpeechSynthesisUtterance(speechText);
@@ -350,7 +371,9 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
         
         const currentVoices = voices.length > 0 ? voices : synth.getVoices();
         const baseLang = targetLang.split('-')[0].toLowerCase();
-        const bestVoice = currentVoices.find(v => v.lang.toLowerCase().startsWith(baseLang));
+        const bestVoice = currentVoices.find(v => String(v.lang || "").toLowerCase().startsWith(baseLang))
+          || currentVoices.find(v => /google|microsoft|apple|native/i.test(String(v.name || "")))
+          || currentVoices[0];
         if (bestVoice) utterance.voice = bestVoice;
         utterance.rate = (slavicLang === "ru" || slavicLang === "uk") ? 0.88 : 0.95;
         utterance.pitch = 1.0;
@@ -359,10 +382,18 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
             setSpeakingIndex((prev) => (prev === index ? null : prev));
         };
         utterance.onerror = () => {
-            setSpeakingIndex((prev) => (prev === index ? null : prev));
+            // Do not stop silently: fallback to backend stream when browser TTS fails.
+            streamTextToAudio(String(text || ""))
+              .then((ok) => {
+                if (ok !== true) setSpeakingIndex((prev) => (prev === index ? null : prev));
+              })
+              .catch(() => {
+                setSpeakingIndex((prev) => (prev === index ? null : prev));
+              });
         };
 
         synth.speak(utterance);
+        return true;
     };
 
     return (
@@ -390,7 +421,7 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
                                     )}
                                 </button>
                             )}
-                            <div className="whitespace-pre-wrap font-semibold tracking-[0.01em]">{msg.text}</div>
+                            <div className="whitespace-pre-wrap font-semibold tracking-[0.01em]">{formatMessageForDisplay(msg.text)}</div>
                         </div>
                     </div>
                 );

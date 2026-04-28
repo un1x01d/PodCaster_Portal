@@ -343,6 +343,31 @@ export async function initDb() {
       UNIQUE (sheet_id, user_id)
     );
   `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_permissions_sheet_id ON permissions(sheet_id);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_permissions_user_id ON permissions(user_id);`);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE table_name='permissions' AND constraint_name='permissions_sheet_fk'
+      ) THEN
+        ALTER TABLE permissions
+          ADD CONSTRAINT permissions_sheet_fk
+          FOREIGN KEY (sheet_id) REFERENCES sheets(id) ON DELETE CASCADE NOT VALID;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE table_name='permissions' AND constraint_name='permissions_user_fk'
+      ) THEN
+        ALTER TABLE permissions
+          ADD CONSTRAINT permissions_user_fk
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE NOT VALID;
+      END IF;
+    END $$;
+  `);
 
   // GROUP permissions
   await pool.query(`
@@ -354,6 +379,31 @@ export async function initDb() {
       row_filters JSONB NOT NULL DEFAULT '{}'::jsonb,
       UNIQUE (sheet_id, group_id)
     );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_group_permissions_sheet_id ON group_permissions(sheet_id);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_group_permissions_group_id ON group_permissions(group_id);`);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE table_name='group_permissions' AND constraint_name='group_permissions_sheet_fk'
+      ) THEN
+        ALTER TABLE group_permissions
+          ADD CONSTRAINT group_permissions_sheet_fk
+          FOREIGN KEY (sheet_id) REFERENCES sheets(id) ON DELETE CASCADE NOT VALID;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE table_name='group_permissions' AND constraint_name='group_permissions_group_fk'
+      ) THEN
+        ALTER TABLE group_permissions
+          ADD CONSTRAINT group_permissions_group_fk
+          FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE NOT VALID;
+      END IF;
+    END $$;
   `);
 
   // VIEWS (locked)
@@ -367,6 +417,31 @@ export async function initDb() {
       created_by INT NOT NULL
     );
   `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_views_sheet_id ON views(sheet_id);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_views_created_by ON views(created_by);`);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE table_name='views' AND constraint_name='views_sheet_fk'
+      ) THEN
+        ALTER TABLE views
+          ADD CONSTRAINT views_sheet_fk
+          FOREIGN KEY (sheet_id) REFERENCES sheets(id) ON DELETE CASCADE NOT VALID;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE table_name='views' AND constraint_name='views_created_by_fk'
+      ) THEN
+        ALTER TABLE views
+          ADD CONSTRAINT views_created_by_fk
+          FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE NOT VALID;
+      END IF;
+    END $$;
+  `);
 
   // VIEW permissions
   await pool.query(`
@@ -377,6 +452,31 @@ export async function initDb() {
       UNIQUE (view_id, user_id)
     );
   `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_view_user_permissions_view_id ON view_user_permissions(view_id);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_view_user_permissions_user_id ON view_user_permissions(user_id);`);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE table_name='view_user_permissions' AND constraint_name='view_user_permissions_view_fk'
+      ) THEN
+        ALTER TABLE view_user_permissions
+          ADD CONSTRAINT view_user_permissions_view_fk
+          FOREIGN KEY (view_id) REFERENCES views(id) ON DELETE CASCADE NOT VALID;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE table_name='view_user_permissions' AND constraint_name='view_user_permissions_user_fk'
+      ) THEN
+        ALTER TABLE view_user_permissions
+          ADD CONSTRAINT view_user_permissions_user_fk
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE NOT VALID;
+      END IF;
+    END $$;
+  `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS view_group_permissions (
       id SERIAL PRIMARY KEY,
@@ -384,6 +484,31 @@ export async function initDb() {
       group_id INT NOT NULL,
       UNIQUE (view_id, group_id)
     );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_view_group_permissions_view_id ON view_group_permissions(view_id);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_view_group_permissions_group_id ON view_group_permissions(group_id);`);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE table_name='view_group_permissions' AND constraint_name='view_group_permissions_view_fk'
+      ) THEN
+        ALTER TABLE view_group_permissions
+          ADD CONSTRAINT view_group_permissions_view_fk
+          FOREIGN KEY (view_id) REFERENCES views(id) ON DELETE CASCADE NOT VALID;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE table_name='view_group_permissions' AND constraint_name='view_group_permissions_group_fk'
+      ) THEN
+        ALTER TABLE view_group_permissions
+          ADD CONSTRAINT view_group_permissions_group_fk
+          FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE NOT VALID;
+      END IF;
+    END $$;
   `);
 
   // Insight settings (per sheet)

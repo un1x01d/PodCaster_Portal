@@ -365,7 +365,7 @@ export async function importDropboxFile(req, res) {
 
     const buf = Buffer.from(await downloadResp.arrayBuffer());
     const tmpPath = path.join(tmpdir(), `dropbox_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`);
-    fs.writeFileSync(tmpPath, buf);
+    await fs.promises.writeFile(tmpPath, buf);
 
     req.file = {
       path: tmpPath,

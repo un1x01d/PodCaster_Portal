@@ -316,8 +316,21 @@ export function useChatbotLogic({
                 },
               }));
             }
-          } catch (_) {
-            // Silent pinned-metric calls should not alter chat UI on errors.
+          } catch (err) {
+            if (typeof window !== "undefined") {
+              const errMsg =
+                err?.response?.data?.message
+                || err?.response?.data?.error
+                || "AI chat request failed.";
+              window.dispatchEvent(new CustomEvent("dashboard:chat-response", {
+                detail: {
+                  sheetId: current.sheetId,
+                  answer: "",
+                  error: String(errMsg),
+                  meta,
+                },
+              }));
+            }
           }
         })();
         return;

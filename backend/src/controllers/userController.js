@@ -1,6 +1,7 @@
 import { query, getClient } from "../config/db.js";
 import { hashPassword, generateComplexPassword } from "../utils/security.js";
 import { decryptSettingValue, encryptSettingValue } from "../utils/settingsCrypto.js";
+import { parsePagination } from "../utils/pagination.js";
 
 const EXPOSE_TEMP_PASSWORDS = process.env.EXPOSE_TEMP_PASSWORDS
     ? process.env.EXPOSE_TEMP_PASSWORDS === "true"
@@ -9,6 +10,7 @@ const ALLOWED_ROLES = new Set(["admin", "user"]);
 const HEAVY_LIST_CACHE = new Map();
 const HEAVY_LIST_CACHE_TTL_MS = Number.parseInt(process.env.HEAVY_LIST_CACHE_TTL_MS || "20000", 10);
 const HEAVY_LIST_CACHE_MAX = Number.parseInt(process.env.HEAVY_LIST_CACHE_MAX || "200", 10);
+const ENABLE_STORAGE_USAGE_METRICS = String(process.env.ENABLE_STORAGE_USAGE_METRICS || "").toLowerCase() === "true";
 
 function normalizeRole(value, fallback = "user") {
     const normalized = String(value || fallback).trim().toLowerCase();
@@ -70,13 +72,22 @@ export async function getUserGroups(req, res) {
 
 export async function listUsers(req, res) {
     const isGlobalAdmin = req.user.role === "admin";
+    const pagination = parsePagination(req.query, { maxLimit: 1000 });
+    if (pagination.error) return res.status(400).json({ error: pagination.error });
     try {
         if (isGlobalAdmin) {
+            const params = [];
+            let sql = `SELECT id, email, role, default_view_id, first_name, last_name, company,
+                              CASE WHEN password IS NULL THEN 'google' ELSE 'manual' END AS auth_provider
+                       FROM users
+                       ORDER BY id ASC`;
+            if (pagination.hasPagination) {
+                sql += ` LIMIT $1 OFFSET $2`;
+                params.push(pagination.limit, pagination.offset);
+            }
             const users = await query(
-                `SELECT id, email, role, default_view_id, first_name, last_name, company,
-                        CASE WHEN password IS NULL THEN 'google' ELSE 'manual' END AS auth_provider
-                 FROM users
-                 ORDER BY id ASC`
+                sql,
+                params
             );
             return res.json(users);
         } else {
@@ -84,13 +95,19 @@ export async function listUsers(req, res) {
             if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
             
             // Return users who share ANY handled group with the admin
-            const users = await query(`
+            const params = [adminGroups];
+            let sql = `
                 SELECT DISTINCT u.id, u.email, u.role, u.default_view_id, u.first_name, u.last_name, u.company,
                                 CASE WHEN u.password IS NULL THEN 'google' ELSE 'manual' END AS auth_provider
                 FROM users u
                 JOIN user_groups ug ON u.id = ug.user_id
                 WHERE ug.group_id = ANY($1::int[])
-                ORDER BY u.id ASC`, [adminGroups]);
+                ORDER BY u.id ASC`;
+            if (pagination.hasPagination) {
+                sql += ` LIMIT $2 OFFSET $3`;
+                params.push(pagination.limit, pagination.offset);
+            }
+            const users = await query(sql, params);
             return res.json(users);
         }
     } catch (e) {
@@ -491,86 +508,111 @@ export async function setOneDriveOauthSetting(req, res) {
 // --- Groups ---
 
 export async function listGroups(req, res) {
+    const pagination = parsePagination(req.query, { maxLimit: 1000 });
+    if (pagination.error) return res.status(400).json({ error: pagination.error });
+    const pageTag = pagination.hasPagination ? `:l${pagination.limit}:o${pagination.offset}` : ":all";
     if (req.user.role === "admin") {
-        const cacheKey = "listGroups:admin";
+        const cacheKey = `listGroups:admin:${ENABLE_STORAGE_USAGE_METRICS ? "usage" : "lite"}${pageTag}`;
         const cached = getHeavyListCache(cacheKey);
         if (cached) return res.json(cached);
-        const groups = await query(
-            `WITH group_folders AS (
-               SELECT DISTINCT fg.group_id, fg.folder_id
-               FROM folder_groups fg
-               UNION
-               SELECT g.id AS group_id, f.id AS folder_id
-               FROM groups g
-               JOIN folders f ON f.group_id = g.id
-             ),
-             folder_usage AS (
-               SELECT
-                 s.folder_id,
-                 COALESCE(SUM(pg_column_size(sr.row_data)), 0)::bigint AS total_size_bytes
-               FROM sheets s
-               LEFT JOIN sheet_rows sr ON sr.sheet_id = s.id
-               GROUP BY s.folder_id
-             ),
-             group_usage AS (
-               SELECT
-                 gf.group_id,
-                 COALESCE(SUM(fu.total_size_bytes), 0)::bigint AS used_storage_bytes
-               FROM group_folders gf
-               LEFT JOIN folder_usage fu ON fu.folder_id = gf.folder_id
-               GROUP BY gf.group_id
-             )
-             SELECT g.*,
-                    COALESCE(gu.used_storage_bytes, 0)::bigint AS used_storage_bytes
-             FROM groups g
-             LEFT JOIN group_usage gu ON gu.group_id = g.id
-             ORDER BY g.id ASC`
-        );
+        let sql;
+        const params = [];
+        if (ENABLE_STORAGE_USAGE_METRICS) {
+            sql = `WITH group_folders AS (
+                     SELECT DISTINCT fg.group_id, fg.folder_id
+                     FROM folder_groups fg
+                     UNION
+                     SELECT g.id AS group_id, f.id AS folder_id
+                     FROM groups g
+                     JOIN folders f ON f.group_id = g.id
+                   ),
+                   folder_usage AS (
+                     SELECT
+                       s.folder_id,
+                       COALESCE(SUM(pg_column_size(sr.row_data)), 0)::bigint AS total_size_bytes
+                     FROM sheets s
+                     LEFT JOIN sheet_rows sr ON sr.sheet_id = s.id
+                     GROUP BY s.folder_id
+                   ),
+                   group_usage AS (
+                     SELECT
+                       gf.group_id,
+                       COALESCE(SUM(fu.total_size_bytes), 0)::bigint AS used_storage_bytes
+                     FROM group_folders gf
+                     LEFT JOIN folder_usage fu ON fu.folder_id = gf.folder_id
+                     GROUP BY gf.group_id
+                   )
+                   SELECT g.*,
+                          COALESCE(gu.used_storage_bytes, 0)::bigint AS used_storage_bytes
+                   FROM groups g
+                   LEFT JOIN group_usage gu ON gu.group_id = g.id
+                   ORDER BY g.id ASC`;
+        } else {
+            sql = `SELECT g.*, 0::bigint AS used_storage_bytes
+                   FROM groups g
+                   ORDER BY g.id ASC`;
+        }
+        if (pagination.hasPagination) {
+            sql += ` LIMIT $1 OFFSET $2`;
+            params.push(pagination.limit, pagination.offset);
+        }
+        const groups = await query(sql, params);
         setHeavyListCache(cacheKey, groups);
         return res.json(groups);
     }
 
     const adminGroups = await getAdminGroups(req.user.id);
     if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
-    const cacheKey = `listGroups:user:${req.user.id}:${[...adminGroups].sort((a, b) => a - b).join(",")}`;
+    const cacheKey = `listGroups:user:${req.user.id}:${[...adminGroups].sort((a, b) => a - b).join(",")}:${ENABLE_STORAGE_USAGE_METRICS ? "usage" : "lite"}${pageTag}`;
     const cached = getHeavyListCache(cacheKey);
     if (cached) return res.json(cached);
 
-    const groups = await query(
-        `WITH group_folders AS (
-           SELECT DISTINCT fg.group_id, fg.folder_id
-           FROM folder_groups fg
-           WHERE fg.group_id = ANY($1::int[])
-           UNION
-           SELECT g.id AS group_id, f.id AS folder_id
-           FROM groups g
-           JOIN folders f ON f.group_id = g.id
-           WHERE g.id = ANY($1::int[])
-         ),
-         folder_usage AS (
-           SELECT
-             s.folder_id,
-             COALESCE(SUM(pg_column_size(sr.row_data)), 0)::bigint AS total_size_bytes
-           FROM sheets s
-           LEFT JOIN sheet_rows sr ON sr.sheet_id = s.id
-           GROUP BY s.folder_id
-         ),
-         group_usage AS (
-           SELECT
-             gf.group_id,
-             COALESCE(SUM(fu.total_size_bytes), 0)::bigint AS used_storage_bytes
-           FROM group_folders gf
-           LEFT JOIN folder_usage fu ON fu.folder_id = gf.folder_id
-           GROUP BY gf.group_id
-         )
-         SELECT g.*,
-                COALESCE(gu.used_storage_bytes, 0)::bigint AS used_storage_bytes
-         FROM groups g
-         LEFT JOIN group_usage gu ON gu.group_id = g.id
-         WHERE g.id = ANY($1::int[])
-         ORDER BY g.id ASC`,
-        [adminGroups]
-    );
+    const params = [adminGroups];
+    let sql;
+    if (ENABLE_STORAGE_USAGE_METRICS) {
+        sql = `WITH group_folders AS (
+                 SELECT DISTINCT fg.group_id, fg.folder_id
+                 FROM folder_groups fg
+                 WHERE fg.group_id = ANY($1::int[])
+                 UNION
+                 SELECT g.id AS group_id, f.id AS folder_id
+                 FROM groups g
+                 JOIN folders f ON f.group_id = g.id
+                 WHERE g.id = ANY($1::int[])
+               ),
+               folder_usage AS (
+                 SELECT
+                   s.folder_id,
+                   COALESCE(SUM(pg_column_size(sr.row_data)), 0)::bigint AS total_size_bytes
+                 FROM sheets s
+                 LEFT JOIN sheet_rows sr ON sr.sheet_id = s.id
+                 GROUP BY s.folder_id
+               ),
+               group_usage AS (
+                 SELECT
+                   gf.group_id,
+                   COALESCE(SUM(fu.total_size_bytes), 0)::bigint AS used_storage_bytes
+                 FROM group_folders gf
+                 LEFT JOIN folder_usage fu ON fu.folder_id = gf.folder_id
+                 GROUP BY gf.group_id
+               )
+               SELECT g.*,
+                      COALESCE(gu.used_storage_bytes, 0)::bigint AS used_storage_bytes
+               FROM groups g
+               LEFT JOIN group_usage gu ON gu.group_id = g.id
+               WHERE g.id = ANY($1::int[])
+               ORDER BY g.id ASC`;
+    } else {
+        sql = `SELECT g.*, 0::bigint AS used_storage_bytes
+               FROM groups g
+               WHERE g.id = ANY($1::int[])
+               ORDER BY g.id ASC`;
+    }
+    if (pagination.hasPagination) {
+        sql += ` LIMIT $2 OFFSET $3`;
+        params.push(pagination.limit, pagination.offset);
+    }
+    const groups = await query(sql, params);
     setHeavyListCache(cacheKey, groups);
     return res.json(groups);
 }
@@ -612,24 +654,34 @@ export async function updateGroup(req, res) {
 export async function deleteGroup(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     const { id } = req.params;
+    const client = await getClient();
     try {
+        await client.query("BEGIN");
         // Check for members
-        const members = await query("SELECT 1 FROM user_groups WHERE group_id = $1 LIMIT 1", [id]);
-        if (members.length > 0) {
+        const members = await client.query("SELECT 1 FROM user_groups WHERE group_id = $1 LIMIT 1", [id]);
+        if (members.rows.length > 0) {
+            await client.query("ROLLBACK");
             return res.status(400).json({ error: "group_not_empty", message: "Cannot delete group with members. Remove all members first." });
         }
         
         // Cleanup other dependencies (folders might still exist, user didn't specify checking those, but permissions should be cleaned)
-        await query("DELETE FROM group_permissions WHERE group_id = $1", [id]);
-        await query("DELETE FROM view_group_permissions WHERE group_id = $1", [id]);
+        await client.query("DELETE FROM group_permissions WHERE group_id = $1", [id]);
+        await client.query("DELETE FROM view_group_permissions WHERE group_id = $1", [id]);
         
-        const r = await query("DELETE FROM groups WHERE id = $1 RETURNING *", [id]);
-        if (!r.length) return res.status(404).json({ error: "not_found" });
+        const r = await client.query("DELETE FROM groups WHERE id = $1 RETURNING *", [id]);
+        if (!r.rows.length) {
+            await client.query("ROLLBACK");
+            return res.status(404).json({ error: "not_found" });
+        }
+        await client.query("COMMIT");
         clearHeavyListCache();
         res.json({ success: true });
     } catch (e) {
+        await client.query("ROLLBACK");
         console.error("deleteGroup error:", e);
         res.status(500).json({ error: "internal_error" });
+    } finally {
+        client.release();
     }
 }
 
@@ -757,95 +809,168 @@ export async function getGroupSheets(req, res) {
 // --- Folders ---
 
 export async function listFolders(req, res) {
+    const pagination = parsePagination(req.query, { maxLimit: 1000 });
+    if (pagination.error) return res.status(400).json({ error: pagination.error });
     const userId = Number(req.user?.id || 0);
     const role = String(req.user?.role || "");
-    let cacheKey = `listFolders:${role}:${userId}`;
+    const pageTag = pagination.hasPagination ? `:l${pagination.limit}:o${pagination.offset}` : ":all";
+    let cacheKey = `listFolders:${role}:${userId}:${ENABLE_STORAGE_USAGE_METRICS ? "usage" : "lite"}${pageTag}`;
     let rows;
     if (req.user.role === "admin") {
         const cached = getHeavyListCache(cacheKey);
         if (cached) return res.json(cached);
-        rows = await query(`
-            WITH folder_usage AS (
-              SELECT
-                s.folder_id,
-                COUNT(DISTINCT s.id)::int AS sheet_count,
-                COALESCE(SUM(pg_column_size(sr.row_data)), 0)::bigint AS total_size_bytes
-              FROM sheets s
-              LEFT JOIN sheet_rows sr ON sr.sheet_id = s.id
-              GROUP BY s.folder_id
-            )
-            SELECT
-              f.id,
-              f.name,
-              f.parent_id,
-              f.created_at,
-              f.group_id AS legacy_group_id,
-              f.owner_user_id,
-              f.max_file_size_mb,
-              f.max_total_size_mb,
-              ou.email AS owner_user_email,
-              COALESCE(fu.sheet_count, 0) AS sheet_count,
-              COALESCE(fu.total_size_bytes, 0) AS total_size_bytes,
-              COALESCE(
-                ARRAY_AGG(DISTINCT fg.group_id) FILTER (WHERE fg.group_id IS NOT NULL),
-                ARRAY[]::INT[]
-              ) AS group_ids
-            FROM folders f
-            LEFT JOIN folder_groups fg ON fg.folder_id = f.id
-            LEFT JOIN users ou ON ou.id = f.owner_user_id
-            LEFT JOIN folder_usage fu ON fu.folder_id = f.id
-            GROUP BY f.id, f.name, f.parent_id, f.created_at, f.group_id, f.owner_user_id, f.max_file_size_mb, f.max_total_size_mb, ou.email, fu.sheet_count, fu.total_size_bytes
-            ORDER BY f.name ASC
-        `);
+        const params = [];
+        let sql;
+        if (ENABLE_STORAGE_USAGE_METRICS) {
+            sql = `
+                WITH folder_usage AS (
+                  SELECT
+                    s.folder_id,
+                    COUNT(DISTINCT s.id)::int AS sheet_count,
+                    COALESCE(SUM(pg_column_size(sr.row_data)), 0)::bigint AS total_size_bytes
+                  FROM sheets s
+                  LEFT JOIN sheet_rows sr ON sr.sheet_id = s.id
+                  GROUP BY s.folder_id
+                )
+                SELECT
+                  f.id,
+                  f.name,
+                  f.parent_id,
+                  f.created_at,
+                  f.group_id AS legacy_group_id,
+                  f.owner_user_id,
+                  f.max_file_size_mb,
+                  f.max_total_size_mb,
+                  ou.email AS owner_user_email,
+                  COALESCE(fu.sheet_count, 0) AS sheet_count,
+                  COALESCE(fu.total_size_bytes, 0) AS total_size_bytes,
+                  COALESCE(
+                    ARRAY_AGG(DISTINCT fg.group_id) FILTER (WHERE fg.group_id IS NOT NULL),
+                    ARRAY[]::INT[]
+                  ) AS group_ids
+                FROM folders f
+                LEFT JOIN folder_groups fg ON fg.folder_id = f.id
+                LEFT JOIN users ou ON ou.id = f.owner_user_id
+                LEFT JOIN folder_usage fu ON fu.folder_id = f.id
+                GROUP BY f.id, f.name, f.parent_id, f.created_at, f.group_id, f.owner_user_id, f.max_file_size_mb, f.max_total_size_mb, ou.email, fu.sheet_count, fu.total_size_bytes
+                ORDER BY f.name ASC`;
+        } else {
+            sql = `
+                SELECT
+                  f.id,
+                  f.name,
+                  f.parent_id,
+                  f.created_at,
+                  f.group_id AS legacy_group_id,
+                  f.owner_user_id,
+                  f.max_file_size_mb,
+                  f.max_total_size_mb,
+                  ou.email AS owner_user_email,
+                  0::int AS sheet_count,
+                  0::bigint AS total_size_bytes,
+                  COALESCE(
+                    ARRAY_AGG(DISTINCT fg.group_id) FILTER (WHERE fg.group_id IS NOT NULL),
+                    ARRAY[]::INT[]
+                  ) AS group_ids
+                FROM folders f
+                LEFT JOIN folder_groups fg ON fg.folder_id = f.id
+                LEFT JOIN users ou ON ou.id = f.owner_user_id
+                GROUP BY f.id, f.name, f.parent_id, f.created_at, f.group_id, f.owner_user_id, f.max_file_size_mb, f.max_total_size_mb, ou.email
+                ORDER BY f.name ASC`;
+        }
+        if (pagination.hasPagination) {
+            sql += ` LIMIT $1 OFFSET $2`;
+            params.push(pagination.limit, pagination.offset);
+        }
+        rows = await query(sql, params);
     } else {
         const adminGroups = await getAdminGroups(req.user.id);
         if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
-        cacheKey = `listFolders:${role}:${userId}:${[...adminGroups].sort((a, b) => a - b).join(",")}`;
+        cacheKey = `listFolders:${role}:${userId}:${[...adminGroups].sort((a, b) => a - b).join(",")}:${ENABLE_STORAGE_USAGE_METRICS ? "usage" : "lite"}${pageTag}`;
         const cached = getHeavyListCache(cacheKey);
         if (cached) return res.json(cached);
-
-        rows = await query(`
-            WITH folder_usage AS (
-              SELECT
-                s.folder_id,
-                COUNT(DISTINCT s.id)::int AS sheet_count,
-                COALESCE(SUM(pg_column_size(sr.row_data)), 0)::bigint AS total_size_bytes
-              FROM sheets s
-              LEFT JOIN sheet_rows sr ON sr.sheet_id = s.id
-              GROUP BY s.folder_id
-            )
-            SELECT
-              f.id,
-              f.name,
-              f.parent_id,
-              f.created_at,
-              f.group_id AS legacy_group_id,
-              f.owner_user_id,
-              f.max_file_size_mb,
-              f.max_total_size_mb,
-              ou.email AS owner_user_email,
-              COALESCE(fu.sheet_count, 0) AS sheet_count,
-              COALESCE(fu.total_size_bytes, 0) AS total_size_bytes,
-              COALESCE(
-                ARRAY_AGG(DISTINCT fg.group_id) FILTER (WHERE fg.group_id IS NOT NULL),
-                ARRAY[]::INT[]
-              ) AS group_ids
-            FROM folders f
-            LEFT JOIN folder_groups fg ON fg.folder_id = f.id
-            LEFT JOIN users ou ON ou.id = f.owner_user_id
-            LEFT JOIN folder_usage fu ON fu.folder_id = f.id
-            WHERE (
-              f.group_id = ANY($1::int[])
-              OR EXISTS (
-                SELECT 1
-                FROM folder_groups fg2
-                WHERE fg2.folder_id = f.id
-                  AND fg2.group_id = ANY($1::int[])
-              )
-            )
-            GROUP BY f.id, f.name, f.parent_id, f.created_at, f.group_id, f.owner_user_id, f.max_file_size_mb, f.max_total_size_mb, ou.email, fu.sheet_count, fu.total_size_bytes
-            ORDER BY f.name ASC
-        `, [adminGroups]);
+        const params = [adminGroups];
+        let sql;
+        if (ENABLE_STORAGE_USAGE_METRICS) {
+            sql = `
+                WITH folder_usage AS (
+                  SELECT
+                    s.folder_id,
+                    COUNT(DISTINCT s.id)::int AS sheet_count,
+                    COALESCE(SUM(pg_column_size(sr.row_data)), 0)::bigint AS total_size_bytes
+                  FROM sheets s
+                  LEFT JOIN sheet_rows sr ON sr.sheet_id = s.id
+                  GROUP BY s.folder_id
+                )
+                SELECT
+                  f.id,
+                  f.name,
+                  f.parent_id,
+                  f.created_at,
+                  f.group_id AS legacy_group_id,
+                  f.owner_user_id,
+                  f.max_file_size_mb,
+                  f.max_total_size_mb,
+                  ou.email AS owner_user_email,
+                  COALESCE(fu.sheet_count, 0) AS sheet_count,
+                  COALESCE(fu.total_size_bytes, 0) AS total_size_bytes,
+                  COALESCE(
+                    ARRAY_AGG(DISTINCT fg.group_id) FILTER (WHERE fg.group_id IS NOT NULL),
+                    ARRAY[]::INT[]
+                  ) AS group_ids
+                FROM folders f
+                LEFT JOIN folder_groups fg ON fg.folder_id = f.id
+                LEFT JOIN users ou ON ou.id = f.owner_user_id
+                LEFT JOIN folder_usage fu ON fu.folder_id = f.id
+                WHERE (
+                  f.group_id = ANY($1::int[])
+                  OR EXISTS (
+                    SELECT 1
+                    FROM folder_groups fg2
+                    WHERE fg2.folder_id = f.id
+                      AND fg2.group_id = ANY($1::int[])
+                  )
+                )
+                GROUP BY f.id, f.name, f.parent_id, f.created_at, f.group_id, f.owner_user_id, f.max_file_size_mb, f.max_total_size_mb, ou.email, fu.sheet_count, fu.total_size_bytes
+                ORDER BY f.name ASC`;
+        } else {
+            sql = `
+                SELECT
+                  f.id,
+                  f.name,
+                  f.parent_id,
+                  f.created_at,
+                  f.group_id AS legacy_group_id,
+                  f.owner_user_id,
+                  f.max_file_size_mb,
+                  f.max_total_size_mb,
+                  ou.email AS owner_user_email,
+                  0::int AS sheet_count,
+                  0::bigint AS total_size_bytes,
+                  COALESCE(
+                    ARRAY_AGG(DISTINCT fg.group_id) FILTER (WHERE fg.group_id IS NOT NULL),
+                    ARRAY[]::INT[]
+                  ) AS group_ids
+                FROM folders f
+                LEFT JOIN folder_groups fg ON fg.folder_id = f.id
+                LEFT JOIN users ou ON ou.id = f.owner_user_id
+                WHERE (
+                  f.group_id = ANY($1::int[])
+                  OR EXISTS (
+                    SELECT 1
+                    FROM folder_groups fg2
+                    WHERE fg2.folder_id = f.id
+                      AND fg2.group_id = ANY($1::int[])
+                  )
+                )
+                GROUP BY f.id, f.name, f.parent_id, f.created_at, f.group_id, f.owner_user_id, f.max_file_size_mb, f.max_total_size_mb, ou.email
+                ORDER BY f.name ASC`;
+        }
+        if (pagination.hasPagination) {
+            sql += ` LIMIT $2 OFFSET $3`;
+            params.push(pagination.limit, pagination.offset);
+        }
+        rows = await query(sql, params);
     }
 
     const byId = new Map(rows.map(r => [r.id, r]));

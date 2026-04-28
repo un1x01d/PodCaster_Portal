@@ -128,10 +128,7 @@ export default function DashboardBody(props) {
     const secondaryHeaderRef = useRef(null);
 
     // Sync header scroll with horizontal data scroll
-    const handlePrimaryScroll = ({ scrollLeft, scrollTop }) => {
-        if (headerRef.current) {
-            headerRef.current.scrollLeft = scrollLeft;
-        }
+    const handlePrimaryScroll = ({ scrollTop }) => {
         if (comparisonOn && secondaryListRef.current) {
             // Only sync if the position is significantly different to avoid loops
             const currentSecondary = secondaryListRef.current.state?.scrollOffset || 0;
@@ -141,10 +138,7 @@ export default function DashboardBody(props) {
         }
     };
 
-    const handleSecondaryScroll = ({ scrollLeft, scrollTop }) => {
-        if (secondaryHeaderRef.current) {
-            secondaryHeaderRef.current.scrollLeft = scrollLeft;
-        }
+    const handleSecondaryScroll = ({ scrollTop }) => {
         if (comparisonOn && primaryListRef.current) {
             const currentPrimary = primaryListRef.current.state?.scrollOffset || 0;
             if (Math.abs(currentPrimary - scrollTop) > 1) {
@@ -478,8 +472,38 @@ export default function DashboardBody(props) {
 
     // Memoize InnerElement to prevent remounts and issues with ref
     const totalRowWidth = React.useMemo(() => {
-        return displayHeaders?.reduce((sum, h) => sum + (colWidths[h] || 180), 0) || 0;
-    }, [displayHeaders, colWidths]);
+        return activePrimaryFields?.reduce((sum, h) => sum + (colWidths[h] || 180), 0) || 0;
+    }, [activePrimaryFields, colWidths]);
+
+    const secondaryTotalWidth = React.useMemo(() => {
+        return activeSecondaryFields?.reduce((sum, h) => sum + 180, 0) || 0;
+    }, [activeSecondaryFields]);
+
+    const PrimaryOuterElement = React.useMemo(() => forwardRef(({ onScroll, ...rest }, ref) => (
+        <div
+            ref={ref}
+            onScroll={(e) => {
+                onScroll(e);
+                if (headerRef.current) {
+                    headerRef.current.scrollLeft = e.currentTarget.scrollLeft;
+                }
+            }}
+            {...rest}
+        />
+    )), []);
+
+    const SecondaryOuterElement = React.useMemo(() => forwardRef(({ onScroll, ...rest }, ref) => (
+        <div
+            ref={ref}
+            onScroll={(e) => {
+                onScroll(e);
+                if (secondaryHeaderRef.current) {
+                    secondaryHeaderRef.current.scrollLeft = e.currentTarget.scrollLeft;
+                }
+            }}
+            {...rest}
+        />
+    )), []);
 
     // Non-admin users: show welcome screen until sheet is selected
     if (user.role !== "admin" && !sheetId) {
@@ -1305,7 +1329,7 @@ export default function DashboardBody(props) {
                                         style={{ width: "100%" }}
                                         ref={headerRef}
                                     >
-                                        <div style={{ display: 'flex', width: (activePrimaryFields.length * 180), height: '100%' }}>
+                                        <div style={{ display: 'flex', width: totalRowWidth, height: '100%' }}>
                                             {activePrimaryFields.map((h) => (
                                                 <div
                                                     key={h}
@@ -1332,8 +1356,9 @@ export default function DashboardBody(props) {
                                                         width={width}
                                                         onItemsRendered={handleItemsRendered}
                                                         onScroll={handlePrimaryScroll}
+                                                        outerElementType={PrimaryOuterElement}
                                                         innerElementType={({ style, ...rest }) => (
-                                                            <div style={{ ...style, width: activePrimaryFields.length * 180, position: 'relative' }} {...rest} />
+                                                            <div style={{ ...style, width: totalRowWidth, position: 'relative' }} {...rest} />
                                                         )}
                                                     >
                                                         {({ index, style }) => {
@@ -1396,7 +1421,7 @@ export default function DashboardBody(props) {
                                             className="flex bg-slate-200/50 border-b border-slate-200 shadow-sm z-10 overflow-hidden shrink-0 h-10 items-center"
                                             ref={secondaryHeaderRef}
                                         >
-                                            <div style={{ display: 'flex', width: activeSecondaryFields.length * 180, height: '100%' }}>
+                                            <div style={{ display: 'flex', width: secondaryTotalWidth, height: '100%' }}>
                                                 {activeSecondaryFields.map((h) => (
                                                     <div key={h} style={{ width: 180, minWidth: 180 }} className="px-3 py-1.5 text-[11px] font-bold text-slate-700 border-r border-slate-200 truncate h-full flex items-center">
                                                         {h}
@@ -1417,8 +1442,9 @@ export default function DashboardBody(props) {
                                                             width={width}
                                                             onItemsRendered={handleSecondaryItemsRendered}
                                                             onScroll={handleSecondaryScroll}
+                                                            outerElementType={SecondaryOuterElement}
                                                             innerElementType={({ style, ...rest }) => (
-                                                                <div style={{ ...style, width: activeSecondaryFields.length * 180, position: 'relative' }} {...rest} />
+                                                                <div style={{ ...style, width: secondaryTotalWidth, position: 'relative' }} {...rest} />
                                                             )}
                                                         >
                                                             {({ index, style }) => {

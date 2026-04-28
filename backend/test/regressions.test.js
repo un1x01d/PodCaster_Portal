@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 test("dropbox oauth state is signed and validates for original user", async () => {
   process.env.JWT_SECRET = "test-secret";
@@ -39,4 +42,32 @@ test("chat sheet access check always allows admin", async () => {
   const mod = await import(`../src/controllers/chatController.js?t=${Date.now()}`);
   const hasAccess = await mod.checkSheetAccess("any-sheet-id", { id: 1, role: "admin" });
   assert.equal(hasAccess, true);
+});
+
+test("chat audio rejects oversized text before upstream call", async () => {
+  process.env.OPENAI_API_KEY = "test-key";
+  process.env.CHAT_AUDIO_MAX_CHARS = "10";
+  const mod = await import(`../src/controllers/chatController.js?t=${Date.now()}_audio_limit`);
+
+  const req = { body: { text: "01234567890", locale: "en" } };
+  const res = {
+    statusCode: 200,
+    payload: null,
+    status(code) { this.statusCode = code; return this; },
+    json(obj) { this.payload = obj; return this; },
+  };
+
+  await mod.getChatAudio(req, res);
+  assert.equal(res.statusCode, 413);
+  assert.equal(res.payload?.error, "text_too_large");
+});
+
+test("chat formatter preserves decimal percentages and removes empty-tab artifact", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const controllerPath = path.join(__dirname, "..", "src", "controllers", "chatController.js");
+  const source = fs.readFileSync(controllerPath, "utf8");
+
+  assert.match(source, /if \(!text\.includes\("\\n"\) && \/\\d\\\.\\d\/\.test\(text\)\) return text;/);
+  assert.match(source, /empty-tab artifact phrases/);
 });

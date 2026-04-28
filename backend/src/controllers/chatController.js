@@ -5,6 +5,7 @@ import { isEnglishLocale, normalizeLocale, translateDashboardItems } from "../ut
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10);
+const CHAT_AUDIO_MAX_CHARS = Number.parseInt(process.env.CHAT_AUDIO_MAX_CHARS || "8000", 10);
 
 let SEMANTIC_CACHE = null;
 let RATIO_CACHE = null;
@@ -17,6 +18,33 @@ function toNum(v) {
   if (!v) return null;
   const n = parseFloat(String(v).replace(/[$,%\s,]/g, ""));
   return Number.isFinite(n) ? n : null;
+}
+
+function looksLikeDateText(v) {
+  const s = String(v || "").trim();
+  if (!s) return false;
+  return (
+    /^\d{4}-\d{2}-\d{2}$/.test(s) ||
+    /^\d{2}-\d{2}-\d{4}$/.test(s) ||
+    /^\d{2}\/\d{2}\/\d{4}$/.test(s) ||
+    /^\d{4}\/\d{2}\/\d{2}$/.test(s)
+  );
+}
+
+function toSqlDateLiteral(v) {
+  const s = String(v || "").trim();
+  if (!s) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  if (/^\d{4}\/\d{2}\/\d{2}$/.test(s)) return s.replaceAll("/", "-");
+  if (/^\d{2}-\d{2}-\d{4}$/.test(s)) {
+    const [mm, dd, yyyy] = s.split("-");
+    return `${yyyy}-${mm}-${dd}`;
+  }
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
+    const [mm, dd, yyyy] = s.split("/");
+    return `${yyyy}-${mm}-${dd}`;
+  }
+  return null;
 }
 
 function parseDateValue(v) {
@@ -163,12 +191,58 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
         
         const valIdx = params.length + 2;
         params.push(f.column === "Year" || f.column === "Month" || f.column === "Quarter" ? "Date" : f.column, String(f.value));
+        const numericFilterVal = toNum(f.value);
+        const dateFilterVal = toSqlDateLiteral(f.value);
+        const useDateComparators = !!dateFilterVal && (
+          looksLikeDateText(f.value) ||
+          /date|time|day|month|year|period|quarter|дата|період|рік|год/i.test(String(f.column || ""))
+        );
 
         switch(f.operator) {
-            case 'gt': where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) > $${valIdx}::numeric)`; break;
-            case 'gte': where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) >= $${valIdx}::numeric)`; break;
-            case 'lt': where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) < $${valIdx}::numeric)`; break;
-            case 'lte': where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) <= $${valIdx}::numeric)`; break;
+            case 'gt':
+              if (useDateComparators) {
+                params[params.length - 1] = dateFilterVal;
+                where += ` AND (to_date(${colSql}, 'MM-DD-YYYY') > $${valIdx}::date)`;
+              } else if (numericFilterVal !== null) {
+                params[params.length - 1] = String(numericFilterVal);
+                where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) > $${valIdx}::numeric)`;
+              } else {
+                where += ` AND (${colSql} > $${valIdx})`;
+              }
+              break;
+            case 'gte':
+              if (useDateComparators) {
+                params[params.length - 1] = dateFilterVal;
+                where += ` AND (to_date(${colSql}, 'MM-DD-YYYY') >= $${valIdx}::date)`;
+              } else if (numericFilterVal !== null) {
+                params[params.length - 1] = String(numericFilterVal);
+                where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) >= $${valIdx}::numeric)`;
+              } else {
+                where += ` AND (${colSql} >= $${valIdx})`;
+              }
+              break;
+            case 'lt':
+              if (useDateComparators) {
+                params[params.length - 1] = dateFilterVal;
+                where += ` AND (to_date(${colSql}, 'MM-DD-YYYY') < $${valIdx}::date)`;
+              } else if (numericFilterVal !== null) {
+                params[params.length - 1] = String(numericFilterVal);
+                where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) < $${valIdx}::numeric)`;
+              } else {
+                where += ` AND (${colSql} < $${valIdx})`;
+              }
+              break;
+            case 'lte':
+              if (useDateComparators) {
+                params[params.length - 1] = dateFilterVal;
+                where += ` AND (to_date(${colSql}, 'MM-DD-YYYY') <= $${valIdx}::date)`;
+              } else if (numericFilterVal !== null) {
+                params[params.length - 1] = String(numericFilterVal);
+                where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) <= $${valIdx}::numeric)`;
+              } else {
+                where += ` AND (${colSql} <= $${valIdx})`;
+              }
+              break;
             case 'equals': where += ` AND (${colSql} = $${valIdx})`; break;
             default: where += ` AND (${colSql} ILIKE $${valIdx})`; params[params.length-1] = `%${f.value}%`; break;
         }
@@ -544,6 +618,8 @@ function cleanAITechnicalNoise(text = "") {
   let out = String(text || "");
   // Remove technical sheet references only if they match exactly (e.g., Sheet1, Sheet2.00)
   out = out.replace(/\bSheet\d+(\.00)?\b/gi, "");
+  // Remove empty-tab artifact phrases that can be left behind after sheet token stripping.
+  out = out.replace(/\b(?:this is based on the data from|based on data from)\s*''\s*tab\.?/gi, "");
   // Remove specific technical version suffix .00 if it's isolated (not part of a currency/number)
   out = out.replace(/\s\.00\b/g, "");
   
@@ -554,6 +630,8 @@ function cleanAITechnicalNoise(text = "") {
 function formatAnswerWithBullets(answer = "") {
   const text = typeof answer === "string" ? answer.trim() : "";
   if (!text) return "";
+  // Do not auto-bullet plain numeric prose with decimals; it can split values like 34.91 into 34 + 91.
+  if (!text.includes("\n") && /\d\.\d/.test(text)) return text;
   const normalizedExistingBullets = text
     .replace(/^\s*[-*]\s+/gm, "• ")
     .replace(/\n\s*[-*]\s+/g, "\n• ");
@@ -885,45 +963,96 @@ function normalizeSlavicGroupedNumbers(text = "") {
   });
 }
 
+function expandLargeIntForEnglishSpeech(rawDigits = "") {
+  const digits = String(rawDigits || "").replace(/[^\d]/g, "");
+  if (!digits) return "0";
+  const n = Number(digits);
+  if (!Number.isFinite(n)) return digits;
+  if (n >= 1_000_000_000) {
+    const b = Math.floor(n / 1_000_000_000);
+    const m = Math.floor((n % 1_000_000_000) / 1_000_000);
+    const k = Math.floor((n % 1_000_000) / 1_000);
+    const r = n % 1_000;
+    return [b ? `${b} billion` : "", m ? `${m} million` : "", k ? `${k} thousand` : "", r ? `${r}` : ""].filter(Boolean).join(" ");
+  }
+  if (n >= 1_000_000) {
+    const m = Math.floor(n / 1_000_000);
+    const k = Math.floor((n % 1_000_000) / 1_000);
+    const r = n % 1_000;
+    return [m ? `${m} million` : "", k ? `${k} thousand` : "", r ? `${r}` : ""].filter(Boolean).join(" ");
+  }
+  if (n >= 1_000) {
+    const k = Math.floor(n / 1_000);
+    const r = n % 1_000;
+    return [k ? `${k} thousand` : "", r ? `${r}` : ""].filter(Boolean).join(" ");
+  }
+  return String(n);
+}
+
 function naturalizeNumbersForTTS(text = "", locale = "en") {
   let out = String(text || "");
   const lang = (locale || "en").split("-")[0].toLowerCase();
 
+  // 1. Strip technical noise and formatting
+  out = out.replace(/[•*]/g, ""); // bullets
+  out = out.replace(/(\n|^)\s*[-–—]\s+/g, "$1 "); // leading dashes
+  out = out.replace(/\.00(?!\d)/g, ""); // trailing .00 decimals
+  out = out.replace(/\bUSD\b/gi, lang === "ru" ? "долларов" : (lang === "uk" ? "доларів" : "dollars"));
+
   if (lang === "uk") {
+    // Normalize currency without cents for cleaner speech output.
+    out = out.replace(/\$([\d,]+)\.(\d{1,2})\b/g, (m, price, centsRaw) => {
+      const p = String(price || "").replace(/,/g, "");
+      return `${p} доларів`;
+    });
+    // Drop decimal tails in spoken output (e.g. 1,927,022.22 -> 1,927,022)
+    out = out.replace(/(\d[\d,\s]*)[.,]\d{1,2}\b/g, "$1");
     out = out.replace(/\bvs\b/gi, "проти");
     out = out.replace(/\bNet Income\b/gi, "Прибуток");
+    out = out.replace(/\bNet Revenue\b/gi, "Чистий виторг");
     out = out.replace(/\bRevenue\b/gi, "Виторг");
-    out = out.replace(/\bAnalysis\b/gi, "Аналіз");
-    out = out.replace(/\bSummary\b/gi, "Підсумок");
-    out = out.replace(/\bGrowth\b/gi, "Зростання");
-    out = out.replace(/\bTotal\b/gi, "Разом");
-    // Handle currency with cents
-    out = out.replace(/\$([\d,]+)\.(\d{2})\b/g, "$1 доларів та $2 центів");
+    out = out.replace(/\btab\b/gi, "вкладка");
     out = out.replace(/\$([\d,.\s]+)\b/g, "$1 доларів");
-    out = out.replace(/(\d+(?:[.,]\d+)?)%/g, "$1 відсотків");
-    out = out.replace(/\(\+/g, "(плюс ");
-    out = out.replace(/\(\-/g, "(мінус ");
-    out = out.replace(/\b(20\d{2})\b/g, "$1 року");
   } else if (lang === "ru") {
+    // Normalize currency without cents for cleaner speech output.
+    out = out.replace(/\$([\d,]+)\.(\d{1,2})\b/g, (m, price, centsRaw) => {
+      const p = String(price || "").replace(/,/g, "");
+      return `${p} долларов`;
+    });
+    // Drop decimal tails in spoken output (e.g. 1,927,022.22 -> 1,927,022)
+    out = out.replace(/(\d[\d,\s]*)[.,]\d{1,2}\b/g, "$1");
     out = out.replace(/\bvs\b/gi, "против");
     out = out.replace(/\bNet Income\b/gi, "Чистая прибыль");
+    out = out.replace(/\bNet Revenue\b/gi, "Чистая выручка");
     out = out.replace(/\bRevenue\b/gi, "Выручка");
-    out = out.replace(/\bAnalysis\b/gi, "Анализ");
-    out = out.replace(/\bSummary\b/gi, "Итог");
-    out = out.replace(/\bGrowth\b/gi, "Рост");
-    out = out.replace(/\bTotal\b/gi, "Всего");
-    // Handle currency with cents
-    out = out.replace(/\$([\d,]+)\.(\d{2})\b/g, "$1 долларов и $2 центов");
+    out = out.replace(/\btab\b/gi, "вкладка");
     out = out.replace(/\$([\d,.\s]+)\b/g, "$1 долларов");
-    out = out.replace(/(\d+(?:[.,]\d+)?)%/g, "$1 процентов");
-    out = out.replace(/\(\+/g, "(плюс ");
-    out = out.replace(/\(\-/g, "(минус ");
-    out = out.replace(/\b(20\d{2})\b/g, "$1 года");
-  }
- else {
+  } else {
     // English defaults
     out = out.replace(/\bvs\b/gi, "versus");
-    out = out.replace(/\$([\d,.]+)\b/g, "$1 dollars");
+    // Handle currency with cents: $1,234.56 or $1234.56
+    out = out.replace(/\$([\d,]+)\.(\d{2})\b/g, (m, price, cents) => {
+        const p = price.replace(/,/g, "");
+        const spoken = expandLargeIntForEnglishSpeech(p);
+        return `${spoken} dollars and ${parseInt(cents, 10)} cents`;
+    });
+    // Handle currency without cents: $1,234
+    out = out.replace(/\$([\d,.]+)\b/g, (m, price) => {
+        const p = String(price || "").replace(/[^\d]/g, "");
+        const spoken = expandLargeIntForEnglishSpeech(p);
+        return `${spoken} dollars`;
+    });
+    // Handle large plain numbers that may be read digit-by-digit by TTS.
+    out = out.replace(/\b\d{5,}\b/g, (m) => expandLargeIntForEnglishSpeech(m));
+    // Final expansion for large numbers to help TTS (e.g. 52,026,091 -> 52 million 26 thousand 91)
+    // We parse as int to strip leading zeros like "026" -> "26"
+    out = out.replace(/\b(\d{1,3}),(\d{3}),(\d{3})\b/g, (m, mill, thou, rest) => {
+        return `${mill} million ${parseInt(thou, 10)} thousand ${parseInt(rest, 10)}`;
+    });
+    out = out.replace(/\b(\d{1,3}),(\d{3})\b/g, (m, thou, rest) => {
+        return `${parseInt(thou, 10)} thousand ${parseInt(rest, 10)}`;
+    });
+    
     out = out.replace(/(\d+(?:\.\d+)?)%/g, "$1 percent");
     out = out.replace(/\(\+/g, "(plus ");
     out = out.replace(/\(\-/g, "(minus ");
@@ -932,165 +1061,125 @@ function naturalizeNumbersForTTS(text = "", locale = "en") {
   return out;
 }
 
-function cyrillicizeNumbers(text = "", lang = "en") {
-  if (lang !== "ru" && lang !== "uk") return text;
-  let out = String(text || "");
-
-  // Simple phonetic mapping for basic numbers to force Slavic engine context
-  const ruMap = {
-    "0": "ноль", "1": "один", "2": "два", "3": "три", "4": "четыре", "5": "пять",
-    "6": "шесть", "7": "семь", "8": "восемь", "9": "девять", "10": "десять"
-  };
-  const ukMap = {
-    "0": "нуль", "1": "один", "2": "два", "3": "три", "4": "чотири", "5": "п'ять",
-    "6": "шість", "7": "сім", "8": "вісім", "9": "дев'ять", "10": "десять"
-  };
-
-  const map = lang === "ru" ? ruMap : ukMap;
-
-  // We only cyrillicize small digits to keep the engine in native mode without making text massive
-  return out.replace(/\b(\d)\b/g, (m) => map[m] || m);
-}
-
-function phoneticExpandSlavicNumbers(text = "", lang = "ru") {
-  let out = String(text || "");
-  
-  // To ensure the engine says "thousands" correctly, we insert the word after the group
-  // Example: 43,846,658.62 -> 43 миллиона 846 тысяч 658 долларов и 62 цента
-  
-  const rules = lang === "ru" ? {
-    million: "миллиона",
-    thousand: "тысяч",
-    dollar: "долларов",
-    cent: "центов",
-    and: "и"
-  } : {
-    million: "мільйона",
-    thousand: "тисяч",
-    dollar: "доларів",
-    cent: "центів",
-    and: "та"
-  };
-
-  // Expand Millions
-  out = out.replace(/\b(\d{1,3})[,\s](\d{3})[,\s](\d{3})\b/g, `$1 ${rules.million} $2 ${rules.thousand} $3`);
-  // Expand Thousands
-  out = out.replace(/\b(\d{1,3})[,\s](\d{3})\b/g, `$1 ${rules.thousand} $2`);
-  
-  return out;
-}
-
 function getSlavicPlural(n, forms) {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
+  const num = Math.abs(Number(n) || 0);
+  const mod10 = num % 10;
+  const mod100 = num % 100;
   if (mod10 === 1 && mod100 !== 11) return forms[0];
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return forms[1];
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return forms[1];
   return forms[2];
 }
 
-function slavicNumberToWords(num, lang = "ru", gender = "m") {
-  const n = Math.floor(Math.abs(num));
-  if (n === 0) return lang === "ru" ? "ноль" : "нуль";
+function slavicNumberToWords(n, lang = "ru", gender = "m") {
+  const num = Math.floor(Math.abs(Number(n) || 0));
+  const dict = lang === "uk"
+    ? {
+      zero: "нуль",
+      onesM: ["", "один", "два", "три", "чотири", "п'ять", "шість", "сім", "вісім", "дев'ять"],
+      onesF: ["", "одна", "дві", "три", "чотири", "п'ять", "шість", "сім", "вісім", "дев'ять"],
+      teens: ["десять", "одинадцять", "дванадцять", "тринадцять", "чотирнадцять", "п'ятнадцять", "шістнадцять", "сімнадцять", "вісімнадцять", "дев'ятнадцять"],
+      tens: ["", "", "двадцять", "тридцять", "сорок", "п'ятдесят", "шістдесят", "сімдесят", "вісімдесят", "дев'яносто"],
+      hundreds: ["", "сто", "двісті", "триста", "чотириста", "п'ятсот", "шістсот", "сімсот", "вісімсот", "дев'ятсот"],
+      thousandForms: ["тисяча", "тисячі", "тисяч"],
+      millionForms: ["мільйон", "мільйони", "мільйонів"]
+    }
+    : {
+      zero: "ноль",
+      onesM: ["", "один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять"],
+      onesF: ["", "одна", "две", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять"],
+      teens: ["десять", "одиннадцать", "двенадцать", "тринадцать", "четырнадцать", "пятнадцать", "шестнадцать", "семнадцать", "восемнадцать", "девятнадцать"],
+      tens: ["", "", "двадцать", "тридцать", "сорок", "пятьдесят", "шестьдесят", "семьдесят", "восемьдесят", "девяносто"],
+      hundreds: ["", "сто", "двести", "триста", "четыреста", "пятьсот", "шестьсот", "семьсот", "восемьсот", "девятьсот"],
+      thousandForms: ["тысяча", "тысячи", "тысяч"],
+      millionForms: ["миллион", "миллиона", "миллионов"]
+    };
 
-  const ru = {
-    ones: { m: ["", "один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять"], f: ["", "одна", "две", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять"] },
-    teens: ["десять", "одиннадцать", "двенадцать", "тринадцать", "четырнадцать", "пятнадцать", "шестнадцать", "семнадцать", "восемнадцать", "девятнадцать"],
-    tens: ["", "", "двадцать", "тридцать", "сорок", "пятьдесят", "шестьдесят", "семьдесят", "восемьдесят", "девяносто"],
-    hundreds: ["", "сто", "двести", "триста", "четыреста", "пятьсот", "шестьсот", "семьсот", "восемьсот", "девятьсот"]
+  const tripleToWords = (value, tripleGender = "m") => {
+    if (!value) return "";
+    const h = Math.floor(value / 100);
+    const t = Math.floor((value % 100) / 10);
+    const u = value % 10;
+    const parts = [];
+    if (h) parts.push(dict.hundreds[h]);
+    if (t === 1) {
+      parts.push(dict.teens[u]);
+    } else {
+      if (t > 1) parts.push(dict.tens[t]);
+      if (u) parts.push((tripleGender === "f" ? dict.onesF : dict.onesM)[u]);
+    }
+    return parts.join(" ");
   };
-  
-  const uk = {
-    ones: { m: ["", "один", "два", "три", "чотири", "п'ять", "шість", "сім", "вісім", "дев'ять"], f: ["", "одна", "дві", "три", "чотири", "п'ять", "шість", "сім", "вісім", "дев'ять"] },
-    teens: ["десять", "одинадцять", "дванадцять", "тринадцять", "чотирнадцять", "п'ятнадцять", "шістнадцять", "сімнадцять", "вісімнадцять", "дев'ятнадцять"],
-    tens: ["", "", "двадцять", "тридцять", "сорок", "п'ятдесят", "шістдесят", "сімдесят", "вісімдесят", "дев'яносто"],
-    hundreds: ["", "сто", "двісті", "триста", "чотириста", "п'ятсот", "шістсот", "сімсот", "вісімсот", "дев'ятсот"]
-  };
 
-  const words = lang === "ru" ? ru : uk;
+  if (num === 0) return dict.zero;
 
-  function convertSmall(val, g) {
-    if (val < 10) return words.ones[g][val];
-    if (val < 20) return words.teens[val - 10];
-    if (val < 100) return (words.tens[Math.floor(val / 10)] + " " + words.ones[g][val % 10]).trim();
-    if (val < 1000) return (words.hundreds[Math.floor(val / 100)] + " " + convertSmall(val % 100, g)).trim();
-    return "";
-  }
-
-  // Define plural forms [singular_nom, singular_gen, plural_gen]
-  const billionsForms = lang === "ru" ? ["миллиард", "миллиарда", "миллиардов"] : ["мільярд", "мільярди", "мільярдів"];
-  const millionsForms = lang === "ru" ? ["миллион", "миллиона", "миллионов"] : ["мільйон", "мільйони", "мільйонів"];
-  const thousandsForms = lang === "ru" ? ["тысяча", "тысячи", "тысяч"] : ["тисяча", "тисячі", "тисяч"];
-
+  const millions = Math.floor(num / 1_000_000);
+  const thousands = Math.floor((num % 1_000_000) / 1_000);
+  const rest = num % 1_000;
   const parts = [];
-  const billions = Math.floor(n / 1000000000);
-  const millions = Math.floor((n % 1000000000) / 1000000);
-  const thousands = Math.floor((n % 1000000) / 1000);
-  const remainder = n % 1000;
 
-  if (billions > 0) parts.push(convertSmall(billions, "m") + " " + getSlavicPlural(billions, billionsForms));
-  if (millions > 0) parts.push(convertSmall(millions, "m") + " " + getSlavicPlural(millions, millionsForms));
-  if (thousands > 0) parts.push(convertSmall(thousands, "f") + " " + getSlavicPlural(thousands, thousandsForms));
-  if (remainder > 0 || parts.length === 0) parts.push(convertSmall(remainder, gender));
-
-  return parts.join(" ").trim();
+  if (millions) {
+    parts.push(tripleToWords(millions, "m"));
+    parts.push(getSlavicPlural(millions, dict.millionForms));
+  }
+  if (thousands) {
+    parts.push(tripleToWords(thousands, "f"));
+    parts.push(getSlavicPlural(thousands, dict.thousandForms));
+  }
+  if (rest) {
+    parts.push(tripleToWords(rest, gender));
+  }
+  return parts.join(" ").replace(/\s+/g, " ").trim();
 }
 
 function expandFinancialTextPhonetically(text = "", lang = "ru") {
     let out = String(text || "");
     const rules = lang === "ru" ? {
-        and: "и",
         dollars: ["доллар", "доллара", "долларов"],
         cents: ["цент", "цента", "центов"],
         percents: ["процент", "процента", "процентов"]
     } : {
-        and: "і",
         dollars: ["долар", "долари", "доларів"],
         cents: ["цент", "центи", "центів"],
         percents: ["відсоток", "відсотки", "відсотків"]
     };
 
-    // 1. Handle Currency with optional cents: (digits)[.,](digits) (unit)
-    out = out.replace(/(\d+)(?:[.,](\d+))?\s?(доларів|долларов)/g, (m, integer, decimal, _) => {
-        const nInt = parseInt(integer);
-        const intWords = slavicNumberToWords(nInt, lang, "m");
-        const intUnit = getSlavicPlural(nInt, rules.dollars);
-        
-        if (decimal) {
-            const nDec = parseInt(decimal);
-            const decWords = slavicNumberToWords(nDec, lang, "m");
-            const decUnit = getSlavicPlural(nDec, rules.cents);
-            return `${intWords} ${intUnit} ${rules.and} ${decWords} ${decUnit}`;
-        }
-        return `${intWords} ${intUnit}`;
+    // 1. Consolidate numbers first: "52 026 091" -> "52026091"
+    out = out.replace(/\b(\d{1,3})[\s,](\d{3})[\s,](\d{3})\b/g, "$1$2$3");
+    out = out.replace(/\b(\d{1,3})[\s,](\d{3})\b/g, "$1$2");
+
+    // 2. Handle Currency Units
+    out = out.replace(/(\d+)\s?(доларів|долларов)/g, (m, num) => {
+        const n = parseInt(num, 10);
+        return slavicNumberToWords(n, lang, "m") + " " + getSlavicPlural(n, rules.dollars);
+    });
+    out = out.replace(/(\d+)\s?(центів|центов)/g, (m, num) => {
+        const n = parseInt(num, 10);
+        return slavicNumberToWords(n, lang, "m") + " " + getSlavicPlural(n, rules.cents);
     });
 
-    // 2. Handle Percentages: (digits)[.,](digits) (unit)
-    out = out.replace(/(\d+)(?:[.,](\d+))?\s?(відсотків|процентов)/g, (m, integer, decimal, _) => {
-        const nInt = parseInt(integer);
-        const intWords = slavicNumberToWords(nInt, lang, "m");
-        const intUnit = getSlavicPlural(nInt, rules.percents);
-        
-        if (decimal) {
-            const nDec = parseInt(decimal);
-            const decWords = slavicNumberToWords(nDec, lang, "m");
-            const decUnit = getSlavicPlural(nDec, rules.percents); // Grammatically percentages use the same form for decimals
-            return `${intWords} ${rules.and} ${decWords} ${intUnit}`;
-        }
-        return `${intWords} ${intUnit}`;
+    // 3. Handle Percentages
+    out = out.replace(/(\d+)\s?(відсотків|процентов)/g, (m, num) => {
+        const n = parseInt(num, 10);
+        return slavicNumberToWords(n, lang, "m") + " " + getSlavicPlural(n, rules.percents);
     });
 
-    // 3. Final cleanup of any lingering digits in financial groups
-    return out.replace(/(\d+)\s?(миллиона|миллионов|мільйона|мільйонів|тысяч|тисяч)/g, (m, num, unit) => {
-        const n = parseInt(num);
-        const gender = (unit.includes("тысяч") || unit.includes("тисяч")) ? "f" : "m";
-        return slavicNumberToWords(n, lang, gender) + " " + unit;
+    // 4. Handle all other standalone numbers (except years)
+    out = out.replace(/\b(\d{1,3}|\d{5,})\b/g, (m, num) => {
+        const n = parseInt(num, 10);
+        if (n > 2000 && n < 2100) return m; // leave years alone
+        return slavicNumberToWords(n, lang, "m");
     });
+
+    return out;
 }
 
 export async function getChatAudio(req, res) {
   let { text, locale } = req.body;
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey || !text) return res.status(400).json({ error: "missing_params" });
+  if (String(text).length > CHAT_AUDIO_MAX_CHARS) {
+    return res.status(413).json({ error: "text_too_large", maxChars: CHAT_AUDIO_MAX_CHARS });
+  }
 
   // Strip Markdown markers before TTS
   text = text.replace(/\*/g, "");
@@ -1104,27 +1193,37 @@ export async function getChatAudio(req, res) {
   let cleanedText = naturalizeNumbersForTTS(text, locale);
   
   if (lang === "uk" || lang === "ru") {
-      cleanedText = phoneticExpandSlavicNumbers(cleanedText, lang);
-      cleanedText = expandFinancialTextPhonetically(cleanedText, lang); // NEW: Convert digits to words
-      cleanedText = cyrillicizeNumbers(cleanedText, lang);
+      // Convert all remaining digits to Cyrillic words to force native accent
+      cleanedText = expandFinancialTextPhonetically(cleanedText, lang);
+      // Absolute final safety: remove ALL Latin characters so TTS engine can't switch to English accent
+      cleanedText = cleanedText.replace(/[a-zA-Z]/g, "");
   }
 
-  if (lang === "uk") cleanedText = normalizeUkrainianSpeechNumbers(normalizeSlavicGroupedNumbers(cleanedText));
-  if (lang === "ru") {
-    cleanedText = normalizeSlavicGroupedNumbers(cleanedText);
-  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
 
   try {
     const response = await fetch(`${OPENAI_BASE_URL}/audio/speech`, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      signal: controller.signal,
       body: JSON.stringify({ 
         model: lang === "en" ? "tts-1" : "tts-1-hd", 
         input: cleanedText, 
         voice,
-        speed: 0.85
+        speed: 0.9
       }),
     });
+    if (!response.ok) {
+      const message = await response.text().catch(() => "");
+      return res.status(502).json({
+        error: "tts_upstream_error",
+        message: message.slice(0, 300) || `upstream_status_${response.status}`,
+      });
+    }
+    if (!response.body) {
+      return res.status(502).json({ error: "tts_empty_response" });
+    }
 
     res.setHeader("Content-Type", "audio/mpeg");
     res.setHeader("Transfer-Encoding", "chunked");
@@ -1137,7 +1236,12 @@ export async function getChatAudio(req, res) {
         }).catch(err => { res.end(); });
     }
     push();
-  } catch (e) { res.status(500).json({ error: "internal_server_error" }); }
+  } catch (e) {
+    const isAbort = e?.name === "AbortError";
+    res.status(isAbort ? 504 : 500).json({ error: isAbort ? "tts_timeout" : "internal_server_error" });
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export async function chatQuery(req, res) {
@@ -1205,7 +1309,16 @@ export async function chatQuery(req, res) {
     
     // --- CROSS-TALK SYNTHESIS ---
     if (ai?.cross_talk && Array.isArray(ai.cross_targets) && ai.cross_targets.length >= 2) {
-        const results = await Promise.all(ai.cross_targets.map(async (t) => {
+        const allowedSheetIds = new Set(availableFiles.map((f) => String(f.id)));
+        const scopedTargets = ai.cross_targets
+          .filter((t) => allowedSheetIds.has(String(t?.sheet_id || "")))
+          .slice(0, 2);
+
+        if (scopedTargets.length < 2) {
+          return res.status(400).json({ error: "invalid_cross_targets" });
+        }
+
+        const results = await Promise.all(scopedTargets.map(async (t) => {
             const res = await computeSqlAggregation({
                 sheetId: t.sheet_id,
                 user: req.user,

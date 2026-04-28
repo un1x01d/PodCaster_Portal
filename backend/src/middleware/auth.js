@@ -1,10 +1,21 @@
 import jwt from "jsonwebtoken";
+import { randomBytes } from "crypto";
 
-const JWT_SECRET = process.env.JWT_SECRET || "dev-only-insecure-secret-please-change-in-production";
+const JWT_SECRET = String(process.env.JWT_SECRET || "").trim() || randomBytes(32).toString("hex");
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "8h";
+const JWT_ISSUER = String(process.env.JWT_ISSUER || "").trim();
+const JWT_AUDIENCE = String(process.env.JWT_AUDIENCE || "").trim();
 
-if (!process.env.JWT_SECRET && process.env.NODE_ENV === "production") {
-    console.error("FATAL ERROR: JWT_SECRET is not defined in production environment.");
+if (!process.env.JWT_SECRET) {
+    if (process.env.NODE_ENV === "production") {
+        console.error("FATAL ERROR: JWT_SECRET is not defined in production environment.");
+        process.exit(1);
+    }
+    console.warn("WARN: JWT_SECRET not set; using ephemeral in-memory secret for non-production.");
+}
+
+if ((JWT_ISSUER && !JWT_AUDIENCE) || (!JWT_ISSUER && JWT_AUDIENCE)) {
+    console.error("FATAL ERROR: JWT_ISSUER and JWT_AUDIENCE must be configured together.");
     process.exit(1);
 }
 
@@ -61,7 +72,12 @@ export function auth(req, res, next) {
     const token = tokenFromReq(req);
     if (!token) return res.status(401).json({ error: "Unauthorized" });
     try {
-        req.user = jwt.verify(token, JWT_SECRET);
+        const verifyOpts = {};
+        if (JWT_ISSUER && JWT_AUDIENCE) {
+            verifyOpts.issuer = JWT_ISSUER;
+            verifyOpts.audience = JWT_AUDIENCE;
+        }
+        req.user = jwt.verify(token, JWT_SECRET, verifyOpts);
         next();
     } catch {
         return res.status(401).json({ error: "Invalid token" });
@@ -69,9 +85,14 @@ export function auth(req, res, next) {
 }
 
 export function generateToken(user) {
+    const signOpts = { expiresIn: JWT_EXPIRES_IN };
+    if (JWT_ISSUER && JWT_AUDIENCE) {
+        signOpts.issuer = JWT_ISSUER;
+        signOpts.audience = JWT_AUDIENCE;
+    }
     return jwt.sign(
         { id: user.id, email: user.email, role: user.role },
         JWT_SECRET,
-        { expiresIn: JWT_EXPIRES_IN }
+        signOpts
     );
 }

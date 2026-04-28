@@ -541,6 +541,10 @@ export default function DashboardHome({
   const [topCardsOrder, setTopCardsOrder] = React.useState([]);
   const [dragCardId, setDragCardId] = React.useState("");
   const [dropCardId, setDropCardId] = React.useState("");
+  const [dashboardAiState, setDashboardAiState] = React.useState({
+    pendingByKey: {},
+    errorByKey: {},
+  });
   const pinnedTitleTranslateInFlightRef = React.useRef(new Set());
   const pinnedTitleTranslateCooldownRef = React.useRef(new Map());
   const pinnedConfigRef = React.useRef(null);
@@ -548,6 +552,123 @@ export default function DashboardHome({
   React.useEffect(() => {
     pinnedConfigRef.current = pinnedConfig;
   }, [pinnedConfig]);
+
+  const markAiPending = React.useCallback((key, pending) => {
+    const safeKey = String(key || "").trim();
+    if (!safeKey) return;
+    setDashboardAiState((prev) => ({
+      pendingByKey: { ...prev.pendingByKey, [safeKey]: !!pending },
+      errorByKey: pending ? { ...prev.errorByKey, [safeKey]: "" } : prev.errorByKey,
+    }));
+  }, []);
+
+  const setAiError = React.useCallback((key, errorMessage) => {
+    const safeKey = String(key || "").trim();
+    if (!safeKey) return;
+    const message = String(errorMessage || "").trim();
+    setDashboardAiState((prev) => ({
+      pendingByKey: { ...prev.pendingByKey, [safeKey]: false },
+      errorByKey: { ...prev.errorByKey, [safeKey]: message || "AI request failed." },
+    }));
+  }, []);
+
+  const clearAiError = React.useCallback((key) => {
+    const safeKey = String(key || "").trim();
+    if (!safeKey) return;
+    setDashboardAiState((prev) => ({
+      ...prev,
+      errorByKey: { ...prev.errorByKey, [safeKey]: "" },
+    }));
+  }, []);
+
+  const submitDashboardPrompt = React.useCallback((query, meta, pendingKey) => {
+    const sheetKey = String(sheetId || "").trim();
+    const text = String(query || "").trim();
+    if (!sheetKey || !text) return;
+    const key = String(pendingKey || "").trim();
+    if (key && dashboardAiState.pendingByKey?.[key]) return;
+    if (key) markAiPending(key, true);
+    if (typeof window === "undefined") {
+      if (key) markAiPending(key, false);
+      return;
+    }
+    window.dispatchEvent(new CustomEvent("dashboard:submit-chat", {
+      detail: {
+        sheetId: sheetKey,
+        message: text,
+        meta: { ...(meta || {}), silent: true, pendingKey: key || null },
+      },
+    }));
+  }, [sheetId, dashboardAiState.pendingByKey, markAiPending]);
+
+  const submitPinnedPromptToAI = React.useCallback((index) => {
+    const idx = Number(index);
+    const items = ensurePinnedItems(pinnedInput.items);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= items.length) return;
+    const query = String(items[idx]?.description || "").trim();
+    if (!query) return;
+    submitDashboardPrompt(query, { index: idx }, `pinned:${idx}`);
+  }, [pinnedInput.items, submitDashboardPrompt]);
+
+  const submitTicketPromptToAI = React.useCallback((ticketId, query) => {
+    const id = String(ticketId || "").trim();
+    const text = String(query || "").trim();
+    if (!id || !text) return;
+    const q = text.toLowerCase();
+
+    const requestedAgg =
+      /\b(avg|average|mean)\b/.test(q) ? "avg" :
+      /\b(count|how many|number of)\b/.test(q) ? "count" :
+      "sum";
+
+    const bestColumn = headers
+      .map((h) => {
+        const key = String(h || "").toLowerCase();
+        let score = 0;
+        if (!key) return { header: h, score };
+        if (q.includes(key)) score += 8;
+        key.split(/[^a-z0-9]+/i).filter(Boolean).forEach((token) => {
+          if (token.length >= 3 && q.includes(token)) score += 1;
+        });
+        if (/\brevenue|sales|income|profit|amount|value|cost|expense|total|ebitda\b/.test(q)
+            && /\brevenue|sales|income|profit|amount|value|cost|expense|total|ebitda\b/.test(key)) score += 3;
+        return { header: h, score };
+      })
+      .sort((a, b) => b.score - a.score)[0];
+
+    const column = bestColumn?.score > 0 ? String(bestColumn.header || "") : "";
+    const isMatchedColumnNumeric = (() => {
+      if (!column) return true;
+      let nonEmpty = 0;
+      let numeric = 0;
+      for (let i = 0; i < Math.min(sortedData.length, 300); i += 1) {
+        const raw = sortedData[i]?.[column];
+        if (raw === null || raw === undefined || String(raw).trim() === "") continue;
+        nonEmpty += 1;
+        if (parseNumber(raw) !== null) numeric += 1;
+      }
+      return nonEmpty === 0 ? true : (numeric / nonEmpty) >= 0.65;
+    })();
+    const agg = (requestedAgg !== "count" && !isMatchedColumnNumeric) ? "count" : requestedAgg;
+
+    setKpiOverrides((prev) => ({
+      ...prev,
+      [id]: {
+        ...(prev?.[id] || {}),
+        aiQuery: text,
+        column: column || (prev?.[id]?.column || ""),
+        agg: agg || (prev?.[id]?.agg || "sum"),
+        categoryColumn: prev?.[id]?.categoryColumn || "",
+      },
+    }));
+  }, [headers, sortedData]);
+
+  const submitChartPromptToAI = React.useCallback((ticketId, query) => {
+    const id = String(ticketId || "").trim();
+    const text = String(query || "").trim();
+    if (!id || !text) return;
+    submitDashboardPrompt(text, { ticketId: id }, `chart:${id}`);
+  }, [submitDashboardPrompt]);
 
   const { metricCol, dateCol, categoryCol, profitCol, incomeCol, revenueCol, expenseCol } = React.useMemo(
     () => detectColumns(headers, sortedData),
@@ -562,6 +683,66 @@ export default function DashboardHome({
     [headers]
   );
 
+  const kpiEditorDefaults = React.useMemo(() => {
+    const metricLabel = metricCol || (ui.primaryMetricAverage || "Primary Metric");
+    const incomeLabel = incomeMetricCol || profitCol || metricCol || (ui.total || "Total");
+    const revenueLabel = revenueMetricCol || metricCol || (ui.value || "Value");
+    const categoryLabel = categoryCol || (ui.topCategory || "Category");
+    return {
+      metricAvg: {
+        agg: "avg",
+        label: metricCol ? `${metricCol} ${ui.average}` : ui.primaryMetricAverage,
+        aiQuery: `What is the average value for ${metricLabel}? Return only the number.`,
+      },
+      incomeTotal: {
+        agg: "sum",
+        label: incomeCol ? `${incomeCol} ${ui.total}` : (profitCol ? `${profitCol} ${ui.total}` : (metricCol ? `${metricCol} ${ui.median}` : ui.primaryMetricTotal)),
+        aiQuery: `What is the total value for ${incomeLabel}? Return only the number.`,
+      },
+      incomeAvg: {
+        agg: "avg",
+        label: incomeCol ? `${incomeCol} ${ui.average}` : (expenseCol ? `${expenseCol} ${ui.total}` : `${ui.income} / ${ui.expense}`),
+        aiQuery: `What is the average value for ${incomeLabel}? Return only the number.`,
+      },
+      incomeMargin: {
+        agg: "avg",
+        label: incomeCol && revenueCol ? ui.incomeMargin : (expenseCol ? ui.expenseShare : ui.incomeRatio),
+        aiQuery: `What is the margin ratio for ${incomeLabel}? Return only the number.`,
+      },
+      latestPeriod: {
+        agg: "sum",
+        label: ui.latestPeriodValue,
+        aiQuery: `What is the latest value for ${revenueLabel}? Return only the number.`,
+      },
+      topValue: {
+        agg: "sum",
+        label: ui.topCategoryValue,
+        aiQuery: `Which ${categoryLabel} has the highest ${revenueLabel} value? Return only the number.`,
+      },
+      topShare: {
+        agg: "avg",
+        label: ui.topCategoryShare,
+        aiQuery: `What is the percentage share for the top ${categoryLabel} by ${revenueLabel}? Return only the number.`,
+      },
+    };
+  }, [metricCol, incomeMetricCol, revenueMetricCol, profitCol, incomeCol, revenueCol, expenseCol, categoryCol, ui]);
+
+  const isDefaultKpiLabel = React.useCallback((cardId, labelText) => {
+    const text = String(labelText || "").trim();
+    if (!text) return false;
+    const defaults = new Set();
+    Object.values(kpiEditorDefaults || {}).forEach((d) => {
+      const l = String(d?.label || "").trim();
+      if (l) defaults.add(l.toLowerCase());
+    });
+    const currentCard = cardsRef.current?.find?.((c) => c?.id === cardId);
+    const cardLabel = String(currentCard?.label || "").trim();
+    if (cardLabel) defaults.add(cardLabel.toLowerCase());
+    return defaults.has(text.toLowerCase());
+  }, [kpiEditorDefaults]);
+
+  const cardsRef = React.useRef([]);
+
   React.useEffect(() => {
     if (!headers.length) return;
     setKpiOverrides((prev) => {
@@ -569,30 +750,42 @@ export default function DashboardHome({
         const ids = ["metricAvg", "incomeTotal", "incomeAvg", "incomeMargin", "latestPeriod", "topValue", "topShare"];
         
         ids.forEach(id => {
+            const defaults = kpiEditorDefaults[id] || {};
+            const defaultCol = (id === "metricAvg") ? (metricCol || "") :
+                             (id === "incomeTotal" || id === "incomeAvg" || id === "incomeMargin") ? (incomeMetricCol || "") :
+                             (revenueMetricCol || "");
+            const current = next[id] || {};
+
             // If this card is new to this sheet structure, or if it contains an AI override, reset it
-            if (!next[id]?.column || next[id]?.aiOverride || next[id]?.manualOverride) {
-                const defaultCol = (id === "metricAvg") ? (metricCol || "") :
-                                 (id === "incomeTotal" || id === "incomeAvg" || id === "incomeMargin") ? (incomeMetricCol || "") :
-                                 (revenueMetricCol || "");
-                
-                const defaultCat = (id === "topValue" || id === "topShare") ? (categoryCol || "") : "";
+            if (!current?.column || current?.aiOverride || current?.manualOverride) {
 
                 next[id] = { 
-                    ...next[id], 
+                    ...current, 
                     column: defaultCol, 
-                    categoryColumn: defaultCat,
-                    label: "", 
+                    agg: current?.agg || defaults.agg || "sum",
+                    label: current?.label || "",
                     subtitle: "",
+                    aiQuery: current?.aiQuery || defaults.aiQuery || "",
                     aiValue: "", 
                     manualOverride: false, 
                     aiOverride: false 
                 };
+                return;
             }
+
+            // Backfill missing editor fields for existing overrides without clobbering user-entered values.
+            next[id] = {
+                ...current,
+                column: current?.column || defaultCol,
+                agg: current?.agg || defaults.agg || "sum",
+                label: current?.label || "",
+                aiQuery: current?.aiQuery || defaults.aiQuery || "",
+            };
         });
 
         return next;
     });
-  }, [headers, metricCol, incomeMetricCol, revenueMetricCol, categoryCol, sheetStructureSignature]);
+  }, [headers, metricCol, incomeMetricCol, revenueMetricCol, categoryCol, sheetStructureSignature, kpiEditorDefaults]);
 
   const numericHeaderOptions = React.useMemo(() => {
     return headers.filter((h) => {
@@ -1021,9 +1214,18 @@ export default function DashboardHome({
     const handleDashboardChatResponse = (event) => {
       const detail = event?.detail || {};
       if (!detail?.sheetId || String(detail.sheetId) !== String(sheetId)) return;
+      const meta = detail?.meta || {};
+      const pendingKey = String(meta?.pendingKey || "").trim();
+      if (pendingKey) {
+        markAiPending(pendingKey, false);
+      }
+      if (detail?.error) {
+        if (pendingKey) setAiError(pendingKey, detail.error);
+        return;
+      }
       const answer = String(detail.answer || "").trim();
       if (!answer) return;
-      const meta = detail?.meta || {};
+      if (pendingKey) clearAiError(pendingKey);
 
       // 1. KPI / Ticket Update
       if (meta.ticketId) {
@@ -1032,11 +1234,11 @@ export default function DashboardHome({
         if (!Number.isFinite(numeric)) return;
 
         if (meta.ticketId === "__top_categories__") {
-          setTopCategoriesConfig((prev) => ({ ...prev, aiValue: String(numeric) }));
+          setTopCategoriesConfig((prev) => ({ ...prev, aiValue: String(numeric), aiOverride: true }));
           return;
         }
         if (meta.ticketId === "__trend_over_time__") {
-          setTrendConfig((prev) => ({ ...prev, aiValue: String(numeric) }));
+          setTrendConfig((prev) => ({ ...prev, aiValue: String(numeric), aiOverride: true }));
           return;
         }
         setKpiOverrides((prev) => ({
@@ -1069,7 +1271,7 @@ export default function DashboardHome({
 
     window.addEventListener("dashboard:chat-response", handleDashboardChatResponse);
     return () => window.removeEventListener("dashboard:chat-response", handleDashboardChatResponse);
-  }, [sheetId, sheetStructureSignature, persistPinnedConfig]);
+  }, [sheetId, sheetStructureSignature, persistPinnedConfig, markAiPending, setAiError, clearAiError]);
 
   // Auto AI refresh is intentionally disabled: pinned values update only on manual "Submit to AI".
 
@@ -1584,12 +1786,14 @@ export default function DashboardHome({
     { id: "topValue", label: ui.topCategoryValue, subtitle: topCategoryName, value: topCategoryValue, sparkline: topCategoryValueSeries, color: "#7c3aed", sparklineType: "currency" },
     { id: "topShare", label: ui.topCategoryShare, value: pct(topCategoryShare), sparkline: topCategoryShareSeries, color: "#0369a1", sparklineType: "percent" },
   ];
+  cardsRef.current = cards;
 
   const applyKpiOverride = React.useCallback((card) => {
     if (!card || card.id === "pinnedMetrics") return card;
     const override = kpiOverrides?.[card.id];
     if (!override || typeof override !== "object") return card;
-    const labelOverride = String(override.label || "").trim();
+    const rawLabelOverride = String(override.label || "").trim();
+    const labelOverride = override?.labelCustom === true ? rawLabelOverride : "";
     const column = String(override.column || "").trim();
     const agg = String(override.agg || "").toLowerCase();
     const from = String(override.from || "").trim();
@@ -1623,8 +1827,7 @@ export default function DashboardHome({
 
     // Recalculate subtitle if it's a category card
     let finalSubtitle = card.subtitle;
-    const categoryColumnOverride = String(override.categoryColumn || "").trim();
-    const finalCategoryCol = categoryColumnOverride || categoryCol;
+    const finalCategoryCol = categoryCol;
 
     if ((card.id === "topValue" || card.id === "topShare") && finalCategoryCol) {
         const map = new Map();
@@ -1636,6 +1839,59 @@ export default function DashboardHome({
         });
         const sorted = Array.from(map.entries()).sort((a,b) => b[1] - a[1]);
         finalSubtitle = sorted.length ? sorted[0][0] : ui.noCategory;
+        if (card.id === "topValue") {
+          const topComputed = sorted.length ? Number(sorted[0][1] || 0) : 0;
+          const topKey = sorted.length ? String(sorted[0][0]) : "";
+          const topSeries = (dateCol && topKey)
+            ? buildSeriesFromRows(rows, dateCol, (r) => {
+                const k = String(r?.[finalCategoryCol] || "").trim();
+                if (k !== topKey) return null;
+                return parseNumber(r?.[column || metricCol]);
+              }, sparklineGranularity)
+            : card.sparkline;
+          return {
+            ...card,
+            label: labelOverride || card.label,
+            subtitle: finalSubtitle,
+            value: forcedValue !== null ? forcedValue : (Number.isFinite(topComputed) ? topComputed : 0),
+            sparkline: topSeries,
+            sparklineType: "currency",
+          };
+        }
+        if (card.id === "topShare") {
+          const topComputed = sorted.length ? Number(sorted[0][1] || 0) : 0;
+          const totalComputed = sorted.reduce((acc, [, value]) => acc + (Number(value) || 0), 0);
+          const topPct = totalComputed > 0 ? (topComputed / totalComputed) * 100 : 0;
+          const topKey = sorted.length ? String(sorted[0][0]) : "";
+          const topShareSeries = (dateCol && topKey)
+            ? (() => {
+                const bucket = new Map();
+                rows.forEach((r) => {
+                  const d = parseDate(r?.[dateCol]);
+                  if (!d) return;
+                  const v = parseNumber(r?.[column || metricCol]);
+                  if (v === null) return;
+                  const period = toBucketKey(d, sparklineGranularity);
+                  const prev = bucket.get(period) || { total: 0, top: 0 };
+                  prev.total += v;
+                  const k = String(r?.[finalCategoryCol] || "").trim();
+                  if (k === topKey) prev.top += v;
+                  bucket.set(period, prev);
+                });
+                return Array.from(bucket.entries())
+                  .sort((a, b) => a[0].localeCompare(b[0]))
+                  .map(([period, t]) => ({ period, value: t.total ? Number(((t.top / t.total) * 100).toFixed(2)) : 0 }));
+              })()
+            : card.sparkline;
+          return {
+            ...card,
+            label: labelOverride || card.label,
+            subtitle: finalSubtitle,
+            value: forcedValue !== null ? forcedValue : pct(topPct),
+            sparkline: topShareSeries,
+            sparklineType: "percent",
+          };
+        }
     }
 
     if (!column || !headers.includes(column)) {
@@ -1863,15 +2119,20 @@ export default function DashboardHome({
                               <button
                                 type="button"
                                 onClick={() => submitPinnedPromptToAI(idx)}
-                                disabled={!String(item.description || "").trim()}
+                                disabled={!String(item.description || "").trim() || !!dashboardAiState.pendingByKey?.[`pinned:${idx}`]}
                                 className={`mt-1 w-full rounded-md border px-2 py-1 text-[11px] font-semibold ${
-                                  !String(item.description || "").trim()
+                                  (!String(item.description || "").trim() || !!dashboardAiState.pendingByKey?.[`pinned:${idx}`])
                                     ? "border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed"
                                     : "border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100"
                                 }`}
                               >
-                                Submit to AI
+                                {dashboardAiState.pendingByKey?.[`pinned:${idx}`] ? "Submitting..." : "Submit to AI"}
                               </button>
+                              {!!dashboardAiState.errorByKey?.[`pinned:${idx}`] && (
+                                <div className="mt-1 text-[10px] font-semibold text-rose-700">
+                                  {dashboardAiState.errorByKey[`pinned:${idx}`]}
+                                </div>
+                              )}
                             </div>
                           ))}
                         </div>
@@ -1900,12 +2161,12 @@ export default function DashboardHome({
                   <div className="mt-1 rounded-md border border-slate-200 bg-slate-50 p-2">
                     <input
                       type="text"
-                      value={String(kpiOverrides?.[card.id]?.label || "")}
+                      value={String(kpiOverrides?.[card.id]?.labelCustom ? (kpiOverrides?.[card.id]?.label || "") : (card.label || ""))}
                       onChange={(e) => {
                         const value = e.target.value;
                         setKpiOverrides((prev) => ({
                           ...prev,
-                          [card.id]: { ...(prev?.[card.id] || {}), label: value },
+                          [card.id]: { ...(prev?.[card.id] || {}), label: value, labelCustom: true },
                         }));
                       }}
                       placeholder="Ticket name"
@@ -2016,15 +2277,20 @@ export default function DashboardHome({
                       <button
                         type="button"
                         onClick={() => submitTicketPromptToAI(card.id, kpiOverrides?.[card.id]?.aiQuery || "")}
-                        disabled={!String(kpiOverrides?.[card.id]?.aiQuery || "").trim()}
+                        disabled={!String(kpiOverrides?.[card.id]?.aiQuery || "").trim() || !!dashboardAiState.pendingByKey?.[`ticket:${card.id}`]}
                         className={`col-span-2 rounded-md border px-2 py-1 text-[11px] font-semibold ${
-                          !String(kpiOverrides?.[card.id]?.aiQuery || "").trim()
+                          (!String(kpiOverrides?.[card.id]?.aiQuery || "").trim() || !!dashboardAiState.pendingByKey?.[`ticket:${card.id}`])
                             ? "border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed"
                             : "border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100"
                         }`}
                       >
-                        Get Value from AI
+                        {dashboardAiState.pendingByKey?.[`ticket:${card.id}`] ? "Applying..." : "Apply AI to fields"}
                       </button>
+                      {!!dashboardAiState.errorByKey?.[`ticket:${card.id}`] && (
+                        <div className="col-span-2 text-[10px] font-semibold text-rose-700">
+                          {dashboardAiState.errorByKey[`ticket:${card.id}`]}
+                        </div>
+                      )}
                     </div>
                     <div className="mt-1 grid grid-cols-2 gap-1 items-center">
                       <label className="col-span-2 inline-flex items-center gap-1.5 text-[10px] font-semibold text-slate-700">
@@ -2247,15 +2513,20 @@ export default function DashboardHome({
                     <button
                       type="button"
                       onClick={() => submitChartPromptToAI("__trend_over_time__", trendConfig.aiQuery || "")}
-                      disabled={!String(trendConfig.aiQuery || "").trim()}
+                      disabled={!String(trendConfig.aiQuery || "").trim() || !!dashboardAiState.pendingByKey?.["chart:__trend_over_time__"]}
                       className={`rounded-md border px-2 py-1 text-[11px] font-semibold ${
-                        !String(trendConfig.aiQuery || "").trim()
+                        (!String(trendConfig.aiQuery || "").trim() || !!dashboardAiState.pendingByKey?.["chart:__trend_over_time__"])
                           ? "border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed"
                           : "border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100"
                       }`}
                     >
-                      Get Value from AI
+                      {dashboardAiState.pendingByKey?.["chart:__trend_over_time__"] ? "Getting..." : "Get Value from AI"}
                     </button>
+                    {!!dashboardAiState.errorByKey?.["chart:__trend_over_time__"] && (
+                      <div className="text-[10px] font-semibold text-rose-700">
+                        {dashboardAiState.errorByKey["chart:__trend_over_time__"]}
+                      </div>
+                    )}
                     <label className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-slate-700">
                       <input
                         type="checkbox"
@@ -2463,15 +2734,20 @@ export default function DashboardHome({
                   <button
                     type="button"
                     onClick={() => submitChartPromptToAI("__top_categories__", topCategoriesConfig.aiQuery || "")}
-                    disabled={!String(topCategoriesConfig.aiQuery || "").trim()}
+                    disabled={!String(topCategoriesConfig.aiQuery || "").trim() || !!dashboardAiState.pendingByKey?.["chart:__top_categories__"]}
                     className={`md:col-span-2 rounded-md border px-2 py-1 text-[11px] font-semibold ${
-                      !String(topCategoriesConfig.aiQuery || "").trim()
+                      (!String(topCategoriesConfig.aiQuery || "").trim() || !!dashboardAiState.pendingByKey?.["chart:__top_categories__"])
                         ? "border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed"
                         : "border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100"
                     }`}
                   >
-                    Get Value from AI
+                    {dashboardAiState.pendingByKey?.["chart:__top_categories__"] ? "Getting..." : "Get Value from AI"}
                   </button>
+                  {!!dashboardAiState.errorByKey?.["chart:__top_categories__"] && (
+                    <div className="md:col-span-2 text-[10px] font-semibold text-rose-700">
+                      {dashboardAiState.errorByKey["chart:__top_categories__"]}
+                    </div>
+                  )}
                   <label className="md:col-span-2 inline-flex items-center gap-1.5 text-[10px] font-semibold text-slate-700">
                     <input
                       type="checkbox"

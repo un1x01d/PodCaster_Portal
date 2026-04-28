@@ -310,7 +310,7 @@ export async function importOneDriveFile(req, res) {
     const originalname = safeBase.endsWith(ext) ? safeBase : `${safeBase}${ext}`;
     const buf = Buffer.from(await downloadResp.arrayBuffer());
     const tmpPath = path.join(tmpdir(), `onedrive_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`);
-    fs.writeFileSync(tmpPath, buf);
+    await fs.promises.writeFile(tmpPath, buf);
 
     req.file = {
       path: tmpPath,

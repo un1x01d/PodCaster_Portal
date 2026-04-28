@@ -162,18 +162,43 @@ async function getVersionedFilename(client, folderId, originalName) {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const XLSX_WORKER_PATH = path.join(__dirname, "..", "utils", "xlsxWorker.js");
+const XLSX_WORKER_TIMEOUT_MS = Number.parseInt(process.env.XLSX_WORKER_TIMEOUT_MS || "45000", 10);
 
 function parseWorkbookInWorker(buffer) {
     return new Promise((resolve, reject) => {
         const worker = new Worker(XLSX_WORKER_PATH, {
             workerData: { buffer }
         });
+        let settled = false;
+        const cleanup = () => {
+            settled = true;
+            clearTimeout(timer);
+            worker.removeAllListeners();
+        };
+        const timer = setTimeout(async () => {
+            if (settled) return;
+            try {
+                await worker.terminate();
+            } catch {
+                // Ignore terminate errors; timeout error is primary signal.
+            }
+            cleanup();
+            reject(new Error("xlsx_worker_timeout"));
+        }, XLSX_WORKER_TIMEOUT_MS);
         worker.on('message', (msg) => {
+            if (settled) return;
+            cleanup();
             if (msg.success) resolve(msg.result);
             else reject(new Error(msg.error));
         });
-        worker.on('error', reject);
+        worker.on('error', (err) => {
+            if (settled) return;
+            cleanup();
+            reject(err);
+        });
         worker.on('exit', (code) => {
+            if (settled) return;
+            cleanup();
             if (code !== 0) reject(new Error(`Worker stopped with exit code ${code}`));
         });
     });
@@ -196,7 +221,7 @@ export async function uploadSheet(req, res) {
         console.log(`[upload] name=${originalName} size=${req.file.size} folderId=${folderId ?? "—"}`);
 
         // Read file into buffer and delete temporary file immediately to free disk space
-        const fileBuffer = fs.readFileSync(filePath);
+        const fileBuffer = await fs.promises.readFile(filePath);
         fs.unlink(filePath, () => {});
         filePath = null;
 
@@ -379,15 +404,50 @@ export async function getUniqueValues(req, res) {
 
     if (!col) return res.status(400).json({ error: "column_required" });
 
-    // 1. Permission check (Reuse logic from getSheetData or similar)
-    // For brevity in this fix, we check basic access to the sheet.
-    // In a full implementation, we'd verify 'col' is in the user's validCols.
-    const access = await query(
-        `SELECT 1 FROM sheets s WHERE s.id = $1 AND (active = TRUE OR folder_id IN (SELECT id FROM folders WHERE group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)))`,
-        [id, userId]
-    );
-    if (!access.length && req.user.role !== 'admin') {
+    // Enforce the same baseline access constraints as other sheet endpoints.
+    const hasAccess = await checkSheetAccess(id, req.user);
+    if (!hasAccess) {
         return res.status(403).json({ error: "Forbidden" });
+    }
+
+    // For non-admin users without folder-wide access, require explicit column permissions.
+    if (req.user.role !== "admin") {
+        const folderAccess = await query(
+            `SELECT 1
+             FROM sheets s
+             LEFT JOIN folders f ON f.id = s.folder_id
+             WHERE s.id = $1
+               AND (
+                 EXISTS (
+                   SELECT 1
+                   FROM folder_groups fg
+                   JOIN user_groups ug ON ug.group_id = fg.group_id
+                   WHERE fg.folder_id = f.id AND ug.user_id = $2
+                 )
+                 OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)
+               )`,
+            [id, userId]
+        );
+        if (folderAccess.length === 0) {
+            const perms = await query(
+                `SELECT allowed_columns FROM permissions WHERE user_id = $2 AND sheet_id = $1
+                 UNION ALL
+                 SELECT gp.allowed_columns FROM group_permissions gp
+                 JOIN user_groups ug ON ug.group_id = gp.group_id
+                 WHERE ug.user_id = $2 AND gp.sheet_id = $1`,
+                [id, userId]
+            );
+            const allowedColumns = new Set();
+            perms.forEach((p) => {
+                const cols = typeof p.allowed_columns === "string"
+                    ? JSON.parse(p.allowed_columns)
+                    : (p.allowed_columns || []);
+                cols.forEach((c) => allowedColumns.add(String(c)));
+            });
+            if (!allowedColumns.has(String(col))) {
+                return res.status(403).json({ error: "Forbidden" });
+            }
+        }
     }
 
     try {
@@ -454,13 +514,19 @@ export async function getActiveSheet(req, res) {
 
 export async function listMySheets(req, res) {
     const userId = req.user.id;
+    const pagination = parsePagination(req.query, { maxLimit: MAX_SHEET_DATA_LIMIT });
+    if (pagination.error) return res.status(400).json({ error: pagination.error });
+
+    const suffix = pagination.hasPagination ? " LIMIT $1 OFFSET $2" : "";
+    const paginationParams = pagination.hasPagination ? [pagination.limit, pagination.offset] : [];
+
     if (req.user.role === "admin") {
         const rows = await query(
             `SELECT s.id, s.filename, s.display_name, s.uploaded_at, s.folder_id, f.name AS folder_name, s.active
              FROM sheets s
              LEFT JOIN folders f ON f.id = s.folder_id
-             ORDER BY s.uploaded_at DESC`,
-            []
+             ORDER BY s.uploaded_at DESC${suffix}`,
+            paginationParams
         );
         return res.json(rows);
     }
@@ -484,20 +550,22 @@ export async function listMySheets(req, res) {
              OR 
              (s.id IN (SELECT sheet_id FROM group_permissions WHERE group_id IN (SELECT group_id FROM user_groups WHERE user_id = $1)))
          )
-         ORDER BY s.uploaded_at DESC`,
-        [userId]
+         ORDER BY s.uploaded_at DESC${pagination.hasPagination ? " LIMIT $2 OFFSET $3" : ""}`,
+        pagination.hasPagination ? [userId, pagination.limit, pagination.offset] : [userId]
     );
     res.json(rows);
 }
 
 export async function listAllSheets(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const pagination = parsePagination(req.query, { maxLimit: MAX_SHEET_DATA_LIMIT });
+    if (pagination.error) return res.status(400).json({ error: pagination.error });
     const rows = await query(
         `SELECT s.id, s.filename, s.display_name, s.uploaded_at, s.folder_id, f.name AS folder_name, s.active
          FROM sheets s
          LEFT JOIN folders f ON f.id = s.folder_id
-         ORDER BY s.uploaded_at DESC`,
-        []
+         ORDER BY s.uploaded_at DESC${pagination.hasPagination ? " LIMIT $1 OFFSET $2" : ""}`,
+        pagination.hasPagination ? [pagination.limit, pagination.offset] : []
     );
     res.json(rows);
 }

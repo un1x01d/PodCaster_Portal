@@ -29,8 +29,13 @@ export async function verifyPassword(password, storedPassword) {
         const valid = await bcrypt.compare(password, storedPassword);
         return { valid, rehash: false };
     }
-    
-    // Legacy plaintext support removed for security.
+
+    // Explicit opt-in fallback for legacy plaintext rows to support controlled migrations.
+    const allowLegacyPlaintext = String(process.env.ALLOW_LEGACY_PLAINTEXT_PASSWORDS || "").toLowerCase() === "true";
+    if (allowLegacyPlaintext && String(password) === String(storedPassword)) {
+        return { valid: true, rehash: true };
+    }
+
     return { valid: false, rehash: false };
 }
 
