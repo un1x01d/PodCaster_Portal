@@ -19,7 +19,7 @@ import localeRoutes from "./src/routes/localeRoutes.js";
 import googleRoutes from "./src/routes/googleRoutes.js";
 import dropboxRoutes from "./src/routes/dropboxRoutes.js";
 import oneDriveRoutes from "./src/routes/oneDriveRoutes.js";
-import { csrfProtect } from "./src/middleware/csrf.js";
+import { ensureCsrfCookie, csrfProtect } from "./src/middleware/csrf.js";
 import { recordHttpRequest, renderPrometheusMetrics } from "./src/utils/metrics.js";
 
 const app = express();
@@ -46,13 +46,14 @@ const corsOpts = {
     cb(new Error(`CORS: origin '${origin}' not allowed`));
   },
   credentials: true,
-  methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "X-CSRF-Token", "x-csrf-token"],
   optionsSuccessStatus: 204,
 };
 app.use(cors(corsOpts));
 app.options("*", cors(corsOpts));
 app.use(express.json());
+app.use(ensureCsrfCookie);
 app.use(csrfProtect);
 
 app.use((req, res, next) => {

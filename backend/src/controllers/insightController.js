@@ -3,7 +3,7 @@ import { query } from "../config/db.js";
 import { isEnglishLocale, normalizeLocale, translateDashboardCards } from "../utils/dashboardLocalization.js";
 import { checkSheetAccess, hasFolderAccess, loadSheetPermissionSets } from "../utils/authorization.js";
 
-const INSIGHT_MAX_ROWS = Number.parseInt(process.env.INSIGHT_MAX_ROWS || "50000", 10);
+const INSIGHT_MAX_ROWS = Number.parseInt(process.env.INSIGHT_MAX_ROWS || "100000", 10);
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10);
@@ -642,6 +642,41 @@ function computeSeries(rows, dateCol, metricCol) {
     .map(([period, value]) => ({ period, value }));
 }
 
+function computeCategoryDeltas(rows, dateCol, metricCol, categoryCol, currentPeriod, previousPeriod) {
+  if (!dateCol || !metricCol || !categoryCol || !currentPeriod) return [];
+  const currentByCat = new Map();
+  const prevByCat = new Map();
+
+  rows.forEach((r) => {
+    const parsedDate = parseDate(r?.[dateCol]);
+    if (!parsedDate) return;
+    const period = monthKey(parsedDate);
+    if (period !== currentPeriod && period !== previousPeriod) return;
+
+    const value = parseNum(r?.[metricCol]);
+    if (value === null) return;
+    const key = String(r?.[categoryCol] ?? "Unknown");
+
+    if (period === currentPeriod) {
+      currentByCat.set(key, (currentByCat.get(key) || 0) + value);
+    } else if (period === previousPeriod) {
+      prevByCat.set(key, (prevByCat.get(key) || 0) + value);
+    }
+  });
+
+  return Array.from(currentByCat.entries())
+    .map(([key, current]) => {
+      const prevValue = prevByCat.get(key) || 0;
+      return {
+        key,
+        current,
+        prev: prevValue,
+        delta: current - prevValue,
+      };
+    })
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+}
+
 async function buildInsights({ rows, headers, settings, context }) {
   const out = [];
   const detected = detectColumns(headers, rows, settings);
@@ -741,30 +776,7 @@ async function buildInsights({ rows, headers, settings, context }) {
   }
 
   if (categoryCol && last) {
-    const currentBucket = rows.filter((r) => monthKey(parseDate(r?.[dateCol]) || new Date("1970-01-01")) === last.period);
-    const prevBucket = prev ? rows.filter((r) => monthKey(parseDate(r?.[dateCol]) || new Date("1970-01-01")) === prev.period) : [];
-
-    const currentByCat = new Map();
-    const prevByCat = new Map();
-    currentBucket.forEach((r) => {
-      const k = String(r?.[categoryCol] ?? "Unknown");
-      const v = parseNum(r?.[metricCol]);
-      if (v === null) return;
-      currentByCat.set(k, (currentByCat.get(k) || 0) + v);
-    });
-    prevBucket.forEach((r) => {
-      const k = String(r?.[categoryCol] ?? "Unknown");
-      const v = parseNum(r?.[metricCol]);
-      if (v === null) return;
-      prevByCat.set(k, (prevByCat.get(k) || 0) + v);
-    });
-
-    categoryDeltas = Array.from(currentByCat.entries()).map(([k, v]) => ({
-      key: k,
-      current: v,
-      prev: prevByCat.get(k) || 0,
-      delta: v - (prevByCat.get(k) || 0),
-    })).sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+    categoryDeltas = computeCategoryDeltas(rows, dateCol, metricCol, categoryCol, last.period, prev?.period || null);
 
     if (categoryDeltas.length) {
       const top = categoryDeltas[0];

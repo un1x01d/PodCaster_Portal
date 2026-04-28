@@ -22,6 +22,16 @@ if ((JWT_ISSUER && !JWT_AUDIENCE) || (!JWT_ISSUER && JWT_AUDIENCE)) {
 
 const AUTH_COOKIE_NAME = "auth_token";
 
+function appendSetCookie(res, cookie) {
+    const existing = res.getHeader("Set-Cookie");
+    if (!existing) {
+        res.setHeader("Set-Cookie", cookie);
+        return;
+    }
+    const values = Array.isArray(existing) ? existing.concat(cookie) : [existing, cookie];
+    res.setHeader("Set-Cookie", values);
+}
+
 function parseCookieValue(cookieHeader, name) {
     const source = String(cookieHeader || "");
     const parts = source.split(";").map((v) => v.trim());
@@ -53,7 +63,7 @@ export function setAuthCookie(req, res, token) {
         secure ? "Secure" : null,
         `Max-Age=${Math.max(1, Math.floor(maxAge / 1000))}`,
     ].filter(Boolean).join("; ");
-    res.setHeader("Set-Cookie", cookie);
+    appendSetCookie(res, cookie);
 }
 
 export function clearAuthCookie(req, res) {
@@ -66,7 +76,7 @@ export function clearAuthCookie(req, res) {
         secure ? "Secure" : null,
         "Max-Age=0",
     ].filter(Boolean).join("; ");
-    res.setHeader("Set-Cookie", cookie);
+    appendSetCookie(res, cookie);
 }
 
 export function auth(req, res, next) {

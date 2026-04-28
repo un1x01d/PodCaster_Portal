@@ -6,6 +6,15 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
     const containerRef = useRef(null);
     const [speakingIndex, setSpeakingIndex] = React.useState(null);
     const utteranceRef = useRef(null);
+    const readCookie = (name) => {
+        if (typeof document === "undefined") return "";
+        const prefix = `${name}=`;
+        const hit = document.cookie
+            .split(";")
+            .map((part) => part.trim())
+            .find((part) => part.startsWith(prefix));
+        return hit ? decodeURIComponent(hit.slice(prefix.length)) : "";
+    };
     const formatMessageForDisplay = (text = "") => {
         let out = String(text || "");
         // Turn inline dash lists into real bullet lines:
@@ -253,12 +262,14 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
             || localStorage.getItem("jwt")
             || localStorage.getItem("jwtToken")
             || "";
+        const csrfToken = readCookie("csrf_token");
 
         const response = await fetch(`${API}/chat/audio`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
                 ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
             },
             body: JSON.stringify({ text, locale }),
             signal: controller.signal,

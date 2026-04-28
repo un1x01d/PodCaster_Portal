@@ -1,6 +1,6 @@
 import React from "react";
 import api from "../../api";
-import { DASHBOARD_COPY_EN } from "../../hooks/useDashboardI18n";
+import { DASHBOARD_COPY_EN, formatTemplate } from "../../hooks/useDashboardI18n";
 
 function Sparkline({ graph, cardType, locale, copy }) {
   const [hoveredIndex, setHoveredIndex] = React.useState(null);
@@ -315,6 +315,16 @@ export default function InsightFeed({
   const [saving, setSaving] = React.useState(false);
   const autoChartKeyRef = React.useRef("");
 
+  const getInsightErrorMessage = React.useCallback((requestError) => {
+    const errorCode = requestError?.response?.data?.error;
+    if (errorCode === "sheet_too_large_for_insights") {
+      return formatTemplate(ui.sheetTooLargeForInsights || DASHBOARD_COPY_EN.sheetTooLargeForInsights, {
+        maxRows: requestError?.response?.data?.maxRows ?? "unknown",
+      });
+    }
+    return errorCode || ui.failedToLoadInsights;
+  }, [ui]);
+
   const loadInsights = React.useCallback(async () => {
     if (!sheetId) {
       setCards([]);
@@ -330,11 +340,11 @@ export default function InsightFeed({
       setSettings(res?.data?.settings || null);
       setAvailable(res?.data?.available || { dateColumns: [], metricColumns: [] });
     } catch (e) {
-      setError(e?.response?.data?.error || ui.failedToLoadInsights);
+      setError(getInsightErrorMessage(e));
     } finally {
       setLoading(false);
     }
-  }, [sheetId, context, locale]);
+  }, [sheetId, context, locale, getInsightErrorMessage]);
 
   React.useEffect(() => {
     loadInsights();

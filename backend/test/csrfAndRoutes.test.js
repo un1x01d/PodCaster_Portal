@@ -35,6 +35,31 @@ test("csrf middleware allows bearer-auth mutating requests when bypass is enable
   assert.equal(nextCalled, true);
 });
 
+test("csrf middleware exempts authenticated AI mutating routes", async () => {
+  process.env.CSRF_BYPASS_BEARER = "true";
+  const { csrfProtect } = await import(`../src/middleware/csrf.js?t=${Date.now()}_ai_exempt`);
+
+  for (const path of ["/chat/query", "/chat/audio", "/dashboard/translate"]) {
+    const req = { method: "POST", path, headers: { cookie: "auth_token=abc" } };
+    const res = {};
+    let nextCalled = false;
+    csrfProtect(req, res, () => { nextCalled = true; });
+    assert.equal(nextCalled, true, `expected ${path} to bypass csrf`);
+  }
+});
+
+test("csrf middleware exempts AI mutating routes with trailing slash", async () => {
+  process.env.CSRF_BYPASS_BEARER = "true";
+  const { csrfProtect } = await import(`../src/middleware/csrf.js?t=${Date.now()}_ai_exempt_slash`);
+
+  const req = { method: "POST", path: "/chat/query/", headers: { cookie: "auth_token=abc" } };
+  const res = {};
+  let nextCalled = false;
+  csrfProtect(req, res, () => { nextCalled = true; });
+
+  assert.equal(nextCalled, true);
+});
+
 test("csrf middleware enforces bearer requests in strict mode", async () => {
   process.env.CSRF_BYPASS_BEARER = "true";
   process.env.CSRF_STRICT_MODE = "true";

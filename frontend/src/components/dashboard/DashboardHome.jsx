@@ -656,17 +656,17 @@ export default function DashboardHome({
     })();
     const agg = (requestedAgg !== "count" && !isMatchedColumnNumeric) ? "count" : requestedAgg;
 
-    setKpiOverrides((prev) => ({
+    setKpiDraftOverrides((prev) => ({
       ...prev,
       [id]: {
         ...(prev?.[id] || {}),
         aiQuery: text,
-        column: column || (prev?.[id]?.column || ""),
-        agg: agg || (prev?.[id]?.agg || "sum"),
-        categoryColumn: prev?.[id]?.categoryColumn || "",
+        column: column || (prev?.[id]?.column || kpiOverrides?.[id]?.column || ""),
+        agg: agg || (prev?.[id]?.agg || kpiOverrides?.[id]?.agg || "sum"),
+        categoryColumn: prev?.[id]?.categoryColumn || kpiOverrides?.[id]?.categoryColumn || "",
       },
     }));
-  }, [headers, sortedData]);
+  }, [headers, sortedData, kpiOverrides]);
 
   const submitChartPromptToAI = React.useCallback((ticketId, query) => {
     const id = String(ticketId || "").trim();

@@ -18,6 +18,46 @@ import "./index.css";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
 axios.defaults.withCredentials = true;
+axios.defaults.xsrfCookieName = "csrf_token";
+axios.defaults.xsrfHeaderName = "x-csrf-token";
+
+function readCookie(name) {
+  if (typeof document === "undefined") return "";
+  const prefix = `${name}=`;
+  const hit = document.cookie
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(prefix));
+  return hit ? decodeURIComponent(hit.slice(prefix.length)) : "";
+}
+
+function readStoredAuthToken() {
+  if (typeof window === "undefined") return "";
+  return String(
+    window.localStorage.getItem("token")
+    || window.localStorage.getItem("authToken")
+    || window.localStorage.getItem("jwt")
+    || window.localStorage.getItem("jwtToken")
+    || ""
+  ).trim();
+}
+
+axios.interceptors.request.use((config) => {
+  const method = String(config.method || "get").toUpperCase();
+  const authToken = readStoredAuthToken();
+  if (authToken) {
+    config.headers = config.headers || {};
+    config.headers.Authorization = `Bearer ${authToken}`;
+  }
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+    const token = readCookie("csrf_token");
+    if (token) {
+      config.headers = config.headers || {};
+      config.headers["x-csrf-token"] = token;
+    }
+  }
+  return config;
+});
 
 /* ---- Date helpers (force YYYY-MM-DD) ---- */
 const ISO_START_RE = /^\d{4}-\d{2}-\d{2}/;
@@ -96,7 +136,7 @@ async function loadPdfModules() {
 
 export default function App() {
   const [user, setUser] = useState(null);
-  const [token, setToken] = useState("");
+  const [token, setToken] = useState(() => readStoredAuthToken());
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [googleEnabled, setGoogleEnabled] = useState(true);
@@ -567,7 +607,11 @@ export default function App() {
     e.preventDefault();
     try {
       const res = await axios.post(`${API}/auth/login`, { email, password });
-      setToken("cookie");
+      const authToken = String(res?.data?.token || "").trim();
+      if (authToken) {
+        localStorage.setItem("token", authToken);
+      }
+      setToken(authToken);
       setUser(res.data.user);
     } catch (err) {
       alert("Login failed");
@@ -1233,7 +1277,8 @@ export default function App() {
         .then((resp) => {
           const exchangedToken = String(resp?.data?.token || "").trim();
           if (!exchangedToken) throw new Error("google_exchange_missing_token");
-          setToken("cookie");
+          localStorage.setItem("token", exchangedToken);
+          setToken(exchangedToken);
         })
         .catch(() => {
           alert("Google sign-in failed.");
@@ -1302,7 +1347,7 @@ export default function App() {
     axios.get(`${API}/auth/me`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
       .then(r => {
         setUser(r.data);
-        setToken((prev) => prev || "cookie");
+        setToken((prev) => prev || readStoredAuthToken());
         const savedSheetId = localStorage.getItem("sheetId");
         const savedTab = localStorage.getItem("activeTab");
         if (savedSheetId && savedSheetId !== "null") {
@@ -1406,6 +1451,10 @@ export default function App() {
   // Handlers for DashboardHeader
   const handleLogout = () => {
     axios.post(`${API}/auth/logout`).catch(() => {});
+    localStorage.removeItem("token");
+    localStorage.removeItem("authToken");
+    localStorage.removeItem("jwt");
+    localStorage.removeItem("jwtToken");
     localStorage.removeItem("sheetId");
     localStorage.removeItem("activeFilename");
     localStorage.removeItem("activeTab");
