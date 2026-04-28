@@ -3,7 +3,7 @@
 ###########
 # Build   #
 ###########
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 WORKDIR /app
 
 # Maximize cache hits
@@ -26,7 +26,7 @@ RUN --mount=type=cache,target=/root/.npm \
 ############
 # Runtime  #
 ############
-FROM node:20-alpine
+FROM node:22-alpine
 WORKDIR /app
 ENV NODE_ENV=production \
     PORT=5173
