@@ -13,6 +13,10 @@ export function getClient() {
   return pool.connect();
 }
 
+export async function closeDbPool() {
+  await pool.end();
+}
+
 /**
  * DB init (idempotent + schema self-heal)
  */

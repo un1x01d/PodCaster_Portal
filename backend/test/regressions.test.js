@@ -71,3 +71,42 @@ test("chat formatter preserves decimal percentages and removes empty-tab artifac
   assert.match(source, /if \(!text\.includes\("\\n"\) && \/\\d\\\.\\d\/\.test\(text\)\) return text;/);
   assert.match(source, /empty-tab artifact phrases/);
 });
+
+test("chat AI plan normalization hardens filters/chart/cross targets", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const controllerPath = path.join(__dirname, "..", "src", "controllers", "chatController.js");
+  const source = fs.readFileSync(controllerPath, "utf8");
+
+  assert.match(source, /const allowedFilterOps = new Set\(\["contains", "equals", "gt", "gte", "lt", "lte"\]\)/);
+  assert.match(source, /aggregation: String\(base\.chart\.aggregation \|\| "sum"\)\.toLowerCase\(\) === "avg" \? "avg" : "sum"/);
+  assert.match(source, /filters: safeFilters/);
+  assert.match(source, /cross_targets: safeCrossTargets/);
+});
+
+test("chat prompt context is bounded and sanitized before upstream AI call", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const controllerPath = path.join(__dirname, "..", "src", "controllers", "chatController.js");
+  const source = fs.readFileSync(controllerPath, "utf8");
+
+  assert.match(source, /const promptRows = sanitizePromptRows\(sampleRows\)/);
+  assert.match(source, /const promptHistory = sanitizeConversationHistory\(conversationHistory\)/);
+  assert.match(source, /conversation_history: promptHistory/);
+  assert.match(source, /sample_rows: promptRows/);
+});
+
+test("chat AI response is strict-schema validated and metrics are logged", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const controllerPath = path.join(__dirname, "..", "src", "controllers", "chatController.js");
+  const source = fs.readFileSync(controllerPath, "utf8");
+
+  assert.match(source, /function validateAiResponseSchemaStrict\(raw\)/);
+  assert.match(source, /throw new Error\("openai_invalid_schema"\)/);
+  assert.match(source, /throw new Error\(`openai_invalid_schema_key:\$\{key\}`\)/);
+  assert.match(source, /console\.info\("\[ai_metrics\]"/);
+  assert.match(source, /prompt_tokens/);
+  assert.match(source, /completion_tokens/);
+  assert.match(source, /estimated_cost_usd/);
+});

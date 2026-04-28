@@ -5,6 +5,7 @@ import { Worker } from "worker_threads";
 import { fileURLToPath } from "url";
 import { query, getClient } from "../config/db.js";
 import { parsePagination } from "../utils/pagination.js";
+import { checkSheetAccess } from "../utils/authorization.js";
 
 const MAX_UPLOAD_SHEETS = Number.parseInt(
     process.env.MAX_UPLOAD_SHEETS || (process.env.NODE_ENV === "production" ? "20" : "50"),
@@ -568,31 +569,6 @@ export async function listAllSheets(req, res) {
         pagination.hasPagination ? [pagination.limit, pagination.offset] : []
     );
     res.json(rows);
-}
-
-async function checkSheetAccess(sheetId, user) {
-    if (user.role === "admin") return true;
-    const res = await query(
-        `SELECT COUNT(s.id) FROM sheets s
-         LEFT JOIN folders f ON f.id = s.folder_id
-         WHERE s.id = $1 AND (
-             (
-               EXISTS (
-                 SELECT 1
-                 FROM folder_groups fg
-                 JOIN user_groups ug ON ug.group_id = fg.group_id
-                 WHERE fg.folder_id = f.id AND ug.user_id = $2
-               )
-               OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2) -- legacy compatibility
-             )
-             OR
-             (s.id IN (SELECT sheet_id FROM permissions WHERE user_id = $2))
-             OR 
-             (s.id IN (SELECT sheet_id FROM group_permissions WHERE group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)))
-         )`,
-        [sheetId, user.id]
-    );
-    return res[0].count !== '0';
 }
 
 export async function getSheetDetails(req, res) {

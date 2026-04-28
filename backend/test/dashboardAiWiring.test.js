@@ -35,3 +35,14 @@ test("cross-sheet AI targets are scoped to accessible files", () => {
   assert.match(source, /filter\(\(t\) => allowedSheetIds\.has/);
   assert.match(source, /invalid_cross_targets/);
 });
+
+test("dashboard AI overrides are applied and persisted for reload", () => {
+  const dashboardHomePath = path.join(repoRoot, "frontend", "src", "components", "dashboard", "DashboardHome.jsx");
+  const source = fs.readFileSync(dashboardHomePath, "utf8");
+
+  assert.match(source, /aiOverride:\s*true/);
+  assert.match(source, /manualOverride:\s*true/);
+  assert.match(source, /persistPinnedConfig\(items\)/);
+  assert.match(source, /const requestId = `\$\{Date\.now\(\)\}_\$\{Math\.random\(\)\.toString\(36\)\.slice\(2, 8\)\}`/);
+  assert.match(source, /if \(latest && latest !== requestId\) return;/);
+});

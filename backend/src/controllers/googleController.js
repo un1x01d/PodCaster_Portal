@@ -403,7 +403,7 @@ export async function listGoogleDriveFiles(req, res) {
     const msg = e?.message || "google_drive_failed";
     if (msg.includes("google_not_connected")) return res.status(400).json({ error: "google_not_connected" });
     console.error("google drive list failed:", msg);
-    return res.status(500).json({ error: "google_drive_failed", message: msg });
+    return res.status(500).json({ error: "google_drive_failed" });
   }
 }
 
@@ -449,6 +449,6 @@ export async function importGoogleDriveFile(req, res) {
   } catch (e) {
     const msg = e?.message || "google_drive_import_failed";
     console.error("google drive import failed:", msg);
-    return res.status(500).json({ error: "google_drive_import_failed", message: msg });
+    return res.status(500).json({ error: "google_drive_import_failed" });
   }
 }

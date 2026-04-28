@@ -5,6 +5,7 @@ const JWT_SECRET = String(process.env.JWT_SECRET || "").trim() || randomBytes(32
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "8h";
 const JWT_ISSUER = String(process.env.JWT_ISSUER || "").trim();
 const JWT_AUDIENCE = String(process.env.JWT_AUDIENCE || "").trim();
+const JWT_ALGORITHM = "HS256";
 
 if (!process.env.JWT_SECRET) {
     if (process.env.NODE_ENV === "production") {
@@ -72,7 +73,7 @@ export function auth(req, res, next) {
     const token = tokenFromReq(req);
     if (!token) return res.status(401).json({ error: "Unauthorized" });
     try {
-        const verifyOpts = {};
+        const verifyOpts = { algorithms: [JWT_ALGORITHM] };
         if (JWT_ISSUER && JWT_AUDIENCE) {
             verifyOpts.issuer = JWT_ISSUER;
             verifyOpts.audience = JWT_AUDIENCE;
@@ -85,7 +86,7 @@ export function auth(req, res, next) {
 }
 
 export function generateToken(user) {
-    const signOpts = { expiresIn: JWT_EXPIRES_IN };
+    const signOpts = { expiresIn: JWT_EXPIRES_IN, algorithm: JWT_ALGORITHM };
     if (JWT_ISSUER && JWT_AUDIENCE) {
         signOpts.issuer = JWT_ISSUER;
         signOpts.audience = JWT_AUDIENCE;

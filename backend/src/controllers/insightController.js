@@ -1,6 +1,7 @@
 import { createHash } from "crypto";
 import { query } from "../config/db.js";
 import { isEnglishLocale, normalizeLocale, translateDashboardCards } from "../utils/dashboardLocalization.js";
+import { checkSheetAccess, hasFolderAccess, loadSheetPermissionSets } from "../utils/authorization.js";
 
 const INSIGHT_MAX_ROWS = Number.parseInt(process.env.INSIGHT_MAX_ROWS || "50000", 10);
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
@@ -544,31 +545,6 @@ function resolveColumn(headers, requested) {
   return headers.find((h) => h.toLowerCase().includes(String(requested).toLowerCase())) || null;
 }
 
-async function checkSheetAccess(sheetId, user) {
-  if (user.role === "admin") return true;
-  const res = await query(
-    `SELECT COUNT(s.id) FROM sheets s
-     LEFT JOIN folders f ON f.id = s.folder_id
-     WHERE s.id = $1 AND (
-         (
-           EXISTS (
-             SELECT 1
-             FROM folder_groups fg
-             JOIN user_groups ug ON ug.group_id = fg.group_id
-             WHERE fg.folder_id = f.id AND ug.user_id = $2
-           )
-           OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)
-         )
-         OR
-         (s.id IN (SELECT sheet_id FROM permissions WHERE user_id = $2))
-         OR
-         (s.id IN (SELECT sheet_id FROM group_permissions WHERE group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)))
-     )`,
-    [sheetId, user.id]
-  );
-  return res?.[0]?.count !== "0";
-}
-
 async function loadAccessibleRows(sheetId, user) {
   const sheet = await query("SELECT headers FROM sheets WHERE id = $1", [sheetId]);
   if (!sheet.length) return { headers: [], rows: [], tooLarge: false, forbidden: false };
@@ -583,49 +559,13 @@ async function loadAccessibleRows(sheetId, user) {
   let rows = allRows.map((r) => (typeof r.row_data === "string" ? JSON.parse(r.row_data) : r.row_data));
   if (user.role === "admin") return { headers, rows, tooLarge: false, forbidden: false };
 
-  const folderAccess = await query(
-    `SELECT 1
-     FROM sheets s
-     LEFT JOIN folders f ON f.id = s.folder_id
-     WHERE s.id = $1
-       AND (
-         EXISTS (
-           SELECT 1
-           FROM folder_groups fg
-           JOIN user_groups ug ON ug.group_id = fg.group_id
-           WHERE fg.folder_id = f.id AND ug.user_id = $2
-         )
-         OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)
-       )
-     LIMIT 1`,
-    [sheetId, user.id]
-  );
-  if (folderAccess.length > 0) {
+  if (await hasFolderAccess(sheetId, user.id)) {
     return { headers, rows, tooLarge: false, forbidden: false };
   }
 
-  const userPerms = await query(
-    `SELECT allowed_columns, row_filters FROM permissions WHERE user_id = $2 AND sheet_id = $1`,
-    [sheetId, user.id]
-  );
-  const groupPerms = await query(
-    `SELECT gp.allowed_columns, gp.row_filters
-     FROM group_permissions gp
-     JOIN user_groups ug ON ug.group_id = gp.group_id
-     WHERE ug.user_id = $2 AND gp.sheet_id = $1`,
-    [sheetId, user.id]
-  );
-  const allPerms = [...userPerms, ...groupPerms];
+  const { allPerms, validCols: validColsArray, rowFiltersList } = await loadSheetPermissionSets(sheetId, user.id);
   if (!allPerms.length) return { headers: [], rows: [], tooLarge: false, forbidden: true };
-
-  const validCols = new Set();
-  const rowFiltersList = [];
-  allPerms.forEach((p) => {
-    const cols = typeof p.allowed_columns === "string" ? JSON.parse(p.allowed_columns) : (p.allowed_columns || []);
-    cols.forEach((c) => validCols.add(c));
-    const filters = typeof p.row_filters === "string" ? JSON.parse(p.row_filters) : (p.row_filters || {});
-    rowFiltersList.push(filters);
-  });
+  const validCols = new Set(validColsArray);
 
   rows = rows.filter((rowData) => {
     let rowAllowed = false;

@@ -11,7 +11,7 @@ import {
 
 const router = express.Router();
 
-router.get("/auth/dropbox/status", asyncHandler(getDropboxStatus));
+router.get("/auth/dropbox/status", auth, asyncHandler(getDropboxStatus));
 router.get("/auth/dropbox/url", auth, asyncHandler(getDropboxAuthUrl));
 router.get("/auth/dropbox/callback", asyncHandler(dropboxCallback));
 router.get("/dropbox/files", auth, asyncHandler(listDropboxFiles));

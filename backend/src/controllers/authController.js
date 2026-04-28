@@ -25,7 +25,12 @@ export async function login(req, res) {
     if (!normalizedEmail) return res.status(400).json({ error: "Missing credentials" });
 
     try {
-        const rows = await query("SELECT * FROM users WHERE LOWER(email)=LOWER($1)", [normalizedEmail]);
+        const rows = await query(
+            `SELECT id, email, password, role, password_reset_required
+             FROM users
+             WHERE LOWER(email)=LOWER($1)`,
+            [normalizedEmail]
+        );
         if (!rows.length) return res.status(401).json({ error: "Invalid credentials" });
 
         const user = rows[0];
@@ -90,7 +95,7 @@ export async function changePassword(req, res) {
         });
     }
 
-    const rows = await query("SELECT * FROM users WHERE id=$1", [req.user.id]);
+    const rows = await query("SELECT id, password FROM users WHERE id=$1", [req.user.id]);
     if (!rows.length) return res.status(404).json({ error: "User not found" });
     const user = rows[0];
 

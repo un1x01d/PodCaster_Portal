@@ -6,7 +6,7 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import * as XLSX from "xlsx"; // Used in healthz
 
-import { initDb, query as dbQuery } from "./src/config/db.js";
+import { initDb, query as dbQuery, closeDbPool } from "./src/config/db.js";
 import authRoutes from "./src/routes/authRoutes.js";
 import sheetRoutes from "./src/routes/sheetRoutes.js";
 import userRoutes from "./src/routes/userRoutes.js";
@@ -17,6 +17,8 @@ import localeRoutes from "./src/routes/localeRoutes.js";
 import googleRoutes from "./src/routes/googleRoutes.js";
 import dropboxRoutes from "./src/routes/dropboxRoutes.js";
 import oneDriveRoutes from "./src/routes/oneDriveRoutes.js";
+import { csrfProtect } from "./src/middleware/csrf.js";
+import { recordHttpRequest, renderPrometheusMetrics } from "./src/utils/metrics.js";
 
 const app = express();
 // Force restart
@@ -42,13 +44,21 @@ const corsOpts = {
 app.use(cors(corsOpts));
 app.options("*", cors(corsOpts));
 app.use(express.json());
+app.use(csrfProtect);
 
 // Logging
 app.use((req, res, next) => {
   const t0 = Date.now();
-  res.on("finish", () =>
-    console.log(`[http] ${req.method} ${req.path} -> ${res.statusCode} (${Date.now() - t0}ms)`)
-  );
+  res.on("finish", () => {
+    const durationMs = Date.now() - t0;
+    console.log(`[http] ${req.method} ${req.path} -> ${res.statusCode} (${durationMs}ms)`);
+    recordHttpRequest({
+      method: req.method,
+      route: req.path,
+      statusCode: res.statusCode,
+      durationMs,
+    });
+  });
   next();
 });
 
@@ -73,6 +83,10 @@ app.use("/", oneDriveRoutes); // /auth/onedrive/*, /onedrive/files
 
 // Health
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
+app.get("/metrics", (_req, res) => {
+  res.setHeader("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
+  res.send(renderPrometheusMetrics());
+});
 app.get("/readyz", async (_req, res) => {
   try {
     await dbQuery("SELECT 1", []);
@@ -137,6 +151,36 @@ try {
   process.exit(1);
 }
 
-app.listen(PORT, () =>
+const server = app.listen(PORT, () =>
   console.log(`✅ Backend running on :${PORT} • SheetJS:`, XLSX?.version || "unknown")
 );
+
+let isShuttingDown = false;
+async function shutdown(signal) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log(`[shutdown] received ${signal}, closing server...`);
+
+  const forceTimer = setTimeout(() => {
+    console.error("[shutdown] timeout reached, forcing exit");
+    process.exit(1);
+  }, Number.parseInt(process.env.SHUTDOWN_TIMEOUT_MS || "10000", 10));
+  forceTimer.unref?.();
+
+  try {
+    await new Promise((resolve, reject) => {
+      server.close((err) => (err ? reject(err) : resolve()));
+    });
+    await closeDbPool();
+    clearTimeout(forceTimer);
+    console.log("[shutdown] completed");
+    process.exit(0);
+  } catch (err) {
+    clearTimeout(forceTimer);
+    console.error("[shutdown] failed", err);
+    process.exit(1);
+  }
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));

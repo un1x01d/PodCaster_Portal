@@ -11,11 +11,10 @@ import {
 
 const router = express.Router();
 
-router.get("/auth/onedrive/status", asyncHandler(getOneDriveStatus));
+router.get("/auth/onedrive/status", auth, asyncHandler(getOneDriveStatus));
 router.get("/auth/onedrive/url", auth, asyncHandler(getOneDriveAuthUrl));
 router.get("/auth/onedrive/callback", asyncHandler(oneDriveCallback));
 router.get("/onedrive/files", auth, asyncHandler(listOneDriveFiles));
 router.post("/onedrive/import", auth, asyncHandler(importOneDriveFile));
 
 export default router;
-

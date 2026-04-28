@@ -1,9 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from "react-router-dom";
 import axios from "axios";
-import * as XLSX from "xlsx";
-import jsPDF from "jspdf";
-import autoTable from "jspdf-autotable";
 
 import UserManagement from "./UserManagement";
 import SpreadsheetChatbot from "./SpreadsheetChatbot";
@@ -79,6 +76,23 @@ const trunc = (str, n) => {
   if (!str) return "";
   return str.length > n ? str.substr(0, n - 1) + "..." : str;
 };
+
+let xlsxModulePromise = null;
+let pdfModulesPromise = null;
+
+async function loadXlsxModule() {
+  if (!xlsxModulePromise) {
+    xlsxModulePromise = import("xlsx");
+  }
+  return xlsxModulePromise;
+}
+
+async function loadPdfModules() {
+  if (!pdfModulesPromise) {
+    pdfModulesPromise = Promise.all([import("jspdf"), import("jspdf-autotable")]);
+  }
+  return pdfModulesPromise;
+}
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -1038,8 +1052,9 @@ export default function App() {
     setSortConfig({ key, direction });
   };
 
-  const exportCSV = () => {
+  const exportCSV = async () => {
     if (!sortedData.length) return;
+    const XLSX = await loadXlsxModule();
     const ws = XLSX.utils.json_to_sheet(sortedData);
     const csv = XLSX.utils.sheet_to_csv(ws);
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -1052,15 +1067,18 @@ export default function App() {
     document.body.removeChild(link);
   };
 
-  const exportXLSX = () => {
+  const exportXLSX = async () => {
     if (!sortedData.length) return;
+    const XLSX = await loadXlsxModule();
     const ws = XLSX.utils.json_to_sheet(sortedData);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Data");
     XLSX.writeFile(wb, `${activeFilename || "export"}.xlsx`);
   };
 
-  const exportPDF = () => {
+  const exportPDF = async () => {
+    const [{ jsPDF }, autoTableModule] = await loadPdfModules();
+    const autoTable = autoTableModule.default;
     const doc = new jsPDF("l", "pt", "a4");
     const pageWidth = doc.internal.pageSize.getWidth();
     const marginX = 24;

@@ -1,6 +1,8 @@
 import { createHash } from "crypto";
 import { query } from "../config/db.js";
 import { isEnglishLocale, normalizeLocale, translateDashboardItems } from "../utils/dashboardLocalization.js";
+import { checkSheetAccess, hasFolderAccess, loadSheetPermissionSets } from "../utils/authorization.js";
+export { checkSheetAccess } from "../utils/authorization.js";
 
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
@@ -17,7 +19,7 @@ let SEMANTIC_CACHE = null;
 let RATIO_CACHE = null;
 let CACHE_TS = 0;
 
-const CHAT_SAMPLE_ROWS = 600;
+const CHAT_SAMPLE_ROWS = Number.parseInt(process.env.CHAT_SAMPLE_ROWS || "600", 10);
 
 async function loadChatTtsSettings() {
   try {
@@ -188,7 +190,30 @@ function formatValue(v, locale = "en", col = "", forSpeech = false) {
  * PERF-01: Server-Side Math
  * Executes heavy calculations in PostgreSQL instead of Node.js memory.
  */
-async function computeSqlAggregation({ sheetId, user, operation, targetColumn, groupBy, filters = [], limit = 5, locale = "en", tabName = null }) {
+function buildRowFilterWhereClause(rowFiltersList = [], startParamIdx = 1) {
+  const normalized = Array.isArray(rowFiltersList) ? rowFiltersList.filter((f) => f && typeof f === "object") : [];
+  if (!normalized.length) return { sql: "", params: [] };
+  const filterClauses = [];
+  const params = [];
+  let paramIdx = startParamIdx;
+
+  normalized.forEach((filters) => {
+    const entries = Object.entries(filters).filter(([k]) => !!k);
+    if (!entries.length) return;
+    const groupPredicates = entries.map(([k, v]) => {
+      const keyIdx = paramIdx++;
+      const valIdx = paramIdx++;
+      params.push(String(k), String(v));
+      return `(row_data->>$${keyIdx}) = $${valIdx}`;
+    });
+    filterClauses.push(`(${groupPredicates.join(" AND ")})`);
+  });
+
+  if (!filterClauses.length) return { sql: "", params: [] };
+  return { sql: ` AND (${filterClauses.join(" OR ")})`, params };
+}
+
+async function computeSqlAggregation({ sheetId, user, operation, targetColumn, groupBy, filters = [], rowFiltersList = [], limit = 5, locale = "en", tabName = null }) {
     const op = String(operation || "none").toLowerCase();
     const lang = String(locale || "en").toLowerCase();
     const isUk = lang.startsWith("uk");
@@ -203,6 +228,13 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
     if (tabName) {
         where += ` AND tab_name = $${params.length + 1}`;
         params.push(tabName);
+    }
+
+    // Apply RBAC row filters in SQL
+    const rowFilterSql = buildRowFilterWhereClause(rowFiltersList, params.length + 1);
+    if (rowFilterSql.sql) {
+      where += rowFilterSql.sql;
+      params.push(...rowFilterSql.params);
     }
 
     // Add AI Filters to SQL
@@ -857,6 +889,8 @@ function buildDateFormatHints(headers = [], rows = []) {
 async function callOpenAI({ message, schemaProfile, sampleRows, headers, conversationHistory, locale, dateFormatHints }) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error("no_api_key");
+  const promptRows = sanitizePromptRows(sampleRows);
+  const promptHistory = sanitizeConversationHistory(conversationHistory);
 
   const system = [
     "You are a professional financial data analyst AI.",
@@ -919,11 +953,11 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
       "квартал 3 / 3 квартал / III квартал = Q3",
       "квартал 4 / 4 квартал / IV квартал = Q4"
     ],
-    conversation_history: conversationHistory,
+    conversation_history: promptHistory,
     available_columns: headers,
     date_format_hints: dateFormatHints || [],
     schema_profile: schemaProfile,
-    sample_rows: sampleRows,
+    sample_rows: promptRows,
     output_schema: {
       answer: "string",
       operation: "none|filter|reset|count|sum|avg|max|min|top_n|year_over_year",
@@ -941,6 +975,7 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
   const isReasoningModel = OPENAI_MODEL.startsWith("o");
+  const startedAt = Date.now();
 
   let resp;
   try {
@@ -963,11 +998,136 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
     throw new Error(`openai_request_failed:${text.slice(0, 300)}`);
   }
   const json = await resp.json();
+  const usage = json?.usage || {};
+  const promptTokens = Number(usage.prompt_tokens || 0);
+  const completionTokens = Number(usage.completion_tokens || 0);
+  const totalTokens = Number(usage.total_tokens || (promptTokens + completionTokens) || 0);
   const content = json?.choices?.[0]?.message?.content;
   if (!content || typeof content !== "string") {
     throw new Error("openai_invalid_response");
   }
-  return JSON.parse(content);
+  const parsed = JSON.parse(content);
+  const validated = validateAiResponseSchemaStrict(parsed);
+  const inCostPer1M = Number.parseFloat(process.env.OPENAI_INPUT_COST_PER_1M || "0");
+  const outCostPer1M = Number.parseFloat(process.env.OPENAI_OUTPUT_COST_PER_1M || "0");
+  const estimatedCostUsd = ((promptTokens / 1_000_000) * inCostPer1M) + ((completionTokens / 1_000_000) * outCostPer1M);
+  console.info("[ai_metrics]", JSON.stringify({
+    provider: "openai",
+    endpoint: "chat.completions",
+    model: OPENAI_MODEL,
+    latency_ms: Date.now() - startedAt,
+    prompt_tokens: promptTokens,
+    completion_tokens: completionTokens,
+    total_tokens: totalTokens,
+    estimated_cost_usd: Number.isFinite(estimatedCostUsd) ? Number(estimatedCostUsd.toFixed(8)) : null,
+    status: "ok",
+  }));
+  return validated;
+}
+
+function normalizeAiPlan(raw) {
+  const base = raw && typeof raw === "object" ? raw : {};
+  const op = String(base.operation || "none").toLowerCase();
+  const allowedOps = new Set(["none", "filter", "reset", "count", "sum", "avg", "max", "min", "top_n", "year_over_year", "chart", "plot", "trend"]);
+  const allowedFilterOps = new Set(["contains", "equals", "gt", "gte", "lt", "lte"]);
+  const safeFilters = Array.isArray(base.filters)
+    ? base.filters
+      .filter((f) => f && typeof f === "object")
+      .map((f) => {
+        const operator = String(f.operator || "contains").toLowerCase();
+        return {
+          column: f.column == null ? "" : String(f.column),
+          operator: allowedFilterOps.has(operator) ? operator : "contains",
+          value: typeof f.value === "number" || typeof f.value === "string" ? f.value : String(f.value ?? ""),
+        };
+      })
+      .filter((f) => f.column.trim())
+    : [];
+  const safeChart = (base.chart && typeof base.chart === "object")
+    ? {
+      date_column: base.chart.date_column == null ? null : String(base.chart.date_column),
+      value_column: base.chart.value_column == null ? null : String(base.chart.value_column),
+      segment_by: base.chart.segment_by == null ? null : String(base.chart.segment_by),
+      aggregation: String(base.chart.aggregation || "sum").toLowerCase() === "avg" ? "avg" : "sum",
+    }
+    : null;
+  const safeCrossTargets = Array.isArray(base.cross_targets)
+    ? base.cross_targets
+      .filter((t) => t && typeof t === "object")
+      .map((t) => ({
+        sheet_id: t.sheet_id == null ? "" : String(t.sheet_id),
+        column: t.column == null ? "" : String(t.column),
+        operation: ["sum", "avg", "count", "max", "min"].includes(String(t.operation || "").toLowerCase())
+          ? String(t.operation).toLowerCase()
+          : "sum",
+      }))
+      .filter((t) => t.sheet_id.trim() && t.column.trim())
+    : [];
+  return {
+    answer: typeof base.answer === "string" ? base.answer : "",
+    operation: allowedOps.has(op) ? op : "none",
+    target_tab: base.target_tab == null ? null : String(base.target_tab),
+    target_column: base.target_column == null ? null : String(base.target_column),
+    group_by: base.group_by == null ? null : String(base.group_by),
+    limit: Number.isFinite(Number(base.limit)) ? Number(base.limit) : null,
+    filters: safeFilters,
+    chart: safeChart,
+    cross_talk: !!base.cross_talk,
+    cross_targets: safeCrossTargets,
+  };
+}
+
+function validateAiResponseSchemaStrict(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("openai_invalid_schema");
+  }
+  const allowedTopLevel = new Set([
+    "answer", "operation", "target_tab", "target_column", "group_by", "limit",
+    "filters", "chart", "cross_talk", "cross_targets"
+  ]);
+  const keys = Object.keys(raw);
+  if (!keys.length) {
+    throw new Error("openai_invalid_schema_empty");
+  }
+  for (const key of keys) {
+    if (!allowedTopLevel.has(key)) {
+      throw new Error(`openai_invalid_schema_key:${key}`);
+    }
+  }
+  return normalizeAiPlan(raw);
+}
+
+function sanitizePromptRows(rows = [], maxRows = 80, maxFieldChars = 120) {
+  return (Array.isArray(rows) ? rows : []).slice(0, maxRows).map((row) => {
+    if (!row || typeof row !== "object") return {};
+    const next = {};
+    Object.entries(row).forEach(([k, v]) => {
+      if (v == null) {
+        next[k] = v;
+        return;
+      }
+      if (typeof v === "number" || typeof v === "boolean") {
+        next[k] = v;
+        return;
+      }
+      const s = String(v);
+      next[k] = s.length > maxFieldChars ? `${s.slice(0, maxFieldChars)}...` : s;
+    });
+    return next;
+  });
+}
+
+function sanitizeConversationHistory(history = [], maxItems = 8, maxChars = 600) {
+  return (Array.isArray(history) ? history : [])
+    .slice(-maxItems)
+    .map((m) => {
+      if (!m || typeof m !== "object") return null;
+      const role = String(m.role || "").toLowerCase();
+      const safeRole = role === "assistant" ? "assistant" : "user";
+      const content = String(m.content || "");
+      return { role: safeRole, content: content.length > maxChars ? `${content.slice(0, maxChars)}...` : content };
+    })
+    .filter(Boolean);
 }
 
 function normalizeToken(value = "") {
@@ -1367,9 +1527,23 @@ export async function chatQuery(req, res) {
   
   // PERF-01: Build Workspace Schema for Cross-Sheet Intelligence
   const workspaceRes = await query(
-      `SELECT s.id, s.display_name, s.filename, s.headers 
-       FROM sheets s 
-       WHERE (s.id IN (SELECT sheet_id FROM permissions WHERE user_id = $1) OR $2 = 'admin')`,
+      `SELECT DISTINCT s.id, s.display_name, s.filename, s.headers
+       FROM sheets s
+       LEFT JOIN folders f ON f.id = s.folder_id
+       WHERE (
+         $2 = 'admin'
+         OR (
+           EXISTS (
+             SELECT 1
+             FROM folder_groups fg
+             JOIN user_groups ug ON ug.group_id = fg.group_id
+             WHERE fg.folder_id = f.id AND ug.user_id = $1
+           )
+           OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $1)
+         )
+         OR (s.id IN (SELECT sheet_id FROM permissions WHERE user_id = $1))
+         OR (s.id IN (SELECT sheet_id FROM group_permissions WHERE group_id IN (SELECT group_id FROM user_groups WHERE user_id = $1)))
+       )`,
       [req.user.id, req.user.role]
   );
   const availableFiles = workspaceRes.map(f => ({
@@ -1382,7 +1556,7 @@ export async function chatQuery(req, res) {
 
   let ai;
   try {
-    ai = await callOpenAI({
+    ai = normalizeAiPlan(await callOpenAI({
       message: `${message}\n\nAvailable tabs: ${tabNames.join(", ") || "N/A"}\nIf the question maps to a specific tab, set target_tab in the JSON response.`,
       headers: aiHeaders,
       sampleRows,
@@ -1393,7 +1567,7 @@ export async function chatQuery(req, res) {
           available_tabs: tabNames,
           available_files: availableFiles 
       }
-    });
+    }));
   } catch (e) {
     console.error("OpenAI call failed:", e);
     return res.status(502).json({ error: "ai_unavailable" }); 
@@ -1463,6 +1637,7 @@ export async function chatQuery(req, res) {
                 user: req.user,
                 operation: t.operation || "sum",
                 targetColumn: t.column,
+                rowFiltersList: loadedSample?.rowFiltersList || [],
                 locale
             });
             // Extract numeric value from "Total X: $Y" or similar
@@ -1498,6 +1673,7 @@ export async function chatQuery(req, res) {
             targetColumn: resolvedTarget,
             groupBy: resolvedGroupBy,
             filters: filteredAiFilters,
+            rowFiltersList: loadedSample?.rowFiltersList || [],
             limit: ai?.limit,
             locale,
             tabName: selectedTab
@@ -1573,60 +1749,22 @@ export async function chatQuery(req, res) {
   }
 }
 
-export async function checkSheetAccess(sheetId, user) {
-  if (user.role === "admin") return true;
-  const res = await query(
-    `SELECT COUNT(s.id) FROM sheets s
-     LEFT JOIN folders f ON f.id = s.folder_id
-     WHERE s.id = $1 AND (
-         (
-           EXISTS (
-             SELECT 1
-             FROM folder_groups fg
-             JOIN user_groups ug ON ug.group_id = fg.group_id
-             WHERE fg.folder_id = f.id AND ug.user_id = $2
-           )
-           OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)
-         )
-         OR
-         (s.id IN (SELECT sheet_id FROM permissions WHERE user_id = $2))
-         OR
-         (s.id IN (SELECT sheet_id FROM group_permissions WHERE group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)))
-     )`,
-    [sheetId, user.id]
-  );
-  return res?.[0]?.count !== "0";
-}
-
 async function loadAccessibleRows(sheetId, user, activeTab = null, rowLimit = null) {
   const sheetRes = await query("SELECT headers, tabs, tab_name FROM sheets WHERE id = $1", [sheetId]);
-  if (!sheetRes.length) return { headers: [], tabs: [], rows: [], forbidden: true };
+  if (!sheetRes.length) return { headers: [], tabs: [], rows: [], rowFiltersList: [], forbidden: true };
   const sheet = sheetRes[0];
 
-  const folderAccess = await query(
-    `SELECT 1 FROM sheets s LEFT JOIN folders f ON f.id = s.folder_id WHERE s.id = $1 AND (EXISTS (SELECT 1 FROM folder_groups fg JOIN user_groups ug ON ug.group_id = fg.group_id WHERE fg.folder_id = f.id AND ug.user_id = $2) OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)) LIMIT 1`,
-    [sheetId, user.id]
-  );
-  const hasFullAccess = (user.role === "admin" || folderAccess.length > 0);
+  const hasFullAccess = (user.role === "admin" || await hasFolderAccess(sheetId, user.id));
 
   let validCols = null;
   let rowFiltersList = [];
 
   if (!hasFullAccess) {
-    const userPerms = await query("SELECT allowed_columns, row_filters FROM permissions WHERE user_id = $2 AND sheet_id = $1", [sheetId, user.id]);
-    const groupPerms = await query(`SELECT gp.allowed_columns, gp.row_filters FROM group_permissions gp JOIN user_groups ug ON ug.group_id = gp.group_id WHERE ug.user_id = $2 AND gp.sheet_id = $1`, [sheetId, user.id]);
-    const allPerms = [...userPerms, ...groupPerms];
-    if (!allPerms.length) return { headers: [], tabs: [], rows: [], forbidden: true };
-
-    const validSet = new Set();
-    allPerms.forEach((p) => {
-      const cols = typeof p.allowed_columns === "string" ? JSON.parse(p.allowed_columns) : (p.allowed_columns || []);
-      cols.forEach((c) => validSet.add(c));
-      const filters = typeof p.row_filters === "string" ? JSON.parse(p.row_filters) : (p.row_filters || {});
-      rowFiltersList.push(filters);
-    });
-    validCols = Array.from(validSet);
-    if (!validCols.length) return { headers: [], tabs: [], rows: [], forbidden: true };
+    const { allPerms, validCols: loadedCols, rowFiltersList: loadedFilters } = await loadSheetPermissionSets(sheetId, user.id);
+    if (!allPerms.length) return { headers: [], tabs: [], rows: [], rowFiltersList: [], forbidden: true };
+    rowFiltersList = loadedFilters;
+    validCols = loadedCols;
+    if (!validCols.length) return { headers: [], tabs: [], rows: [], rowFiltersList: [], forbidden: true };
   }
 
   // Build the SQL query for efficient retrieval
@@ -1680,6 +1818,7 @@ async function loadAccessibleRows(sheetId, user, activeTab = null, rowLimit = nu
     headers,
     tabs: Array.isArray(sheet.tabs) ? sheet.tabs : (sheet.tab_name ? [sheet.tab_name] : []),
     rows: rows.map(r => ({ ...(r.row_data || {}), __tab_name: r.tab_name })),
+    rowFiltersList,
     forbidden: false,
   };
 }

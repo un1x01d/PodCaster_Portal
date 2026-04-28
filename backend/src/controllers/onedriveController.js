@@ -278,7 +278,7 @@ export async function listOneDriveFiles(req, res) {
     const msg = e?.message || "onedrive_failed";
     if (msg.includes("onedrive_not_connected")) return res.status(400).json({ error: "onedrive_not_connected" });
     console.error("onedrive list failed:", msg);
-    return res.status(500).json({ error: "onedrive_list_failed", message: msg });
+    return res.status(500).json({ error: "onedrive_list_failed" });
   }
 }
 
@@ -327,6 +327,6 @@ export async function importOneDriveFile(req, res) {
   } catch (e) {
     const msg = e?.message || "onedrive_import_failed";
     console.error("onedrive import failed:", msg);
-    return res.status(500).json({ error: "onedrive_import_failed", message: msg });
+    return res.status(500).json({ error: "onedrive_import_failed" });
   }
 }

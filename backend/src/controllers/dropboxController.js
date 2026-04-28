@@ -326,7 +326,7 @@ export async function listDropboxFiles(req, res) {
     const msg = e?.message || "dropbox_failed";
     if (msg.includes("dropbox_not_connected")) return res.status(400).json({ error: "dropbox_not_connected" });
     console.error("dropbox list failed:", msg);
-    return res.status(500).json({ error: "dropbox_list_failed", message: msg });
+    return res.status(500).json({ error: "dropbox_list_failed" });
   }
 }
 
@@ -383,6 +383,6 @@ export async function importDropboxFile(req, res) {
   } catch (e) {
     const msg = e?.message || "dropbox_import_failed";
     console.error("dropbox import failed:", msg);
-    return res.status(500).json({ error: "dropbox_import_failed", message: msg });
+    return res.status(500).json({ error: "dropbox_import_failed" });
   }
 }

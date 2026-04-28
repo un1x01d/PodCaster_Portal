@@ -719,11 +719,14 @@ export async function updateGroupMembers(req, res) {
         // Delete members NOT in the new list (preserves existing users' flags)
         await client.query("DELETE FROM user_groups WHERE group_id=$1 AND NOT (user_id = ANY($2::int[]))", [gid, userIds]);
         
-        // Insert new members (DO NOTHING if already exists)
-        for (const uid of userIds) {
+        // Insert new members in one statement (avoids N+1 query overhead)
+        if (userIds.length > 0) {
             await client.query(
-                "INSERT INTO user_groups (group_id, user_id) VALUES ($1, $2) ON CONFLICT (user_id, group_id) DO NOTHING",
-                [gid, uid]
+                `INSERT INTO user_groups (group_id, user_id)
+                 SELECT $1, uid
+                 FROM unnest($2::int[]) AS uid
+                 ON CONFLICT (user_id, group_id) DO NOTHING`,
+                [gid, userIds]
             );
         }
         await client.query("COMMIT");

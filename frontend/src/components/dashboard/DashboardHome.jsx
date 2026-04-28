@@ -549,6 +549,7 @@ export default function DashboardHome({
   const pinnedTitleTranslateInFlightRef = React.useRef(new Set());
   const pinnedTitleTranslateCooldownRef = React.useRef(new Map());
   const pinnedConfigRef = React.useRef(null);
+  const aiRequestByPendingKeyRef = React.useRef({});
 
   React.useEffect(() => {
     pinnedConfigRef.current = pinnedConfig;
@@ -587,8 +588,10 @@ export default function DashboardHome({
     const text = String(query || "").trim();
     if (!sheetKey || !text) return;
     const key = String(pendingKey || "").trim();
+    const requestId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     if (key && dashboardAiState.pendingByKey?.[key]) return;
     if (key) markAiPending(key, true);
+    if (key) aiRequestByPendingKeyRef.current[key] = requestId;
     if (typeof window === "undefined") {
       if (key) markAiPending(key, false);
       return;
@@ -598,7 +601,7 @@ export default function DashboardHome({
         sheetId: sheetKey,
         locale,
         message: text,
-        meta: { ...(meta || {}), source: "dashboard-ai", silent: true, pendingKey: key || null },
+        meta: { ...(meta || {}), source: "dashboard-ai", silent: true, pendingKey: key || null, requestId },
       },
     }));
   }, [sheetId, locale, dashboardAiState.pendingByKey, markAiPending]);
@@ -1238,12 +1241,23 @@ export default function DashboardHome({
 
   // --- Unified Dashboard Chat Response Handler ---
   React.useEffect(() => {
+    const parseStrictSingleNumber = (rawText) => {
+      const matches = String(rawText || "").match(/-?\d+(?:[.,]\d+)?/g) || [];
+      if (matches.length !== 1) return null;
+      const value = Number(matches[0].replace(",", "."));
+      return Number.isFinite(value) ? value : null;
+    };
     const handleDashboardChatResponse = (event) => {
       const detail = event?.detail || {};
       if (!detail?.sheetId || String(detail.sheetId) !== String(sheetId)) return;
       const meta = detail?.meta || {};
       const isDashboardAiEvent = meta?.source === "dashboard-ai";
       const pendingKey = String(meta?.pendingKey || "").trim();
+      const requestId = String(meta?.requestId || "").trim();
+      if (pendingKey && requestId) {
+        const latest = String(aiRequestByPendingKeyRef.current[pendingKey] || "");
+        if (latest && latest !== requestId) return;
+      }
       if (pendingKey) {
         markAiPending(pendingKey, false);
       }
@@ -1259,9 +1273,11 @@ export default function DashboardHome({
 
       // 1. KPI / Ticket Update
       if (meta.ticketId) {
-        const cleaned = answer.replace(/[^\d.-]/g, "");
-        const numeric = parseFloat(cleaned);
-        if (!Number.isFinite(numeric)) return;
+        const numeric = parseStrictSingleNumber(answer);
+        if (!Number.isFinite(numeric)) {
+          if (pendingKey) setAiError(pendingKey, "AI returned non-numeric output. Please ask for a single number.");
+          return;
+        }
 
         if (meta.ticketId === "__top_categories__") {
           setTopCategoriesConfig((prev) => ({ ...prev, aiValue: String(numeric), aiOverride: true }));
@@ -1286,9 +1302,11 @@ export default function DashboardHome({
 
       // 2. Pinned Metric Update
       if (Number.isInteger(meta.index) && meta.index >= 0 && meta.index <= 3) {
-        const cleaned = answer.replace(/[^\d.-]/g, "");
-        const numeric = parseFloat(cleaned);
-        if (Number.isNaN(numeric)) return;
+        const numeric = parseStrictSingleNumber(answer);
+        if (!Number.isFinite(numeric)) {
+          if (pendingKey) setAiError(pendingKey, "AI returned non-numeric output. Please ask for a single number.");
+          return;
+        }
 
         setPinnedInput((prev) => {
           const items = ensurePinnedItems(prev.items);
