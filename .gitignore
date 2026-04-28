@@ -18,3 +18,6 @@ backend/uploads/
 *.njsproj
 *.sln
 *.sw?
+
+# Root node modules
+node_modules/
