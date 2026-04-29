@@ -11,11 +11,20 @@ export default function ColumnFilterMenu({
     onClear,
     onClose,
     tableContainerRef,
+    fetchUniqueValues,
+    sheetId,
+    activeTab,
 }) {
     const panelRef = useRef(null);
     const [q, setQ] = useState("");
     const [coords, setCoords] = useState({ top: 0, left: 0 });
     const [measured, setMeasured] = useState(false);
+
+    useEffect(() => {
+        if (fetchUniqueValues && !allValues.length) {
+            fetchUniqueValues(column, sheetId, activeTab);
+        }
+    }, [fetchUniqueValues, allValues.length, column, sheetId, activeTab]);
 
     const values = Array.isArray(allValues) ? allValues : [];
 

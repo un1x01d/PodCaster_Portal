@@ -125,11 +125,111 @@ export default function DashboardBody(props) {
         secondarySheetId,
         setSecondarySheetId,
         secondaryTab,
-        setSecondaryTab
+        setSecondaryTab,
+        workspaceChartStateRef
     } = props;
 
     const headerRef = useRef(null);
     const secondaryHeaderRef = useRef(null);
+    const workspaceChartTouchedRef = useRef(false);
+    const chartStateRef = useRef({});
+
+    useEffect(() => {
+        chartStateRef.current = {
+            pivotOn,
+            pivotRowKey,
+            pivotColKey,
+            pivotValKey,
+            pivotAgg,
+            twoOn,
+            condCol1,
+            condCol2,
+            valueCol,
+            trendsOn,
+            trendsDateKey,
+            trendsValueKey,
+            trendGranularity,
+            compareYears,
+        };
+    }, [
+        pivotOn,
+        pivotRowKey,
+        pivotColKey,
+        pivotValKey,
+        pivotAgg,
+        twoOn,
+        condCol1,
+        condCol2,
+        valueCol,
+        trendsOn,
+        trendsDateKey,
+        trendsValueKey,
+        trendGranularity,
+        compareYears,
+    ]);
+
+    useEffect(() => {
+        const saved = workspaceChartStateRef?.current;
+        if (saved) {
+            workspaceChartTouchedRef.current = !!(saved.pivotOn || saved.twoOn || saved.trendsOn);
+            setPivotOn(!!saved.pivotOn);
+            setPivotRowKey(saved.pivotRowKey || "");
+            setPivotColKey(saved.pivotColKey || "");
+            setPivotValKey(saved.pivotValKey || "");
+            setPivotAgg(saved.pivotAgg || "sum");
+            setTwoOn(!!saved.twoOn);
+            setCondCol1(saved.condCol1 || "");
+            setCondCol2(saved.condCol2 || "");
+            setValueCol(saved.valueCol || "");
+            setTrendsOn(!!saved.trendsOn);
+            setTrendsDateKey(saved.trendsDateKey || "");
+            setTrendsValueKey(saved.trendsValueKey || "");
+            setTrendGranularity(saved.trendGranularity || "month");
+            setCompareYears(Array.isArray(saved.compareYears) ? saved.compareYears : []);
+        } else {
+            setPivotOn(false);
+            setTwoOn(false);
+            setTrendsOn(false);
+        }
+
+        return () => {
+            if (workspaceChartStateRef) {
+                workspaceChartStateRef.current = chartStateRef.current;
+            }
+        };
+    }, []);
+
+    useEffect(() => {
+        if (workspaceChartTouchedRef.current) return;
+        if (!pivotOn && !twoOn && !trendsOn) return;
+        setPivotOn(false);
+        setTwoOn(false);
+        setTrendsOn(false);
+    }, [pivotOn, twoOn, trendsOn, setPivotOn, setTwoOn, setTrendsOn]);
+
+    const markWorkspaceChartTouched = React.useCallback(() => {
+        workspaceChartTouchedRef.current = true;
+    }, []);
+
+    const setWorkspacePivotOn = React.useCallback((next) => {
+        markWorkspaceChartTouched();
+        setPivotOn(next);
+    }, [markWorkspaceChartTouched, setPivotOn]);
+
+    const setWorkspaceTwoOn = React.useCallback((next) => {
+        markWorkspaceChartTouched();
+        setTwoOn(next);
+    }, [markWorkspaceChartTouched, setTwoOn]);
+
+    const setWorkspaceTrendsOn = React.useCallback((next) => {
+        markWorkspaceChartTouched();
+        setTrendsOn(next);
+    }, [markWorkspaceChartTouched, setTrendsOn]);
+
+    const openWorkspaceInsightChart = React.useCallback((config) => {
+        markWorkspaceChartTouched();
+        onInsightOpenChart?.(config);
+    }, [markWorkspaceChartTouched, onInsightOpenChart]);
 
     // Sync header scroll with horizontal data scroll
     const handlePrimaryScroll = ({ scrollTop }) => {
@@ -159,8 +259,8 @@ export default function DashboardBody(props) {
     };
 
     const handleSecondaryItemsRendered = ({ visibleStopIndex }) => {
-        if (visibleStopIndex >= secondaryData.length - 15 && onLoadMoreSecondary && !secondaryIsBatchLoading) {
-            onLoadMoreSecondary();
+        if (visibleStopIndex >= filteredSecondaryData.length - 15 && onLoadMoreSecondary && !secondaryIsBatchLoading) {
+            onLoadMoreSecondary(secondaryColumnFilters);
         }
     };
 
@@ -184,6 +284,7 @@ export default function DashboardBody(props) {
     const [comparisonOn, setComparisonOn] = useState(false);
     const [splitWidth, setSplitWidth] = useState(50); // percentage
     const isResizingRef = useRef(false);
+    const [secondaryColumnFilters, setSecondaryColumnFilters] = useState({});
 
     const [primaryFields, setPrimaryFields] = useState([]);
     const [secondaryFields, setSecondaryFields] = useState([]);
@@ -203,6 +304,11 @@ export default function DashboardBody(props) {
             setSecondaryFields(secondaryHeaders);
         }
     }, [secondaryHeaders]);
+
+    useEffect(() => {
+        setSecondaryColumnFilters({});
+        setOpenFilterCol((prev) => (String(prev || "").startsWith("sec_") ? null : prev));
+    }, [secondarySheetId, secondaryTab, setOpenFilterCol]);
 
     const primaryGridRef = useRef(null);
     const secondaryGridRef = useRef(null);
@@ -537,6 +643,34 @@ export default function DashboardBody(props) {
     const secondaryTotalWidth = React.useMemo(() => {
         return activeSecondaryFields?.reduce((sum, h) => sum + 180, 0) || 0;
     }, [activeSecondaryFields]);
+
+    const uniqueValuesCacheKey = React.useCallback((sid, tabName, col) => (
+        `${String(sid || "")}::${tabName ? String(tabName) : "__all__"}::${String(col || "")}`
+    ), []);
+
+    const getCachedUniqueValues = React.useCallback((sid, tabName, col) => (
+        uniqueValuesByColumn?.[uniqueValuesCacheKey(sid, tabName, col)] || []
+    ), [uniqueValuesByColumn, uniqueValuesCacheKey]);
+
+    const reloadSecondaryWithFilters = React.useCallback((filters) => {
+        if (!secondarySheetId || !loadData) return;
+        loadData(secondarySheetId, true, secondaryTab, {
+            context: "secondary",
+            preferCache: false,
+            filters,
+        });
+    }, [loadData, secondarySheetId, secondaryTab]);
+
+    const filteredSecondaryData = React.useMemo(() => {
+        const rows = Array.isArray(secondaryData) ? secondaryData : [];
+        const activeFilters = Object.entries(secondaryColumnFilters)
+            .filter(([, allowed]) => allowed instanceof Set && allowed.size > 0);
+        if (!activeFilters.length) return rows;
+
+        return rows.filter((row) => activeFilters.every(([col, allowed]) => (
+            allowed.has(String(row?.[col] ?? ""))
+        )));
+    }, [secondaryData, secondaryColumnFilters]);
 
     const PrimaryOuterElement = React.useMemo(() => forwardRef(({ onScroll, ...rest }, ref) => (
         <div
@@ -940,15 +1074,15 @@ export default function DashboardBody(props) {
                             </button>
                             {expandedMenus.charts && (
                                 <div className="left-menu-submenu">
-                                    <button className="left-menu-action left-menu-toggle-row" onClick={() => setPivotOn((p) => !p)}>
+                                    <button className="left-menu-action left-menu-toggle-row" onClick={() => setWorkspacePivotOn((p) => !p)}>
                                         <span>Pivot Table</span>
                                         <span className="left-menu-state">{pivotOn ? "ON" : "OFF"}</span>
                                     </button>
-                                    <button className="left-menu-action left-menu-toggle-row" onClick={() => setTwoOn((p) => !p)}>
+                                    <button className="left-menu-action left-menu-toggle-row" onClick={() => setWorkspaceTwoOn((p) => !p)}>
                                         <span>Two-Condition</span>
                                         <span className="left-menu-state">{twoOn ? "ON" : "OFF"}</span>
                                     </button>
-                                    <button className="left-menu-action left-menu-toggle-row" onClick={() => setTrendsOn((p) => !p)}>
+                                    <button className="left-menu-action left-menu-toggle-row" onClick={() => setWorkspaceTrendsOn((p) => !p)}>
                                         <span>Trends</span>
                                         <span className="left-menu-state">{trendsOn ? "ON" : "OFF"}</span>
                                     </button>
@@ -1465,13 +1599,13 @@ export default function DashboardBody(props) {
                 </div>
             )}
 
-            <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-y-auto scroll-smooth">
+            <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-y-auto scroll-smooth" ref={tableContainerRef}>
                 <div className="flex flex-col min-h-full">
 
             {/* Pivot Controls */}
             {pivotOn && (
                 <PivotOverlay
-                    setPivotOn={setPivotOn}
+                    setPivotOn={setWorkspacePivotOn}
                     pivotRowKey={pivotRowKey} setPivotRowKey={setPivotRowKey}
                     pivotColKey={pivotColKey} setPivotColKey={setPivotColKey}
                     pivotValKey={pivotValKey} setPivotValKey={setPivotValKey}
@@ -1490,7 +1624,7 @@ export default function DashboardBody(props) {
             {/* Trends Overlay */}
             {trendsOn && (
                 <TrendsOverlay
-                    setTrendsOn={setTrendsOn}
+                    setTrendsOn={setWorkspaceTrendsOn}
                     trendsDateKey={trendsDateKey} setTrendsDateKey={setTrendsDateKey}
                     headers={displayHeaders}
                     tabs={tabs}
@@ -1507,7 +1641,7 @@ export default function DashboardBody(props) {
             {/* Two Condition Overlay */}
             {twoOn && (
                 <TwoConditionOverlay
-                    setTwoOn={setTwoOn}
+                    setTwoOn={setWorkspaceTwoOn}
                     condCol1={condCol1} setCondCol1={setCondCol1}
                     headers={displayHeaders}
                     tabs={tabs}
@@ -1544,12 +1678,67 @@ export default function DashboardBody(props) {
                                             {activePrimaryFields.map((h) => (
                                                 <div
                                                     key={h}
+                                                    ref={(el) => {
+                                                        if (filterAnchorRefs?.current) filterAnchorRefs.current[h] = el;
+                                                    }}
                                                     style={{ width: colWidths[h] || 180, minWidth: colWidths[h] || 180 }}
                                                     className="table-pro-text relative border-r border-slate-200 px-3 py-1.5 text-[11px] text-left cursor-pointer group flex items-center justify-between hover:bg-slate-200 transition-colors bg-slate-100 text-slate-800 font-bold h-full"
-                                                    onClick={() => requestSort(h)}
+                                                    onClick={(e) => {
+                                                        const isFilterBtn = e.target.closest && e.target.closest(".filter-btn");
+                                                        if (!isFilterBtn) requestSort(h);
+                                                    }}
                                                 >
                                                     <span className="truncate">{h}</span>
-                                                    {sortConfig?.key === h && <span className="ml-1 text-[9px]">{sortConfig.direction === "asc" ? "▲" : "▼"}</span>}
+                                                    <div className="flex items-center gap-1.5">
+                                                        {sortConfig?.key === h && <span className="text-[9px]">{sortConfig.direction === "asc" ? "▲" : "▼"}</span>}
+                                                        <button
+                                                            type="button"
+                                                            ref={(el) => {
+                                                                if (filterBtnRefs?.current) filterBtnRefs.current[h] = el;
+                                                            }}
+                                                            className={`filter-btn h-5 px-1 rounded transition-all flex items-center justify-center ${columnFilters[h] && columnFilters[h] instanceof Set && columnFilters[h].size > 0
+                                                                ? "bg-blue-100 text-blue-700 ring-1 ring-blue-300"
+                                                                : "bg-slate-200 text-slate-400 opacity-0 group-hover:opacity-100 hover:bg-slate-300 hover:text-slate-600"
+                                                                }`}
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                setOpenFilterCol((prev) => (prev === h ? null : h));
+                                                            }}
+                                                        >
+                                                            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg>
+                                                        </button>
+                                                    </div>
+
+                                                    {/* Filter Menu Rendering */}
+                                                    {openFilterCol === h && (
+                                                        <ColumnFilterMenu
+                                                            anchorMapRef={filterAnchorRefs}
+                                                            tableContainerRef={tableContainerRef}
+                                                            columnKey={h}
+                                                            column={h}
+                                                            allValues={getCachedUniqueValues(sheetId, activeTab, h)}
+                                                            appliedSelected={columnFilters[h] && columnFilters[h] instanceof Set ? columnFilters[h] : null}
+                                                            onApply={(col, set) => {
+                                                                setColumnFilters((prev) => {
+                                                                    const next = { ...prev };
+                                                                    if (set === null) delete next[col];
+                                                                    else next[col] = new Set(set);
+                                                                    return next;
+                                                                });
+                                                            }}
+                                                            onClear={(col) => {
+                                                                setColumnFilters((prev) => {
+                                                                    const next = { ...prev };
+                                                                    delete next[col];
+                                                                    return next;
+                                                                });
+                                                            }}
+                                                            onClose={() => setOpenFilterCol(null)}
+                                                            fetchUniqueValues={fetchUniqueValues}
+                                                            sheetId={sheetId}
+                                                            activeTab={activeTab}
+                                                        />
+                                                    )}
                                                 </div>
                                             ))}
                                         </div>
@@ -1576,7 +1765,7 @@ export default function DashboardBody(props) {
                                                             const row = sortedData[index];
                                                             return (
                                                                 <div
-                                                                    style={{ ...style, width: (activePrimaryFields.length * 180), minWidth: "100%" }}
+                                                                    style={{ ...style, width: totalRowWidth, minWidth: "100%" }}
                                                                     className={`flex ${index % 2 === 1 ? "bg-slate-50" : "bg-white"} hover:bg-indigo-50/50 transition-colors border-b border-slate-100 items-center h-8`}
                                                                 >
                                                                     {activePrimaryFields.map((h) => (
@@ -1643,8 +1832,65 @@ export default function DashboardBody(props) {
                                         >
                                             <div style={{ display: 'flex', width: secondaryTotalWidth, height: '100%' }}>
                                                 {activeSecondaryFields.map((h) => (
-                                                    <div key={h} style={{ width: 180, minWidth: 180 }} className="px-3 py-1.5 text-[11px] font-bold text-slate-700 border-r border-slate-200 truncate h-full flex items-center">
-                                                        {h}
+                                                    <div
+                                                        key={h}
+                                                        ref={(el) => {
+                                                            if (filterAnchorRefs?.current) filterAnchorRefs.current[`sec_${h}`] = el;
+                                                        }}
+                                                        style={{ width: 180, minWidth: 180 }}
+                                                        className="px-3 py-1.5 text-[11px] font-bold text-slate-700 border-r border-slate-200 truncate h-full flex items-center justify-between group hover:bg-slate-300 transition-colors relative cursor-pointer"
+                                                        onClick={(e) => {
+                                                            const isFilterBtn = e.target.closest && e.target.closest(".filter-btn");
+                                                            if (!isFilterBtn) {
+                                                                // No secondary sort logic currently implemented in the same way, but keeping UI consistent
+                                                            }
+                                                        }}
+                                                    >
+                                                        <span className="truncate">{h}</span>
+                                                        <button
+                                                            type="button"
+                                                            ref={(el) => {
+                                                                if (filterBtnRefs?.current) filterBtnRefs.current[`sec_${h}`] = el;
+                                                            }}
+                                                            className={`filter-btn h-5 px-1 rounded transition-all flex items-center justify-center ${secondaryColumnFilters[h] && secondaryColumnFilters[h] instanceof Set && secondaryColumnFilters[h].size > 0
+                                                                ? "bg-blue-100 text-blue-700 ring-1 ring-blue-300"
+                                                                : "bg-slate-300 text-slate-500 opacity-0 group-hover:opacity-100 hover:bg-slate-400 hover:text-slate-700"
+                                                                }`}
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                setOpenFilterCol((prev) => (prev === `sec_${h}` ? null : `sec_${h}`));
+                                                            }}
+                                                        >
+                                                            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg>
+                                                        </button>
+
+                                                        {openFilterCol === `sec_${h}` && (
+                                                            <ColumnFilterMenu
+                                                                anchorMapRef={filterAnchorRefs}
+                                                                tableContainerRef={tableContainerRef}
+                                                                columnKey={`sec_${h}`}
+                                                                column={h}
+                                                                allValues={getCachedUniqueValues(secondarySheetId, secondaryTab, h)}
+                                                                appliedSelected={secondaryColumnFilters[h] && secondaryColumnFilters[h] instanceof Set ? secondaryColumnFilters[h] : null}
+                                                                onApply={(col, set) => {
+                                                                    const next = { ...secondaryColumnFilters };
+                                                                    if (set === null) delete next[col];
+                                                                    else next[col] = new Set(set);
+                                                                    setSecondaryColumnFilters(next);
+                                                                    reloadSecondaryWithFilters(next);
+                                                                }}
+                                                                onClear={(col) => {
+                                                                    const next = { ...secondaryColumnFilters };
+                                                                    delete next[col];
+                                                                    setSecondaryColumnFilters(next);
+                                                                    reloadSecondaryWithFilters(next);
+                                                                }}
+                                                                onClose={() => setOpenFilterCol(null)}
+                                                                fetchUniqueValues={fetchUniqueValues}
+                                                                sheetId={secondarySheetId}
+                                                                activeTab={secondaryTab}
+                                                            />
+                                                        )}
                                                     </div>
                                                 ))}
                                             </div>
@@ -1657,7 +1903,7 @@ export default function DashboardBody(props) {
                                                         <List
                                                             ref={secondaryListRef}
                                                             height={height}
-                                                            itemCount={secondaryData.length}
+                                                            itemCount={filteredSecondaryData.length}
                                                             itemSize={36}
                                                             width={width}
                                                             onItemsRendered={handleSecondaryItemsRendered}
@@ -1668,7 +1914,7 @@ export default function DashboardBody(props) {
                                                             )}
                                                         >
                                                             {({ index, style }) => {
-                                                                const row = secondaryData[index];
+                                                                const row = filteredSecondaryData[index];
                                                                 return (
                                                                     <div style={style} className={`flex ${index % 2 === 1 ? "bg-slate-100/30" : "bg-white"} border-b border-slate-100 items-center h-8`}>
                                                                         {activeSecondaryFields.map((h) => (
@@ -1715,7 +1961,7 @@ export default function DashboardBody(props) {
                         context="workspace"
                         user={user}
                         onApplyFilter={onInsightApplyFilter}
-                        onOpenChart={onInsightOpenChart}
+                        onOpenChart={openWorkspaceInsightChart}
                         onSaveView={onInsightSaveView}
                     />
                 </aside>

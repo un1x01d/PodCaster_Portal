@@ -89,18 +89,6 @@ if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 }
 
-// Routes
-app.use("/auth", authRoutes); // /auth/login, /auth/me, /auth/change-password
-app.use("/", sheetRoutes); // /sheets, /upload
-app.use("/", userRoutes);  // /users, /groups (customers), /folders, /permissions
-app.use("/", viewRoutes);  // /views
-app.use("/", chatRoutes);  // /chat/query
-app.use("/", insightRoutes); // /insights/:sheetId
-app.use("/", localeRoutes); // /dashboard/translate
-app.use("/", googleRoutes); // /auth/google/*, /google/drive/files
-app.use("/", dropboxRoutes); // /auth/dropbox/*, /dropbox/files
-app.use("/", oneDriveRoutes); // /auth/onedrive/*, /onedrive/files
-
 // Health
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
 app.get("/metrics", (_req, res) => {
@@ -115,6 +103,18 @@ app.get("/readyz", async (_req, res) => {
     res.status(503).json({ ok: false, error: "db_unavailable" });
   }
 });
+
+// Routes
+app.use("/auth", authRoutes); // /auth/login, /auth/me, /auth/change-password
+app.use("/", sheetRoutes); // /sheets, /upload
+app.use("/", userRoutes);  // /users, /groups (customers), /folders, /permissions
+app.use("/", viewRoutes);  // /views
+app.use("/", chatRoutes);  // /chat/query
+app.use("/", insightRoutes); // /insights/:sheetId
+app.use("/", localeRoutes); // /dashboard/translate
+app.use("/", googleRoutes); // /auth/google/*, /google/drive/files
+app.use("/", dropboxRoutes); // /auth/dropbox/*, /dropbox/files
+app.use("/", oneDriveRoutes); // /auth/onedrive/*, /onedrive/files
 
 // Global Error Handler
 app.use((err, req, res, next) => {

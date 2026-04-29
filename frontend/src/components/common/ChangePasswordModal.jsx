@@ -41,59 +41,64 @@ export default function ChangePasswordModal({ open, onClose, forceChange }) {
 
   return (
     <Modal open={open} onClose={canClose ? onClose : () => { }} title={title}>
-      {forceChange && (
-        <div className="bg-yellow-50 text-yellow-700 p-3 rounded-lg text-sm mb-4 border border-yellow-200">
-          Your admin has reset your password. You must set a new one to continue.
-        </div>
-      )}
+      <div className="p-1">
+        {forceChange && (
+          <div className="bg-amber-50 text-amber-800 p-2.5 rounded-md text-[11px] font-medium mb-3 border border-amber-200 shadow-sm leading-relaxed">
+            <span className="font-black uppercase text-[8px] block mb-0.5 tracking-widest opacity-60">Security Protocol</span>
+            Your administrator has initiated a mandatory security reset. Please define a new access key to resume your session.
+          </div>
+        )}
 
-      <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-        {error && <div className="text-red-600 text-sm bg-red-50 p-2 rounded">{error}</div>}
-        {success && <div className="text-green-600 text-sm bg-green-50 p-2 rounded">{success}</div>}
+        <form onSubmit={handleSubmit} className="space-y-3">
+          {error && <div className="text-red-700 text-[11px] font-bold bg-red-50 p-2 rounded-md border border-red-100 animate-shake">{error}</div>}
+          {success && <div className="text-emerald-700 text-[11px] font-bold bg-emerald-50 p-2 rounded-md border border-emerald-100">{success}</div>}
 
-        <div>
-          <label className="block text-xs font-bold text-gray-500 uppercase">Current Password</label>
-          <input
-            type="password"
-            value={currentPassword}
-            onChange={e => setCurrentPassword(e.target.value)}
-            className="w-full border p-2 rounded text-sm"
-            required
-          />
-        </div>
+          <div className="space-y-1 group">
+            <label className="block text-[8px] font-black text-slate-400 uppercase tracking-[0.15em] ml-1 group-focus-within:text-indigo-500 transition-colors">Current Password</label>
+            <input
+              type="password"
+              value={currentPassword}
+              onChange={e => setCurrentPassword(e.target.value)}
+              className="w-full bg-slate-50 border border-slate-200 rounded-md px-3 py-1.5 text-[11px] font-bold focus:outline-none focus:ring-4 focus:ring-indigo-500/5 focus:border-indigo-500/40 transition-all"
+              required
+            />
+          </div>
 
-        <div>
-          <label className="block text-xs font-bold text-gray-500 uppercase">New Password</label>
-          <input
-            type="password"
-            value={newPassword}
-            onChange={e => setNewPassword(e.target.value)}
-            className="w-full border p-2 rounded text-sm"
-            required
-          />
-          <p className="text-[10px] text-gray-400 mt-1">
-            Min 16 chars, 1 uppercase, 1 lowercase, 1 number, 1 special (!@#$%^&*()_+)
-          </p>
-        </div>
+          <div className="space-y-1 group">
+            <label className="block text-[8px] font-black text-slate-400 uppercase tracking-[0.15em] ml-1 group-focus-within:text-indigo-500 transition-colors">New Access Key</label>
+            <input
+              type="password"
+              value={newPassword}
+              onChange={e => setNewPassword(e.target.value)}
+              className="w-full bg-slate-50 border border-slate-200 rounded-md px-3 py-1.5 text-[11px] font-bold focus:outline-none focus:ring-4 focus:ring-indigo-500/5 focus:border-indigo-500/40 transition-all"
+              required
+            />
+            <div className="bg-slate-50 rounded p-1.5 border border-slate-100 mt-1">
+              <p className="text-[7.5px] font-black text-slate-400 uppercase tracking-widest leading-normal">
+                Requirement: Min 16 chars · Upper · Lower · Num · Symbol
+              </p>
+            </div>
+          </div>
 
-        <div>
-          <label className="block text-xs font-bold text-gray-500 uppercase">Confirm New Password</label>
-          <input
-            type="password"
-            value={confirmPassword}
-            onChange={e => setConfirmPassword(e.target.value)}
-            className="w-full border p-2 rounded text-sm"
-            required
-          />
-        </div>
+          <div className="space-y-1 group">
+            <label className="block text-[8px] font-black text-slate-400 uppercase tracking-[0.15em] ml-1 group-focus-within:text-indigo-500 transition-colors">Verify New Key</label>
+            <input
+              type="password"
+              value={confirmPassword}
+              onChange={e => setConfirmPassword(e.target.value)}
+              className="w-full bg-slate-50 border border-slate-200 rounded-md px-3 py-1.5 text-[11px] font-bold focus:outline-none focus:ring-4 focus:ring-indigo-500/5 focus:border-indigo-500/40 transition-all"
+              required
+            />
+          </div>
 
-        <button
-          type="submit"
-          className="bg-blue-600 text-white py-2 rounded font-semibold text-sm hover:bg-blue-700 mt-2"
-        >
-          Update Password
-        </button>
-      </form>
+          <button
+            type="submit"
+            className="w-full bg-slate-900 hover:bg-black text-white py-2 rounded-md font-black text-[11px] uppercase tracking-widest shadow-lg shadow-slate-100 hover:shadow-xl active:scale-[0.98] transition-all"
+          >
+            Update & Verify Access
+          </button>
+        </form>
+      </div>
     </Modal>
   );
 }

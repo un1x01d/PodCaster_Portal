@@ -134,6 +134,304 @@ async function loadPdfModules() {
   return pdfModulesPromise;
 }
 
+/**
+ * Footer - Small static footer for all pages.
+ */
+function Footer() {
+  return (
+    <footer className="bg-white/40 backdrop-blur-md border-t border-slate-200 py-1.5 px-8 flex flex-col md:flex-row items-center justify-between gap-4 text-[9px] font-black text-slate-400 uppercase tracking-[0.2em] relative z-20">
+      <div>© 2026 tfron · Advanced Data Governance</div>
+      <div className="flex gap-8">
+        <a href="#" className="hover:text-indigo-600 transition-colors">Privacy Policy</a>
+        <a href="#" className="hover:text-indigo-600 transition-colors">Terms & Conditions</a>
+        <Link to="/support" className="hover:text-indigo-600 transition-colors">Support Hub</Link>
+      </div>
+    </footer>
+  );
+}
+
+/**
+ * SupportScreen - Professional interactive support hub.
+ */
+function SupportScreen() {
+  const [reason, setReason] = useState("");
+  const [formData, setFormData] = useState({ name: "", email: "", company: "", message: "" });
+  const [submitted, setSubmitted] = useState(false);
+  const [serviceStatus, setServiceStatus] = useState(null); // 'online', 'offline', null
+
+  useEffect(() => {
+    const checkHealth = async () => {
+      try {
+        const res = await axios.get(`${API}/healthz`, { timeout: 3000 });
+        if (res.status === 200 && res.data?.ok) {
+          setServiceStatus("online");
+        } else {
+          setServiceStatus("offline");
+        }
+      } catch (err) {
+        setServiceStatus("offline");
+      }
+    };
+    checkHealth();
+  }, []);
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    // Simulate API call
+    console.log("Support request submitted:", { reason, ...formData });
+    setSubmitted(true);
+  };
+
+  return (
+    <div className="absolute inset-0 w-full flex items-center justify-center p-4 sm:p-6 bg-[#fafafa] overflow-hidden">
+      <div className="absolute top-[-20%] left-[-10%] w-[60%] h-[60%] bg-indigo-500/10 rounded-full blur-[140px] animate-pulse" />
+      <div className="absolute bottom-[-20%] right-[-10%] w-[60%] h-[60%] bg-cyan-500/10 rounded-full blur-[140px] animate-pulse" style={{ animationDelay: '2s' }} />
+
+      <div className="glass rounded-xl p-5 md:p-7 w-full max-w-[500px] max-h-full relative z-10 border-white/50 shadow-[0_32px_80px_rgba(0,0,0,0.08)] animate-in fade-in zoom-in-95 duration-1000 flex flex-col overflow-y-auto">
+        <div className="mb-5 text-center shrink-0">
+          <div className="flex justify-center mb-4">
+            <Link to="/">
+              <img
+                src="/assets/tform-logo.png"
+                alt="tfron"
+                className="h-10 w-auto object-contain drop-shadow-md hover:scale-105 transition-transform duration-500"
+              />
+            </Link>
+          </div>
+          <h2 className="text-lg font-black text-slate-900 tracking-tighter mb-1">Support Hub</h2>
+          <p className="text-slate-500 text-[9px] font-semibold opacity-70 uppercase tracking-[0.18em]">Workspace Assistance</p>
+        </div>
+
+        {submitted ? (
+          <div className="flex flex-col items-center justify-center bg-emerald-50 border border-emerald-100 rounded-xl p-5 text-center animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="w-9 h-9 bg-emerald-500 text-white rounded-full flex items-center justify-center text-base mb-3 shadow-lg shadow-emerald-200">✓</div>
+            <h3 className="text-sm font-black text-emerald-900 mb-1">Request Received</h3>
+            <p className="text-emerald-700/70 font-bold text-[11px] leading-relaxed max-w-xs">
+              Our security team has categorized your inquiry. You will receive a response within 30 minutes.
+            </p>
+            <button onClick={() => setSubmitted(false)} className="mt-3 text-[8px] font-black uppercase tracking-widest text-emerald-600 hover:text-emerald-800 transition-colors">Submit Another Request</button>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-3">
+            <div className="space-y-1">
+              <label className="text-[8.5px] font-black uppercase tracking-[0.22em] text-slate-400 ml-1">Reason for Contact</label>
+              <select
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                className="w-full bg-white border border-slate-200 rounded-md px-3 py-1.5 text-[11px] font-bold focus:outline-none focus:ring-4 focus:ring-indigo-500/5 focus:border-indigo-500/40 transition-all appearance-none cursor-pointer"
+              >
+                <option value="" disabled>Select a category…</option>
+                <option value="password">Security: Password Reset</option>
+                <option value="tech">Technical: Portal Support</option>
+                <option value="billing">Administrative: Billing & Account</option>
+                <option value="other">General Inquiry</option>
+              </select>
+            </div>
+
+            {reason && (
+              <form onSubmit={handleSubmit} className="flex flex-col gap-3 animate-in fade-in slide-in-from-top-2 duration-300">
+                <div className="space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <label className="text-[8.5px] font-black uppercase tracking-widest text-slate-400 ml-1">Full Name</label>
+                      <input
+                        type="text"
+                        className="w-full bg-white/50 border border-slate-200 rounded-md px-3 py-1.5 text-[11px] font-bold focus:outline-none focus:ring-4 focus:ring-indigo-500/5"
+                        placeholder="Jane Doe"
+                        value={formData.name}
+                        onChange={e => setFormData({ ...formData, name: e.target.value })}
+                        required
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[8.5px] font-black uppercase tracking-widest text-slate-400 ml-1">Work Email</label>
+                      <input
+                        type="email"
+                        className="w-full bg-white/50 border border-slate-200 rounded-md px-3 py-1.5 text-[11px] font-bold focus:outline-none focus:ring-4 focus:ring-indigo-500/5"
+                        placeholder="jane@company.com"
+                        value={formData.email}
+                        onChange={e => setFormData({ ...formData, email: e.target.value })}
+                        required
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[8.5px] font-black uppercase tracking-widest text-slate-400 ml-1">Company Name</label>
+                    <input
+                      type="text"
+                      className="w-full bg-white/50 border border-slate-200 rounded-md px-3 py-1.5 text-[11px] font-bold focus:outline-none focus:ring-4 focus:ring-indigo-500/5"
+                      placeholder="Acme Corp"
+                      value={formData.company}
+                      onChange={e => setFormData({ ...formData, company: e.target.value })}
+                      required
+                    />
+                  </div>
+                  <div className="space-y-1 relative">
+                    <div className="flex justify-between items-center px-1">
+                      <label className="text-[8.5px] font-black uppercase tracking-widest text-slate-400">Request Details</label>
+                      <span className={`text-[8px] font-black uppercase tracking-widest ${formData.message.length > 1900 ? "text-amber-500" : "text-slate-400"}`}>
+                        {formData.message.length} / 2000
+                      </span>
+                    </div>
+                    <textarea
+                      rows="4"
+                      maxLength="2000"
+                      className="w-full bg-white/50 border border-slate-200 rounded-md px-3 py-2 text-[11px] font-bold focus:outline-none focus:ring-4 focus:ring-indigo-500/5 resize-none shadow-inner"
+                      placeholder={reason === 'password' ? "Include your department and any recent access issues..." : "Describe the issue or request..."}
+                      value={formData.message}
+                      onChange={e => setFormData({ ...formData, message: e.target.value })}
+                      required
+                    ></textarea>
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full bg-slate-900 hover:bg-black text-white rounded-md py-2 text-[10px] font-black uppercase tracking-[0.18em] shadow-xl shadow-slate-200 active:scale-[0.98] transition-all"
+                >
+                  Initiate Support Protocol
+                </button>
+              </form>
+            )}
+
+            {!reason && (
+              <div className="bg-slate-50 border border-slate-100 rounded-lg p-4 text-center border-dashed">
+                <p className="text-[9px] text-slate-400 font-bold uppercase tracking-[0.3em] leading-loose">
+                  Select a category above to activate the secure communication terminal
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="mt-5 pt-3 border-t border-slate-100 flex flex-col gap-2 shrink-0">
+          <div className="grid grid-cols-2 gap-2">
+             <a href="#" className="bg-white border border-slate-100 rounded-md p-2 hover:border-indigo-200 hover:shadow-sm transition-all group text-center">
+                <div className="text-[7.5px] font-black uppercase text-slate-400 mb-0.5 group-hover:text-indigo-500 tracking-widest">Documentation</div>
+                <div className="text-[10px] font-bold text-slate-700">User Guides</div>
+             </a>
+             <a href="#" className="bg-white border border-slate-100 rounded-md p-2 hover:border-indigo-200 hover:shadow-sm transition-all group text-center">
+                <div className="text-[7.5px] font-black uppercase text-slate-400 mb-0.5 group-hover:text-indigo-500 tracking-widest">Service Status</div>
+                <div className={`text-[10px] font-bold ${serviceStatus === 'online' ? "text-emerald-500" : serviceStatus === 'offline' ? "text-red-500" : "text-slate-700"}`}>
+                  {serviceStatus === 'online' ? "Operational" : serviceStatus === 'offline' ? "Connection Failed" : "Probing..."}
+                </div>
+             </a>
+          </div>
+
+          <Link to="/" className="text-[8.5px] font-black uppercase tracking-[0.18em] text-slate-400 hover:text-indigo-600 transition-colors flex items-center justify-center gap-2 mt-1">
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
+            Return to Secure Login
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * AuthScreen - Modern, high-fidelity login interface.
+ * Matches the "Premium" workspace aesthetic with glassmorphism and coordinated gradients.
+ */
+function AuthScreen({ email, setEmail, password, setPassword, onSubmit, onGoogleLogin, googleEnabled }) {
+  return (
+    <div className="min-h-screen w-full flex items-center justify-center p-6 relative bg-[#fafafa] overflow-x-hidden">
+      {/* Decorative background blobs - more vibrant for Auth */}
+      <div className="absolute top-[-20%] left-[-10%] w-[60%] h-[60%] bg-indigo-500/10 rounded-full blur-[140px] animate-pulse" />
+      <div className="absolute bottom-[-20%] right-[-10%] w-[60%] h-[60%] bg-cyan-500/10 rounded-full blur-[140px] animate-pulse" style={{ animationDelay: '2s' }} />
+
+      <div className="glass rounded-xl p-5 md:p-7 w-full max-w-[500px] relative z-10 border-white/50 shadow-[0_32px_80px_rgba(0,0,0,0.08)] animate-in fade-in zoom-in-95 duration-1000">
+        <div className="mb-6 text-center">
+          <div className="flex justify-center mb-5">
+            <img
+              src="/assets/tform-logo.png"
+              alt="tfron"
+              className="h-12 w-auto object-contain drop-shadow-md hover:scale-105 transition-transform duration-500"
+            />
+          </div>
+          <h2 className="text-xl font-[900] text-slate-900 tracking-tighter mb-1.5">Welcome Back</h2>
+          <p className="text-slate-500 text-[10px] font-semibold opacity-70 uppercase tracking-wider">Log in to your enterprise data hub</p>
+        </div>
+
+        <form onSubmit={onSubmit} className="space-y-3">
+          <div className="group space-y-1">
+            <label className="text-[8.5px] font-black uppercase tracking-[0.2em] text-slate-400 ml-1 group-focus-within:text-indigo-500 transition-colors">Corporate Email</label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="name@company.com"
+              className="w-full bg-white/40 border border-slate-200 rounded-md px-3 py-1.5 text-[11px] font-bold focus:outline-none focus:ring-[4px] focus:ring-indigo-500/5 focus:border-indigo-500/40 transition-all placeholder:text-slate-300"
+              required
+            />
+          </div>
+
+          <div className="group space-y-1">
+            <div className="flex justify-between items-center px-1">
+              <label className="text-[8.5px] font-black uppercase tracking-[0.2em] text-slate-400 group-focus-within:text-indigo-500 transition-colors">Access Key</label>
+              <Link to="/support" className="text-[8px] font-black uppercase tracking-widest text-indigo-600 hover:text-indigo-800 transition-colors">Trouble Signing In?</Link>
+            </div>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••••••"
+              className="w-full bg-white/40 border border-slate-200 rounded-md px-3 py-1.5 text-[11px] font-bold focus:outline-none focus:ring-[4px] focus:ring-indigo-500/5 focus:border-indigo-500/40 transition-all placeholder:text-slate-300"
+              required
+            />
+          </div>
+
+          <button
+            type="submit"
+            className="w-full bg-slate-900 hover:bg-black text-white rounded-md py-1.5 text-[11px] font-[900] shadow-xl shadow-slate-200 hover:shadow-2xl active:scale-[0.98] transition-all duration-300 group"
+          >
+            <span className="flex items-center justify-center gap-2">
+              Sign In to Workspace
+              <svg className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M14 5l7 7m0 0l-7 7m7-7H3" /></svg>
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={onGoogleLogin}
+            disabled={!googleEnabled}
+            className={`w-full flex items-center justify-center gap-2.5 bg-white border border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-800 rounded-md py-1.5 text-[10px] font-bold shadow-sm active:scale-[0.98] transition-all duration-300 ${!googleEnabled ? "opacity-50 cursor-not-allowed grayscale" : ""}`}
+          >
+            <svg viewBox="0 0 24 24" width="14" height="14">
+              <path
+                d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c1.61-1.48 2.54-3.67 2.54-6.09z"
+                fill="#4285F4"
+              />
+              <path
+                d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                fill="#34A853"
+              />
+              <path
+                d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
+                fill="#FBBC05"
+              />
+              <path
+                d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
+                fill="#EA4335"
+              />
+            </svg>
+            Continue with Single Sign-On
+          </button>
+        </form>
+
+        <div className="mt-14 flex flex-col items-center gap-2">
+           <div className="flex gap-4">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+              <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em]">Operational Readiness Secure</span>
+           </div>
+           <p className="text-[9px] font-bold text-slate-300 uppercase tracking-widest text-center max-w-[280px] leading-relaxed">
+             v0.3-rc · Encrypted Channel · Isolated Workspace
+           </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(() => readStoredAuthToken());
@@ -181,6 +479,7 @@ export default function App() {
   const [myFilesLoading, setMyFilesLoading] = useState(false);
   const [reportSources, setReportSources] = useState([]);
   const [reportSourceImports, setReportSourceImports] = useState({});
+  const workspaceChartStateRef = useRef(null);
 
 
   // Admin folder files view
@@ -239,6 +538,9 @@ export default function App() {
   }, [headers]);
 
   const [uniqueValuesByColumn, setUniqueValuesByColumn] = useState({});
+  const uniqueValuesCacheKey = (sid, tabName, col) => (
+    `${String(sid || "")}::${tabName ? String(tabName) : "__all__"}::${String(col || "")}`
+  );
 
   const fetchUniqueValues = async (col, sid = sheetId, tabName = activeTab) => {
     if (!sid || !col) return;
@@ -249,7 +551,7 @@ export default function App() {
       });
       setUniqueValuesByColumn(prev => ({
         ...prev,
-        [col]: res.data || []
+        [uniqueValuesCacheKey(sid, tabName, col)]: res.data || []
       }));
     } catch (e) {
       console.error("fetchUniqueValues failed", e);
@@ -722,7 +1024,7 @@ export default function App() {
 
   const loadData = async (sid = sheetId, preserveFilters = false, tabName = null, options = {}) => {
     if (!sid) return;
-    const { preferCache = true, limit = BATCH_SIZE, offset = 0, append = false, context = "primary" } = options;
+    const { preferCache = true, limit = BATCH_SIZE, offset = 0, append = false, context = "primary", filters = null } = options;
     
     const isPrimary = context === "primary";
     if (append) {
@@ -744,9 +1046,10 @@ export default function App() {
         params.append("sort_order", activeSort.direction);
       }
       
-      if (isPrimary && columnFilters && Object.keys(columnFilters).length > 0) {
+      const effectiveFilters = isPrimary ? columnFilters : filters;
+      if (effectiveFilters && Object.keys(effectiveFilters).length > 0) {
         const serializableFilters = {};
-        Object.entries(columnFilters).forEach(([col, val]) => {
+        Object.entries(effectiveFilters).forEach(([col, val]) => {
           serializableFilters[col] = (val instanceof Set) ? Array.from(val) : val;
         });
         params.append("filters", JSON.stringify(serializableFilters));
@@ -795,13 +1098,14 @@ export default function App() {
     });
   };
 
-  const onLoadMoreSecondary = () => {
+  const onLoadMoreSecondary = (filters = null) => {
     if (secondaryIsBatchLoading || !secondaryHasMoreData || !secondarySheetId) return;
     loadData(secondarySheetId, true, secondaryTab, {
         offset: secondaryData.length,
         append: true,
         context: "secondary",
-        preferCache: false
+        preferCache: false,
+        filters
     });
   };
 
@@ -1339,6 +1643,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    localStorage.removeItem("workspaceChartState:v1");
     const params = new URLSearchParams(window.location.search);
     const googleCode = params.get("google_code");
     const googleError = params.get("google_error");
@@ -1528,6 +1833,7 @@ export default function App() {
     localStorage.removeItem("sheetId");
     localStorage.removeItem("activeFilename");
     localStorage.removeItem("activeTab");
+    localStorage.removeItem("workspaceChartState:v1");
     setToken("");
     setUser(null);
     setData([]);
@@ -1588,53 +1894,15 @@ export default function App() {
             <Route path="/" element={
               <ErrorBoundary>
                 {!user ? (
-                  <div className="min-h-screen flex items-center justify-center p-6">
-                    <div className="glass rounded-3xl p-10 w-full max-w-md animate-in fade-in zoom-in duration-500">
-                      <div className="mb-8 text-center">
-                        <div className="bg-indigo-600 text-white w-16 h-16 rounded-2xl flex items-center justify-center text-3xl shadow-xl shadow-indigo-200 mx-auto mb-4">📊</div>
-                        <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight">Welcome Back</h2>
-                        <p className="text-slate-500 mt-2">Sign in to manage your data workspace</p>
-                      </div>
-                      <form onSubmit={handleLogin} className="flex flex-col gap-5">
-                        <div className="space-y-1.5">
-                          <label className="text-xs font-bold uppercase tracking-wider text-slate-500 ml-1">Email Address</label>
-                          <input
-                            type="email"
-                            value={email}
-                            onChange={(e) => setEmail(e.target.value)}
-                            placeholder="admin@example.com"
-                            className="input-premium"
-                            required
-                          />
-                        </div>
-                        <div className="space-y-1.5">
-                          <label className="text-xs font-bold uppercase tracking-wider text-slate-500 ml-1">Password</label>
-                          <input
-                            type="password"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                            placeholder="••••••••"
-                            className="input-premium"
-                            required
-                          />
-                        </div>
-                        <button
-                          type="submit"
-                          className="btn-premium bg-indigo-600 hover:bg-indigo-700 text-white w-full py-4 mt-4 shadow-xl shadow-indigo-200"
-                        >
-                          Sign In
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleGoogleLogin}
-                          disabled={!googleEnabled}
-                          className={`btn-premium bg-white text-slate-800 border border-slate-300 w-full py-4 shadow-sm ${googleEnabled ? "hover:bg-slate-50" : "opacity-50 cursor-not-allowed"}`}
-                        >
-                          {googleEnabled ? "Continue with Google" : "Google Sign-In Disabled"}
-                        </button>
-                      </form>
-                    </div>
-                  </div>
+                  <AuthScreen
+                    email={email}
+                    setEmail={setEmail}
+                    password={password}
+                    setPassword={setPassword}
+                    onSubmit={handleLogin}
+                    onGoogleLogin={handleGoogleLogin}
+                    googleEnabled={googleEnabled}
+                  />
                 ) : (
                   <DashboardHome
                     user={user}
@@ -1685,56 +1953,19 @@ export default function App() {
 
               </ErrorBoundary>
             } />
+            <Route path="/support" element={<SupportScreen />} />
             <Route path="/workspace" element={
               <ErrorBoundary>
                 {!user ? (
-                  <div className="min-h-screen flex items-center justify-center p-6">
-                    <div className="glass rounded-3xl p-10 w-full max-w-md animate-in fade-in zoom-in duration-500">
-                      <div className="mb-8 text-center">
-                        <div className="bg-indigo-600 text-white w-16 h-16 rounded-2xl flex items-center justify-center text-3xl shadow-xl shadow-indigo-200 mx-auto mb-4">📊</div>
-                        <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight">Welcome Back</h2>
-                        <p className="text-slate-500 mt-2">Sign in to manage your data workspace</p>
-                      </div>
-                      <form onSubmit={handleLogin} className="flex flex-col gap-5">
-                        <div className="space-y-1.5">
-                          <label className="text-xs font-bold uppercase tracking-wider text-slate-500 ml-1">Email Address</label>
-                          <input
-                            type="email"
-                            value={email}
-                            onChange={(e) => setEmail(e.target.value)}
-                            placeholder="admin@example.com"
-                            className="input-premium"
-                            required
-                          />
-                        </div>
-                        <div className="space-y-1.5">
-                          <label className="text-xs font-bold uppercase tracking-wider text-slate-500 ml-1">Password</label>
-                          <input
-                            type="password"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                            placeholder="••••••••"
-                            className="input-premium"
-                            required
-                          />
-                        </div>
-                        <button
-                          type="submit"
-                          className="btn-premium bg-indigo-600 hover:bg-indigo-700 text-white w-full py-4 mt-4 shadow-xl shadow-indigo-200"
-                        >
-                          Sign In
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleGoogleLogin}
-                          disabled={!googleEnabled}
-                          className={`btn-premium bg-white text-slate-800 border border-slate-300 w-full py-4 shadow-sm ${googleEnabled ? "hover:bg-slate-50" : "opacity-50 cursor-not-allowed"}`}
-                        >
-                          {googleEnabled ? "Continue with Google" : "Google Sign-In Disabled"}
-                        </button>
-                      </form>
-                    </div>
-                  </div>
+                  <AuthScreen
+                    email={email}
+                    setEmail={setEmail}
+                    password={password}
+                    setPassword={setPassword}
+                    onSubmit={handleLogin}
+                    onGoogleLogin={handleGoogleLogin}
+                    googleEnabled={googleEnabled}
+                  />
                 ) : (
                   <>
                     <DashboardBody
@@ -1820,6 +2051,7 @@ export default function App() {
                       setSecondarySheetId={setSecondarySheetId}
                       secondaryTab={secondaryTab}
                       setSecondaryTab={setSecondaryTab}
+                      workspaceChartStateRef={workspaceChartStateRef}
                     />
                     {sheetId && (
                     <SpreadsheetChatbot
@@ -1854,6 +2086,7 @@ export default function App() {
             <ChangePasswordModal open={true} forceChange={true} onClose={() => { }} className="glass-modal" />
           )}
         </main>
+        <Footer />
       </div>
 
       {/* Column Visibility Selector Modal for Saving Views */}

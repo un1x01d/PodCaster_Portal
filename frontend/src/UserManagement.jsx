@@ -281,7 +281,6 @@ export default function UserManagement({ token, user, sheetId }) {
   const [editingFolderMaxTotalSizeMb, setEditingFolderMaxTotalSizeMb] = useState("1024");
   const [editingUserId, setEditingUserId] = useState(null);
   const [editingUserForm, setEditingUserForm] = useState({ firstName: "", lastName: "", company: "", email: "" });
-  const [deleteUserId, setDeleteUserId] = useState("");
 
   const userById = useMemo(() => {
     const m = new Map();
@@ -1026,18 +1025,6 @@ export default function UserManagement({ token, user, sheetId }) {
     fetchUsers();
   };
 
-  const deleteUser = async (id) => {
-    if (!confirm("Delete user?")) return;
-    try {
-      await axios.delete(`${API}/users/${id}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (selectedUserId === id) setSelectedUserId(null);
-      fetchUsers();
-    } catch (e) {
-      alert(e.response?.data?.error || "Failed to delete user");
-    }
-  };
   const beginEditUser = (u) => {
     setEditingUserId(u.id);
     setEditingUserForm({
@@ -1481,7 +1468,7 @@ export default function UserManagement({ token, user, sheetId }) {
 
   return (
     <div className="admin-modern admin-compact p-4 lg:p-5 bg-slate-100 min-h-full overflow-auto">
-      <div className="max-w-5xl mx-auto space-y-4">
+      <div className="max-w-7xl mx-auto space-y-4">
       <div className="px-1 py-1 text-slate-100">
         <div className="rounded-sm bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 px-5 py-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1573,36 +1560,6 @@ export default function UserManagement({ token, user, sheetId }) {
               onClick={addUser}
             >
               {user?.role === "admin" ? "Add User" : "Add Customer User"}
-            </button>
-          </div>
-        </div>
-
-        {/* Delete User */}
-        <div className="flex flex-col gap-2 mb-4 bg-rose-50 p-3 rounded-md border border-rose-200">
-          <label className="text-[10px] font-semibold uppercase tracking-wide text-rose-600 ml-1">Delete User</label>
-          <div className="flex items-center gap-2">
-            <select
-              className="input-premium py-1.5 text-[11px] font-semibold flex-1"
-              value={deleteUserId}
-              onChange={(e) => setDeleteUserId(e.target.value)}
-            >
-              <option value="">Select user…</option>
-              {uniqueUsers.map((u) => (
-                <option key={String(u.id)} value={u.id}>
-                  {displayNameForUser(u)} ({u.email})
-                </option>
-              ))}
-            </select>
-            <button
-              className="btn-premium bg-rose-600 hover:bg-rose-700 text-white px-3 py-1.5"
-              onClick={() => {
-                if (!deleteUserId) return;
-                deleteUser(deleteUserId);
-                setDeleteUserId("");
-              }}
-              disabled={!deleteUserId}
-            >
-              Delete
             </button>
           </div>
         </div>
@@ -2017,6 +1974,12 @@ export default function UserManagement({ token, user, sheetId }) {
                 <input className="input-premium" placeholder="Redirect URI" value={googleOauthForm.redirectUri} onChange={(e) => setGoogleOauthForm((prev) => ({ ...prev, redirectUri: e.target.value }))} />
                 <input className="input-premium" placeholder="Frontend URL" value={googleOauthForm.frontendUrl} onChange={(e) => setGoogleOauthForm((prev) => ({ ...prev, frontendUrl: e.target.value }))} />
                 <button type="button" onClick={saveGoogleOauthSetting} disabled={googleOauthSaving} className={`btn-premium bg-slate-800 text-white w-full py-2 ${googleOauthSaving ? "opacity-60 cursor-not-allowed" : ""}`}>{googleOauthSaving ? "Saving..." : "Save Google OAuth"}</button>
+                <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600 space-y-1">
+                  <div className="font-semibold text-slate-700">Setup help</div>
+                  <a className="block text-blue-700 hover:underline" href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer">Configure credentials in Google Cloud Console</a>
+                  <div className="text-slate-500">Required Scopes: `drive.readonly`, `openid`, `email`, `profile`</div>
+                  <a className="block text-blue-700 hover:underline" href="https://developers.google.com/identity/protocols/oauth2/web-server" target="_blank" rel="noreferrer">Google OAuth2 Web Server guide</a>
+                </div>
               </div>
             )}
             <button type="button" onClick={toggleDropboxIntegration} disabled={dropboxIntegrationSaving} className={`w-full flex items-center justify-between px-3 py-2 rounded-md border text-xs font-bold uppercase tracking-wider transition-colors ${dropboxIntegrationEnabled ? "bg-blue-50 border-blue-200 text-blue-700" : "bg-slate-100 border-slate-200 text-slate-600"} ${dropboxIntegrationSaving ? "opacity-60 cursor-not-allowed" : ""}`} title="Enable or disable Dropbox integration"><span className="inline-flex items-center gap-2"><img src="https://upload.wikimedia.org/wikipedia/commons/7/78/Dropbox_Icon.svg" alt="Dropbox" className="h-3.5 w-3.5" /><span>Dropbox Integration</span></span><span>{dropboxIntegrationEnabled ? "Enabled" : "Disabled"}</span></button>
@@ -2028,6 +1991,12 @@ export default function UserManagement({ token, user, sheetId }) {
                 <input className="input-premium" placeholder="Redirect URI" value={dropboxOauthForm.redirectUri} onChange={(e) => setDropboxOauthForm((prev) => ({ ...prev, redirectUri: e.target.value }))} />
                 <input className="input-premium" placeholder="Frontend URL" value={dropboxOauthForm.frontendUrl} onChange={(e) => setDropboxOauthForm((prev) => ({ ...prev, frontendUrl: e.target.value }))} />
                 <button type="button" onClick={saveDropboxOauthSetting} disabled={dropboxOauthSaving} className={`btn-premium bg-slate-800 text-white w-full py-2 ${dropboxOauthSaving ? "opacity-60 cursor-not-allowed" : ""}`}>{dropboxOauthSaving ? "Saving..." : "Save Dropbox OAuth"}</button>
+                <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600 space-y-1">
+                  <div className="font-semibold text-slate-700">Setup help</div>
+                  <a className="block text-blue-700 hover:underline" href="https://www.dropbox.com/developers/apps" target="_blank" rel="noreferrer">Create/Manage apps in Dropbox Console</a>
+                  <div className="text-slate-500">Required Permissions: `files.metadata.read`, `files.content.read`</div>
+                  <a className="block text-blue-700 hover:underline" href="https://www.dropbox.com/developers/documentation/http/documentation#oauth2-authorize" target="_blank" rel="noreferrer">Dropbox OAuth2 guide</a>
+                </div>
               </div>
             )}
             <button type="button" onClick={toggleOneDriveIntegration} disabled={oneDriveIntegrationSaving} className={`w-full flex items-center justify-between px-3 py-2 rounded-md border text-xs font-bold uppercase tracking-wider transition-colors ${oneDriveIntegrationEnabled ? "bg-blue-50 border-blue-200 text-blue-700" : "bg-slate-100 border-slate-200 text-slate-600"} ${oneDriveIntegrationSaving ? "opacity-60 cursor-not-allowed" : ""}`} title="Enable or disable OneDrive integration"><span className="inline-flex items-center gap-2"><img src="https://upload.wikimedia.org/wikipedia/commons/e/e7/Microsoft_OneDrive_Icon_%282025_-_present%29.svg" alt="OneDrive" className="h-3.5 w-3.5" /><span>OneDrive Integration</span></span><span>{oneDriveIntegrationEnabled ? "Enabled" : "Disabled"}</span></button>
