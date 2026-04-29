@@ -2019,20 +2019,6 @@ export default function DashboardHome({
             </h2>
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            {hasMultipleTabs && (
-              <div className="inline-flex items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 shadow-sm">
-                <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">Tab</span>
-                <select
-                  value={String(activeTab || tabs[0] || "")}
-                  onChange={(e) => onTabChange && onTabChange(e.target.value)}
-                  className="rounded-md border border-slate-300 bg-white px-2 py-1 text-sm font-semibold text-slate-900"
-                >
-                  {tabs.map((t) => (
-                    <option key={`global-tab-${t}`} value={t}>{t}</option>
-                  ))}
-                </select>
-              </div>
-            )}
             <Link
               to="/workspace"
               className="inline-flex items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 shadow-sm transition-all duration-150 hover:-translate-y-px hover:border-slate-400 hover:bg-slate-50 hover:shadow focus:outline-none focus:ring-2 focus:ring-slate-200"

@@ -381,13 +381,14 @@ export async function uploadSheet(req, res) {
 
         const originalName = req.file.originalname || "uploaded.xlsx";
         const displayName = sanitizeDisplayName(req.body?.display_name);
+        const fileLabel = String(req.body?.file_label || req.body?.fileLabel || displayName || "File").trim();
         const rawFolderId = req.body?.folderId ?? req.body?.folder_id;
         const rawReportSourceId = req.body?.reportSourceId ?? req.body?.report_source_id;
         const rawReportSourceName = req.body?.reportSourceName ?? req.body?.report_source_name;
         const folderId = rawFolderId ? parseInt(rawFolderId, 10) : null;
         if (!displayName) return res.status(400).json({ error: "display_name_required" });
 
-        console.log(`[upload] name=${originalName} size=${req.file.size} folderId=${folderId ?? "—"} reportSourceId=${rawReportSourceId || "—"}`);
+        console.log(`[upload] name=${originalName} size=${req.file.size} folderId=${folderId ?? "—"} reportSourceId=${rawReportSourceId || "—"} label=${fileLabel}`);
 
         // Read file into buffer and delete temporary file immediately to free disk space
         const fileBuffer = await fs.promises.readFile(filePath);
@@ -529,8 +530,8 @@ export async function uploadSheet(req, res) {
             const headerDiff = buildHeaderDiff(reportSource.previousHeaders, headers);
             const schemaStatus = getSchemaStatus(headerDiff);
             const versionRes = await client.query(
-                "SELECT COALESCE(MAX(import_version), 0)::int + 1 AS next_version FROM report_source_imports WHERE report_source_id = $1",
-                [reportSource.id]
+                "SELECT COALESCE(MAX(import_version), 0)::int + 1 AS next_version FROM report_source_imports WHERE report_source_id = $1 AND file_label = $2",
+                [reportSource.id, fileLabel]
             );
             const sourceVersion = Number(versionRes.rows?.[0]?.next_version || 1);
 
@@ -592,9 +593,9 @@ export async function uploadSheet(req, res) {
             });
             await client.query(
                 `INSERT INTO report_source_imports
-                   (report_source_id, sheet_id, import_version, original_filename, imported_by, schema_status, schema_diff)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-                [reportSource.id, sheetId, sourceVersion, originalName, req.user?.id || null, schemaStatus, JSON.stringify(headerDiff)]
+                   (report_source_id, sheet_id, import_version, file_label, original_filename, imported_by, schema_status, schema_diff)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+                [reportSource.id, sheetId, sourceVersion, fileLabel, originalName, req.user?.id || null, schemaStatus, JSON.stringify(headerDiff)]
             );
             await client.query(
                 `UPDATE report_sources
@@ -915,11 +916,13 @@ export async function getReportSourceImports(req, res) {
         return res.status(403).json({ error: "Forbidden" });
     }
     const rows = await query(
-        `SELECT rsi.id, rsi.report_source_id, rsi.sheet_id, rsi.import_version,
+        `SELECT rsi.id, rsi.report_source_id, rsi.sheet_id, rsi.import_version, rsi.file_label,
                 rsi.original_filename, rsi.schema_status, rsi.schema_diff, rsi.created_at,
-                s.display_name, s.filename, s.uploaded_at
+                s.display_name, s.filename, s.uploaded_at,
+                COALESCE(NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), u.email) AS imported_by_name
          FROM report_source_imports rsi
          JOIN sheets s ON s.id = rsi.sheet_id
+         LEFT JOIN users u ON u.id = rsi.imported_by
          WHERE rsi.report_source_id = $1
          ORDER BY rsi.import_version DESC`,
         [sourceId]

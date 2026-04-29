@@ -292,10 +292,38 @@ export async function initDb() {
       imported_by INT REFERENCES users(id) ON DELETE SET NULL,
       schema_status TEXT NOT NULL DEFAULT 'new',
       schema_diff JSONB NOT NULL DEFAULT '{}'::jsonb,
-      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(report_source_id, import_version)
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `);
+  await pool.query(`ALTER TABLE report_source_imports ADD COLUMN IF NOT EXISTS file_label TEXT;`);
+  
+  // Migration: set file_label from sheet display_name if null
+  await pool.query(`
+    UPDATE report_source_imports rsi
+       SET file_label = COALESCE(s.display_name, s.filename, 'File')
+      FROM sheets s
+     WHERE s.id = rsi.sheet_id
+       AND rsi.file_label IS NULL;
+  `);
+
+  // Drop old constraints/indexes that interfere with version recalculation
+  await pool.query(`ALTER TABLE report_source_imports DROP CONSTRAINT IF EXISTS report_source_imports_report_source_id_import_version_key CASCADE;`);
+  await pool.query(`DROP INDEX IF EXISTS idx_report_source_imports_source_version;`);
+
+  // Migration: Recalculate versions to be scoped by (source, label)
+  await pool.query(`
+    WITH new_versions AS (
+        SELECT id, ROW_NUMBER() OVER (PARTITION BY report_source_id, file_label ORDER BY created_at ASC) as new_v
+        FROM report_source_imports
+    )
+    UPDATE report_source_imports
+    SET import_version = nv.new_v
+    FROM new_versions nv
+    WHERE report_source_imports.id = nv.id;
+  `);
+
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_rsi_source_label_version ON report_source_imports(report_source_id, file_label, import_version);`);
+  
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_report_source_imports_source_id ON report_source_imports(report_source_id);`);
 
   // SHEET DATA (JSONB rows)

@@ -27,11 +27,12 @@ export default function DashboardBody(props) {
         setFile,
         selectedFileName,
         setSelectedFileName,
-        uploadDisplayName,
-        setUploadDisplayName,
+        fileLabel,
+        setFileLabel,
         reportSourceName = "",
         setReportSourceName = () => {},
         reportSources = [],
+        reportSourceImports = {},
 
         handleUpload,
         handleGoogleDriveImport,
@@ -274,6 +275,7 @@ export default function DashboardBody(props) {
     const [oneDriveLoading, setOneDriveLoading] = useState(false);
     const [oneDriveBreadcrumbs, setOneDriveBreadcrumbs] = useState([{ id: "root", name: "OneDrive" }]);
     const [selectedOneDriveFile, setSelectedOneDriveFile] = useState(null);
+    const [isNewLabel, setIsNewLabel] = useState(false);
 
     const toggleMenu = (key) => {
         setExpandedMenus((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -321,6 +323,35 @@ export default function DashboardBody(props) {
             })
         );
     }, [reportSources]);
+
+    const labelOptions = React.useMemo(() => {
+        if (!selectedReportSourceId) return [];
+        const imports = reportSourceImports[selectedReportSourceId] || [];
+        const labels = new Set(imports.map(i => i.file_label).filter(Boolean));
+        const options = Array.from(labels).sort().map(l => ({ label: l, value: l }));
+        return [...options, { label: "+ Create New Label", value: "__NEW__" }];
+    }, [selectedReportSourceId, reportSourceImports]);
+
+    useEffect(() => {
+        if (selectedReportSourceId) {
+            // If we have labels, default to the first one.
+            if (labelOptions.length > 1) {
+                if (!fileLabel || !labelOptions.some(o => o.value === fileLabel)) {
+                    const firstVal = labelOptions[0].value;
+                    if (firstVal !== "__NEW__") {
+                        setFileLabel(firstVal);
+                        setIsNewLabel(false);
+                    } else {
+                        setIsNewLabel(true);
+                    }
+                }
+            } else {
+                setIsNewLabel(true);
+            }
+        } else {
+            setIsNewLabel(true);
+        }
+    }, [selectedReportSourceId, labelOptions]);
 
     const leftMenuSelectClasses = {
         buttonClassName: "!bg-white/10 !border-white/25 !rounded-[0.6rem] !min-h-[2.05rem] !h-auto !px-2 !py-1.5 !text-[0.76rem] !font-bold !text-white hover:!bg-white/20 hover:!border-white/35 !shadow-none focus:!outline-none focus:!ring-2 focus:!ring-white/20",
@@ -781,48 +812,63 @@ export default function DashboardBody(props) {
                                                         <SearchableSelect
                                                             options={reportSourceOptions}
                                                             value={selectedReportSourceId}
-                                                            onChange={(e) => setSelectedReportSourceId(e.target.value)}
-                                                            placeholder="Report source"
+                                                            onChange={(e) => {
+                                                                setSelectedReportSourceId(e.target.value);
+                                                            }}
+                                                            placeholder="Report source (optional)"
                                                             className="w-full"
                                                             {...leftMenuSelectClasses}
                                                             panelWidth="100%"
                                                         />
-                                                        <input
-                                                            type="text"
-                                                            value={reportSourceName}
-                                                            onChange={(e) => setReportSourceName(e.target.value)}
-                                                            placeholder={selectedReportSourceId ? "Using selected report source" : "Report source name (required)"}
-                                                            className="left-menu-action"
-                                                            maxLength={160}
-                                                            disabled={!!selectedReportSourceId}
-                                                            required={!selectedReportSourceId}
-                                                        />
-                                                        <input
-                                                            type="text"
-                                                            value={uploadDisplayName}
-                                                            onChange={(e) => setUploadDisplayName(e.target.value.replace(/\s+/g, "_"))}
-                                                            placeholder="Import display name (required)"
-                                                            className="left-menu-action"
-                                                            maxLength={120}
-                                                            required
-                                                        />
+
+                                                        {selectedReportSourceId && labelOptions.length > 1 && (
+                                                            <SearchableSelect
+                                                                options={labelOptions}
+                                                                value={isNewLabel ? "__NEW__" : fileLabel}
+                                                                onChange={(e) => {
+                                                                    if (e.target.value === "__NEW__") {
+                                                                        setIsNewLabel(true);
+                                                                        setFileLabel("");
+                                                                    } else {
+                                                                        setIsNewLabel(false);
+                                                                        setFileLabel(e.target.value);
+                                                                    }
+                                                                }}
+                                                                placeholder="Select Label"
+                                                                className="w-full"
+                                                                {...leftMenuSelectClasses}
+                                                                panelWidth="100%"
+                                                            />
+                                                        )}
+
+                                                        {(!selectedReportSourceId || isNewLabel || labelOptions.length <= 1) && (
+                                                            <input
+                                                                type="text"
+                                                                value={fileLabel}
+                                                                onChange={(e) => setFileLabel(e.target.value.replace(/\s+/g, "_"))}
+                                                                placeholder="Label (required)"
+                                                                className="left-menu-action"
+                                                                maxLength={120}
+                                                                required
+                                                            />
+                                                        )}
+
                                                         <button
                                                             type="button"
                                                             onClick={() => {
-                                                                handleUpload(file, selectedFolderId, uploadDisplayName, selectedReportSourceId, reportSourceName);
+                                                                // Use fileLabel for both display_name and file_label.
+                                                                // If no source ID, use fileLabel as the source name too.
+                                                                handleUpload(file, selectedFolderId, fileLabel, selectedReportSourceId, selectedReportSourceId ? "" : fileLabel, fileLabel);
+                                                                setFileLabel("");
                                                             }}
-                                                            disabled={!file || (!selectedFolderId && !selectedReportSourceId) || !String(uploadDisplayName || "").trim() || (!selectedReportSourceId && !String(reportSourceName || "").trim())}
-                                                            className={`left-menu-action ${!file || (!selectedFolderId && !selectedReportSourceId) || !String(uploadDisplayName || "").trim() || (!selectedReportSourceId && !String(reportSourceName || "").trim()) ? "left-menu-action-disabled" : ""}`}
+                                                            disabled={!file || (!selectedFolderId && !selectedReportSourceId && !fileLabel.trim()) || (selectedReportSourceId && !fileLabel.trim())}
+                                                            className={`left-menu-action ${!file || (!selectedFolderId && !selectedReportSourceId && !fileLabel.trim()) || (selectedReportSourceId && !fileLabel.trim()) ? "left-menu-action-disabled" : ""}`}
                                                             title={
                                                                 !file
                                                                     ? "Choose a file"
-                                                                    : (!selectedFolderId && !selectedReportSourceId)
-                                                                        ? "Select a folder or report source"
-                                                                        : (!selectedReportSourceId && !String(reportSourceName || "").trim())
-                                                                            ? "Enter a report source name"
-                                                                        : !String(uploadDisplayName || "").trim()
-                                                                            ? "Enter a display name"
-                                                                            : "Upload & Load"
+                                                                    : (!selectedFolderId && !selectedReportSourceId && !fileLabel.trim())
+                                                                        ? "Select a folder or enter a label"
+                                                                        : "Upload & Load"
                                                             }
                                                         >
                                                             Upload & Load
@@ -1051,13 +1097,51 @@ export default function DashboardBody(props) {
                                 <div className="px-3 py-6 text-center text-sm font-semibold text-slate-500">No supported files in this folder.</div>
                             )}
                         </div>
+                        <div className="p-4 space-y-3">
+                            <SearchableSelect
+                                options={reportSourceOptions}
+                                value={selectedReportSourceId}
+                                onChange={(e) => setSelectedReportSourceId(e.target.value)}
+                                placeholder="Report source (optional)"
+                                className="w-full border border-slate-300 rounded-md text-xs"
+                                panelWidth="100%"
+                            />
+                            {selectedReportSourceId && labelOptions.length > 1 && (
+                                <SearchableSelect
+                                    options={labelOptions}
+                                    value={isNewLabel ? "__NEW__" : fileLabel}
+                                    onChange={(e) => {
+                                        if (e.target.value === "__NEW__") {
+                                            setIsNewLabel(true);
+                                            setFileLabel("");
+                                        } else {
+                                            setIsNewLabel(false);
+                                            setFileLabel(e.target.value);
+                                        }
+                                    }}
+                                    placeholder="Select Label"
+                                    className="w-full border border-slate-300 rounded-md text-xs"
+                                    panelWidth="100%"
+                                />
+                            )}
+                            {(!selectedReportSourceId || isNewLabel || labelOptions.length <= 1) && (
+                                <input
+                                    type="text"
+                                    value={fileLabel}
+                                    onChange={(e) => setFileLabel(e.target.value.replace(/\s+/g, "_"))}
+                                    placeholder="Label (required)"
+                                    className="w-full border border-slate-300 rounded-md px-3 py-1.5 text-xs focus:ring-1 focus:ring-slate-400 outline-none"
+                                    maxLength={120}
+                                />
+                            )}
+                        </div>
                         <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-4 py-3">
                             <button type="button" onClick={closeDrivePicker} className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
                                 Cancel
                             </button>
                             <button
                                 type="button"
-                                disabled={!selectedDriveFile || (!selectedFolderId && !selectedReportSourceId) || !String(uploadDisplayName || "").trim() || (!selectedReportSourceId && !String(reportSourceName || "").trim())}
+                                disabled={!selectedDriveFile || (!selectedFolderId && !selectedReportSourceId && !fileLabel.trim()) || (selectedReportSourceId && !fileLabel.trim())}
                                 onClick={() => {
                                     if (!selectedDriveFile) return;
                                     handleGoogleDriveImport({
@@ -1065,21 +1149,21 @@ export default function DashboardBody(props) {
                                         name: selectedDriveFile.name,
                                         mimeType: selectedDriveFile.mimeType,
                                         folderId: selectedFolderId,
-                                        displayName: uploadDisplayName,
+                                        displayName: fileLabel,
                                         reportSourceId: selectedReportSourceId,
-                                        reportSourceName,
+                                        reportSourceName: selectedReportSourceId ? "" : fileLabel,
+                                        fileLabel: fileLabel,
                                     });
+                                    setFileLabel("");
                                     closeDrivePicker();
                                 }}
-                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedDriveFile || (!selectedFolderId && !selectedReportSourceId) || !String(uploadDisplayName || "").trim() || (!selectedReportSourceId && !String(reportSourceName || "").trim()) ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
+                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedDriveFile || (!selectedFolderId && !selectedReportSourceId && !fileLabel.trim()) || (selectedReportSourceId && !fileLabel.trim()) ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
                                 title={
-                                    (!selectedFolderId && !selectedReportSourceId)
-                                        ? "Select a folder or report source first"
-                                        : !String(uploadDisplayName || "").trim()
-                                            ? "Enter a display name"
-                                            : !selectedDriveFile
-                                                ? "Select a Google Drive file"
-                                                : "Import selected file"
+                                    (!selectedFolderId && !selectedReportSourceId && !fileLabel.trim())
+                                        ? "Select a folder or enter a label"
+                                        : !selectedDriveFile
+                                            ? "Select a Google Drive file"
+                                            : "Import selected file"
                                 }
                             >
                                 Import selected file
@@ -1158,34 +1242,72 @@ export default function DashboardBody(props) {
                                 <div className="px-3 py-6 text-center text-sm font-semibold text-slate-500">No supported files in this folder.</div>
                             )}
                         </div>
+                        <div className="p-4 space-y-3">
+                            <SearchableSelect
+                                options={reportSourceOptions}
+                                value={selectedReportSourceId}
+                                onChange={(e) => setSelectedReportSourceId(e.target.value)}
+                                placeholder="Report source (optional)"
+                                className="w-full border border-slate-300 rounded-md text-xs"
+                                panelWidth="100%"
+                            />
+                            {selectedReportSourceId && labelOptions.length > 1 && (
+                                <SearchableSelect
+                                    options={labelOptions}
+                                    value={isNewLabel ? "__NEW__" : fileLabel}
+                                    onChange={(e) => {
+                                        if (e.target.value === "__NEW__") {
+                                            setIsNewLabel(true);
+                                            setFileLabel("");
+                                        } else {
+                                            setIsNewLabel(false);
+                                            setFileLabel(e.target.value);
+                                        }
+                                    }}
+                                    placeholder="Select Label"
+                                    className="w-full border border-slate-300 rounded-md text-xs"
+                                    panelWidth="100%"
+                                />
+                            )}
+                            {(!selectedReportSourceId || isNewLabel || labelOptions.length <= 1) && (
+                                <input
+                                    type="text"
+                                    value={fileLabel}
+                                    onChange={(e) => setFileLabel(e.target.value.replace(/\s+/g, "_"))}
+                                    placeholder="Label (required)"
+                                    className="w-full border border-slate-300 rounded-md px-3 py-1.5 text-xs focus:ring-1 focus:ring-slate-400 outline-none"
+                                    maxLength={120}
+                                />
+                            )}
+                        </div>
                         <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-4 py-3">
                             <button type="button" onClick={closeDropboxPicker} className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
                                 Cancel
                             </button>
                             <button
                                 type="button"
-                                disabled={!selectedDropboxFile || (!selectedFolderId && !selectedReportSourceId) || !String(uploadDisplayName || "").trim() || (!selectedReportSourceId && !String(reportSourceName || "").trim())}
+                                disabled={!selectedDropboxFile || (!selectedFolderId && !selectedReportSourceId && !fileLabel.trim()) || (selectedReportSourceId && !fileLabel.trim())}
                                 onClick={() => {
                                     if (!selectedDropboxFile) return;
                                     handleDropboxImport({
                                         pathLower: selectedDropboxFile.pathLower,
                                         name: selectedDropboxFile.name,
                                         folderId: selectedFolderId,
-                                        displayName: uploadDisplayName,
+                                        displayName: fileLabel,
                                         reportSourceId: selectedReportSourceId,
-                                        reportSourceName,
+                                        reportSourceName: selectedReportSourceId ? "" : fileLabel,
+                                        fileLabel: fileLabel,
                                     });
+                                    setFileLabel("");
                                     closeDropboxPicker();
                                 }}
-                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedDropboxFile || (!selectedFolderId && !selectedReportSourceId) || !String(uploadDisplayName || "").trim() || (!selectedReportSourceId && !String(reportSourceName || "").trim()) ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
+                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedDropboxFile || (!selectedFolderId && !selectedReportSourceId && !fileLabel.trim()) || (selectedReportSourceId && !fileLabel.trim()) ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
                                 title={
-                                    (!selectedFolderId && !selectedReportSourceId)
-                                        ? "Select a folder or report source first"
-                                        : !String(uploadDisplayName || "").trim()
-                                            ? "Enter a display name"
-                                            : !selectedDropboxFile
-                                                ? "Select a Dropbox file"
-                                                : "Import selected file"
+                                    (!selectedFolderId && !selectedReportSourceId && !fileLabel.trim())
+                                        ? "Select a folder or enter a label"
+                                        : !selectedDropboxFile
+                                            ? "Select a Dropbox file"
+                                            : "Import selected file"
                                 }
                             >
                                 Import selected file
@@ -1263,34 +1385,72 @@ export default function DashboardBody(props) {
                                 <div className="px-3 py-6 text-center text-sm font-semibold text-slate-500">No supported files in this folder.</div>
                             )}
                         </div>
+                        <div className="p-4 space-y-3">
+                            <SearchableSelect
+                                options={reportSourceOptions}
+                                value={selectedReportSourceId}
+                                onChange={(e) => setSelectedReportSourceId(e.target.value)}
+                                placeholder="Report source (optional)"
+                                className="w-full border border-slate-300 rounded-md text-xs"
+                                panelWidth="100%"
+                            />
+                            {selectedReportSourceId && labelOptions.length > 1 && (
+                                <SearchableSelect
+                                    options={labelOptions}
+                                    value={isNewLabel ? "__NEW__" : fileLabel}
+                                    onChange={(e) => {
+                                        if (e.target.value === "__NEW__") {
+                                            setIsNewLabel(true);
+                                            setFileLabel("");
+                                        } else {
+                                            setIsNewLabel(false);
+                                            setFileLabel(e.target.value);
+                                        }
+                                    }}
+                                    placeholder="Select Label"
+                                    className="w-full border border-slate-300 rounded-md text-xs"
+                                    panelWidth="100%"
+                                />
+                            )}
+                            {(!selectedReportSourceId || isNewLabel || labelOptions.length <= 1) && (
+                                <input
+                                    type="text"
+                                    value={fileLabel}
+                                    onChange={(e) => setFileLabel(e.target.value.replace(/\s+/g, "_"))}
+                                    placeholder="Label (required)"
+                                    className="w-full border border-slate-300 rounded-md px-3 py-1.5 text-xs focus:ring-1 focus:ring-slate-400 outline-none"
+                                    maxLength={120}
+                                />
+                            )}
+                        </div>
                         <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-4 py-3">
                             <button type="button" onClick={closeOneDrivePicker} className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
                                 Cancel
                             </button>
                             <button
                                 type="button"
-                                disabled={!selectedOneDriveFile || (!selectedFolderId && !selectedReportSourceId) || !String(uploadDisplayName || "").trim() || (!selectedReportSourceId && !String(reportSourceName || "").trim())}
+                                disabled={!selectedOneDriveFile || (!selectedFolderId && !selectedReportSourceId && !fileLabel.trim()) || (selectedReportSourceId && !fileLabel.trim())}
                                 onClick={() => {
                                     if (!selectedOneDriveFile) return;
                                     handleOneDriveImport({
                                         itemId: selectedOneDriveFile.id,
                                         name: selectedOneDriveFile.name,
                                         folderId: selectedFolderId,
-                                        displayName: uploadDisplayName,
+                                        displayName: fileLabel,
                                         reportSourceId: selectedReportSourceId,
-                                        reportSourceName,
+                                        reportSourceName: selectedReportSourceId ? "" : fileLabel,
+                                        fileLabel: fileLabel,
                                     });
+                                    setFileLabel("");
                                     closeOneDrivePicker();
                                 }}
-                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedOneDriveFile || (!selectedFolderId && !selectedReportSourceId) || !String(uploadDisplayName || "").trim() || (!selectedReportSourceId && !String(reportSourceName || "").trim()) ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
+                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedOneDriveFile || (!selectedFolderId && !selectedReportSourceId && !fileLabel.trim()) || (selectedReportSourceId && !fileLabel.trim()) ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
                                 title={
-                                    (!selectedFolderId && !selectedReportSourceId)
-                                        ? "Select a folder or report source first"
-                                        : !String(uploadDisplayName || "").trim()
-                                            ? "Enter a display name"
-                                            : !selectedOneDriveFile
-                                                ? "Select a OneDrive file"
-                                                : "Import selected file"
+                                    (!selectedFolderId && !selectedReportSourceId && !fileLabel.trim())
+                                        ? "Select a folder or enter a label"
+                                        : !selectedOneDriveFile
+                                            ? "Select a OneDrive file"
+                                            : "Import selected file"
                                 }
                             >
                                 Import selected file

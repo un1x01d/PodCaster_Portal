@@ -172,8 +172,9 @@ export default function App() {
 
   const [file, setFile] = useState(null);
   const [selectedFileName, setSelectedFileName] = useState("");
-  const [uploadDisplayName, setUploadDisplayName] = useState("");
-  const [reportSourceName, setReportSourceName] = useState("");
+  const [uploadDisplayName, setUploadDisplayName] = React.useState("");
+  const [fileLabel, setFileLabel] = React.useState("");
+  const [reportSourceName, setReportSourceName] = React.useState("");
 
   // My files (sheet selection)
   const [myFiles, setMyFiles] = useState([]);
@@ -913,13 +914,14 @@ export default function App() {
       });
   }, [API, token, user]);
 
-  const handleUpload = async (uploadFile, folderId, displayName, reportSourceId = "", newReportSourceName = "") => {
+  const handleUpload = async (uploadFile, folderId, displayName, reportSourceId = "", newReportSourceName = "", fileLabel = "") => {
     if (!uploadFile || (!folderId && !reportSourceId) || !String(displayName || "").trim()) return;
     if (!reportSourceId && !String(newReportSourceName || "").trim()) return;
     const formData = new FormData();
     formData.append("file", uploadFile);
     if (folderId) formData.append("folder_id", folderId);
     formData.append("display_name", String(displayName).trim());
+    formData.append("file_label", String(fileLabel || displayName).trim());
     if (reportSourceId) {
       formData.append("report_source_id", reportSourceId);
     } else {
@@ -961,7 +963,7 @@ export default function App() {
     }
   };
 
-  const handleGoogleDriveImport = async ({ fileId, name, mimeType, folderId, displayName, reportSourceId = "", reportSourceName: newReportSourceName = "" }) => {
+  const handleGoogleDriveImport = async ({ fileId, name, mimeType, folderId, displayName, reportSourceId = "", reportSourceName: newReportSourceName = "", fileLabel = "" }) => {
     if (!fileId || (!folderId && !reportSourceId) || !String(displayName || "").trim()) return;
     if (!reportSourceId && !String(newReportSourceName || "").trim()) return;
     try {
@@ -973,6 +975,7 @@ export default function App() {
           mimeType,
           ...(folderId ? { folder_id: folderId } : {}),
           display_name: String(displayName).trim(),
+          file_label: String(fileLabel || displayName).trim(),
           ...(reportSourceId ? { report_source_id: reportSourceId } : { report_source_name: String(newReportSourceName).trim() }),
         },
         { headers: { Authorization: `Bearer ${token}` } }
@@ -1005,7 +1008,7 @@ export default function App() {
     }
   };
 
-  const handleDropboxImport = async ({ pathLower, name, folderId, displayName, reportSourceId = "", reportSourceName: newReportSourceName = "" }) => {
+  const handleDropboxImport = async ({ pathLower, name, folderId, displayName, reportSourceId = "", reportSourceName: newReportSourceName = "", fileLabel = "" }) => {
     if (!pathLower || (!folderId && !reportSourceId) || !String(displayName || "").trim()) return;
     if (!reportSourceId && !String(newReportSourceName || "").trim()) return;
     try {
@@ -1016,6 +1019,7 @@ export default function App() {
           name,
           ...(folderId ? { folder_id: folderId } : {}),
           display_name: String(displayName).trim(),
+          file_label: String(fileLabel || displayName).trim(),
           ...(reportSourceId ? { report_source_id: reportSourceId } : { report_source_name: String(newReportSourceName).trim() }),
         },
         { headers: { Authorization: `Bearer ${token}` } }
@@ -1048,7 +1052,7 @@ export default function App() {
     }
   };
 
-  const handleOneDriveImport = async ({ itemId, name, folderId, displayName, reportSourceId = "", reportSourceName: newReportSourceName = "" }) => {
+  const handleOneDriveImport = async ({ itemId, name, folderId, displayName, reportSourceId = "", reportSourceName: newReportSourceName = "", fileLabel = "" }) => {
     if (!itemId || (!folderId && !reportSourceId) || !String(displayName || "").trim()) return;
     if (!reportSourceId && !String(newReportSourceName || "").trim()) return;
     try {
@@ -1059,6 +1063,7 @@ export default function App() {
           name,
           ...(folderId ? { folder_id: folderId } : {}),
           display_name: String(displayName).trim(),
+          file_label: String(fileLabel || displayName).trim(),
           ...(reportSourceId ? { report_source_id: reportSourceId } : { report_source_name: String(newReportSourceName).trim() }),
         },
         { headers: { Authorization: `Bearer ${token}` } }
@@ -1672,10 +1677,14 @@ export default function App() {
                       sheetId={sheetId} activeFilename={activeFilename}
                       file={file} setFile={setFile}
                       selectedFileName={selectedFileName} setSelectedFileName={setSelectedFileName}
-                      uploadDisplayName={uploadDisplayName} setUploadDisplayName={setUploadDisplayName}
+                      uploadDisplayName={uploadDisplayName}
+                      setUploadDisplayName={setUploadDisplayName}
+                      fileLabel={fileLabel}
+                      setFileLabel={setFileLabel}
                       reportSourceName={reportSourceName}
                       setReportSourceName={setReportSourceName}
                       reportSources={reportSources}
+                      reportSourceImports={reportSourceImports}
                       handleUpload={handleUpload}
                       handleGoogleDriveImport={handleGoogleDriveImport}
                       handleDropboxImport={handleDropboxImport}
