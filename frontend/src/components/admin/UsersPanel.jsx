@@ -64,7 +64,7 @@ export default function UsersPanel({
                         value={newUser.groupId || ""}
                         onChange={e => setNewUser({ ...newUser, groupId: e.target.value })}
                     >
-                        <option value="">Select Group...</option>
+                        <option value="">Select Customer...</option>
                         {groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
                     </select>
                 )}

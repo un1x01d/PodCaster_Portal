@@ -2,6 +2,7 @@ import { createHash } from "crypto";
 import { query } from "../config/db.js";
 import { isEnglishLocale, normalizeLocale, translateDashboardItems } from "../utils/dashboardLocalization.js";
 import { checkSheetAccess, hasFolderAccess, loadSheetPermissionSets } from "../utils/authorization.js";
+import { estimateOpenAiCostUsd, recordAiUsage, reserveAiQueryForSheet } from "../utils/aiQuota.js";
 export { checkSheetAccess } from "../utils/authorization.js";
 
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
@@ -1064,9 +1065,7 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
   }
   const parsed = JSON.parse(content);
   const validated = validateAiResponseSchemaStrict(parsed);
-  const inCostPer1M = Number.parseFloat(process.env.OPENAI_INPUT_COST_PER_1M || "0");
-  const outCostPer1M = Number.parseFloat(process.env.OPENAI_OUTPUT_COST_PER_1M || "0");
-  const estimatedCostUsd = ((promptTokens / 1_000_000) * inCostPer1M) + ((completionTokens / 1_000_000) * outCostPer1M);
+  const estimatedCostUsd = estimateOpenAiCostUsd(promptTokens, completionTokens);
   console.info("[ai_metrics]", JSON.stringify({
     provider: "openai",
     endpoint: "chat.completions",
@@ -1078,7 +1077,17 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
     estimated_cost_usd: Number.isFinite(estimatedCostUsd) ? Number(estimatedCostUsd.toFixed(8)) : null,
     status: "ok",
   }));
-  return validated;
+  return {
+    plan: validated,
+    usage: {
+      promptTokens,
+      completionTokens,
+      totalTokens,
+      estimatedCostUsd,
+      provider: "openai",
+      model: OPENAI_MODEL,
+    },
+  };
 }
 
 function normalizeAiPlan(raw) {
@@ -1572,6 +1581,12 @@ export async function chatQuery(req, res) {
   const locale = normalizeLocale(rawLocale || "en");
   const hasAccess = await checkSheetAccess(sheetId, req.user);
   if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
+  let aiReservation = null;
+  try {
+    aiReservation = await reserveAiQueryForSheet({ sheetId, user: req.user, kind: "chat_query" });
+  } catch (err) {
+    return res.status(err.statusCode || 429).json({ error: err.message, ...(err.details || {}) });
+  }
 
   // PERF-01: Load only SAMPLE rows for AI context, not all 500k rows
   const loadedSample = await loadAccessibleRows(sheetId, req.user, null, 100);
@@ -1613,7 +1628,7 @@ export async function chatQuery(req, res) {
 
   let ai;
   try {
-    ai = normalizeAiPlan(await callOpenAI({
+    const aiResult = await callOpenAI({
       message: `${message}\n\nAvailable tabs: ${tabNames.join(", ") || "N/A"}\nIf the question maps to a specific tab, set target_tab in the JSON response.`,
       headers: aiHeaders,
       sampleRows,
@@ -1625,7 +1640,16 @@ export async function chatQuery(req, res) {
           available_files: availableFiles,
           active_filters: activeDashboardFilters
       }
-    }));
+    });
+    ai = normalizeAiPlan(aiResult.plan);
+    await recordAiUsage({
+      reservation: aiReservation,
+      provider: aiResult.usage?.provider,
+      model: aiResult.usage?.model,
+      promptTokens: aiResult.usage?.promptTokens,
+      completionTokens: aiResult.usage?.completionTokens,
+      estimatedCostUsd: aiResult.usage?.estimatedCostUsd,
+    }).catch((err) => console.error("[ai_quota] usage record failed:", err?.message || err));
   } catch (e) {
     console.error("OpenAI call failed:", e);
     return res.status(502).json({ error: "ai_unavailable" }); 

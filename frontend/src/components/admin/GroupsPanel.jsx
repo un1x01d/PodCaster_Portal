@@ -21,14 +21,15 @@ export default function GroupsPanel({
     return (
         <div className="bg-white border text-slate-700 rounded-2xl shadow-sm p-6 border-slate-200 h-full flex flex-col">
             <h3 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2 border-b pb-2">
-                <span className="text-xl">🏢</span> Groups
+                <span className="text-xl">🏢</span>
+                Customers
             </h3>
 
             {user?.role === "admin" && (
                 <div className="flex gap-2 mb-4">
                     <input
                         className="border border-slate-200 rounded-lg px-3 h-9 text-sm flex-1 focus:ring-2 focus:ring-blue-100 focus:border-blue-400 outline-none"
-                        placeholder="New group name"
+                        placeholder="New customer name"
                         value={newGroupName}
                         onChange={e => setNewGroupName(e.target.value)}
                     />
@@ -85,7 +86,7 @@ export default function GroupsPanel({
                                     onBlur={(e) => {
                                         const val = parseInt(e.target.value, 10);
                                         if (!isNaN(val)) {
-                                            // Trigger updating the group (handleUpdateGroup needs to be passed down)
+                                            // Trigger updating the customer (handleUpdateGroup keeps the legacy API name)
                                             if (window.confirm(`Update ${groups.find(g => g.id === selectedGroupId)?.name} limit to ${val}MB?`)) {
                                                 if (typeof updateGroup === 'function') {
                                                     updateGroup(selectedGroupId, { maxFileSizeMb: val });

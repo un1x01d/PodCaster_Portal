@@ -207,6 +207,33 @@ test("chat AI response is strict-schema validated and metrics are logged", async
   assert.match(source, /estimated_cost_usd/);
 });
 
+test("customer AI query quota is entitlement backed and enforced before chat AI calls", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const chatPath = path.join(__dirname, "..", "src", "controllers", "chatController.js");
+  const quotaPath = path.join(__dirname, "..", "src", "utils", "aiQuota.js");
+  const dbPath = path.join(__dirname, "..", "src", "config", "db.js");
+  const uiPath = path.join(__dirname, "..", "..", "frontend", "src", "UserManagement.jsx");
+  const envPath = path.join(__dirname, "..", "..", ".env.example");
+  const chatSource = fs.readFileSync(chatPath, "utf8");
+  const quotaSource = fs.readFileSync(quotaPath, "utf8");
+  const dbSource = fs.readFileSync(dbPath, "utf8");
+  const uiSource = fs.readFileSync(uiPath, "utf8");
+  const env = fs.readFileSync(envPath, "utf8");
+
+  assert.match(dbSource, /CREATE TABLE IF NOT EXISTS ai_usage_monthly/);
+  assert.match(quotaSource, /maxAiQueriesPerMonth/);
+  assert.match(quotaSource, /aiMonthlyBudgetUsd/);
+  assert.match(quotaSource, /ai_query_quota_exceeded/);
+  assert.match(quotaSource, /ai_budget_quota_exceeded/);
+  assert.match(chatSource, /reserveAiQueryForSheet\(\{ sheetId, user: req\.user, kind: "chat_query" \}\)/);
+  assert.match(chatSource, /recordAiUsage\(\{/);
+  assert.match(uiSource, /AI Queries \/ Month/);
+  assert.match(uiSource, /AI Budget \/ Month \(\$\)/);
+  assert.match(env, /OPENAI_INPUT_COST_PER_1M=0\.40/);
+  assert.match(env, /OPENAI_OUTPUT_COST_PER_1M=1\.60/);
+});
+
 test("unique values endpoint applies row filters before distinct sampling", async () => {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
@@ -217,6 +244,55 @@ test("unique values endpoint applies row filters before distinct sampling", asyn
   assert.match(source, /rowFiltersList\.push\(filters\)/);
   assert.match(source, /const filterClause = buildRowFilterWhereClause\(rowFiltersList, params\.length \+ 1\);/);
   assert.match(source, /Security: row filters must be applied before sampling\/distinct/);
+});
+
+test("import approval, job status, and audit routes are wired", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const sheetRoutesPath = path.join(__dirname, "..", "src", "routes", "sheetRoutes.js");
+  const userRoutesPath = path.join(__dirname, "..", "src", "routes", "userRoutes.js");
+  const sheetRoutes = fs.readFileSync(sheetRoutesPath, "utf8");
+  const userRoutes = fs.readFileSync(userRoutesPath, "utf8");
+
+  assert.match(sheetRoutes, /router\.get\("\/import-jobs"/);
+  assert.match(sheetRoutes, /router\.get\("\/import-jobs\/:id"/);
+  assert.match(sheetRoutes, /router\.post\("\/report-source-imports\/:id\/publish"/);
+  assert.match(sheetRoutes, /router\.post\("\/report-source-imports\/:id\/reject"/);
+  assert.match(userRoutes, /router\.get\("\/audit-logs"/);
+});
+
+test("database init creates import job, approval, and audit log schema", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const dbPath = path.join(__dirname, "..", "src", "config", "db.js");
+  const source = fs.readFileSync(dbPath, "utf8");
+
+  assert.match(source, /CREATE TABLE IF NOT EXISTS import_jobs/);
+  assert.match(source, /CREATE TABLE IF NOT EXISTS audit_logs/);
+  assert.match(source, /ALTER TABLE report_source_imports ADD COLUMN IF NOT EXISTS status/);
+  assert.match(source, /ALTER TABLE report_source_imports ADD COLUMN IF NOT EXISTS published_at/);
+  assert.match(source, /ALTER TABLE report_source_imports ADD COLUMN IF NOT EXISTS rejected_at/);
+  assert.match(source, /ALTER TABLE report_source_imports ADD COLUMN IF NOT EXISTS job_id/);
+});
+
+test("uploads preserve auto-publish by default and support opt-in approval and async jobs", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const controllerPath = path.join(__dirname, "..", "src", "controllers", "sheetController.js");
+  const envPath = path.join(__dirname, "..", "..", ".env.example");
+  const source = fs.readFileSync(controllerPath, "utf8");
+  const env = fs.readFileSync(envPath, "utf8");
+
+  assert.match(source, /function uploadRequiresApproval\(req\)/);
+  assert.match(source, /IMPORT_REQUIRE_APPROVAL/);
+  assert.match(source, /function uploadRunsAsync\(req\)/);
+  assert.match(source, /IMPORT_ASYNC_UPLOADS/);
+  assert.match(source, /if \(!approvalRequired\) \{/);
+  assert.match(source, /UPDATE sheets SET active = FALSE WHERE active = TRUE/);
+  assert.match(source, /status: importStatus/);
+  assert.match(env, /IMPORT_REQUIRE_APPROVAL=false/);
+  assert.match(env, /IMPORT_ASYNC_UPLOADS=false/);
+  assert.match(env, /AUDIT_LOG_MAX_METADATA_BYTES=8192/);
 });
 
 test("prometheus route labels are normalized to avoid object id cardinality", async () => {
@@ -279,6 +355,25 @@ test("insights push row filters and column projection into SQL", async () => {
   assert.doesNotMatch(source, /rows = rows\.filter\(\(rowData\)/);
 });
 
+test("insight AI prompts use compact bounded context", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const controllerPath = path.join(__dirname, "..", "src", "controllers", "insightController.js");
+  const envPath = path.join(__dirname, "..", "..", ".env.example");
+  const source = fs.readFileSync(controllerPath, "utf8");
+  const env = fs.readFileSync(envPath, "utf8");
+
+  assert.match(source, /const INSIGHT_AI_MAX_SERIES_POINTS = Number\.parseInt/);
+  assert.match(source, /const INSIGHT_AI_MAX_PROMPT_CHARS = Number\.parseInt/);
+  assert.match(source, /function compactInsightSeries\(series/);
+  assert.match(source, /history_series: compactSeries/);
+  assert.doesNotMatch(source, /original_history_series: series/);
+  assert.match(source, /forecast ai skipped: prompt_chars=/);
+  assert.match(source, /recommendations ai skipped: prompt_chars=/);
+  assert.match(env, /INSIGHT_AI_MAX_SERIES_POINTS=18/);
+  assert.match(env, /INSIGHT_AI_MAX_PROMPT_CHARS=12000/);
+});
+
 test("generated commodity market insight route is removed", async () => {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
@@ -318,4 +413,47 @@ test("xlsx worker strips workbook formulas and sheet metadata before import rows
   assert.deepEqual(result.sheets["Dirty Sheet"], [{ Name: "Client A", Total: "2" }]);
   assert.equal(JSON.stringify(result).includes("1+1"), false);
   assert.ok(Number(result.cleanup.metadataEntriesStripped) >= 1);
+});
+
+test("limited customer admin entitlements are persisted on groups", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const dbPath = path.join(__dirname, "..", "src", "config", "db.js");
+  const controllerPath = path.join(__dirname, "..", "src", "controllers", "userController.js");
+  const dbSource = fs.readFileSync(dbPath, "utf8");
+  const controllerSource = fs.readFileSync(controllerPath, "utf8");
+
+  assert.match(dbSource, /ALTER TABLE groups ADD COLUMN IF NOT EXISTS entitlements JSONB NOT NULL DEFAULT '\{\}'::jsonb/);
+  assert.match(controllerSource, /INSERT INTO groups \(name, max_file_size_mb, max_total_storage_mb, entitlements\)/);
+  assert.match(controllerSource, /entitlements = COALESCE\(\$4::jsonb, entitlements\)/);
+});
+
+test("customer admin user management is group scoped and entitlement gated", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const controllerPath = path.join(__dirname, "..", "src", "controllers", "userController.js");
+  const source = fs.readFileSync(controllerPath, "utf8");
+
+  assert.match(source, /if \(desiredRole !== "user"\) return res\.status\(403\)/);
+  assert.match(source, /managed_group_required/);
+  assert.match(source, /assertGroupUserLimitAvailable\(targetGroupId, 1\)/);
+  assert.match(source, /function assertGroupsCanManageUsers/);
+  assert.match(source, /feature_not_enabled:manageUsers/);
+  assert.match(source, /group_user_limit_exceeded/);
+});
+
+test("customer admin promotion requires explicit entitlement and frontend exposes toggles", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
+  const controllerPath = path.join(repoRoot, "backend", "src", "controllers", "userController.js");
+  const uiPath = path.join(repoRoot, "frontend", "src", "UserManagement.jsx");
+  const controllerSource = fs.readFileSync(controllerPath, "utf8");
+  const uiSource = fs.readFileSync(uiPath, "utf8");
+
+  assert.match(controllerSource, /feature_not_enabled:manageGroupAdmins/);
+  assert.match(controllerSource, /groupHasFeature\(group, "manageGroupAdmins"\)/);
+  assert.match(uiSource, /DEFAULT_GROUP_ENTITLEMENTS/);
+  assert.match(uiSource, /maxUsers/);
+  assert.match(uiSource, /manageGroupAdmins/);
+  assert.match(uiSource, /groupId: Number\(selectedGroupId\)/);
 });

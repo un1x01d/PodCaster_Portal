@@ -86,6 +86,25 @@ export async function initDb() {
   await pool.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
   await pool.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS max_file_size_mb INT DEFAULT 100;`);
   await pool.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS max_total_storage_mb INT DEFAULT 10240;`);
+  await pool.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS entitlements JSONB NOT NULL DEFAULT '{}'::jsonb;`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ai_usage_monthly (
+      group_id INT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+      period_month TEXT NOT NULL,
+      query_count INT NOT NULL DEFAULT 0,
+      prompt_tokens BIGINT NOT NULL DEFAULT 0,
+      completion_tokens BIGINT NOT NULL DEFAULT 0,
+      estimated_cost_usd NUMERIC(12, 6) NOT NULL DEFAULT 0,
+      provider TEXT,
+      model TEXT,
+      last_kind TEXT,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (group_id, period_month)
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_ai_usage_monthly_period ON ai_usage_monthly(period_month);`);
 
   // USER_GROUPS (membership)
   await pool.query(`
@@ -311,6 +330,61 @@ export async function initDb() {
     );
   `);
   await pool.query(`ALTER TABLE report_source_imports ADD COLUMN IF NOT EXISTS file_label TEXT;`);
+  await pool.query(`ALTER TABLE report_source_imports ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'published';`);
+  await pool.query(`ALTER TABLE report_source_imports ADD COLUMN IF NOT EXISTS published_at TIMESTAMP;`);
+  await pool.query(`ALTER TABLE report_source_imports ADD COLUMN IF NOT EXISTS published_by INT REFERENCES users(id) ON DELETE SET NULL;`);
+  await pool.query(`ALTER TABLE report_source_imports ADD COLUMN IF NOT EXISTS rejected_at TIMESTAMP;`);
+  await pool.query(`ALTER TABLE report_source_imports ADD COLUMN IF NOT EXISTS rejected_by INT REFERENCES users(id) ON DELETE SET NULL;`);
+  await pool.query(`ALTER TABLE report_source_imports ADD COLUMN IF NOT EXISTS review_notes TEXT;`);
+  await pool.query(`ALTER TABLE report_source_imports ADD COLUMN IF NOT EXISTS job_id TEXT;`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS import_jobs (
+      id TEXT PRIMARY KEY,
+      status TEXT NOT NULL DEFAULT 'queued',
+      mode TEXT NOT NULL DEFAULT 'sync',
+      stage TEXT,
+      requested_by INT REFERENCES users(id) ON DELETE SET NULL,
+      report_source_id INT REFERENCES report_sources(id) ON DELETE SET NULL,
+      sheet_id TEXT REFERENCES sheets(id) ON DELETE SET NULL,
+      import_id INT,
+      original_filename TEXT,
+      error TEXT,
+      result JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      started_at TIMESTAMP,
+      finished_at TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_import_jobs_requested_by ON import_jobs(requested_by, created_at DESC);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_import_jobs_report_source_id ON import_jobs(report_source_id, created_at DESC);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_import_jobs_status ON import_jobs(status, created_at DESC);`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id BIGSERIAL PRIMARY KEY,
+      actor_user_id INT REFERENCES users(id) ON DELETE SET NULL,
+      action TEXT NOT NULL,
+      resource_type TEXT,
+      resource_id TEXT,
+      request_id TEXT,
+      ip TEXT,
+      user_agent TEXT,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at DESC);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_logs_actor ON audit_logs(actor_user_id, created_at DESC);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_logs_resource ON audit_logs(resource_type, resource_id, created_at DESC);`);
+  await pool.query(`
+    UPDATE report_source_imports
+       SET status = 'published',
+           published_at = COALESCE(published_at, created_at),
+           published_by = COALESCE(published_by, imported_by)
+     WHERE status IS NULL OR status = 'published';
+  `);
   
   // Migration: set file_label from sheet display_name if null
   await pool.query(`

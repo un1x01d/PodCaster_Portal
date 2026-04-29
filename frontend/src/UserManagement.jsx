@@ -21,10 +21,84 @@ function saveTemplates(arr) {
   localStorage.setItem(LS_KEY, JSON.stringify(arr || []));
 }
 
+const DEFAULT_GROUP_ENTITLEMENTS = {
+  maxUsers: "",
+  maxReportSources: "",
+  maxAiQueriesPerMonth: "",
+  aiMonthlyBudgetUsd: "",
+  features: {
+    manageUsers: true,
+    managePermissions: true,
+    manageFolders: true,
+    manageGroupAdmins: false,
+    ai: true,
+    exports: true,
+    imports: true,
+    approvalFlow: false,
+    auditLogs: false,
+    googleDrive: true,
+    dropbox: true,
+    oneDrive: true,
+  },
+};
+
+const RESET_PASSWORD_LENGTH = 16;
+const RESET_PASSWORD_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()-_=+[]{};:,.?";
+const RESET_PASSWORD_REQUIRED_SETS = [
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+  "abcdefghijklmnopqrstuvwxyz",
+  "0123456789",
+  "!@#$%^&*()-_=+[]{};:,.?",
+];
+
+function secureRandomInt(max) {
+  if (window.crypto?.getRandomValues) {
+    const value = new Uint32Array(1);
+    window.crypto.getRandomValues(value);
+    return value[0] % max;
+  }
+  return Math.floor(Math.random() * max);
+}
+
+function generateAdminPassword(length = RESET_PASSWORD_LENGTH) {
+  const chars = RESET_PASSWORD_REQUIRED_SETS.map((set) => set[secureRandomInt(set.length)]);
+  while (chars.length < length) {
+    chars.push(RESET_PASSWORD_ALPHABET[secureRandomInt(RESET_PASSWORD_ALPHABET.length)]);
+  }
+  for (let i = chars.length - 1; i > 0; i -= 1) {
+    const j = secureRandomInt(i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join("");
+}
+
+function normalizeGroupEntitlements(value) {
+  const raw = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    ...DEFAULT_GROUP_ENTITLEMENTS,
+    ...raw,
+    maxUsers: raw.maxUsers ?? "",
+    maxReportSources: raw.maxReportSources ?? "",
+    maxAiQueriesPerMonth: raw.maxAiQueriesPerMonth ?? "",
+    aiMonthlyBudgetUsd: raw.aiMonthlyBudgetUsd ?? "",
+    features: {
+      ...DEFAULT_GROUP_ENTITLEMENTS.features,
+      ...(raw.features || {}),
+    },
+  };
+}
+
 export default function UserManagement({ token, user, sheetId }) {
   const trunc = (s, n) => (s && s.length > n ? s.slice(0, n) + "..." : s);
   const [users, setUsers] = useState([]);
   const [newUser, setNewUser] = useState({ firstName: "", lastName: "", company: "", email: "", password: "", role: "user" });
+  const [passwordResetModal, setPasswordResetModal] = useState({
+    open: false,
+    userId: null,
+    label: "",
+    password: "",
+    repeat: "",
+  });
   const [googleIntegrationEnabled, setGoogleIntegrationEnabled] = useState(true);
   const [googleIntegrationSaving, setGoogleIntegrationSaving] = useState(false);
   const [googleOauthMeta, setGoogleOauthMeta] = useState({
@@ -94,7 +168,7 @@ export default function UserManagement({ token, user, sheetId }) {
   const [groupMembers, setGroupMembers] = useState([]);
   const [groupAddUserId, setGroupAddUserId] = useState("");
 
-  // group permissions (per-sheet)
+  // customer permissions (per-sheet)
   const [groupAllowedCols, setGroupAllowedCols] = useState(new Set());
   const [groupRowFilters, setGroupRowFilters] = useState([{ key: "", value: "" }]);
 
@@ -131,7 +205,7 @@ export default function UserManagement({ token, user, sheetId }) {
       let effectiveGroupIds = [];
       if (folderOwnershipType === "group") {
         if (!folderOwnerGroupId) {
-          alert("Select an owner group");
+          alert("Select an owner customer");
           return;
         }
         effectiveGroupIds = [Number(folderOwnerGroupId)];
@@ -142,7 +216,7 @@ export default function UserManagement({ token, user, sheetId }) {
         }
         effectiveGroupIds = await getGroupsForUser(folderOwnerUserId);
         if (!effectiveGroupIds.length) {
-          alert("Selected user does not belong to any groups");
+          alert("Selected user does not belong to any customers");
           return;
         }
       } else {
@@ -814,7 +888,7 @@ export default function UserManagement({ token, user, sheetId }) {
     }
   }, [selectedGroupId]);
 
-  // group overrides use the SAME selected sheet as user overrides
+  // customer overrides use the SAME selected sheet as user overrides
   useEffect(() => {
     if (!selectedUserSheetId || !selectedGroupId) {
       setGroupSheetHeaders([]);
@@ -848,8 +922,16 @@ export default function UserManagement({ token, user, sheetId }) {
       alert("First name, last name, company, email, and password are required.");
       return;
     }
+    if (user?.role !== "admin" && !selectedGroupId) {
+      alert("Select a customer before creating a customer user.");
+      return;
+    }
     try {
-      await axios.post(`${API}/users`, newUser, {
+      await axios.post(`${API}/users`, {
+        ...newUser,
+        role: user?.role === "admin" ? newUser.role : "user",
+        ...(selectedGroupId ? { groupId: Number(selectedGroupId) } : {}),
+      }, {
         headers: { Authorization: `Bearer ${token}` },
       });
       setNewUser({ firstName: "", lastName: "", company: "", email: "", password: "", role: "user" });
@@ -859,12 +941,79 @@ export default function UserManagement({ token, user, sheetId }) {
     }
   };
 
-  const resetPassword = async (id) => {
+  const openPasswordResetModal = (id, label = "this user") => {
+    if (!id) return;
+    setPasswordResetModal({
+      open: true,
+      userId: id,
+      label,
+      password: "",
+      repeat: "",
+    });
+  };
+
+  const closePasswordResetModal = () => {
+    setPasswordResetModal({
+      open: false,
+      userId: null,
+      label: "",
+      password: "",
+      repeat: "",
+    });
+  };
+
+  const fillGeneratedResetPassword = () => {
+    const password = generateAdminPassword();
+    setPasswordResetModal((prev) => ({ ...prev, password, repeat: password }));
+  };
+
+  const copyResetPassword = async () => {
+    const password = String(passwordResetModal.password || "");
+    if (!password) {
+      alert("Generate or enter a password first.");
+      return;
+    }
     try {
-      const res = await axios.patch(`${API}/users/${id}`, { reset: true }, {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(password);
+      } else {
+        const input = document.createElement("textarea");
+        input.value = password;
+        input.setAttribute("readonly", "");
+        input.style.position = "fixed";
+        input.style.opacity = "0";
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand("copy");
+        document.body.removeChild(input);
+      }
+      alert("Password copied.");
+    } catch {
+      alert("Could not copy password.");
+    }
+  };
+
+  const submitPasswordReset = async () => {
+    const id = passwordResetModal.userId;
+    const password = String(passwordResetModal.password || "");
+    const repeat = String(passwordResetModal.repeat || "");
+    if (!id) return;
+    if (password.length < RESET_PASSWORD_LENGTH) {
+      alert(`Password must be at least ${RESET_PASSWORD_LENGTH} characters.`);
+      return;
+    }
+    if (password !== repeat) {
+      alert("Passwords do not match.");
+      return;
+    }
+    try {
+      await axios.patch(`${API}/users/${id}`, { reset: true, password }, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      alert(`Temp password: ${res.data?.newPassword || "(see server log)"}`);
+      alert("Password reset. The user will be required to change it after login.");
+      closePasswordResetModal();
+      fetchUsers();
+      if (selectedGroupId) fetchGroupMembers(selectedGroupId);
     } catch (e) {
       alert(e.response?.data?.error || "Failed to reset password");
     }
@@ -936,7 +1085,7 @@ export default function UserManagement({ token, user, sheetId }) {
       await fetchSelectedUserGroups(uid);
       await fetchUserGroupMap();
     } catch (e) {
-      alert(e.response?.data?.error || "Failed to update user group membership");
+      alert(e.response?.data?.error || "Failed to update customer membership");
     }
   };
   const startEditFolder = (folder) => {
@@ -1001,7 +1150,7 @@ export default function UserManagement({ token, user, sheetId }) {
       setNewGroupName("");
       fetchGroups();
     } catch (e) {
-      alert(e.response?.data?.error || "Failed to create group");
+      alert(e.response?.data?.error || "Failed to create customer");
     }
   };
 
@@ -1012,7 +1161,7 @@ export default function UserManagement({ token, user, sheetId }) {
       });
       fetchGroups();
     } catch (e) {
-      alert(e.response?.data?.error || "Failed to update group");
+      alert(e.response?.data?.error || "Failed to update customer");
     }
   };
 
@@ -1025,20 +1174,20 @@ export default function UserManagement({ token, user, sheetId }) {
       setGroupAddUserId("");
       fetchGroupMembers(selectedGroupId);
     } catch (e) {
-      alert(e.response?.data?.error || "Failed to add user to group");
+      alert(e.response?.data?.error || "Failed to add user to customer");
     }
   };
 
   const removeUserFromGroup = async (uid) => {
     if (!selectedGroupId) return;
-    if (!window.confirm("Remove this user from the selected group?")) return;
+    if (!window.confirm("Remove this user from the selected customer?")) return;
     try {
       await axios.delete(`${API}/groups/${selectedGroupId}/users/${uid}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       fetchGroupMembers(selectedGroupId);
     } catch (e) {
-      alert(e.response?.data?.error || "Failed to remove user from group");
+      alert(e.response?.data?.error || "Failed to remove user from customer");
     }
   };
 
@@ -1050,13 +1199,13 @@ export default function UserManagement({ token, user, sheetId }) {
       });
       fetchGroupMembers(selectedGroupId);
     } catch (e) {
-      alert(e.response?.data?.error || "Failed to toggle group admin");
+      alert(e.response?.data?.error || "Failed to toggle customer admin");
     }
   };
 
   const saveGroupPermissions = async () => {
     if (!selectedGroupId || !selectedUserSheetId) {
-      alert("Pick a group and a report source first.");
+      alert("Pick a customer and a report source first.");
       return;
     }
     const allowed_columns = Array.from(groupAllowedCols);
@@ -1074,13 +1223,13 @@ export default function UserManagement({ token, user, sheetId }) {
       allowed_columns,
       row_filters
     }, { headers: { Authorization: `Bearer ${token}` } });
-    alert("Group permissions saved");
+    alert("Customer permissions saved");
   };
 
   // NEW: delete group (with confirm) from Groups panel
   const deleteGroup = async (gid) => {
     if (!gid) return;
-    if (!confirm("Delete this group and its memberships/permissions?")) return;
+    if (!confirm("Delete this customer and its memberships/permissions?")) return;
     try {
       await axios.delete(`${API}/groups/${gid}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -1095,8 +1244,8 @@ export default function UserManagement({ token, user, sheetId }) {
       }
       fetchGroups();
     } catch (e) {
-      console.error("delete group failed", e);
-      alert(e.response?.data?.message || e.response?.data?.error || "❌ Could not delete group");
+      console.error("delete customer failed", e);
+      alert(e.response?.data?.message || e.response?.data?.error || "❌ Could not delete customer");
     }
   };
 
@@ -1135,7 +1284,7 @@ export default function UserManagement({ token, user, sheetId }) {
   // User panel: save template
   const handleSaveTemplateFromUser = () => {
     if (!newTplNameUser.trim()) { alert("Enter template name"); return; }
-    if (!currentUserSheetGroupId) { alert("Select a sheet (with group) first"); return; }
+    if (!currentUserSheetGroupId) { alert("Select a sheet (with customer) first"); return; }
     const tpl = makeTemplate(
       newTplNameUser,
       Array.from(userAllowedCols),
@@ -1173,7 +1322,7 @@ export default function UserManagement({ token, user, sheetId }) {
   // Group panel: save template
   const handleSaveTemplateFromGroup = () => {
     if (!newTplNameGroup.trim()) { alert("Enter template name"); return; }
-    if (!selectedGroupId) { alert("Select a group first"); return; }
+    if (!selectedGroupId) { alert("Select a customer first"); return; }
     const tpl = makeTemplate(
       newTplNameGroup,
       Array.from(groupAllowedCols),
@@ -1267,6 +1416,27 @@ export default function UserManagement({ token, user, sheetId }) {
     if (user?.role === "admin") return true;
     return uniqueGroupMembers.some((m) => Number(m.id) === Number(user?.id) && !!m.is_admin);
   }, [user, uniqueGroupMembers]);
+  const selectedGroup = useMemo(
+    () => (Array.isArray(groups) ? groups.find((g) => Number(g.id) === Number(selectedGroupId)) : null),
+    [groups, selectedGroupId]
+  );
+  const selectedGroupEntitlements = useMemo(
+    () => normalizeGroupEntitlements(selectedGroup?.entitlements || {}),
+    [selectedGroup]
+  );
+  const updateSelectedGroupEntitlements = (nextPatch) => {
+    if (!selectedGroupId || user?.role !== "admin") return;
+    updateGroup(selectedGroupId, {
+      entitlements: normalizeGroupEntitlements({
+        ...selectedGroupEntitlements,
+        ...nextPatch,
+        features: {
+          ...selectedGroupEntitlements.features,
+          ...(nextPatch.features || {}),
+        },
+      }),
+    });
+  };
   const [collapsedSections, setCollapsedSections] = useState({
     users: false,
     groups: false,
@@ -1317,11 +1487,11 @@ export default function UserManagement({ token, user, sheetId }) {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-lg font-semibold tracking-tight">Administration Console</h2>
-            <p className="text-sm text-slate-300 mt-1">Manage identity, groups, storage boundaries, and data permissions.</p>
+            <p className="text-sm text-slate-300 mt-1">Manage identity, customers, storage boundaries, and data permissions.</p>
           </div>
           <div className="flex items-center gap-2 text-xs">
             <span className="rounded-md border border-slate-600 bg-slate-800 px-2.5 py-1 font-medium">Users {users.length}</span>
-            <span className="rounded-md border border-slate-600 bg-slate-800 px-2.5 py-1 font-medium">Groups {groups.length}</span>
+            <span className="rounded-md border border-slate-600 bg-slate-800 px-2.5 py-1 font-medium">Customers {groups.length}</span>
             <span className="rounded-md border border-slate-600 bg-slate-800 px-2.5 py-1 font-medium">Folders {folders.length}</span>
           </div>
         </div>
@@ -1379,19 +1549,30 @@ export default function UserManagement({ token, user, sheetId }) {
             onChange={e => setNewUser({ ...newUser, password: e.target.value })}
           />
           <div className="flex items-center gap-3">
-            <select
-              className="input-premium py-2 max-w-[120px]"
-              value={newUser.role}
-              onChange={e => setNewUser({ ...newUser, role: e.target.value })}
-            >
-              <option value="user">User</option>
-              <option value="admin">Admin</option>
-            </select>
+            {user?.role === "admin" ? (
+              <select
+                className="input-premium py-2 max-w-[120px]"
+                value={newUser.role}
+                onChange={e => setNewUser({ ...newUser, role: e.target.value })}
+              >
+                <option value="user">User</option>
+                <option value="admin">Admin</option>
+              </select>
+            ) : (
+              <select
+                className="input-premium py-2 max-w-[180px]"
+                value={selectedGroupId || ""}
+                onChange={e => setSelectedGroupId(e.target.value ? Number(e.target.value) : null)}
+              >
+                <option value="">Select customer…</option>
+                {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+              </select>
+            )}
             <button
               className="btn-premium bg-slate-900 hover:bg-slate-800 text-white flex-1 py-2.5 shadow-sm"
               onClick={addUser}
             >
-              Add User
+              {user?.role === "admin" ? "Add User" : "Add Customer User"}
             </button>
           </div>
         </div>
@@ -1427,15 +1608,15 @@ export default function UserManagement({ token, user, sheetId }) {
         </div>
 
         <div className="text-[11px] text-slate-500 mb-3">
-          User listing and membership are managed under Group Management below.
+          User listing and membership are managed under Customer Management below.
         </div>
         <div className="mt-5 rounded-md border border-slate-200 bg-slate-50 p-4">
           <div className="flex items-center justify-between mb-3">
-            <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500">Group Management</div>
+            <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500">Customer Management</div>
             <span className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600">{groups.length} total</span>
           </div>
           <div className="flex gap-2 mb-3">
-            <input className="input-premium flex-1" placeholder="New group name" value={newGroupName} onChange={e => setNewGroupName(e.target.value)} />
+            <input className="input-premium flex-1" placeholder="New customer name" value={newGroupName} onChange={e => setNewGroupName(e.target.value)} />
             <button className="btn-premium bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2" onClick={createGroup}>Create</button>
           </div>
           <div className="space-y-2 max-h-48 overflow-auto pr-1 custom-scrollbar">
@@ -1454,7 +1635,7 @@ export default function UserManagement({ token, user, sheetId }) {
           {selectedGroupId && (
             <div className="mt-3 rounded-md border border-slate-200 bg-white p-3">
               <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500 mb-2">
-                Group Members: {(Array.isArray(groups) && groups.find((g) => Number(g.id) === Number(selectedGroupId))?.name) || selectedGroupId}
+                Customer Users: {(Array.isArray(groups) && groups.find((g) => Number(g.id) === Number(selectedGroupId))?.name) || selectedGroupId}
               </div>
               <div className="flex gap-2 mb-2">
                 <select
@@ -1499,6 +1680,15 @@ export default function UserManagement({ token, user, sheetId }) {
                         >
                           Edit
                         </button>
+                        <button
+                          className="gm-action-btn h-[14px] min-w-[30px] px-1 leading-none text-[5px] font-semibold rounded-sm border border-amber-200 text-amber-700 hover:bg-amber-50"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openPasswordResetModal(m.id, displayNameForUser(full));
+                          }}
+                        >
+                          Reset
+                        </button>
                         {canManageGroupAdmins && (
                           <button
                             className="gm-action-btn h-[14px] min-w-[34px] px-1 leading-none text-[5px] font-semibold rounded-sm border border-slate-300 text-slate-600 hover:bg-slate-100"
@@ -1517,7 +1707,7 @@ export default function UserManagement({ token, user, sheetId }) {
                     </div>
                   );
                 })}
-                {!uniqueGroupMembers.length && <div className="text-[10px] text-slate-400 italic">No users in this group.</div>}
+                {!uniqueGroupMembers.length && <div className="text-[10px] text-slate-400 italic">No users in this customer.</div>}
               </div>
               {editingUserId && (
                 <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3 space-y-2">
@@ -1562,6 +1752,74 @@ export default function UserManagement({ token, user, sheetId }) {
                       }
                     }}
                   />
+                  <label className="text-[10px] font-semibold text-slate-500">Max Users</label>
+                  <input
+                    key={`max-users-${selectedGroupId}-${selectedGroupEntitlements.maxUsers || ""}`}
+                    type="number"
+                    className="input-premium py-1.5"
+                    defaultValue={selectedGroupEntitlements.maxUsers || ""}
+                    placeholder="Unlimited"
+                    onBlur={(e) => updateSelectedGroupEntitlements({ maxUsers: e.target.value ? Number(e.target.value) : null })}
+                  />
+                  <label className="text-[10px] font-semibold text-slate-500">Max Sources</label>
+                  <input
+                    key={`max-sources-${selectedGroupId}-${selectedGroupEntitlements.maxReportSources || ""}`}
+                    type="number"
+                    className="input-premium py-1.5"
+                    defaultValue={selectedGroupEntitlements.maxReportSources || ""}
+                    placeholder="Unlimited"
+                    onBlur={(e) => updateSelectedGroupEntitlements({ maxReportSources: e.target.value ? Number(e.target.value) : null })}
+                  />
+                  <label className="text-[10px] font-semibold text-slate-500">AI Queries / Month</label>
+                  <input
+                    key={`max-ai-queries-${selectedGroupId}-${selectedGroupEntitlements.maxAiQueriesPerMonth || ""}`}
+                    type="number"
+                    className="input-premium py-1.5"
+                    defaultValue={selectedGroupEntitlements.maxAiQueriesPerMonth || ""}
+                    placeholder="Unlimited"
+                    onBlur={(e) => updateSelectedGroupEntitlements({ maxAiQueriesPerMonth: e.target.value ? Number(e.target.value) : null })}
+                  />
+                  <label className="text-[10px] font-semibold text-slate-500">AI Budget / Month ($)</label>
+                  <input
+                    key={`ai-budget-${selectedGroupId}-${selectedGroupEntitlements.aiMonthlyBudgetUsd || ""}`}
+                    type="number"
+                    step="0.01"
+                    className="input-premium py-1.5"
+                    defaultValue={selectedGroupEntitlements.aiMonthlyBudgetUsd || ""}
+                    placeholder="Unlimited"
+                    onBlur={(e) => updateSelectedGroupEntitlements({ aiMonthlyBudgetUsd: e.target.value ? Number(e.target.value) : null })}
+                  />
+                  <div className="col-span-2 rounded-md border border-sky-100 bg-sky-50 px-2 py-1.5 text-[10px] leading-snug text-sky-800">
+                    OpenAI estimate with gpt-4.1-mini: about $0.40 / 1M input tokens and $1.60 / 1M output tokens. A typical compact spreadsheet question is usually well below one cent.
+                  </div>
+                  <div className="col-span-2 mt-2 rounded-md border border-slate-200 bg-white p-2">
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-2">Customer Features</div>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {[
+                        ["manageUsers", "Manage users"],
+                        ["managePermissions", "Permissions"],
+                        ["manageFolders", "Folders"],
+                        ["manageGroupAdmins", "Promote admins"],
+                        ["ai", "AI"],
+                        ["exports", "Exports"],
+                        ["imports", "Imports"],
+                        ["approvalFlow", "Approvals"],
+                        ["auditLogs", "Audit logs"],
+                        ["googleDrive", "Google Drive"],
+                        ["dropbox", "Dropbox"],
+                        ["oneDrive", "OneDrive"],
+                      ].map(([key, label]) => (
+                        <label key={key} className="flex items-center gap-1.5 text-[10px] font-semibold text-slate-600">
+                          <input
+                            type="checkbox"
+                            checked={selectedGroupEntitlements.features?.[key] !== false}
+                            onChange={(e) => updateSelectedGroupEntitlements({ features: { [key]: e.target.checked } })}
+                          />
+                          {label}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
@@ -1572,25 +1830,21 @@ export default function UserManagement({ token, user, sheetId }) {
 
       </section>
 
-      {/* 2. GROUPS PANEL */}
+      {/* 2. CUSTOMERS PANEL */}
       <div className="hidden xl:col-span-3 rounded-md border border-slate-300 bg-white p-5 md:p-6 h-full flex flex-col shadow-sm">
         <div className="flex items-center justify-between mb-6 border-b border-slate-200 pb-4">
           <h3 className="font-semibold text-lg text-slate-900 flex items-center gap-2">
             <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-slate-900 text-[10px] font-bold text-white">02</span>
-            Groups
+            Customers
           </h3>
           <span className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600">{groups.length} total</span>
         </div>
-        <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500 mb-4">
-          Group Membership Management
-        </div>
+        <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500 mb-4">Customer User Management</div>
 
         {selectedGroupId && (
           <div className="mb-6 bg-slate-50 p-4 rounded-md border border-slate-200 animate-in fade-in zoom-in duration-300">
             <h4 className="font-bold text-xs text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-              Group Settings
-            </h4>
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>Customer Settings</h4>
 
             {user?.role === "admin" && (
               <div className="mb-6 space-y-2">
@@ -1662,15 +1916,22 @@ export default function UserManagement({ token, user, sheetId }) {
                               ? "text-amber-500 hover:bg-amber-50"
                               : "text-slate-300 hover:text-amber-500 hover:bg-indigo-50"
                           }`}
-                          title={m.is_admin ? "Remove Group Admin" : "Make Group Admin"}
+                          title={m.is_admin ? "Remove Customer Admin" : "Make Customer Admin"}
                         >
                           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill={m.is_admin ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
                         </button>
                       )}
                       <button
+                        className="p-1.5 text-slate-300 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
+                        onClick={() => openPasswordResetModal(m.id, m.email || "this user")}
+                        title="Reset password"
+                      >
+                        Reset
+                      </button>
+                      <button
                         className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
                         onClick={() => removeUserFromGroup(m.id)}
-                        title="Remove from group"
+                        title="Remove from customer"
                       >
                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                       </button>
@@ -1686,7 +1947,7 @@ export default function UserManagement({ token, user, sheetId }) {
         <div className="flex gap-3 mb-8 bg-slate-50 p-4 rounded-md border border-slate-200">
           <input
             className="input-premium flex-1"
-            placeholder="New group name"
+            placeholder="New customer name"
             value={newGroupName}
             onChange={e => setNewGroupName(e.target.value)}
           />
@@ -1721,7 +1982,7 @@ export default function UserManagement({ token, user, sheetId }) {
                   className={`p-2 rounded-lg transition-colors opacity-0 group-hover:opacity-100 ${
                     selectedGroupId === g.id ? "hover:bg-white/20 text-white" : "hover:bg-red-50 text-slate-400 hover:text-red-500"
                   }`}
-                  title="Delete group"
+                  title="Delete customer"
                   onClick={(e) => { e.stopPropagation(); deleteGroup(g.id); }}
                 >🗑️</button>
               )}
@@ -1803,8 +2064,8 @@ export default function UserManagement({ token, user, sheetId }) {
               value={folderOwnershipType}
               onChange={(e) => setFolderOwnershipType(e.target.value)}
             >
-              <option value="group">Group-owned</option>
-              <option value="user">User-owned (via user's groups)</option>
+              <option value="group">Customer-owned</option>
+              <option value="user">User-owned (via user customer access)</option>
             </select>
             {folderOwnershipType === "group" && (
               <select
@@ -1812,7 +2073,7 @@ export default function UserManagement({ token, user, sheetId }) {
                 value={folderOwnerGroupId}
                 onChange={(e) => setFolderOwnerGroupId(e.target.value)}
               >
-                <option value="">Select owner group…</option>
+                <option value="">Select owner customer…</option>
                 {groups.map((g) => (
                   <option key={g.id} value={g.id}>{g.name}</option>
                 ))}
@@ -1895,7 +2156,7 @@ export default function UserManagement({ token, user, sheetId }) {
                 <label className="text-[10px] font-semibold text-slate-500">Total Limit (MB)</label>
                 <input className="input-premium" type="number" min="1" value={editingFolderMaxTotalSizeMb} onChange={(e) => setEditingFolderMaxTotalSizeMb(e.target.value)} />
               </div>
-              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Owner Group</div>
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Owner Customer</div>
               <select
                 className="input-premium"
                 value={editingFolderOwnerGroupId}
@@ -1928,7 +2189,7 @@ export default function UserManagement({ token, user, sheetId }) {
           <summary className="flex items-center justify-between cursor-pointer px-3 py-2 text-sm font-semibold text-slate-800">
             <span>Permissions</span>
             <span className="text-[10px] font-semibold text-slate-500">
-              {selectedUserId ? `User: ${userById instanceof Map ? (userById.get(selectedUserId)?.email || selectedUserId) : selectedUserId}` : `Group: ${(Array.isArray(groups) && groups.find(g => g.id === selectedGroupId)?.name) || selectedGroupId}`}
+              {selectedUserId ? `User: ${userById instanceof Map ? (userById.get(selectedUserId)?.email || selectedUserId) : selectedUserId}` : `Customer: ${(Array.isArray(groups) && groups.find(g => g.id === selectedGroupId)?.name) || selectedGroupId}`}
             </span>
           </summary>
           <div className="px-3 pb-3">
@@ -2123,11 +2384,11 @@ export default function UserManagement({ token, user, sheetId }) {
 
                 {selectedGroupId && (
                 <div className="pt-6 border-t border-slate-200/40 space-y-4">
-                  <div className="text-[10px] font-bold uppercase tracking-widest text-emerald-600">Group Override (Same Report Source)</div>
+                  <div className="text-[10px] font-bold uppercase tracking-widest text-emerald-600">Customer Override (Same Report Source)</div>
 
                     <>
                       <div className="flex items-center justify-between">
-                        <h4 className="font-bold text-sm text-slate-700">Group Column Permissions</h4>
+                        <h4 className="font-bold text-sm text-slate-700">Customer Column Permissions</h4>
                         <button
                           className="text-[10px] font-bold text-emerald-600 hover:underline"
                           onClick={() => setGroupAllowedCols(new Set())}
@@ -2190,7 +2451,7 @@ export default function UserManagement({ token, user, sheetId }) {
 
                       <div className="space-y-3">
                         <div className="flex items-center justify-between">
-                          <h4 className="font-bold text-sm text-slate-700">Group Row Filters</h4>
+                          <h4 className="font-bold text-sm text-slate-700">Customer Row Filters</h4>
                           <button
                             className="bg-emerald-600 text-white rounded-lg px-3 py-1 text-[10px] font-bold"
                             onClick={() => setGroupRowFilters([...groupRowFilters, { key: "", value: "" }])}
@@ -2234,10 +2495,10 @@ export default function UserManagement({ token, user, sheetId }) {
                         </div>
                       </div>
 
-                      {/* Locked Views for Group */}
+                      {/* Locked Views for Customer */}
                       <div className="space-y-3 pt-4 border-t border-slate-200">
                         <h4 className="font-bold text-sm text-slate-700">Locked Views (Data Restrictions)</h4>
-                        <p className="text-[10px] text-slate-500 italic mb-2">Assigning a Locked View will strictly limit all members of this group to the specific columns and row filters defined in that view.</p>
+                        <p className="text-[10px] text-slate-500 italic mb-2">Assigning a Locked View will strictly limit all users of this customer to the specific columns and row filters defined in that view.</p>
                         <div className="space-y-1.5">
                           {Array.isArray(views) && views.filter(v => String(v.sheet_id) === String(selectedUserSheetId)).map(v => (
                             <label key={v.id} className={`flex items-center justify-between p-2 rounded-md border cursor-pointer ${(groupViews instanceof Set && groupViews.has(v.id)) ? "bg-emerald-50 border-emerald-200" : "bg-white border-slate-200"}`}>
@@ -2257,9 +2518,7 @@ export default function UserManagement({ token, user, sheetId }) {
                       <button
                         className="btn-premium bg-emerald-600 hover:bg-emerald-700 text-white w-full py-3 mt-4"
                         onClick={saveGroupPermissions}
-                      >
-                        Save Group Permissions
-                      </button>
+                      >Save Customer Permissions</button>
 
                     </>
                 </div>
@@ -2269,7 +2528,7 @@ export default function UserManagement({ token, user, sheetId }) {
               <div className="flex-1 flex items-center justify-center bg-white/30 rounded-lg border border-dashed border-slate-300">
                 <div className="text-center p-8">
                   <div className="text-4xl mb-4 opacity-20">🎯</div>
-                  <div className="text-slate-400 font-medium max-w-[260px] mx-auto">Select a report source to configure user/group override permissions.</div>
+                  <div className="text-slate-400 font-medium max-w-[260px] mx-auto">Select a report source to configure user/customer override permissions.</div>
                 </div>
               </div>
             )}
@@ -2281,6 +2540,72 @@ export default function UserManagement({ token, user, sheetId }) {
       </section>
 
       </div>
+      {passwordResetModal.open && (
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-slate-950/60 px-4">
+          <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-5 shadow-2xl">
+            <div className="mb-4">
+              <h3 className="text-base font-semibold text-slate-900">Reset Password</h3>
+              <p className="mt-1 text-xs text-slate-500">
+                Set a new temporary password for {passwordResetModal.label || "this user"}. The user must change it after login.
+              </p>
+            </div>
+            <div className="space-y-3">
+              <label className="block">
+                <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">New Password</span>
+                <input
+                  className="input-premium w-full"
+                  type="password"
+                  autoComplete="new-password"
+                  value={passwordResetModal.password}
+                  onChange={(e) => setPasswordResetModal((prev) => ({ ...prev, password: e.target.value }))}
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">Repeat Password</span>
+                <input
+                  className="input-premium w-full"
+                  type="password"
+                  autoComplete="new-password"
+                  value={passwordResetModal.repeat}
+                  onChange={(e) => setPasswordResetModal((prev) => ({ ...prev, repeat: e.target.value }))}
+                />
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                  type="button"
+                  onClick={fillGeneratedResetPassword}
+                >
+                  Generate 16-character password
+                </button>
+                <button
+                  className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800 hover:bg-amber-100"
+                  type="button"
+                  onClick={copyResetPassword}
+                >
+                  Copy password
+                </button>
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                className="rounded-md border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                type="button"
+                onClick={closePasswordResetModal}
+              >
+                Cancel
+              </button>
+              <button
+                className="rounded-md bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800"
+                type="button"
+                onClick={submitPasswordReset}
+              >
+                Reset Password
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
     </div>
   );

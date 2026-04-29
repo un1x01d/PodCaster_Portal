@@ -92,7 +92,7 @@ if (!fs.existsSync(UPLOADS_DIR)) {
 // Routes
 app.use("/auth", authRoutes); // /auth/login, /auth/me, /auth/change-password
 app.use("/", sheetRoutes); // /sheets, /upload
-app.use("/", userRoutes);  // /users, /groups, /folders, /permissions
+app.use("/", userRoutes);  // /users, /groups (customers), /folders, /permissions
 app.use("/", viewRoutes);  // /views
 app.use("/", chatRoutes);  // /chat/query
 app.use("/", insightRoutes); // /insights/:sheetId

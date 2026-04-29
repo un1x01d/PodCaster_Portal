@@ -7,6 +7,8 @@ const INSIGHT_MAX_ROWS = Number.parseInt(process.env.INSIGHT_MAX_ROWS || "100000
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10);
+const INSIGHT_AI_MAX_SERIES_POINTS = Number.parseInt(process.env.INSIGHT_AI_MAX_SERIES_POINTS || "18", 10);
+const INSIGHT_AI_MAX_PROMPT_CHARS = Number.parseInt(process.env.INSIGHT_AI_MAX_PROMPT_CHARS || "12000", 10);
 const INSIGHT_CACHE = new Map();
 const INSIGHT_CACHE_TTL_MS = Number.parseInt(process.env.INSIGHT_CACHE_TTL_MS || `${10 * 60 * 1000}`, 10);
 const INSIGHT_CACHE_MAX_ENTRIES = Number.parseInt(process.env.INSIGHT_CACHE_MAX_ENTRIES || "200", 10);
@@ -110,6 +112,39 @@ function hashObject(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
+function truncateText(value, maxChars = 160) {
+  const text = String(value ?? "").trim();
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}...`;
+}
+
+function compactInsightSeries(series, maxPoints = INSIGHT_AI_MAX_SERIES_POINTS) {
+  if (!Array.isArray(series)) return [];
+  const safeMax = Math.max(3, Math.min(60, Number(maxPoints) || 18));
+  return series
+    .slice(-safeMax)
+    .map((point) => ({
+      period: truncateText(point?.period, 24),
+      value: Number(point?.value),
+    }))
+    .filter((point) => point.period && Number.isFinite(point.value));
+}
+
+function buildSeriesStats(series) {
+  const values = Array.isArray(series)
+    ? series.map((point) => Number(point?.value)).filter(Number.isFinite)
+    : [];
+  const first = Array.isArray(series) && series.length ? series[0] : null;
+  const latest = Array.isArray(series) && series.length ? series[series.length - 1] : null;
+  return {
+    total_periods: Array.isArray(series) ? series.length : 0,
+    first_period: first ? { period: truncateText(first.period, 24), value: Number(first.value) } : null,
+    latest_period: latest ? { period: truncateText(latest.period, 24), value: Number(latest.value) } : null,
+    min_value: values.length ? Math.min(...values) : null,
+    max_value: values.length ? Math.max(...values) : null,
+  };
+}
+
 function buildRowFilterWhereClause(rowFiltersList = [], startParamIndex = 1) {
   const normalized = Array.isArray(rowFiltersList) ? rowFiltersList : [];
   const hasAllowAll = normalized.some((f) => !f || Object.keys(f).length === 0);
@@ -186,24 +221,18 @@ async function callOpenAIInsightForecast({ metricCol, dateCol, series, context }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
   try {
+    const compactSeries = compactInsightSeries(series);
     const payload = {
-      metric_column: metricCol,
-      date_column: dateCol,
-      context,
-      original_history_series: series,
-      history_series: series,
-      historical_summary: {
-        total_periods: series.length,
-        first_period: series[0] || null,
-        latest_period: series[series.length - 1] || null,
-        min_value: series.length ? Math.min(...series.map((p) => p.value)) : null,
-        max_value: series.length ? Math.max(...series.map((p) => p.value)) : null,
-      },
+      metric_column: truncateText(metricCol, 120),
+      date_column: truncateText(dateCol, 120),
+      context: truncateText(context, 40),
+      history_series: compactSeries,
+      historical_summary: buildSeriesStats(series),
       instructions: [
-        "Forecast the next 3 periods using the full spreadsheet history provided.",
+        "Forecast the next 3 periods using the compact recent trend and aggregate history stats provided.",
         "Return JSON only.",
         "The periods should match the same monthly period format as the input series.",
-        "Base the decision on the historical trend pattern across the spreadsheet, not just the last point.",
+        "Base the decision on the provided trend pattern and summary stats, not raw rows.",
         "Write a concise recommendation aimed at an operator or analyst.",
         "Explain the trend basis with a short phrase, such as sustained rise, sustained decline, flat range, or mixed volatility.",
         "Do not mention that you are an AI model."
@@ -217,6 +246,11 @@ async function callOpenAIInsightForecast({ metricCol, dateCol, series, context }
         forecast_periods: [{ period: "string", value: "number" }]
       }
     };
+    const userContent = JSON.stringify(payload);
+    if (userContent.length > INSIGHT_AI_MAX_PROMPT_CHARS) {
+      console.warn(`[insights] forecast ai skipped: prompt_chars=${userContent.length} max=${INSIGHT_AI_MAX_PROMPT_CHARS}`);
+      return null;
+    }
 
     const isReasoningModel = OPENAI_MODEL.startsWith("o");
     const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
@@ -241,7 +275,7 @@ async function callOpenAIInsightForecast({ metricCol, dateCol, series, context }
               "Make the recommendation specific and actionable."
             ].join(" "),
           },
-          { role: "user", content: JSON.stringify(payload) },
+          { role: "user", content: userContent },
         ],
       }),
     });
@@ -278,25 +312,29 @@ async function callOpenAIInsightRecommendations({
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
   try {
-    const recentSeries = series.slice(-6);
+    const recentSeries = compactInsightSeries(series, 6);
     const latestPoint = series[series.length - 1] || null;
     const previousPoint = series[series.length - 2] || null;
     const payload = {
-      metric_column: metricCol,
-      date_column: dateCol,
-      category_column: categoryCol || null,
-      context,
+      metric_column: truncateText(metricCol, 120),
+      date_column: truncateText(dateCol, 120),
+      category_column: categoryCol ? truncateText(categoryCol, 120) : null,
+      context: truncateText(context, 40),
       summary: {
-        latest_point: latestPoint,
-        previous_point: previousPoint,
+        latest_point: latestPoint ? { period: truncateText(latestPoint.period, 24), value: Number(latestPoint.value) } : null,
+        previous_point: previousPoint ? { period: truncateText(previousPoint.period, 24), value: Number(previousPoint.value) } : null,
         latest_period: latestPoint?.period || null,
         latest_value: latestPoint?.value ?? null,
         recent_series: recentSeries,
-        latest: latestPoint,
-        previous: previousPoint,
+        historical_summary: buildSeriesStats(series),
         top_category_driver: topCategoryDriver || null,
-        category_deltas: categoryDeltas.slice(0, 5),
-        attention_titles: attentionDrivers.slice(0, 3).map((card) => card.title),
+        category_deltas: categoryDeltas.slice(0, 5).map((item) => ({
+          key: truncateText(item?.key, 120),
+          current: Number(item?.current),
+          prev: Number(item?.prev),
+          delta: Number(item?.delta),
+        })),
+        attention_titles: attentionDrivers.slice(0, 3).map((card) => truncateText(card.title, 160)),
       },
       instructions: [
         "You are a senior business analyst.",
@@ -318,6 +356,11 @@ async function callOpenAIInsightRecommendations({
         }]
       }
     };
+    const userContent = JSON.stringify(payload);
+    if (userContent.length > INSIGHT_AI_MAX_PROMPT_CHARS) {
+      console.warn(`[insights] recommendations ai skipped: prompt_chars=${userContent.length} max=${INSIGHT_AI_MAX_PROMPT_CHARS}`);
+      return null;
+    }
 
     const isReasoningModel = OPENAI_MODEL.startsWith("o");
     const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
@@ -344,7 +387,7 @@ async function callOpenAIInsightRecommendations({
               "Use concise, concrete phrasing. No vague advice.",
             ].join(" "),
           },
-          { role: "user", content: JSON.stringify(payload) },
+          { role: "user", content: userContent },
         ],
       }),
     });

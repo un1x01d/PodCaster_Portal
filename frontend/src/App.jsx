@@ -937,6 +937,18 @@ export default function App() {
           "Content-Type": "multipart/form-data"
         },
       });
+      if (res.data?.status === "queued") {
+        alert("Upload queued for import processing.");
+        refreshReportSources();
+        return;
+      }
+      if (res.data?.status === "pending_approval") {
+        alert("Uploaded and waiting for approval.");
+        setUploadDisplayName("");
+        setReportSourceName("");
+        refreshReportSources();
+        return;
+      }
       alert("Uploaded!");
       if (res.data.sheetId) {
         setSheetId(res.data.sheetId);
@@ -983,6 +995,18 @@ export default function App() {
         { headers: { Authorization: `Bearer ${token}` } }
       );
 
+      if (res.data?.status === "queued") {
+        alert("Google Drive import queued for processing.");
+        refreshReportSources();
+        return;
+      }
+      if (res.data?.status === "pending_approval") {
+        alert("Imported from Google Drive and waiting for approval.");
+        setUploadDisplayName("");
+        setReportSourceName("");
+        refreshReportSources();
+        return;
+      }
       alert("Imported from Google Drive!");
       if (res.data?.sheetId) {
         setSheetId(res.data.sheetId);
@@ -1027,6 +1051,18 @@ export default function App() {
         { headers: { Authorization: `Bearer ${token}` } }
       );
 
+      if (res.data?.status === "queued") {
+        alert("Dropbox import queued for processing.");
+        refreshReportSources();
+        return;
+      }
+      if (res.data?.status === "pending_approval") {
+        alert("Imported from Dropbox and waiting for approval.");
+        setUploadDisplayName("");
+        setReportSourceName("");
+        refreshReportSources();
+        return;
+      }
       alert("Imported from Dropbox!");
       if (res.data?.sheetId) {
         setSheetId(res.data.sheetId);
@@ -1071,6 +1107,18 @@ export default function App() {
         { headers: { Authorization: `Bearer ${token}` } }
       );
 
+      if (res.data?.status === "queued") {
+        alert("OneDrive import queued for processing.");
+        refreshReportSources();
+        return;
+      }
+      if (res.data?.status === "pending_approval") {
+        alert("Imported from OneDrive and waiting for approval.");
+        setUploadDisplayName("");
+        setReportSourceName("");
+        refreshReportSources();
+        return;
+      }
       alert("Imported from OneDrive!");
       if (res.data?.sheetId) {
         setSheetId(res.data.sheetId);

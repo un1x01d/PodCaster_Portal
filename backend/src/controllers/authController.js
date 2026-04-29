@@ -1,6 +1,7 @@
 import { query } from "../config/db.js";
 import { hashPassword, verifyPassword } from "../utils/security.js";
 import { clearAuthCookie, generateToken, setAuthCookie } from "../middleware/auth.js";
+import { writeAuditLog } from "../utils/auditLog.js";
 
 function normalizeEmail(email) {
     return String(email || "").trim().toLowerCase();
@@ -31,12 +32,31 @@ export async function login(req, res) {
              WHERE LOWER(email)=LOWER($1)`,
             [normalizedEmail]
         );
-        if (!rows.length) return res.status(401).json({ error: "Invalid credentials" });
+        if (!rows.length) {
+            await writeAuditLog({
+                req,
+                action: "auth.login_failed",
+                resourceType: "user",
+                resourceId: normalizedEmail,
+                metadata: { reason: "unknown_email" },
+            });
+            return res.status(401).json({ error: "Invalid credentials" });
+        }
 
         const user = rows[0];
         const { valid, rehash } = await verifyPassword(password, user.password);
 
-        if (!valid) return res.status(401).json({ error: "Invalid credentials" });
+        if (!valid) {
+            await writeAuditLog({
+                req,
+                actorUserId: user.id,
+                action: "auth.login_failed",
+                resourceType: "user",
+                resourceId: user.id,
+                metadata: { reason: "invalid_password" },
+            });
+            return res.status(401).json({ error: "Invalid credentials" });
+        }
 
         if (rehash) {
             // Lazy migration: Update to hashed password
@@ -48,6 +68,13 @@ export async function login(req, res) {
         const token = generateToken(user);
         setAuthCookie(req, res, token);
         const groupFlags = await resolveGroupAdminFlags(user.id);
+        await writeAuditLog({
+            req,
+            actorUserId: user.id,
+            action: "auth.login_success",
+            resourceType: "user",
+            resourceId: user.id,
+        });
         res.json({
             token,
             user: {
@@ -104,10 +131,24 @@ export async function changePassword(req, res) {
 
     const hashed = await hashPassword(newPassword);
     await query("UPDATE users SET password=$1, password_reset_required=FALSE WHERE id=$2", [hashed, req.user.id]);
+    await writeAuditLog({
+        req,
+        action: "auth.password_changed",
+        resourceType: "user",
+        resourceId: req.user.id,
+    });
     res.json({ success: true });
 }
 
 export async function logout(req, res) {
+    if (req.user?.id) {
+        await writeAuditLog({
+            req,
+            action: "auth.logout",
+            resourceType: "user",
+            resourceId: req.user.id,
+        });
+    }
     clearAuthCookie(req, res);
     res.json({ success: true });
 }

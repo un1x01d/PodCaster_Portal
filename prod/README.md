@@ -439,7 +439,7 @@ Operational guidance:
 
 Required controls:
 
-- AI routes must enforce the same sheet/folder/group authorization as normal data access.
+- AI routes must enforce the same sheet/folder/customer authorization as normal data access.
 - Row filters and restricted columns must be applied before sending data to AI.
 - AI prompts and responses must not be logged with sensitive data.
 - AI calls must have timeouts and row/column/token bounds.
@@ -523,7 +523,7 @@ Run after every production deployment:
 Authorization:
 
 - Normal user cannot access another user's sheet by changing `sheetId`.
-- Normal user cannot access another folder/group/tenant by changing IDs.
+- Normal user cannot access another folder/customer by changing IDs.
 - Viewer cannot update, delete, share, or export beyond allowed permissions.
 - Admin routes reject normal users.
 - Export and AI routes enforce the same authorization as sheet viewing.

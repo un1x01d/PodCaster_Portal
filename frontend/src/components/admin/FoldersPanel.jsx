@@ -30,7 +30,7 @@ export default function FoldersPanel({
                         value={folderGroupId}
                         onChange={(e) => setFolderGroupId(e.target.value)}
                     >
-                        <option value="">(No Group)</option>
+                        <option value="">(No Customer)</option>
                         {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
                     </select>
                     <button
@@ -49,7 +49,7 @@ export default function FoldersPanel({
                             <div className="font-semibold text-slate-800 text-sm">{f.name}</div>
                             {f.group_id && (
                                 <div className="text-[10px] uppercase tracking-wider text-slate-400 font-bold mt-0.5">
-                                    Group: {groups.find(g => g.id === f.group_id)?.name || f.group_id}
+                                    Customer: {groups.find(g => g.id === f.group_id)?.name || f.group_id}
                                 </div>
                             )}
                         </div>

@@ -999,7 +999,7 @@ export default function DashboardBody(props) {
                                                 navigate("/users");
                                             }}
                                         >
-                                            User / Group / Permissions
+                                            User / Customer / Permissions
                                         </button>
                                     </div>
                                 )}

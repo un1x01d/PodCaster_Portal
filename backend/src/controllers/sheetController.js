@@ -3,9 +3,11 @@ import path from "path";
 import fs from "fs";
 import { Worker } from "worker_threads";
 import { fileURLToPath } from "url";
+import { randomUUID } from "crypto";
 import { query, getClient } from "../config/db.js";
 import { parsePagination } from "../utils/pagination.js";
 import { checkSheetAccess } from "../utils/authorization.js";
+import { writeAuditLog } from "../utils/auditLog.js";
 
 const MAX_UPLOAD_SHEETS = Number.parseInt(
     process.env.MAX_UPLOAD_SHEETS || (process.env.NODE_ENV === "production" ? "20" : "50"),
@@ -331,6 +333,137 @@ const __dirname = path.dirname(__filename);
 const XLSX_WORKER_PATH = path.join(__dirname, "..", "utils", "xlsxWorker.js");
 const XLSX_WORKER_TIMEOUT_MS = Number.parseInt(process.env.XLSX_WORKER_TIMEOUT_MS || "45000", 10);
 
+function truthyFlag(value) {
+    return ["1", "true", "yes", "on"].includes(String(value || "").trim().toLowerCase());
+}
+
+function uploadRequiresApproval(req) {
+    const requested = req.body?.approval_required ?? req.body?.approvalRequired;
+    if (requested !== undefined) return truthyFlag(requested);
+    return truthyFlag(process.env.IMPORT_REQUIRE_APPROVAL);
+}
+
+function uploadRunsAsync(req) {
+    const requested = req.body?.async_import ?? req.body?.asyncImport;
+    if (requested !== undefined) return truthyFlag(requested);
+    return truthyFlag(process.env.IMPORT_ASYNC_UPLOADS);
+}
+
+async function userCanApproveReportSource(client, user, reportSourceId) {
+    if (String(user?.role || "").toLowerCase() === "admin") return true;
+    const source = await client.query("SELECT folder_id FROM report_sources WHERE id = $1", [reportSourceId]);
+    if (!source.rows.length) return false;
+    return canWriteToFolder(client, user, source.rows[0].folder_id);
+}
+
+async function createImportJob(client, { id, mode, requestedBy, originalFilename }) {
+    await client.query(
+        `INSERT INTO import_jobs (id, status, mode, stage, requested_by, original_filename, started_at, updated_at)
+         VALUES ($1, 'running', $2, 'processing', $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+         ON CONFLICT (id)
+         DO UPDATE SET status = 'running',
+                       mode = EXCLUDED.mode,
+                       stage = 'processing',
+                       started_at = COALESCE(import_jobs.started_at, CURRENT_TIMESTAMP),
+                       updated_at = CURRENT_TIMESTAMP`,
+        [id, mode, requestedBy || null, originalFilename || null]
+    );
+}
+
+async function enqueueImportJob({ id, requestedBy, originalFilename }) {
+    await query(
+        `INSERT INTO import_jobs (id, status, mode, stage, requested_by, original_filename, updated_at)
+         VALUES ($1, 'queued', 'async', 'queued', $2, $3, CURRENT_TIMESTAMP)`,
+        [id, requestedBy || null, originalFilename || null]
+    );
+}
+
+async function finishImportJob(client, { id, status, reportSourceId, sheetId, importId, result, error }) {
+    await client.query(
+        `UPDATE import_jobs
+            SET status = $2,
+                stage = $3,
+                report_source_id = $4,
+                sheet_id = $5,
+                import_id = $6,
+                result = $7::jsonb,
+                error = $8,
+                finished_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+          WHERE id = $1`,
+        [
+            id,
+            status,
+            status,
+            reportSourceId || null,
+            sheetId || null,
+            importId || null,
+            JSON.stringify(result || {}),
+            error || null,
+        ]
+    );
+}
+
+async function failImportJob(id, error) {
+    await query(
+        `UPDATE import_jobs
+            SET status = 'failed',
+                stage = 'failed',
+                error = $2,
+                finished_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+          WHERE id = $1`,
+        [id, String(error?.message || error || "import_failed").slice(0, 1000)]
+    );
+}
+
+function makeAsyncUploadRequest(req, filePath, importJobId) {
+    return {
+        __asyncWorker: true,
+        importJobId,
+        user: { ...(req.user || {}) },
+        body: {
+            ...(req.body || {}),
+            async_import: "false",
+            asyncImport: "false",
+        },
+        file: {
+            ...(req.file || {}),
+            path: filePath,
+        },
+        headers: { ...(req.headers || {}) },
+        ip: req.ip,
+        id: req.id,
+        requestId: req.requestId,
+    };
+}
+
+function runAsyncUpload(req) {
+    const fakeRes = {
+        statusCode: 200,
+        status(code) {
+            this.statusCode = code;
+            return this;
+        },
+        json(payload) {
+            if (this.statusCode >= 400) {
+                const err = new Error(payload?.error || payload?.message || "async_upload_failed");
+                err.payload = payload;
+                throw err;
+            }
+            return payload;
+        },
+    };
+    setImmediate(async () => {
+        try {
+            await uploadSheet(req, fakeRes);
+        } catch (err) {
+            await failImportJob(req.importJobId, err).catch(() => {});
+            console.error("[import_job] async upload failed:", err?.message || err);
+        }
+    });
+}
+
 function parseWorkbookInWorker(buffer) {
     return new Promise((resolve, reject) => {
         const worker = new Worker(XLSX_WORKER_PATH, {
@@ -382,6 +515,8 @@ export async function uploadSheet(req, res) {
         const originalName = req.file.originalname || "uploaded.xlsx";
         const displayName = sanitizeDisplayName(req.body?.display_name);
         const fileLabel = String(req.body?.file_label || req.body?.fileLabel || displayName || "File").trim();
+        const approvalRequired = uploadRequiresApproval(req);
+        const importJobId = req.importJobId || randomUUID();
         const rawFolderId = req.body?.folderId ?? req.body?.folder_id;
         const rawReportSourceId = req.body?.reportSourceId ?? req.body?.report_source_id;
         const rawReportSourceName = req.body?.reportSourceName ?? req.body?.report_source_name;
@@ -389,6 +524,33 @@ export async function uploadSheet(req, res) {
         if (!displayName) return res.status(400).json({ error: "display_name_required" });
 
         console.log(`[upload] size=${req.file.size} folderId=${folderId ?? "none"} reportSourceId=${rawReportSourceId || "none"}`);
+
+        if (!req.__asyncWorker && uploadRunsAsync(req)) {
+            await enqueueImportJob({
+                id: importJobId,
+                requestedBy: req.user?.id,
+                originalFilename: originalName,
+            });
+            const asyncReq = makeAsyncUploadRequest(req, filePath, importJobId);
+            filePath = null;
+            runAsyncUpload(asyncReq);
+            await writeAuditLog({
+                req,
+                action: "import.queued",
+                resourceType: "import_job",
+                resourceId: importJobId,
+                metadata: {
+                    original_filename: originalName,
+                    approval_required: approvalRequired,
+                },
+            });
+            return res.status(202).json({
+                status: "queued",
+                import_status: "queued",
+                importJobId,
+                import_job_id: importJobId,
+            });
+        }
 
         // Read file into buffer and delete temporary file immediately to free disk space
         const fileBuffer = await fs.promises.readFile(filePath);
@@ -426,10 +588,16 @@ export async function uploadSheet(req, res) {
         const client = await getClient();
         try {
             await client.query('BEGIN');
+            await createImportJob(client, {
+                id: importJobId,
+                mode: approvalRequired ? "sync_pending_approval" : "sync",
+                requestedBy: req.user?.id,
+                originalFilename: originalName,
+            });
 
             const sheetId = `${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
 
-            // Report Source / Folder Resolution & Group Limit Check
+            // Report Source / Folder Resolution & Customer Limit Check
             let assignedFolderId = null;
             let reportSource = null;
             if (rawReportSourceId) {
@@ -466,7 +634,7 @@ export async function uploadSheet(req, res) {
                         await client.query('ROLLBACK');
                         return res.status(413).json({ 
                             error: "file_too_large", 
-                            message: `File exceeds group limit of ${limitMb}MB`,
+                            message: `File exceeds customer limit of ${limitMb}MB`,
                             maxMB: limitMb 
                         });
                     }
@@ -490,7 +658,7 @@ export async function uploadSheet(req, res) {
                         await client.query('ROLLBACK');
                         return res.status(413).json({
                             error: "file_too_large",
-                            message: `File exceeds group limit of ${limitMb}MB`,
+                            message: `File exceeds customer limit of ${limitMb}MB`,
                             maxMB: limitMb
                         });
                     }
@@ -540,14 +708,16 @@ export async function uploadSheet(req, res) {
             );
             const sourceVersion = Number(versionRes.rows?.[0]?.next_version || 1);
 
-            // Deactivate other sheets (atomic within transaction)
-            await client.query("UPDATE sheets SET active = FALSE WHERE active = TRUE");
+            if (!approvalRequired) {
+                // Preserve existing behavior: successful uploads immediately become the active sheet.
+                await client.query("UPDATE sheets SET active = FALSE WHERE active = TRUE");
+            }
 
             // Insert Sheet Record
             await client.query(
                 `INSERT INTO sheets (id, headers, active, filename, display_name, folder_id, stored_path, tab_name, tabs, report_source_id, source_version) 
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-                [sheetId, JSON.stringify(headers), true, versionedFilename, displayName, assignedFolderId, null, firstTabName, JSON.stringify(sheetNames), reportSource.id, sourceVersion]
+                [sheetId, JSON.stringify(headers), !approvalRequired, versionedFilename, displayName, assignedFolderId, null, firstTabName, JSON.stringify(sheetNames), reportSource.id, sourceVersion]
             );
 
             // Insert Rows in Chunks per Tab
@@ -596,24 +766,57 @@ export async function uploadSheet(req, res) {
                 previousHeaders: reportSource.previousHeaders,
                 nextHeaders: headers,
             });
-            await client.query(
+            const importStatus = approvalRequired ? "pending_approval" : "published";
+            const importRes = await client.query(
                 `INSERT INTO report_source_imports
-                   (report_source_id, sheet_id, import_version, file_label, original_filename, imported_by, schema_status, schema_diff)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-                [reportSource.id, sheetId, sourceVersion, fileLabel, originalName, req.user?.id || null, schemaStatus, JSON.stringify(headerDiff)]
+                   (report_source_id, sheet_id, import_version, file_label, original_filename, imported_by,
+                    schema_status, schema_diff, status, published_at, published_by, job_id)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                         CASE WHEN $9 = 'published' THEN CURRENT_TIMESTAMP ELSE NULL END,
+                         CASE WHEN $9 = 'published' THEN $6 ELSE NULL END,
+                         $10)
+                 RETURNING id`,
+                [
+                    reportSource.id,
+                    sheetId,
+                    sourceVersion,
+                    fileLabel,
+                    originalName,
+                    req.user?.id || null,
+                    schemaStatus,
+                    JSON.stringify(headerDiff),
+                    importStatus,
+                    importJobId,
+                ]
             );
-            await client.query(
-                `UPDATE report_sources
-                    SET current_sheet_id = $1,
-                        folder_id = COALESCE(folder_id, $2),
-                        updated_at = CURRENT_TIMESTAMP
-                  WHERE id = $3`,
-                [sheetId, assignedFolderId, reportSource.id]
-            );
+            const importId = importRes.rows[0].id;
+            if (!approvalRequired) {
+                await client.query(
+                    `UPDATE report_sources
+                        SET current_sheet_id = $1,
+                            folder_id = COALESCE(folder_id, $2),
+                            updated_at = CURRENT_TIMESTAMP
+                      WHERE id = $3`,
+                    [sheetId, assignedFolderId, reportSource.id]
+                );
+            } else {
+                await client.query(
+                    `UPDATE report_sources
+                        SET folder_id = COALESCE(folder_id, $1),
+                            updated_at = CURRENT_TIMESTAMP
+                      WHERE id = $2`,
+                    [assignedFolderId, reportSource.id]
+                );
+            }
 
-            await client.query('COMMIT');
-            res.json({
+            const responsePayload = {
                 sheetId,
+                importId,
+                import_id: importId,
+                importJobId,
+                import_job_id: importJobId,
+                import_status: importStatus,
+                status: importStatus,
                 reportSourceId: reportSource.id,
                 report_source_id: reportSource.id,
                 report_source_name: reportSource.name,
@@ -622,12 +825,39 @@ export async function uploadSheet(req, res) {
                 schema_diff: headerDiff,
                 headers,
                 rows: totalRows,
-                active: true,
+                active: !approvalRequired,
                 filename: versionedFilename,
                 display_name: displayName,
                 folderId: assignedFolderId,
                 tabs: sheetNames
+            };
+
+            await finishImportJob(client, {
+                id: importJobId,
+                status: importStatus,
+                reportSourceId: reportSource.id,
+                sheetId,
+                importId,
+                result: responsePayload,
             });
+
+            await client.query('COMMIT');
+
+            await writeAuditLog({
+                req,
+                action: approvalRequired ? "import.pending_approval" : "import.published",
+                resourceType: "report_source_import",
+                resourceId: importId,
+                metadata: {
+                    report_source_id: reportSource.id,
+                    sheet_id: sheetId,
+                    job_id: importJobId,
+                    rows: totalRows,
+                    tabs: sheetNames.length,
+                    schema_status: schemaStatus,
+                },
+            });
+            res.json(responsePayload);
 
         } catch (txErr) {
             await client.query('ROLLBACK');
@@ -896,7 +1126,7 @@ export async function listReportSources(req, res) {
                 rs.created_at, rs.updated_at,
                 COALESCE(import_counts.import_count, 0)::int AS import_count
          FROM report_sources rs
-         JOIN sheets s ON s.id = rs.current_sheet_id
+         LEFT JOIN sheets s ON s.id = rs.current_sheet_id
          LEFT JOIN folders f ON f.id = rs.folder_id
          LEFT JOIN (
            SELECT report_source_id, COUNT(*) AS import_count
@@ -931,17 +1161,29 @@ export async function getReportSourceImports(req, res) {
     if (!Number.isInteger(sourceId) || sourceId <= 0) {
         return res.status(400).json({ error: "invalid_report_source_id" });
     }
-    const [source] = await query("SELECT current_sheet_id FROM report_sources WHERE id = $1", [sourceId]);
+    const [source] = await query("SELECT current_sheet_id, folder_id FROM report_sources WHERE id = $1", [sourceId]);
     if (!source) return res.status(404).json({ error: "not_found" });
     if (source.current_sheet_id) {
         const hasAccess = await checkSheetAccess(source.current_sheet_id, req.user);
         if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
     } else if (req.user.role !== "admin") {
-        return res.status(403).json({ error: "Forbidden" });
+        const folderAccess = await query(
+            `SELECT 1
+               FROM folders f
+               LEFT JOIN folder_groups fg ON fg.folder_id = f.id
+               JOIN user_groups ug ON ug.user_id = $2
+              WHERE f.id = $1
+                AND (ug.group_id = fg.group_id OR ug.group_id = f.group_id)
+              LIMIT 1`,
+            [source.folder_id, req.user.id]
+        );
+        if (!folderAccess.length) return res.status(403).json({ error: "Forbidden" });
     }
     const rows = await query(
         `SELECT rsi.id, rsi.report_source_id, rsi.sheet_id, rsi.import_version, rsi.file_label,
-                rsi.original_filename, rsi.schema_status, rsi.schema_diff, rsi.created_at,
+                rsi.original_filename, rsi.schema_status, rsi.schema_diff, rsi.status,
+                rsi.published_at, rsi.published_by, rsi.rejected_at, rsi.rejected_by,
+                rsi.review_notes, rsi.job_id, rsi.created_at,
                 s.display_name, s.filename, s.uploaded_at,
                 COALESCE(NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), u.email) AS imported_by_name
          FROM report_source_imports rsi
@@ -952,6 +1194,256 @@ export async function getReportSourceImports(req, res) {
         [sourceId]
     );
     res.json(rows);
+}
+
+export async function listImportJobs(req, res) {
+    const pagination = parsePagination(req.query, { maxLimit: 200 });
+    if (pagination.error) return res.status(400).json({ error: pagination.error });
+
+    const baseParams = [];
+    let where = "";
+    if (req.user.role !== "admin") {
+        baseParams.push(req.user.id);
+        where = `WHERE (
+          ij.requested_by = $1
+          OR EXISTS (
+            SELECT 1
+            FROM report_sources rs
+            LEFT JOIN folders f ON f.id = rs.folder_id
+            LEFT JOIN folder_groups fg ON fg.folder_id = f.id
+            JOIN user_groups ug ON ug.user_id = $1
+            WHERE rs.id = ij.report_source_id
+              AND (ug.group_id = fg.group_id OR ug.group_id = f.group_id)
+          )
+        )`;
+    }
+
+    const params = [...baseParams];
+    let limitSql = "";
+    if (pagination.hasPagination) {
+        params.push(pagination.limit, pagination.offset);
+        limitSql = ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
+    }
+
+    const rows = await query(
+        `SELECT ij.id, ij.status, ij.mode, ij.stage, ij.requested_by, ij.report_source_id,
+                ij.sheet_id, ij.import_id, ij.original_filename, ij.error, ij.result,
+                ij.created_at, ij.started_at, ij.finished_at, ij.updated_at,
+                rs.name AS report_source_name
+           FROM import_jobs ij
+           LEFT JOIN report_sources rs ON rs.id = ij.report_source_id
+          ${where}
+          ORDER BY ij.created_at DESC${limitSql}`,
+        params
+    );
+    res.json(rows);
+}
+
+export async function getImportJob(req, res) {
+    const jobId = String(req.params.id || "").trim();
+    if (!jobId) return res.status(400).json({ error: "invalid_import_job_id" });
+
+    const rows = await query(
+        `SELECT ij.id, ij.status, ij.mode, ij.stage, ij.requested_by, ij.report_source_id,
+                ij.sheet_id, ij.import_id, ij.original_filename, ij.error, ij.result,
+                ij.created_at, ij.started_at, ij.finished_at, ij.updated_at,
+                rs.name AS report_source_name
+           FROM import_jobs ij
+           LEFT JOIN report_sources rs ON rs.id = ij.report_source_id
+          WHERE ij.id = $1`,
+        [jobId]
+    );
+    if (!rows.length) return res.status(404).json({ error: "not_found" });
+    const job = rows[0];
+    if (req.user.role !== "admin") {
+        const userId = req.user.id;
+        const hasAccess = job.requested_by === userId || (job.sheet_id && await checkSheetAccess(job.sheet_id, req.user));
+        if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
+    }
+    res.json(job);
+}
+
+export async function publishReportSourceImport(req, res) {
+    const importId = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(importId) || importId <= 0) {
+        return res.status(400).json({ error: "invalid_import_id" });
+    }
+
+    const client = await getClient();
+    try {
+        await client.query("BEGIN");
+        const importRes = await client.query(
+            `SELECT rsi.id, rsi.report_source_id, rsi.sheet_id, rsi.status, rsi.file_label, rsi.job_id,
+                    rs.folder_id
+               FROM report_source_imports rsi
+               JOIN report_sources rs ON rs.id = rsi.report_source_id
+              WHERE rsi.id = $1
+              FOR UPDATE`,
+            [importId]
+        );
+        if (!importRes.rows.length) {
+            await client.query("ROLLBACK");
+            return res.status(404).json({ error: "not_found" });
+        }
+        const record = importRes.rows[0];
+        const canApprove = await userCanApproveReportSource(client, req.user, record.report_source_id);
+        if (!canApprove) {
+            await client.query("ROLLBACK");
+            return res.status(403).json({ error: "Forbidden" });
+        }
+        if (record.status === "rejected") {
+            await client.query("ROLLBACK");
+            return res.status(409).json({ error: "import_rejected" });
+        }
+
+        await client.query("UPDATE sheets SET active = FALSE WHERE active = TRUE");
+        await client.query("UPDATE sheets SET active = TRUE WHERE id = $1", [record.sheet_id]);
+        await client.query(
+            `UPDATE report_sources
+                SET current_sheet_id = $1,
+                    updated_at = CURRENT_TIMESTAMP
+              WHERE id = $2`,
+            [record.sheet_id, record.report_source_id]
+        );
+        await client.query(
+            `UPDATE report_source_imports
+                SET status = 'superseded'
+              WHERE report_source_id = $1
+                AND id <> $2
+                AND status = 'published'`,
+            [record.report_source_id, importId]
+        );
+        await client.query(
+            `UPDATE report_source_imports
+                SET status = 'published',
+                    published_at = CURRENT_TIMESTAMP,
+                    published_by = $2,
+                    rejected_at = NULL,
+                    rejected_by = NULL,
+                    review_notes = COALESCE($3, review_notes)
+              WHERE id = $1`,
+            [importId, req.user.id, req.body?.review_notes || req.body?.notes || null]
+        );
+        if (record.job_id) {
+            await client.query(
+                `UPDATE import_jobs
+                    SET status = 'published',
+                        stage = 'published',
+                        sheet_id = $2,
+                        report_source_id = $3,
+                        import_id = $1,
+                        updated_at = CURRENT_TIMESTAMP,
+                        finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP)
+                  WHERE id = $4`,
+                [importId, record.sheet_id, record.report_source_id, record.job_id]
+            );
+        }
+        await client.query("COMMIT");
+
+        await writeAuditLog({
+            req,
+            action: "import.approved_published",
+            resourceType: "report_source_import",
+            resourceId: importId,
+            metadata: {
+                report_source_id: record.report_source_id,
+                sheet_id: record.sheet_id,
+                previous_status: record.status,
+            },
+        });
+        res.json({
+            success: true,
+            import_id: importId,
+            report_source_id: record.report_source_id,
+            sheet_id: record.sheet_id,
+            status: "published",
+        });
+    } catch (err) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw err;
+    } finally {
+        client.release();
+    }
+}
+
+export async function rejectReportSourceImport(req, res) {
+    const importId = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(importId) || importId <= 0) {
+        return res.status(400).json({ error: "invalid_import_id" });
+    }
+
+    const client = await getClient();
+    try {
+        await client.query("BEGIN");
+        const importRes = await client.query(
+            `SELECT rsi.id, rsi.report_source_id, rsi.sheet_id, rsi.status, rsi.job_id
+               FROM report_source_imports rsi
+               JOIN report_sources rs ON rs.id = rsi.report_source_id
+              WHERE rsi.id = $1
+              FOR UPDATE`,
+            [importId]
+        );
+        if (!importRes.rows.length) {
+            await client.query("ROLLBACK");
+            return res.status(404).json({ error: "not_found" });
+        }
+        const record = importRes.rows[0];
+        const canApprove = await userCanApproveReportSource(client, req.user, record.report_source_id);
+        if (!canApprove) {
+            await client.query("ROLLBACK");
+            return res.status(403).json({ error: "Forbidden" });
+        }
+        if (record.status === "published") {
+            await client.query("ROLLBACK");
+            return res.status(409).json({ error: "published_import_cannot_be_rejected" });
+        }
+
+        await client.query(
+            `UPDATE report_source_imports
+                SET status = 'rejected',
+                    rejected_at = CURRENT_TIMESTAMP,
+                    rejected_by = $2,
+                    review_notes = COALESCE($3, review_notes)
+              WHERE id = $1`,
+            [importId, req.user.id, req.body?.review_notes || req.body?.notes || null]
+        );
+        if (record.job_id) {
+            await client.query(
+                `UPDATE import_jobs
+                    SET status = 'rejected',
+                        stage = 'rejected',
+                        updated_at = CURRENT_TIMESTAMP,
+                        finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP)
+                  WHERE id = $1`,
+                [record.job_id]
+            );
+        }
+        await client.query("COMMIT");
+
+        await writeAuditLog({
+            req,
+            action: "import.rejected",
+            resourceType: "report_source_import",
+            resourceId: importId,
+            metadata: {
+                report_source_id: record.report_source_id,
+                sheet_id: record.sheet_id,
+                previous_status: record.status,
+            },
+        });
+        res.json({
+            success: true,
+            import_id: importId,
+            report_source_id: record.report_source_id,
+            sheet_id: record.sheet_id,
+            status: "rejected",
+        });
+    } catch (err) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw err;
+    } finally {
+        client.release();
+    }
 }
 
 export async function getSheetDetails(req, res) {

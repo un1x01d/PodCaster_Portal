@@ -13,6 +13,10 @@ import {
     getUniqueValues,
     listReportSources,
     getReportSourceImports,
+    listImportJobs,
+    getImportJob,
+    publishReportSourceImport,
+    rejectReportSourceImport,
     deleteSheet
 } from "../controllers/sheetController.js";
 import { auth } from "../middleware/auth.js";
@@ -57,6 +61,10 @@ router.get("/my-sheets", asyncHandler(listMySheets));
 router.get("/sheets/all", asyncHandler(listAllSheets)); // For admin
 router.get("/report-sources", asyncHandler(listReportSources));
 router.get("/report-sources/:id/imports", asyncHandler(getReportSourceImports));
+router.get("/import-jobs", asyncHandler(listImportJobs));
+router.get("/import-jobs/:id", asyncHandler(getImportJob));
+router.post("/report-source-imports/:id/publish", asyncHandler(publishReportSourceImport));
+router.post("/report-source-imports/:id/reject", asyncHandler(rejectReportSourceImport));
 router.get("/sheets/:id", asyncHandler(getSheetDetails));
 router.patch("/sheets/:id", asyncHandler(updateSheetDetails));
 router.get("/sheets/:id/tabs", asyncHandler(getSheetTabs));

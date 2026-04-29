@@ -13,7 +13,8 @@ import {
     listFolders, createFolder, updateFolder, deleteFolder,
     setPermissions, getPermissions, setReportSourcePermissions, getReportSourcePermissions,
     setGroupPermissions, getGroupPermissions, setReportSourceGroupPermissions, getReportSourceGroupPermissions,
-    getUserKpiOverrides, setUserKpiOverrides
+    getUserKpiOverrides, setUserKpiOverrides,
+    listAuditLogs
 } from "../controllers/userController.js";
 import { auth } from "../middleware/auth.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
@@ -41,7 +42,7 @@ router.patch("/admin/settings/onedrive-integration", asyncHandler(setOneDriveInt
 router.get("/admin/settings/onedrive-oauth", asyncHandler(getOneDriveOauthSetting));
 router.patch("/admin/settings/onedrive-oauth", asyncHandler(setOneDriveOauthSetting));
 
-// Groups
+// Customers (legacy route names remain /groups for API compatibility)
 router.post("/groups/:id/users/:userId/admin", asyncHandler(toggleGroupAdmin));
 router.get("/groups", asyncHandler(listGroups));
 router.post("/groups", asyncHandler(createGroup));
@@ -71,5 +72,6 @@ router.post("/report-source-group-permissions", asyncHandler(setReportSourceGrou
 router.get("/report-source-group-permissions", asyncHandler(getReportSourceGroupPermissions));
 router.get("/users/me/kpi-overrides", asyncHandler(getUserKpiOverrides));
 router.put("/users/me/kpi-overrides", asyncHandler(setUserKpiOverrides));
+router.get("/audit-logs", asyncHandler(listAuditLogs));
 
 export default router;

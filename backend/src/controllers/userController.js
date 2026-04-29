@@ -2,6 +2,8 @@ import { query, getClient } from "../config/db.js";
 import { hashPassword, generateComplexPassword } from "../utils/security.js";
 import { decryptSettingValue, encryptSettingValue } from "../utils/settingsCrypto.js";
 import { parsePagination } from "../utils/pagination.js";
+import { writeAuditLog } from "../utils/auditLog.js";
+import { normalizeGroupEntitlements, groupHasFeature } from "../utils/entitlements.js";
 
 const EXPOSE_TEMP_PASSWORDS = process.env.EXPOSE_TEMP_PASSWORDS
     ? process.env.EXPOSE_TEMP_PASSWORDS === "true"
@@ -44,9 +46,96 @@ function clearHeavyListCache() {
     HEAVY_LIST_CACHE.clear();
 }
 
+export async function listAuditLogs(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const pagination = parsePagination(req.query, { maxLimit: 1000 });
+    if (pagination.error) return res.status(400).json({ error: pagination.error });
+    const params = [];
+    const clauses = [];
+    if (req.query?.actorUserId) {
+        params.push(Number.parseInt(req.query.actorUserId, 10));
+        clauses.push(`al.actor_user_id = $${params.length}`);
+    }
+    if (req.query?.action) {
+        params.push(String(req.query.action));
+        clauses.push(`al.action = $${params.length}`);
+    }
+    if (req.query?.resourceType) {
+        params.push(String(req.query.resourceType));
+        clauses.push(`al.resource_type = $${params.length}`);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    let limitSql = "";
+    if (pagination.hasPagination) {
+        params.push(pagination.limit, pagination.offset);
+        limitSql = ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
+    }
+    const rows = await query(
+        `SELECT al.id, al.actor_user_id, u.email AS actor_email, al.action, al.resource_type,
+                al.resource_id, al.request_id, al.ip, al.user_agent, al.metadata, al.created_at
+           FROM audit_logs al
+           LEFT JOIN users u ON u.id = al.actor_user_id
+          ${where}
+          ORDER BY al.created_at DESC${limitSql}`,
+        params
+    );
+    res.json(rows);
+}
+
 async function getAdminGroups(userId) {
     const res = await query('SELECT group_id FROM user_groups WHERE user_id = $1 AND is_admin = TRUE', [userId]);
     return res.map(r => r.group_id);
+}
+
+async function loadGroupForAdminAction(groupId) {
+    const gid = Number.parseInt(groupId, 10);
+    if (!Number.isInteger(gid) || gid <= 0) return null;
+    const rows = await query("SELECT id, name, entitlements FROM groups WHERE id = $1", [gid]);
+    return rows[0] || null;
+}
+
+async function assertGroupCanManageUsers(groupId) {
+    const group = await loadGroupForAdminAction(groupId);
+    if (!group) {
+        const err = new Error("group_not_found");
+        err.statusCode = 404;
+        throw err;
+    }
+    if (!groupHasFeature(group, "manageUsers")) {
+        const err = new Error("feature_not_enabled:manageUsers");
+        err.statusCode = 403;
+        throw err;
+    }
+    return group;
+}
+
+async function assertGroupsCanManageUsers(groupIds) {
+    const ids = Array.from(new Set((groupIds || [])
+        .map((groupId) => Number.parseInt(groupId, 10))
+        .filter((groupId) => Number.isInteger(groupId) && groupId > 0)));
+    for (const groupId of ids) {
+        await assertGroupCanManageUsers(groupId);
+    }
+}
+
+async function assertGroupUserLimitAvailable(groupId, additionalUsers = 1) {
+    const group = await assertGroupCanManageUsers(groupId);
+    const entitlements = normalizeGroupEntitlements(group.entitlements || {});
+    if (!entitlements.maxUsers) return group;
+    const rows = await query("SELECT COUNT(*)::int AS c FROM user_groups WHERE group_id = $1", [group.id]);
+    const current = Number(rows?.[0]?.c || 0);
+    if (current + additionalUsers > entitlements.maxUsers) {
+        const err = new Error("group_user_limit_exceeded");
+        err.statusCode = 403;
+        err.details = { maxUsers: entitlements.maxUsers, currentUsers: current };
+        throw err;
+    }
+    return group;
+}
+
+function parseEntitlementsInput(value) {
+    if (value === undefined) return undefined;
+    return normalizeGroupEntitlements(value);
 }
 
 // --- Users ---
@@ -90,12 +179,17 @@ export async function listUsers(req, res) {
                 params
             );
             return res.json(users);
-        } else {
-            const adminGroups = await getAdminGroups(req.user.id);
-            if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
-            
-            // Return users who share ANY handled group with the admin
-            const params = [adminGroups];
+    } else {
+        const adminGroups = await getAdminGroups(req.user.id);
+        if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
+        try {
+            await assertGroupsCanManageUsers(adminGroups);
+        } catch (err) {
+            return res.status(err.statusCode || 403).json({ error: err.message });
+        }
+
+        // Return users who share ANY handled group with the admin
+        const params = [adminGroups];
             let sql = `
                 SELECT DISTINCT u.id, u.email, u.role, u.default_view_id, u.first_name, u.last_name, u.company,
                                 CASE WHEN u.password IS NULL THEN 'google' ELSE 'manual' END AS auth_provider
@@ -119,11 +213,26 @@ export async function listUsers(req, res) {
 export async function createUser(req, res) {
     const isGlobalAdmin = req.user.role === "admin";
     const desiredRole = normalizeRole(req.body?.role, "user");
+    const requestedGroupId = req.body?.groupId ?? req.body?.group_id;
+    const targetGroupId = requestedGroupId ? Number.parseInt(requestedGroupId, 10) : null;
     if (!desiredRole) return res.status(400).json({ error: "invalid_role" });
     if (!isGlobalAdmin) {
         const adminGroups = await getAdminGroups(req.user.id);
         if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
         if (desiredRole !== "user") return res.status(403).json({ error: "Forbidden" });
+        if (!Number.isInteger(targetGroupId) || !adminGroups.includes(targetGroupId)) {
+            return res.status(400).json({ error: "managed_group_required" });
+        }
+        try {
+            await assertGroupUserLimitAvailable(targetGroupId, 1);
+        } catch (err) {
+            return res.status(err.statusCode || 403).json({ error: err.message, ...(err.details || {}) });
+        }
+    } else if (Number.isInteger(targetGroupId)) {
+        const targetGroup = await loadGroupForAdminAction(targetGroupId);
+        if (!targetGroup) {
+            return res.status(400).json({ error: "invalid_group_id" });
+        }
     }
     const { email, password, role, firstName, lastName, company } = req.body;
     const emailText = normalizeEmail(email);
@@ -138,12 +247,37 @@ export async function createUser(req, res) {
     const hashedFn = await hashPassword(temporaryPassword);
 
     try {
-        const created = await query(
-            "INSERT INTO users (email, password, role, first_name, last_name, company, password_reset_required) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, email, role, first_name, last_name, company",
-            [emailText, hashedFn, desiredRole, firstNameText, lastNameText, companyText, true]
-        );
-        const payload = { ...created[0] };
+        const client = await getClient();
+        let payload;
+        try {
+            await client.query("BEGIN");
+            const created = await client.query(
+                "INSERT INTO users (email, password, role, first_name, last_name, company, password_reset_required) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, email, role, first_name, last_name, company",
+                [emailText, hashedFn, desiredRole, firstNameText, lastNameText, companyText, true]
+            );
+            payload = { ...created.rows[0] };
+            if (Number.isInteger(targetGroupId)) {
+                await client.query(
+                    "INSERT INTO user_groups (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                    [targetGroupId, payload.id]
+                );
+            }
+            await client.query("COMMIT");
+        } catch (err) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw err;
+        } finally {
+            client.release();
+        }
         if (EXPOSE_TEMP_PASSWORDS) payload.newPassword = temporaryPassword;
+        await writeAuditLog({
+            req,
+            action: "user.created",
+            resourceType: "user",
+            resourceId: payload.id,
+            metadata: { role: payload.role, group_id: targetGroupId || null },
+        });
+        clearHeavyListCache();
         res.json(payload);
     } catch (e) {
         if (String(e).includes("unique constraint")) return res.status(400).json({ error: "Email exists" });
@@ -171,22 +305,35 @@ export async function updateUser(req, res) {
         if (!sharesGroup.length) return res.status(403).json({ error: "Forbidden" });
 
         // SEC-01 Fix: Ensure user doesn't belong to groups OUTSIDE the admin's scope
-        const unmanagedGroups = await query(
-            `SELECT group_id FROM user_groups WHERE user_id = $1 AND NOT (group_id = ANY($2::int[]))`, 
-            [id, adminGroups]
+        const memberships = await query(
+            "SELECT group_id FROM user_groups WHERE user_id = $1",
+            [id]
         );
+        const unmanagedGroups = memberships.filter((row) => !adminGroups.includes(row.group_id));
         if (unmanagedGroups.length > 0) {
-            return res.status(403).json({ error: "Forbidden: User belongs to groups outside your admin scope." });
+            return res.status(403).json({ error: "Forbidden: User belongs to customers outside your admin scope." });
+        }
+        try {
+            await assertGroupsCanManageUsers(memberships.map((row) => row.group_id));
+        } catch (err) {
+            return res.status(err.statusCode || 403).json({ error: err.message });
         }
     }
 
     try {
         // Handle password reset request
         if (reset) {
-            const newPassword = generateComplexPassword(16);
+            const suppliedPassword = String(password || "");
+            const newPassword = suppliedPassword || generateComplexPassword(16);
             const hashed = await hashPassword(newPassword);
             await query("UPDATE users SET password=$1, password_reset_required=TRUE WHERE id=$2", [hashed, id]);
-            return res.json(EXPOSE_TEMP_PASSWORDS ? { success: true, newPassword } : { success: true });
+            await writeAuditLog({
+                req,
+                action: "user.password_reset",
+                resourceType: "user",
+                resourceId: id,
+            });
+            return res.json(EXPOSE_TEMP_PASSWORDS && !suppliedPassword ? { success: true, newPassword } : { success: true });
         }
 
         // Dynamic partial update
@@ -232,6 +379,15 @@ export async function updateUser(req, res) {
         const sql = `UPDATE users SET ${fields.join(", ")} WHERE id=$${idx}`;
 
         await query(sql, values);
+        await writeAuditLog({
+            req,
+            action: "user.updated",
+            resourceType: "user",
+            resourceId: id,
+            metadata: {
+                fields: fields.map((field) => field.split("=")[0]),
+            },
+        });
         res.json({ success: true });
     } catch (e) {
         if (String(e).includes("unique constraint")) {
@@ -254,14 +410,37 @@ export async function deleteUser(req, res) {
             const target = await query("SELECT role FROM users WHERE id=$1", [id]);
             if (!target.length) return res.status(404).json({ error: "not_found" });
             if (target[0].role === "admin") return res.status(403).json({ error: "Forbidden" });
+            const targetManagedGroups = await query(
+                "SELECT group_id FROM user_groups WHERE user_id = $1 AND group_id = ANY($2::int[])",
+                [id, adminGroups]
+            );
+            if (!targetManagedGroups.length) return res.status(403).json({ error: "Forbidden" });
+            try {
+                await assertGroupsCanManageUsers(targetManagedGroups.map((row) => row.group_id));
+            } catch (err) {
+                return res.status(err.statusCode || 403).json({ error: err.message });
+            }
 
-            // Instead of deleting globally, Group Admin only removes the user from ALL groups that the admin manages.
+            // Instead of deleting globally, customer admin only removes the user from managed customers.
             await query(`DELETE FROM user_groups WHERE user_id = $1 AND group_id = ANY($2::int[])`, [id, adminGroups]);
-            return res.json({ success: true, message: "User removed from your managed groups." });
+            await writeAuditLog({
+                req,
+                action: "user.removed_from_managed_groups",
+                resourceType: "user",
+                resourceId: id,
+                metadata: { group_ids: adminGroups },
+            });
+            return res.json({ success: true, message: "User removed from your managed customers." });
         }
 
         // Global admin remains destructive
         await query("DELETE FROM users WHERE id=$1", [id]);
+        await writeAuditLog({
+            req,
+            action: "user.deleted",
+            resourceType: "user",
+            resourceId: id,
+        });
         res.json({ success: true });
     } catch (e) {
         console.error("deleteUser error:", e);
@@ -620,10 +799,11 @@ export async function listGroups(req, res) {
 export async function createGroup(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     const { name, maxFileSizeMb, maxTotalStorageMb } = req.body;
+    const entitlements = parseEntitlementsInput(req.body?.entitlements);
     try {
         const r = await query(
-            "INSERT INTO groups (name, max_file_size_mb, max_total_storage_mb) VALUES ($1, $2, $3) RETURNING *",
-            [name, maxFileSizeMb || 100, maxTotalStorageMb || 10240]
+            "INSERT INTO groups (name, max_file_size_mb, max_total_storage_mb, entitlements) VALUES ($1, $2, $3, $4::jsonb) RETURNING *",
+            [name, maxFileSizeMb || 100, maxTotalStorageMb || 10240, JSON.stringify(entitlements || {})]
         );
         clearHeavyListCache();
         res.json(r[0]);
@@ -637,10 +817,17 @@ export async function updateGroup(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     const { id } = req.params;
     const { name, maxFileSizeMb, maxTotalStorageMb } = req.body;
+    const entitlements = parseEntitlementsInput(req.body?.entitlements);
     try {
         const r = await query(
-            "UPDATE groups SET name = COALESCE($1, name), max_file_size_mb = COALESCE($2, max_file_size_mb), max_total_storage_mb = COALESCE($3, max_total_storage_mb) WHERE id = $4 RETURNING *",
-            [name, maxFileSizeMb, maxTotalStorageMb, id]
+            `UPDATE groups
+                SET name = COALESCE($1, name),
+                    max_file_size_mb = COALESCE($2, max_file_size_mb),
+                    max_total_storage_mb = COALESCE($3, max_total_storage_mb),
+                    entitlements = COALESCE($4::jsonb, entitlements)
+              WHERE id = $5
+              RETURNING *`,
+            [name, maxFileSizeMb, maxTotalStorageMb, entitlements === undefined ? null : JSON.stringify(entitlements), id]
         );
         if (!r.length) return res.status(404).json({ error: "not_found" });
         clearHeavyListCache();
@@ -661,7 +848,7 @@ export async function deleteGroup(req, res) {
         const members = await client.query("SELECT 1 FROM user_groups WHERE group_id = $1 LIMIT 1", [id]);
         if (members.rows.length > 0) {
             await client.query("ROLLBACK");
-            return res.status(400).json({ error: "group_not_empty", message: "Cannot delete group with members. Remove all members first." });
+            return res.status(400).json({ error: "group_not_empty", message: "Cannot delete customer with users. Remove all users first." });
         }
         
         // Cleanup other dependencies (folders might still exist, user didn't specify checking those, but permissions should be cleaned)
@@ -690,6 +877,11 @@ export async function getGroupMembers(req, res) {
     if (req.user.role !== "admin") {
         const adminGroups = await getAdminGroups(req.user.id);
         if (!adminGroups.includes(gid)) return res.status(403).json({ error: "Forbidden" });
+        try {
+            await assertGroupCanManageUsers(gid);
+        } catch (err) {
+            return res.status(err.statusCode || 403).json({ error: err.message });
+        }
     }
     const rows = await query(
         `SELECT u.id, u.email, u.role, ug.is_admin,
@@ -708,9 +900,21 @@ export async function updateGroupMembers(req, res) {
     if (req.user.role !== "admin") {
         const adminGroups = await getAdminGroups(req.user.id);
         if (!adminGroups.includes(gid)) return res.status(403).json({ error: "Forbidden" });
+        try {
+            await assertGroupCanManageUsers(gid);
+        } catch (err) {
+            return res.status(err.statusCode || 403).json({ error: err.message });
+        }
     }
     const { userIds } = req.body; // array
     if (!Array.isArray(userIds)) return res.status(400).json({ error: "invalid_format" });
+    if (req.user.role !== "admin") {
+        const group = await loadGroupForAdminAction(gid);
+        const entitlements = normalizeGroupEntitlements(group?.entitlements || {});
+        if (entitlements.maxUsers && userIds.length > entitlements.maxUsers) {
+            return res.status(403).json({ error: "group_user_limit_exceeded", maxUsers: entitlements.maxUsers });
+        }
+    }
 
     // H9: wrap in transaction to eliminate DELETE+INSERT race condition
     const client = await getClient();
@@ -743,11 +947,19 @@ export async function updateGroupMembers(req, res) {
 
 export async function addUserToGroup(req, res) {
     const gid = parseInt(req.params.id, 10);
+    const userId = Number.parseInt(req.body?.userId, 10);
+    if (!Number.isInteger(gid) || !Number.isInteger(userId)) return res.status(400).json({ error: "invalid_group_or_user_id" });
     if (req.user.role !== "admin") {
         const adminGroups = await getAdminGroups(req.user.id);
         if (!adminGroups.includes(gid)) return res.status(403).json({ error: "Forbidden" });
+        try {
+            const existing = await query("SELECT 1 FROM user_groups WHERE group_id = $1 AND user_id = $2", [gid, userId]);
+            if (!existing.length) await assertGroupUserLimitAvailable(gid, 1);
+            else await assertGroupCanManageUsers(gid);
+        } catch (err) {
+            return res.status(err.statusCode || 403).json({ error: err.message, ...(err.details || {}) });
+        }
     }
-    const { userId } = req.body;
     await query("INSERT INTO user_groups (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [gid, userId]);
     clearHeavyListCache();
     res.json({ success: true });
@@ -758,6 +970,11 @@ export async function removeUserFromGroup(req, res) {
     if (req.user.role !== "admin") {
         const adminGroups = await getAdminGroups(req.user.id);
         if (!adminGroups.includes(gid)) return res.status(403).json({ error: "Forbidden" });
+        try {
+            await assertGroupCanManageUsers(gid);
+        } catch (err) {
+            return res.status(err.statusCode || 403).json({ error: err.message });
+        }
     }
     const { userId } = req.params;
     await query("DELETE FROM user_groups WHERE group_id=$1 AND user_id=$2", [gid, userId]);
@@ -773,6 +990,10 @@ export async function toggleGroupAdmin(req, res) {
         if (req.user.role !== "admin") {
             const adminGroups = await getAdminGroups(req.user.id);
             if (!adminGroups.includes(Number(gid))) return res.status(403).json({ error: "Forbidden" });
+            const group = await loadGroupForAdminAction(gid);
+            if (!groupHasFeature(group, "manageGroupAdmins")) {
+                return res.status(403).json({ error: "feature_not_enabled:manageGroupAdmins" });
+            }
         }
 
         await query(
@@ -1131,6 +1352,13 @@ export async function setPermissions(req, res) {
          DO UPDATE SET allowed_columns=$3, row_filters=$4`,
         [userId, sheetId, JSON.stringify(allowed || []), JSON.stringify(rowFilters || [])]
     );
+    await writeAuditLog({
+        req,
+        action: "permission.user_sheet_set",
+        resourceType: "sheet",
+        resourceId: sheetId,
+        metadata: { target_user_id: userId, allowed_columns: Array.isArray(allowed) ? allowed.length : 0 },
+    });
     res.json({ success: true });
 }
 
@@ -1156,6 +1384,13 @@ export async function setReportSourcePermissions(req, res) {
          DO UPDATE SET allowed_columns=$3, row_filters=$4`,
         [userId, resolved.sheetId, JSON.stringify(allowed || []), JSON.stringify(rowFilters || [])]
     );
+    await writeAuditLog({
+        req,
+        action: "permission.user_report_source_set",
+        resourceType: "report_source",
+        resourceId: resolved.reportSourceId,
+        metadata: { target_user_id: userId, sheet_id: resolved.sheetId, allowed_columns: Array.isArray(allowed) ? allowed.length : 0 },
+    });
     res.json({ success: true, report_source_id: resolved.reportSourceId, sheet_id: resolved.sheetId });
 }
 
@@ -1181,6 +1416,13 @@ export async function setGroupPermissions(req, res) {
          DO UPDATE SET allowed_columns=$3, row_filters=$4`,
         [groupId, sheetId, JSON.stringify(allowed || []), JSON.stringify(rowFilters || [])]
     );
+    await writeAuditLog({
+        req,
+        action: "permission.group_sheet_set",
+        resourceType: "sheet",
+        resourceId: sheetId,
+        metadata: { target_group_id: groupId, allowed_columns: Array.isArray(allowed) ? allowed.length : 0 },
+    });
     res.json({ success: true });
 }
 
@@ -1205,6 +1447,13 @@ export async function setReportSourceGroupPermissions(req, res) {
          DO UPDATE SET allowed_columns=$3, row_filters=$4`,
         [groupId, resolved.sheetId, JSON.stringify(allowed || []), JSON.stringify(rowFilters || [])]
     );
+    await writeAuditLog({
+        req,
+        action: "permission.group_report_source_set",
+        resourceType: "report_source",
+        resourceId: resolved.reportSourceId,
+        metadata: { target_group_id: groupId, sheet_id: resolved.sheetId, allowed_columns: Array.isArray(allowed) ? allowed.length : 0 },
+    });
     res.json({ success: true, report_source_id: resolved.reportSourceId, sheet_id: resolved.sheetId });
 }
 

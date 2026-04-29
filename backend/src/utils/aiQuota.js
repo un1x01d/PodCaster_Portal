@@ -1,0 +1,136 @@
+import { query } from "../config/db.js";
+import { normalizeGroupEntitlements, groupHasFeature } from "./entitlements.js";
+
+const OPENAI_INPUT_COST_PER_1M = Number.parseFloat(process.env.OPENAI_INPUT_COST_PER_1M || "0.40");
+const OPENAI_OUTPUT_COST_PER_1M = Number.parseFloat(process.env.OPENAI_OUTPUT_COST_PER_1M || "1.60");
+
+function currentPeriodMonth(date = new Date()) {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+export function estimateOpenAiCostUsd(promptTokens = 0, completionTokens = 0) {
+  const inputTokens = Number(promptTokens || 0);
+  const outputTokens = Number(completionTokens || 0);
+  const cost = ((inputTokens / 1_000_000) * OPENAI_INPUT_COST_PER_1M)
+    + ((outputTokens / 1_000_000) * OPENAI_OUTPUT_COST_PER_1M);
+  return Number.isFinite(cost) ? cost : 0;
+}
+
+function quotaNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+async function resolveCustomerGroupForSheet(sheetId, user) {
+  if (!sheetId || String(user?.role || "") === "admin") return null;
+  const rows = await query(
+    `SELECT DISTINCT COALESCE(fg.group_id, f.group_id) AS group_id
+       FROM sheets s
+       LEFT JOIN folders f ON f.id = s.folder_id
+       LEFT JOIN folder_groups fg ON fg.folder_id = f.id
+       JOIN user_groups ug ON ug.user_id = $2
+        AND ug.group_id = COALESCE(fg.group_id, f.group_id)
+      WHERE s.id = $1
+        AND COALESCE(fg.group_id, f.group_id) IS NOT NULL
+      ORDER BY group_id ASC
+      LIMIT 1`,
+    [sheetId, user?.id]
+  );
+  return rows?.[0]?.group_id || null;
+}
+
+async function loadCustomerQuota(groupId) {
+  if (!groupId) return null;
+  const rows = await query("SELECT id, name, entitlements FROM groups WHERE id = $1", [groupId]);
+  const group = rows?.[0];
+  if (!group) return null;
+  const entitlements = normalizeGroupEntitlements(group.entitlements || {});
+  return {
+    group,
+    entitlements,
+    maxQueries: quotaNumber(entitlements.maxAiQueriesPerMonth),
+    monthlyBudgetUsd: quotaNumber(entitlements.aiMonthlyBudgetUsd),
+  };
+}
+
+export async function reserveAiQueryForSheet({ sheetId, user, kind = "chat_query" }) {
+  const groupId = await resolveCustomerGroupForSheet(sheetId, user);
+  if (!groupId) return { groupId: null, periodMonth: currentPeriodMonth(), enforced: false };
+
+  const quota = await loadCustomerQuota(groupId);
+  if (!quota) return { groupId, periodMonth: currentPeriodMonth(), enforced: false };
+  if (!groupHasFeature(quota.group, "ai")) {
+    const err = new Error("feature_not_enabled:ai");
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const periodMonth = currentPeriodMonth();
+  await query(
+    `INSERT INTO ai_usage_monthly (group_id, period_month, query_count, updated_at)
+     VALUES ($1, $2, 0, CURRENT_TIMESTAMP)
+     ON CONFLICT (group_id, period_month) DO NOTHING`,
+    [groupId, periodMonth]
+  );
+
+  const usageRows = await query(
+    "SELECT query_count, estimated_cost_usd FROM ai_usage_monthly WHERE group_id = $1 AND period_month = $2",
+    [groupId, periodMonth]
+  );
+  const usage = usageRows?.[0] || {};
+  const currentQueries = Number(usage.query_count || 0);
+  const currentCost = Number(usage.estimated_cost_usd || 0);
+
+  if (quota.maxQueries && currentQueries >= quota.maxQueries) {
+    const err = new Error("ai_query_quota_exceeded");
+    err.statusCode = 429;
+    err.details = { maxAiQueriesPerMonth: quota.maxQueries, usedAiQueries: currentQueries, periodMonth };
+    throw err;
+  }
+  if (quota.monthlyBudgetUsd && currentCost >= quota.monthlyBudgetUsd) {
+    const err = new Error("ai_budget_quota_exceeded");
+    err.statusCode = 429;
+    err.details = { aiMonthlyBudgetUsd: quota.monthlyBudgetUsd, estimatedCostUsd: Number(currentCost.toFixed(6)), periodMonth };
+    throw err;
+  }
+
+  await query(
+    `UPDATE ai_usage_monthly
+        SET query_count = query_count + 1,
+            last_kind = $3,
+            updated_at = CURRENT_TIMESTAMP
+      WHERE group_id = $1 AND period_month = $2`,
+    [groupId, periodMonth, kind]
+  );
+
+  return { groupId, periodMonth, enforced: true, quota };
+}
+
+export async function recordAiUsage({ reservation, provider = "openai", model = null, promptTokens = 0, completionTokens = 0, estimatedCostUsd = null }) {
+  if (!reservation?.groupId) return;
+  const inputTokens = Number(promptTokens || 0);
+  const outputTokens = Number(completionTokens || 0);
+  const cost = estimatedCostUsd === null || estimatedCostUsd === undefined
+    ? estimateOpenAiCostUsd(inputTokens, outputTokens)
+    : Number(estimatedCostUsd || 0);
+  await query(
+    `UPDATE ai_usage_monthly
+        SET provider = $3,
+            model = $4,
+            prompt_tokens = prompt_tokens + $5,
+            completion_tokens = completion_tokens + $6,
+            estimated_cost_usd = estimated_cost_usd + $7,
+            updated_at = CURRENT_TIMESTAMP
+      WHERE group_id = $1 AND period_month = $2`,
+    [
+      reservation.groupId,
+      reservation.periodMonth,
+      provider,
+      model,
+      inputTokens,
+      outputTokens,
+      Number.isFinite(cost) ? cost : 0,
+    ]
+  );
+}
