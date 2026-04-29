@@ -16,11 +16,20 @@ export default defineConfig({
   build: {
     rollupOptions: {
       output: {
-        manualChunks: {
-          xlsx: ["xlsx"],
-          jspdf: ["jspdf", "jspdf-autotable"],
-          recharts: ["recharts"],
-          vendor: ["react", "react-dom", "react-router-dom", "axios"]
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          const groups = [
+            ["xlsx", ["xlsx"]],
+            ["jspdf", ["jspdf", "jspdf-autotable"]],
+            ["recharts", ["recharts"]],
+            ["vendor", ["react", "react-dom", "react-router-dom", "axios"]]
+          ];
+          for (const [chunkName, packages] of groups) {
+            if (packages.some((pkg) => id.includes(`/node_modules/${pkg}/`))) {
+              return chunkName;
+            }
+          }
+          return undefined;
         }
       }
     }
@@ -29,4 +38,3 @@ export default defineConfig({
     include: ["react-window", "react-virtualized-auto-sizer"]
   }
 });
-

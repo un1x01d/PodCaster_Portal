@@ -388,7 +388,7 @@ export async function uploadSheet(req, res) {
         const folderId = rawFolderId ? parseInt(rawFolderId, 10) : null;
         if (!displayName) return res.status(400).json({ error: "display_name_required" });
 
-        console.log(`[upload] name=${originalName} size=${req.file.size} folderId=${folderId ?? "—"} reportSourceId=${rawReportSourceId || "—"} label=${fileLabel}`);
+        console.log(`[upload] size=${req.file.size} folderId=${folderId ?? "none"} reportSourceId=${rawReportSourceId || "none"}`);
 
         // Read file into buffer and delete temporary file immediately to free disk space
         const fileBuffer = await fs.promises.readFile(filePath);
@@ -407,7 +407,12 @@ export async function uploadSheet(req, res) {
             });
         }
 
-        const { sheetNames, sheets } = parsedResult;
+        const { sheetNames, sheets, cleanup } = parsedResult;
+        if (cleanup && (cleanup.formulasStripped || cleanup.metadataEntriesStripped)) {
+            console.info(
+                `[upload_cleanup] formulas_stripped=${Number(cleanup.formulasStripped || 0)} metadata_entries_stripped=${Number(cleanup.metadataEntriesStripped || 0)}`
+            );
+        }
         if (!sheetNames || sheetNames.length === 0) {
             return res.status(400).json({ error: "no_sheets" });
         }
@@ -660,7 +665,11 @@ export async function getUniqueValues(req, res) {
         return res.status(403).json({ error: "Forbidden" });
     }
 
-    // For non-admin users without folder-wide access, require explicit column permissions.
+    let hasFullAccess = req.user.role === "admin";
+    let rowFiltersList = [];
+
+    // For non-admin users without folder-wide access, require explicit column permissions
+    // and apply the same row filters used by the main sheet data endpoint.
     if (req.user.role !== "admin") {
         const folderAccess = await query(
             `SELECT 1
@@ -678,11 +687,12 @@ export async function getUniqueValues(req, res) {
                )`,
             [id, userId]
         );
-        if (folderAccess.length === 0) {
+        hasFullAccess = folderAccess.length > 0;
+        if (!hasFullAccess) {
             const perms = await query(
-                `SELECT allowed_columns FROM permissions WHERE user_id = $2 AND sheet_id = $1
+                `SELECT allowed_columns, row_filters FROM permissions WHERE user_id = $2 AND sheet_id = $1
                  UNION ALL
-                 SELECT gp.allowed_columns FROM group_permissions gp
+                 SELECT gp.allowed_columns, gp.row_filters FROM group_permissions gp
                  JOIN user_groups ug ON ug.group_id = gp.group_id
                  WHERE ug.user_id = $2 AND gp.sheet_id = $1`,
                 [id, userId]
@@ -693,6 +703,10 @@ export async function getUniqueValues(req, res) {
                     ? JSON.parse(p.allowed_columns)
                     : (p.allowed_columns || []);
                 cols.forEach((c) => allowedColumns.add(String(c)));
+                const filters = typeof p.row_filters === "string"
+                    ? JSON.parse(p.row_filters)
+                    : (p.row_filters || {});
+                rowFiltersList.push(filters);
             });
             if (!allowedColumns.has(String(col))) {
                 return res.status(403).json({ error: "Forbidden" });
@@ -701,20 +715,30 @@ export async function getUniqueValues(req, res) {
     }
 
     try {
-        // PERF-03 Fix: Use a subquery to hit the sheet_id index first, and sample for performance if large
+        // PERF-03 Fix: Use a subquery to hit the sheet_id index first, and sample for performance if large.
+        // Security: row filters must be applied before sampling/distinct to avoid metadata leaks.
+        const params = [col, id];
+        let where = `WHERE sheet_id = $2`;
+        if (tab) {
+            params.push(tab);
+            where += ` AND tab_name = $${params.length}`;
+        }
+        if (!hasFullAccess && rowFiltersList.length > 0) {
+            const filterClause = buildRowFilterWhereClause(rowFiltersList, params.length + 1);
+            where += filterClause.sql;
+            params.push(...filterClause.params);
+        }
+
         let sql = `
             SELECT DISTINCT (row_data->>$1) as val 
             FROM (
                 SELECT row_data FROM sheet_rows 
-                WHERE sheet_id = $2 
-                ${tab ? 'AND tab_name = $3' : ''}
+                ${where}
                 LIMIT 10000
             ) as sampled
             ORDER BY val ASC 
             LIMIT 1000
         `;
-        const params = [col, id];
-        if (tab) params.push(tab);
 
         const rows = await query(sql, params);
         const values = rows.map(r => r.val).filter(v => v !== null);
@@ -1030,8 +1054,18 @@ export async function getSheetData(req, res) {
         const [view] = await query(
             `SELECT v.config, s.headers
              FROM views v
-             JOIN sheets s ON s.id = v.sheet_id
-             WHERE v.id = $1 AND v.sheet_id = $2
+             CROSS JOIN sheets s
+             LEFT JOIN report_source_imports rsi ON rsi.sheet_id = s.id
+             WHERE v.id = $1 AND s.id = $2
+               AND (
+                 v.is_global = TRUE
+                 OR v.sheet_id = s.id
+                 OR (
+                   v.sheet_id IS NULL
+                   AND v.report_source_id = rsi.report_source_id
+                   AND (v.file_label IS NULL OR v.file_label = rsi.file_label)
+                 )
+               )
                AND (
                  $3 = 'admin'
                  OR EXISTS (SELECT 1 FROM view_user_permissions WHERE view_id = v.id AND user_id = $4)

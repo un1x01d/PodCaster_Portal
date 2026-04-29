@@ -364,9 +364,14 @@ export default function DashboardBody(props) {
     };
 
     const viewOptions = React.useMemo(() => {
-        return [{ value: "", label: "Select a view…" }].concat(
-            views.map((v) => ({ value: v.id, label: v.name }))
-        );
+        const sorted = (views || []).map((v) => {
+            let prefix = "[Rev]";
+            if (v.is_global) prefix = "[Global]";
+            else if (v.report_source_id && !v.file_label) prefix = "[Source]";
+            else if (v.report_source_id && v.file_label) prefix = "[File]";
+            return { value: v.id, label: `${prefix} ${v.name}` };
+        });
+        return [{ value: "", label: "Select a view…" }].concat(sorted);
     }, [views]);
 
     const deleteView = async (id) => {

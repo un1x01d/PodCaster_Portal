@@ -219,83 +219,6 @@ function Sparkline({ graph, cardType, locale, copy }) {
   );
 }
 
-function BulletMiniSparkline({ graph, locale }) {
-  const values = Array.isArray(graph?.values)
-    ? graph.values.map((v) => Number(v)).filter((v) => Number.isFinite(v))
-    : [];
-  const labels = Array.isArray(graph?.labels) ? graph.labels : [];
-  const unit = graph?.unit || "number";
-  const [hoveredIndex, setHoveredIndex] = React.useState(null);
-  if (values.length < 2) return null;
-
-  const w = 260;
-  const h = 44;
-  const pad = 4;
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const span = max - min || 1;
-  const stepX = (w - pad * 2) / Math.max(1, values.length - 1);
-  const yFor = (v) => pad + (h - pad * 2) - ((v - min) / span) * (h - pad * 2);
-  const coords = values.map((v, i) => [pad + i * stepX, yFor(v)]);
-  const path = coords.map(([x, y], idx) => `${idx === 0 ? "M" : "L"}${x.toFixed(2)},${y.toFixed(2)}`).join(" ");
-
-  const fmt = (value) => {
-    if (unit === "currency") {
-      return `$${Number(value).toLocaleString(locale || "en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-    }
-    if (unit === "percent") {
-      return `${Number(value).toLocaleString(locale || "en-US", { maximumFractionDigits: 2 })}%`;
-    }
-    return Number(value).toLocaleString(locale || "en-US");
-  };
-
-  const fmtLabel = (value) => {
-    const text = String(value || "");
-    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
-      const [y, m, d] = text.split("-").map((v) => Number(v));
-      if (y && m && d) {
-        return new Intl.DateTimeFormat(locale || "en-US", { weekday: "short" }).format(new Date(y, m - 1, d));
-      }
-    }
-    return text;
-  };
-
-  return (
-    <div className="relative mt-1 rounded border border-slate-200 bg-slate-50/40 px-1 py-0.5">
-      <svg
-        viewBox={`0 0 ${w} ${h}`}
-        className="h-[44px] w-full"
-        onMouseMove={(e) => {
-          const rect = e.currentTarget.getBoundingClientRect();
-          const x = ((e.clientX - rect.left) / rect.width) * w;
-          let nearestIndex = 0;
-          let nearestDistance = Infinity;
-          coords.forEach(([cx], idx) => {
-            const dist = Math.abs(cx - x);
-            if (dist < nearestDistance) {
-              nearestDistance = dist;
-              nearestIndex = idx;
-            }
-          });
-          setHoveredIndex(nearestIndex);
-        }}
-        onMouseLeave={() => setHoveredIndex(null)}
-      >
-        <path d={path} fill="none" stroke="#0f766e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-        {hoveredIndex !== null && coords[hoveredIndex] && (
-          <circle cx={coords[hoveredIndex][0]} cy={coords[hoveredIndex][1]} r="2.6" fill="#0f766e" />
-        )}
-      </svg>
-      {hoveredIndex !== null && (
-        <div className="pointer-events-none absolute right-1 top-1 z-10 rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[10px] text-slate-700 shadow">
-          <span className="font-semibold">{fmtLabel(labels[hoveredIndex])}</span>
-          <span>{` ${fmt(values[hoveredIndex])}`}</span>
-        </div>
-      )}
-    </div>
-  );
-}
-
 export default function InsightFeed({
   sheetId,
   context = "dashboard",
@@ -542,25 +465,7 @@ export default function InsightFeed({
                   <ul className="mt-2 min-h-0 flex-1 overflow-y-auto list-disc pl-5 text-xs text-slate-700 space-y-1 custom-scrollbar">
                     {(card.bullets || []).map((b, idx) => {
                       if (!isAIRecommendation) {
-                        const text = String(b || "");
-                        if (card.type === "market_oil") {
-                          const colonIndex = text.indexOf(":");
-                          const hasCategory = colonIndex > 0 && colonIndex < 40;
-                          return (
-                            <li key={`${card.id}-b-${idx}`}>
-                              {hasCategory ? (
-                                <>
-                                  <span className="font-semibold text-slate-900">{text.slice(0, colonIndex + 1)}</span>
-                                  <span>{text.slice(colonIndex + 1)}</span>
-                                </>
-                              ) : (
-                                <span>{text}</span>
-                              )}
-                              <BulletMiniSparkline graph={card?.miniGraphs?.[idx]} locale={locale} />
-                            </li>
-                          );
-                        }
-                        return <li key={`${card.id}-b-${idx}`}>{text}</li>;
+                        return <li key={`${card.id}-b-${idx}`}>{String(b || "")}</li>;
                       }
                       const text = String(b || "");
                       const colonIndex = text.indexOf(":");
@@ -575,11 +480,9 @@ export default function InsightFeed({
                       return <li key={`${card.id}-b-${idx}`}>{text}</li>;
                     })}
                   </ul>
-                  {card.type !== "market_oil" && (
-                    <div className="mt-3 shrink-0 border-t border-slate-200 pt-2">
-                      <Sparkline graph={card.graph} cardType={card.type} locale={locale} copy={ui} />
-                    </div>
-                  )}
+                  <div className="mt-3 shrink-0 border-t border-slate-200 pt-2">
+                    <Sparkline graph={card.graph} cardType={card.type} locale={locale} copy={ui} />
+                  </div>
                 </article>
               );
             })}

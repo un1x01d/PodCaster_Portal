@@ -193,6 +193,7 @@ export default function App() {
   const [views, setViews] = useState([]);
   const [selectedViewId, setSelectedViewId] = useState("");
   const [pendingViewName, setPendingViewName] = useState("");
+  const [viewLevel, setViewLevel] = useState("revision");
   const [showColumnSelector, setShowColumnSelector] = useState(false);
   const [visibleColumns, setVisibleColumns] = useState([]); // columns to save
 
@@ -413,6 +414,7 @@ export default function App() {
 
   const saveInsightView = React.useCallback((name) => {
     setPendingViewName(name || "Insight View");
+    setViewLevel("revision");
     setShowColumnSelector(true);
   }, []);
 
@@ -1153,10 +1155,25 @@ export default function App() {
     setSortConfig({ key, direction });
   };
 
+  const sanitizeSpreadsheetExportValue = (value) => {
+    if (typeof value !== "string") return value;
+    return /^[\s]*[=+\-@]/.test(value) ? `'${value}` : value;
+  };
+
+  const sanitizeSpreadsheetExportRows = (rows) => (
+    rows.map((row) => {
+      const safeRow = {};
+      Object.entries(row || {}).forEach(([key, value]) => {
+        safeRow[key] = sanitizeSpreadsheetExportValue(value);
+      });
+      return safeRow;
+    })
+  );
+
   const exportCSV = async () => {
     if (!sortedData.length) return;
     const XLSX = await loadXlsxModule();
-    const ws = XLSX.utils.json_to_sheet(sortedData);
+    const ws = XLSX.utils.json_to_sheet(sanitizeSpreadsheetExportRows(sortedData));
     const csv = XLSX.utils.sheet_to_csv(ws);
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -1171,7 +1188,7 @@ export default function App() {
   const exportXLSX = async () => {
     if (!sortedData.length) return;
     const XLSX = await loadXlsxModule();
-    const ws = XLSX.utils.json_to_sheet(sortedData);
+    const ws = XLSX.utils.json_to_sheet(sanitizeSpreadsheetExportRows(sortedData));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Data");
     XLSX.writeFile(wb, `${activeFilename || "export"}.xlsx`);
@@ -1831,12 +1848,41 @@ export default function App() {
                 ))}
               </div>
 
+              <div className="space-y-4">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">View Name</label>
+                  <input
+                    type="text"
+                    value={pendingViewName}
+                    onChange={(e) => setPendingViewName(e.target.value)}
+                    placeholder="e.g. Monthly Dashboard"
+                    className="w-full rounded-lg border border-slate-200 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    autoFocus
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Scope</label>
+                  <select
+                    value={viewLevel}
+                    onChange={(e) => setViewLevel(e.target.value)}
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  >
+                    <option value="global">Global (All Files)</option>
+                    <option value="source">This Report Source (All Files)</option>
+                    <option value="file">This File (All Revisions)</option>
+                    <option value="revision">This Revision Only</option>
+                  </select>
+                </div>
+              </div>
+
               <div className="flex gap-3 justify-end">
                 <button
                   className="btn-premium bg-slate-100 hover:bg-slate-200 text-slate-600 px-6"
                   onClick={() => {
                     setShowColumnSelector(false);
                     setPendingViewName("");
+                    setViewLevel("revision");
                     setVisibleColumns([]);
                   }}
                 >
@@ -1871,7 +1917,7 @@ export default function App() {
                       };
                       await axios.post(
                         `${API}/views`,
-                        { name: pendingViewName, sheetId, config },
+                        { name: pendingViewName, sheetId, config, level: viewLevel },
                         { headers: { Authorization: `Bearer ${token}` } }
                       );
                       const res = await axios.get(`${API}/views/${sheetId}`, {
@@ -1880,6 +1926,7 @@ export default function App() {
                       setViews(res.data || []);
                       setShowColumnSelector(false);
                       setPendingViewName("");
+                      setViewLevel("revision");
                       setVisibleColumns([]);
                       alert("View saved successfully!");
                     } catch (e) {

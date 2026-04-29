@@ -188,18 +188,17 @@ export default function DashboardHeader({
                                                                 const latest = group[0];
                                                                 const label = fileLabel(latest);
                                                                 const itemSheetId = String(latest.sheet_id || "");
-                                                                const isCurrent = group.some(i => String(i.sheet_id) === String(source.current_sheet_id));
-                                                                const isSelected = group.some(i => String(i.sheet_id) === String(sheetId));
+                                                                const isSelectedGroup = group.some(i => String(i.sheet_id) === String(sheetId));
                                                                 const fileKey = `${key}:${label}`;
 
                                                                 return (
                                                                     <div
                                                                         key={fileKey}
-                                                                        className={`group flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors ${isSelected ? "bg-indigo-50" : "hover:bg-indigo-50/70"}`}
+                                                                        className={`group flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors ${isSelectedGroup ? "bg-indigo-50" : "hover:bg-indigo-50/70"}`}
                                                                         onClick={() => selectSheet(itemSheetId, label)}
                                                                         title={label}
                                                                     >
-                                                                        <div className="w-10 shrink-0 flex justify-center file-version-dropdown-container">
+                                                                        <div className="relative w-10 shrink-0 flex justify-center file-version-dropdown-container">
                                                                             <button
                                                                                 type="button"
                                                                                 onClick={(e) => {
@@ -213,11 +212,10 @@ export default function DashboardHeader({
                                                                             </button>
                                                                             
                                                                             {fileVersionMenuKey === fileKey && (
-                                                                                <div className="absolute left-12 mt-1 w-52 bg-white border border-slate-200 rounded-lg shadow-xl z-[70] py-1 animate-in fade-in zoom-in-95 duration-150 origin-top-left">
+                                                                                <div className="absolute left-0 mt-1 w-52 bg-white border border-slate-200 rounded-lg shadow-xl z-[70] py-1 animate-in fade-in zoom-in-95 duration-150 origin-top-left">
                                                                                     <div className="max-h-48 overflow-auto custom-scrollbar">
                                                                                         {group.map((v) => {
                                                                                             const isSel = String(v.sheet_id) === String(sheetId);
-                                                                                            const isCur = String(v.sheet_id) === String(source.current_sheet_id);
                                                                                             return (
                                                                                                 <button
                                                                                                     key={v.sheet_id}
@@ -233,7 +231,7 @@ export default function DashboardHeader({
                                                                                                         <div className={`text-[10px] truncate ${isSel ? 'font-bold text-indigo-700' : 'font-medium text-slate-700'}`}>{label}</div>
                                                                                                         <div className="text-[8px] text-slate-400">{new Date(v.uploaded_at).toLocaleDateString()}</div>
                                                                                                     </div>
-                                                                                                    {isCur && <div className="w-1 h-1 rounded-full bg-emerald-500" title="Current"></div>}
+                                                                                                    {isSel && <div className="w-1 h-1 rounded-full bg-emerald-500" title="Current"></div>}
                                                                                                 </button>
                                                                                             );
                                                                                         })}
@@ -247,10 +245,9 @@ export default function DashboardHeader({
                                                                                 {latest.uploaded_at && `Uploaded: ${new Date(latest.uploaded_at).toLocaleDateString()} `}
                                                                                 {latest.created_at && `· Modified: ${new Date(latest.created_at).toLocaleDateString()} `}
                                                                                 {latest.imported_by_name && `· By: ${latest.imported_by_name}`}
-                                                                                {isCurrent && " · current"}
                                                                             </div>
                                                                         </div>
-                                                                        {isCurrent && (
+                                                                        {isSelectedGroup && (
                                                                             <span className="shrink-0 rounded-full bg-emerald-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-emerald-700">Current</span>
                                                                         )}
                                                                         {user?.role === "admin" && onDeleteSheet && itemSheetId && (

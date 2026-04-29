@@ -213,12 +213,51 @@ function buildRowFilterWhereClause(rowFiltersList = [], startParamIdx = 1) {
   return { sql: ` AND (${filterClauses.join(" OR ")})`, params };
 }
 
-async function computeSqlAggregation({ sheetId, user, operation, targetColumn, groupBy, filters = [], rowFiltersList = [], limit = 5, locale = "en", tabName = null }) {
+function normalizeActiveDashboardFilters(headers = [], activeFilters = {}) {
+  if (!activeFilters || typeof activeFilters !== "object" || Array.isArray(activeFilters)) return [];
+  const headerList = Array.isArray(headers) ? headers : [];
+  const resolveHeader = (name) => {
+    const raw = String(name || "").trim();
+    if (!raw) return null;
+    return headerList.find((h) => String(h).trim().toLowerCase() === raw.toLowerCase()) || null;
+  };
+
+  const out = [];
+  Object.entries(activeFilters).forEach(([rawColumn, rawValue]) => {
+    const column = resolveHeader(rawColumn);
+    if (!column || rawValue === null || rawValue === undefined || rawValue === "") return;
+
+    if (Array.isArray(rawValue)) {
+      const values = rawValue
+        .map((v) => String(v ?? ""))
+        .filter((v) => v !== "")
+        .slice(0, 100);
+      if (values.length) out.push({ column, operator: "in", values });
+      return;
+    }
+
+    if (rawValue && typeof rawValue === "object") {
+      const value = String(rawValue.value ?? "").trim();
+      if (!value) return;
+      const operator = String(rawValue.operator || rawValue.type || "contains").toLowerCase() === "equals"
+        ? "equals"
+        : "contains";
+      out.push({ column, operator, value });
+    }
+  });
+  return out;
+}
+
+async function computeSqlAggregation({ sheetId, user, operation, targetColumn, groupBy, filters = [], rowFiltersList = [], allowedColumns = null, limit = 5, locale = "en", tabName = null }) {
     const op = String(operation || "none").toLowerCase();
     const lang = String(locale || "en").toLowerCase();
     const isUk = lang.startsWith("uk");
     const isRu = lang.startsWith("ru");
     const nLimit = Number.isInteger(limit) ? limit : 5;
+    const allowedColumnSet = Array.isArray(allowedColumns) && allowedColumns.length
+      ? new Set(allowedColumns.map((c) => String(c)))
+      : null;
+    const canUseColumn = (column) => !allowedColumnSet || allowedColumnSet.has(String(column));
     
     // 1. Build Base Where Clause (RBAC + Tab + AI Filters)
     let sql = `SELECT `;
@@ -239,7 +278,17 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
 
     // Add AI Filters to SQL
     filters.forEach(f => {
-        if (!f.column || f.value === undefined) return;
+        if (!f.column) return;
+        if (f.operator === "in") {
+            const values = Array.isArray(f.values) ? f.values.map((v) => String(v ?? "")).filter((v) => v !== "") : [];
+            if (!values.length) return;
+            const colIdx = params.length + 1;
+            const valIdx = params.length + 2;
+            params.push(f.column, values);
+            where += ` AND ((row_data->>$${colIdx}) = ANY($${valIdx}::text[]))`;
+            return;
+        }
+        if (f.value === undefined) return;
         
         let colSql = `row_data->>$${params.length + 1}`;
         // Support virtual columns in filters
@@ -313,6 +362,8 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
         }
 
         if (!targetColumn) return null;
+        if (!canUseColumn(targetColumn)) return null;
+        if (groupBy && !["Year", "Month", "Quarter"].includes(groupBy) && !canUseColumn(groupBy)) return null;
 
         // Common Numeric Casting for target column
         const valSql = `CAST(NULLIF(regexp_replace(row_data->>$${params.length + 1}, '[^0-9.-]', '', 'g'), '') AS NUMERIC)`;
@@ -701,6 +752,11 @@ function applyFilters(rows, filters) {
     if (!filters?.length) return rows;
     return rows.filter(row => {
         return filters.every(f => {
+            if (f.operator === "in") {
+                const values = Array.isArray(f.values) ? f.values.map((v) => String(v ?? "")) : [];
+                if (!values.length) return true;
+                return values.includes(String(row[f.column] ?? ""));
+            }
             const val = toNum(row[f.column]);
             const filterVal = toNum(f.value);
             const cellStr = String(row[f.column] || "").toLowerCase();
@@ -1512,7 +1568,7 @@ export async function getChatAudio(req, res) {
 }
 
 export async function chatQuery(req, res) {
-  const { sheetId, activeTab = null, message, conversationHistory = [], locale: rawLocale } = req.body || {};
+  const { sheetId, activeTab = null, message, activeFilters = {}, conversationHistory = [], locale: rawLocale } = req.body || {};
   const locale = normalizeLocale(rawLocale || "en");
   const hasAccess = await checkSheetAccess(sheetId, req.user);
   if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
@@ -1522,7 +1578,8 @@ export async function chatQuery(req, res) {
   if (loadedSample?.forbidden) return res.status(403).json({ error: "Forbidden" });
 
   const aiHeaders = loadedSample.headers || [];
-  const sampleRows = loadedSample.rows || [];
+  const activeDashboardFilters = normalizeActiveDashboardFilters(aiHeaders, activeFilters);
+  const sampleRows = applyFilters(loadedSample.rows || [], activeDashboardFilters);
   const tabNames = Array.isArray(loadedSample.tabs) ? loadedSample.tabs : [];
   
   // PERF-01: Build Workspace Schema for Cross-Sheet Intelligence
@@ -1565,7 +1622,8 @@ export async function chatQuery(req, res) {
       dateFormatHints,
       schemaProfile: { 
           available_tabs: tabNames,
-          available_files: availableFiles 
+          available_files: availableFiles,
+          active_filters: activeDashboardFilters
       }
     }));
   } catch (e) {
@@ -1583,6 +1641,7 @@ export async function chatQuery(req, res) {
       value: f.value
     })));
     const filteredAiFilters = aiFilters.filter(f => f.column);
+    const executionFilters = [...activeDashboardFilters, ...filteredAiFilters];
 
     let resolvedOperation = (ai?.operation || "none").toLowerCase();
     let resolvedTarget = await resolveColumn(aiHeaders, ai?.target_column, sampleRows);
@@ -1632,18 +1691,30 @@ export async function chatQuery(req, res) {
         }
 
         const results = await Promise.all(scopedTargets.map(async (t) => {
+            const targetAccess = await loadAccessibleRows(t.sheet_id, req.user, null, 1);
+            if (targetAccess?.forbidden) {
+                throw new Error("cross_target_forbidden");
+            }
+            const targetOperation = String(t.operation || "sum").toLowerCase();
+            const resolvedCrossColumn = targetOperation === "count"
+              ? null
+              : await resolveColumn(targetAccess.headers || [], t.column, targetAccess.rows || []);
+            if (targetOperation !== "count" && !resolvedCrossColumn) {
+                throw new Error("cross_target_column_forbidden");
+            }
             const res = await computeSqlAggregation({
                 sheetId: t.sheet_id,
                 user: req.user,
-                operation: t.operation || "sum",
-                targetColumn: t.column,
-                rowFiltersList: loadedSample?.rowFiltersList || [],
+                operation: targetOperation,
+                targetColumn: resolvedCrossColumn,
+                rowFiltersList: targetAccess?.rowFiltersList || [],
+                allowedColumns: targetAccess?.headers || [],
                 locale
             });
             // Extract numeric value from "Total X: $Y" or similar
             const val = res?.answer ? parseFloat(res.answer.replace(/[^\d.-]/g, "")) : 0;
             const fileName = availableFiles.find(f => String(f.id) === String(t.sheet_id))?.name || "Sheet";
-            return { value: val, column: t.column, fileName };
+            return { value: val, column: resolvedCrossColumn, fileName };
         }));
 
         const a = results[0];
@@ -1672,8 +1743,9 @@ export async function chatQuery(req, res) {
             operation: resolvedOperation,
             targetColumn: resolvedTarget,
             groupBy: resolvedGroupBy,
-            filters: filteredAiFilters,
+            filters: executionFilters,
             rowFiltersList: loadedSample?.rowFiltersList || [],
+            allowedColumns: loadedSample?.headers || [],
             limit: ai?.limit,
             locale,
             tabName: selectedTab
@@ -1689,7 +1761,7 @@ export async function chatQuery(req, res) {
             ? augmentRowsWithQuarter(fullLoad.rows, fullLoad.headers)
             : { rows: fullLoad.rows, headers: fullLoad.headers };
 
-        const matchedRows = applyFilters(augmented.rows, filteredAiFilters);
+        const matchedRows = applyFilters(augmented.rows, executionFilters);
         exec = await computeDeterministicAnswer(resolvedOperation, matchedRows, resolvedTarget, resolvedGroupBy, ai?.limit, locale, message);
     }
 
@@ -1819,6 +1891,7 @@ async function loadAccessibleRows(sheetId, user, activeTab = null, rowLimit = nu
     tabs: Array.isArray(sheet.tabs) ? sheet.tabs : (sheet.tab_name ? [sheet.tab_name] : []),
     rows: rows.map(r => ({ ...(r.row_data || {}), __tab_name: r.tab_name })),
     rowFiltersList,
+    allowedColumns: headers,
     forbidden: false,
   };
 }

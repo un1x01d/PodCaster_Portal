@@ -23,10 +23,6 @@ echo "Building backend image: ${BACKEND_IMAGE}"
 docker build -f backend/Dockerfile -t "${BACKEND_IMAGE}" .
 docker push "${BACKEND_IMAGE}"
 
-echo "Building frontend image: ${FRONTEND_IMAGE}"
-docker build -f frontend/Dockerfile -t "${FRONTEND_IMAGE}" .
-docker push "${FRONTEND_IMAGE}"
-
 CLOUDSQL_CONN="$(gcloud sql instances describe "$DB_INSTANCE" --format='value(connectionName)')"
 DB_PASSWORD="$(gcloud secrets versions access latest --secret=DB_PASSWORD)"
 DATABASE_URL="postgresql://${DB_USER}:${DB_PASSWORD}@/${DB_NAME}?host=/cloudsql/${CLOUDSQL_CONN}"
@@ -43,13 +39,20 @@ gcloud run deploy "${BACKEND_SERVICE}" \
 
 BACKEND_URL="$(gcloud run services describe "${BACKEND_SERVICE}" --region "${REGION}" --format='value(status.url)')"
 
+echo "Building frontend image with API URL ${BACKEND_URL}: ${FRONTEND_IMAGE}"
+docker build \
+  --build-arg "VITE_API_URL=${BACKEND_URL}" \
+  -f frontend/Dockerfile \
+  -t "${FRONTEND_IMAGE}" \
+  .
+docker push "${FRONTEND_IMAGE}"
+
 echo "Deploying frontend service: ${FRONTEND_SERVICE}"
 gcloud run deploy "${FRONTEND_SERVICE}" \
   --image "${FRONTEND_IMAGE}" \
   --region "${REGION}" \
   --platform managed \
-  --allow-unauthenticated \
-  --set-env-vars "VITE_API_URL=${BACKEND_URL}"
+  --allow-unauthenticated
 
 FRONTEND_URL="$(gcloud run services describe "${FRONTEND_SERVICE}" --region "${REGION}" --format='value(status.url)')"
 gcloud run services update "${BACKEND_SERVICE}" \

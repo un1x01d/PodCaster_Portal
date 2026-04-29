@@ -1,6 +1,26 @@
 const appStartMs = Date.now();
 const httpRequestTotals = new Map();
 const httpRequestDurationMs = new Map();
+const MAX_METRIC_SERIES = Number.parseInt(process.env.METRICS_MAX_SERIES || "2000", 10);
+
+export function normalizeRouteLabel(route) {
+  const raw = String(route || "unknown").split("?")[0] || "unknown";
+  if (raw === "unknown") return raw;
+  return raw
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi, ":uuid")
+    .replace(/\b\d{6,}\b/g, ":id")
+    .replace(/\/\d+(?=\/|$)/g, "/:id")
+    .replace(/\/+/g, "/");
+}
+
+function incrementCapped(map, key) {
+  if (map.has(key) || map.size < MAX_METRIC_SERIES) {
+    map.set(key, (map.get(key) || 0) + 1);
+    return;
+  }
+  const overflowKey = key.split("|").map((part, idx) => (idx === 1 ? "overflow" : part)).join("|");
+  map.set(overflowKey, (map.get(overflowKey) || 0) + 1);
+}
 
 function sanitizeLabel(value) {
   return String(value || "")
@@ -22,13 +42,13 @@ function bucketizeMs(ms) {
 
 export function recordHttpRequest({ method, route, statusCode, durationMs }) {
   const m = String(method || "GET").toUpperCase();
-  const r = String(route || "unknown");
+  const r = normalizeRouteLabel(route);
   const s = String(statusCode || 0);
   const totalKey = `${m}|${r}|${s}`;
-  httpRequestTotals.set(totalKey, (httpRequestTotals.get(totalKey) || 0) + 1);
+  incrementCapped(httpRequestTotals, totalKey);
 
   const durationKey = `${m}|${r}|${bucketizeMs(Number(durationMs) || 0)}`;
-  httpRequestDurationMs.set(durationKey, (httpRequestDurationMs.get(durationKey) || 0) + 1);
+  incrementCapped(httpRequestDurationMs, durationKey);
 }
 
 export function renderPrometheusMetrics() {

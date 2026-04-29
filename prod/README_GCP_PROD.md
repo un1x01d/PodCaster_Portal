@@ -106,12 +106,7 @@ docker build -f backend/Dockerfile -t "${REGION}-docker.pkg.dev/${PROJECT_ID}/${
 docker push "${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/backend:latest"
 ```
 
-Frontend:
-
-```bash
-docker build -f frontend/Dockerfile -t "${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/frontend:latest" .
-docker push "${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/frontend:latest"
-```
+Build the frontend after the backend is deployed, because Vite bakes `VITE_API_URL` into the static assets at build time.
 
 ## 7. Deploy Backend to Cloud Run
 
@@ -145,6 +140,17 @@ Set backend URL:
 export BACKEND_URL="$(gcloud run services describe "$BACKEND_SERVICE" --region "$REGION" --format='value(status.url)')"
 ```
 
+Build and push frontend with the backend URL baked into the artifact:
+
+```bash
+docker build \
+  --build-arg "VITE_API_URL=${BACKEND_URL}" \
+  -f frontend/Dockerfile \
+  -t "${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/frontend:latest" \
+  .
+docker push "${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/frontend:latest"
+```
+
 Deploy frontend:
 
 ```bash
@@ -152,8 +158,7 @@ gcloud run deploy "$FRONTEND_SERVICE" \
   --image "${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/frontend:latest" \
   --region "$REGION" \
   --platform managed \
-  --allow-unauthenticated \
-  --set-env-vars "VITE_API_URL=${BACKEND_URL}"
+  --allow-unauthenticated
 ```
 
 ## 9. CORS and Allowed Origins

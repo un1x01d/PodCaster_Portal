@@ -3,7 +3,22 @@ import { encryptSettingValue } from "../utils/settingsCrypto.js";
 import { hashPassword } from "../utils/security.js";
 const { Pool } = pg;
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+function parsePositiveIntEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  max: parsePositiveIntEnv("DB_POOL_MAX", 10),
+  idleTimeoutMillis: parsePositiveIntEnv("DB_POOL_IDLE_TIMEOUT_MS", 30000),
+  connectionTimeoutMillis: parsePositiveIntEnv("DB_POOL_CONNECTION_TIMEOUT_MS", 10000),
+  query_timeout: parsePositiveIntEnv("DB_QUERY_TIMEOUT_MS", 60000),
+  statement_timeout: parsePositiveIntEnv("DB_STATEMENT_TIMEOUT_MS", 60000),
+  idle_in_transaction_session_timeout: parsePositiveIntEnv("DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS", 60000),
+});
 
 export async function query(sql, params) {
   const res = await pool.query(sql, params);
@@ -586,13 +601,23 @@ export async function initDb() {
     CREATE TABLE IF NOT EXISTS views (
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL,
-      sheet_id TEXT NOT NULL,
+      sheet_id TEXT,
+      report_source_id INT REFERENCES report_sources(id) ON DELETE CASCADE,
+      file_label TEXT,
+      is_global BOOLEAN DEFAULT FALSE,
       config JSONB NOT NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       created_by INT NOT NULL
     );
   `);
+  await pool.query(`ALTER TABLE views ALTER COLUMN sheet_id DROP NOT NULL;`);
+  await pool.query(`ALTER TABLE views ADD COLUMN IF NOT EXISTS report_source_id INT REFERENCES report_sources(id) ON DELETE CASCADE;`);
+  await pool.query(`ALTER TABLE views ADD COLUMN IF NOT EXISTS file_label TEXT;`);
+  await pool.query(`ALTER TABLE views ADD COLUMN IF NOT EXISTS is_global BOOLEAN DEFAULT FALSE;`);
+  
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_views_sheet_id ON views(sheet_id);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_views_report_source_id ON views(report_source_id);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_views_is_global ON views(is_global);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_views_created_by ON views(created_by);`);
   await pool.query(`
     DO $$

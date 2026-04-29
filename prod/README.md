@@ -112,7 +112,7 @@ Security and auth controls:
 
 ```bash
 CSRF_STRICT_MODE=true
-CSRF_ALLOW_BEARER_WITHOUT_TOKEN=true
+CSRF_BYPASS_BEARER=false
 ALLOW_LEGACY_PLAINTEXT_PASSWORDS=false
 ```
 
@@ -252,8 +252,8 @@ Expected current caveat:
 Docker build:
 
 ```bash
-docker build -f backend/Dockerfile -t data-insights-portal-backend:prod backend
-docker build -f frontend/Dockerfile -t data-insights-portal-frontend:prod frontend
+docker build -f backend/Dockerfile -t data-insights-portal-backend:prod .
+docker build --build-arg "VITE_API_URL=https://api.example.com" -f frontend/Dockerfile -t data-insights-portal-frontend:prod .
 ```
 
 Container smoke checks:
@@ -310,15 +310,16 @@ Recommended deploy sequence:
 
 1. Merge reviewed code to the release branch.
 2. Run backend tests, frontend build, audits, and Docker builds.
-3. Build immutable backend and frontend images.
+3. Build immutable backend image.
 4. Push images to private registry.
 5. Apply database migrations in a controlled step.
 6. Deploy backend to one non-serving instance or staging environment.
 7. Run smoke checks against backend health/readiness.
-8. Deploy frontend with the correct `VITE_API_URL`.
-9. Shift a small percentage of traffic or one instance first.
-10. Monitor logs, metrics, and error rates.
-11. Roll to all instances only after smoke checks pass.
+8. Build and push the immutable frontend image with the backend URL passed as `--build-arg VITE_API_URL=...`.
+9. Deploy frontend.
+10. Shift a small percentage of traffic or one instance first.
+11. Monitor logs, metrics, and error rates.
+12. Roll to all instances only after smoke checks pass.
 
 Avoid deploying schema changes and app changes blindly at the same time unless the migration is backward-compatible.
 
@@ -553,8 +554,8 @@ Pipeline should run:
 ```bash
 cd backend && npm ci && npm test && npm audit --audit-level=high
 cd frontend && npm ci && npm run build && npm audit --audit-level=high
-docker build -f backend/Dockerfile -t backend:$COMMIT_SHA backend
-docker build -f frontend/Dockerfile -t frontend:$COMMIT_SHA frontend
+docker build -f backend/Dockerfile -t backend:$COMMIT_SHA .
+docker build --build-arg "VITE_API_URL=$BACKEND_URL" -f frontend/Dockerfile -t frontend:$COMMIT_SHA .
 ```
 
 Pipeline should also:
@@ -599,4 +600,3 @@ Go only if all are true:
 - Restore process has been tested at least once in staging.
 
 If any item is false, the decision is **No-Go**.
-

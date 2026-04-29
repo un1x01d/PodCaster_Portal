@@ -1,13 +1,45 @@
 import { query } from "../config/db.js";
+import { checkSheetAccess } from "../utils/authorization.js";
 
 export async function createView(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const { name, sheetId, config } = req.body || {};
+    const { name, sheetId, config, level = "revision" } = req.body || {};
+
+    let report_source_id = null;
+    let file_label = null;
+    let sid = null;
+    let is_global = false;
+
+    if (level === "global") {
+        is_global = true;
+    } else if (sheetId) {
+        // Resolve source/label from sheetId
+        const [meta] = await query(
+            "SELECT report_source_id, file_label FROM report_source_imports WHERE sheet_id = $1",
+            [sheetId]
+        );
+        if (meta) {
+            report_source_id = meta.report_source_id;
+            file_label = meta.file_label;
+        }
+
+        if (level === "source") {
+            file_label = null;
+        } else if (level === "file") {
+            // keep label
+        } else {
+            // revision level
+            sid = sheetId;
+            report_source_id = null;
+            file_label = null;
+        }
+    }
+
     const r = await query(
-        `INSERT INTO views (name, sheet_id, config, created_by)
-         VALUES ($1,$2,$3,$4)
-         RETURNING id, name, sheet_id, created_at`,
-        [name, sheetId, JSON.stringify(config || {}), req.user.id]
+        `INSERT INTO views (name, sheet_id, report_source_id, file_label, is_global, config, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         RETURNING id, name, sheet_id, report_source_id, file_label, is_global, created_at`,
+        [name, sid, report_source_id, file_label, is_global, JSON.stringify(config || {}), req.user.id]
     );
     res.json(r[0]);
 }
@@ -56,37 +88,57 @@ export async function deleteView(req, res) {
 
 export async function getViewsForSheet(req, res) {
     const { sheetId } = req.params;
+    const hasSheetAccess = await checkSheetAccess(sheetId, req.user);
+    if (!hasSheetAccess) return res.status(403).json({ error: "Forbidden" });
+
+    // First resolve the hierarchy context for this sheet
+    const [meta] = await query(
+        "SELECT report_source_id, file_label FROM report_source_imports WHERE sheet_id = $1",
+        [sheetId]
+    );
+    const sourceId = meta?.report_source_id || -1;
+    const fileLabel = meta?.file_label || "";
+
+    const scopeFilter = `
+        (
+          v.is_global = TRUE
+          OR (v.report_source_id = $1 AND v.file_label IS NULL AND v.sheet_id IS NULL)
+          OR (v.report_source_id = $1 AND v.file_label = $2 AND v.sheet_id IS NULL)
+          OR (v.sheet_id = $3)
+        )
+    `;
+
     if (req.user.role === "admin") {
         const rows = await query(
-            `SELECT v.id, v.name, v.sheet_id, v.config, v.created_at, u.email as created_by
+            `SELECT v.id, v.name, v.sheet_id, v.report_source_id, v.file_label, v.is_global, v.config, v.created_at, u.email as created_by
              FROM views v
              JOIN users u ON u.id = v.created_by
-             WHERE v.sheet_id = $1
-             ORDER BY v.name ASC`,
-            [sheetId]
+             WHERE ${scopeFilter}
+             ORDER BY v.is_global DESC, v.report_source_id ASC NULLS LAST, v.file_label ASC NULLS LAST, v.name ASC`,
+            [sourceId, fileLabel, sheetId]
         );
         return res.json(rows);
     }
 
     // Checking permissions for non-admin
     const rows = await query(
-        `SELECT v.id, v.name, v.sheet_id, v.config, v.created_at, u.email as created_by
+        `SELECT v.id, v.name, v.sheet_id, v.report_source_id, v.file_label, v.is_global, v.config, v.created_at, u.email as created_by
          FROM views v
          JOIN users u ON u.id = v.created_by
-         WHERE v.sheet_id = $1
+         WHERE ${scopeFilter}
            AND (
              EXISTS (
-               SELECT 1 FROM view_user_permissions vup WHERE vup.view_id = v.id AND vup.user_id = $2
+               SELECT 1 FROM view_user_permissions vup WHERE vup.view_id = v.id AND vup.user_id = $4
              )
              OR
              EXISTS (
                SELECT 1 FROM view_group_permissions vgp 
                JOIN user_groups ug ON ug.group_id = vgp.group_id
-               WHERE vgp.view_id = v.id AND ug.user_id = $2
+               WHERE vgp.view_id = v.id AND ug.user_id = $4
              )
            )
-         ORDER BY v.name ASC`,
-        [sheetId, req.user.id]
+         ORDER BY v.is_global DESC, v.report_source_id ASC NULLS LAST, v.file_label ASC NULLS LAST, v.name ASC`,
+        [sourceId, fileLabel, sheetId, req.user.id]
     );
     res.json(rows);
 }

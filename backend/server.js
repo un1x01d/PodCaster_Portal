@@ -68,10 +68,13 @@ app.use((req, res, next) => {
   const t0 = Date.now();
   res.on("finish", () => {
     const durationMs = Date.now() - t0;
+    const routeLabel = req.route?.path
+      ? `${req.baseUrl || ""}${req.route.path}`
+      : req.path;
     console.log(`[http] request_id=${req.id} ${req.method} ${req.path} -> ${res.statusCode} (${durationMs}ms)`);
     recordHttpRequest({
       method: req.method,
-      route: req.path,
+      route: routeLabel,
       statusCode: res.statusCode,
       durationMs,
     });
