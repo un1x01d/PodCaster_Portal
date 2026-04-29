@@ -8,6 +8,7 @@ export { checkSheetAccess } from "../utils/authorization.js";
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10);
+const CHAT_MAX_ROWS = Number.parseInt(process.env.CHAT_MAX_ROWS || "50000", 10);
 const CHAT_AUDIO_MAX_CHARS = Number.parseInt(process.env.CHAT_AUDIO_MAX_CHARS || "8000", 10);
 const CHAT_TTS_SETTINGS_KEY = "chat_tts_settings";
 const CHAT_TTS_DEFAULTS = {
@@ -1601,18 +1602,10 @@ export async function chatQuery(req, res) {
   const workspaceRes = await query(
       `SELECT DISTINCT s.id, s.display_name, s.filename, s.headers
        FROM sheets s
-       LEFT JOIN folders f ON f.id = s.folder_id
+       LEFT JOIN report_sources rs ON rs.id = s.report_source_id
        WHERE (
          $2 = 'admin'
-         OR (
-           EXISTS (
-             SELECT 1
-             FROM folder_groups fg
-             JOIN user_groups ug ON ug.group_id = fg.group_id
-             WHERE fg.folder_id = f.id AND ug.user_id = $1
-           )
-           OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $1)
-         )
+         OR rs.created_by = $1
          OR (s.id IN (SELECT sheet_id FROM permissions WHERE user_id = $1))
          OR (s.id IN (SELECT sheet_id FROM group_permissions WHERE group_id IN (SELECT group_id FROM user_groups WHERE user_id = $1)))
        )`,
@@ -1780,6 +1773,13 @@ export async function chatQuery(req, res) {
     if (!exec) {
         // Only NOW load full rows if we really need to (YoY, custom ratios)
         const fullLoad = await loadAccessibleRows(sheetId, req.user, selectedTab);
+        if (fullLoad?.tooLarge) {
+          return res.status(413).json({
+            error: "chat_dataset_too_large",
+            maxRows: CHAT_MAX_ROWS,
+            message: "Dataset is too large for this chat analysis path. Narrow filters or use a direct aggregate query.",
+          });
+        }
         // Note: For memory-based fallback, we might still need augmentation if requested
         const augmented = (resolvedGroupBy === "Year" || resolvedGroupBy === "Month" || resolvedGroupBy === "Quarter")
             ? augmentRowsWithQuarter(fullLoad.rows, fullLoad.headers)
@@ -1897,14 +1897,26 @@ async function loadAccessibleRows(sheetId, user, activeTab = null, rowLimit = nu
   }
 
   let sql = `SELECT ${columnSelection} as row_data, tab_name FROM sheet_rows ${where} ORDER BY row_index ASC`;
-  if (rowLimit) {
+  const effectiveLimit = rowLimit || (CHAT_MAX_ROWS + 1);
+  if (effectiveLimit) {
     sql += ` LIMIT $${params.length + 1}`;
-    params.push(rowLimit);
+    params.push(effectiveLimit);
   }
 
-  const rows = await query(sql, params);
   const rawHeaders = sheet.headers;
   let headers = Array.isArray(rawHeaders) ? rawHeaders : (typeof rawHeaders === "string" ? JSON.parse(rawHeaders || "[]") : []);
+  const rows = await query(sql, params);
+  if (!rowLimit && rows.length > CHAT_MAX_ROWS) {
+    return {
+      headers,
+      tabs: Array.isArray(sheet.tabs) ? sheet.tabs : (sheet.tab_name ? [sheet.tab_name] : []),
+      rows: [],
+      rowFiltersList,
+      allowedColumns: headers,
+      tooLarge: true,
+      forbidden: false,
+    };
+  }
 
   if (validCols && !hasFullAccess) {
       headers = headers.filter(h => validCols.includes(h));

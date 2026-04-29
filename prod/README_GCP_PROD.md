@@ -125,12 +125,11 @@ gcloud run deploy "$BACKEND_SERVICE" \
   --platform managed \
   --allow-unauthenticated \
   --add-cloudsql-instances "$CLOUDSQL_CONN" \
-  --set-env-vars "NODE_ENV=production,PORT=8080,OPENAI_MODEL=gpt-4o-mini,OPENAI_BASE_URL=https://api.openai.com/v1,OPENAI_TIMEOUT_MS=60000,CHAT_AUDIO_MAX_CHARS=8000,POSTGRES_USER=${DB_USER},POSTGRES_DB=${DB_NAME}" \
-  --set-secrets "POSTGRES_PASSWORD=DB_PASSWORD:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,JWT_SECRET=JWT_SECRET:latest,JWT_ISSUER=JWT_ISSUER:latest,JWT_AUDIENCE=JWT_AUDIENCE:latest,SETTINGS_CRYPTO_KEY=SETTINGS_CRYPTO_KEY:latest" \
-  --set-env-vars "DATABASE_URL=postgresql://${DB_USER}:$(gcloud secrets versions access latest --secret=DB_PASSWORD)@/$(echo $DB_NAME)?host=/cloudsql/${CLOUDSQL_CONN}"
+  --set-env-vars "NODE_ENV=production,PORT=8080,OPENAI_MODEL=gpt-4o-mini,OPENAI_BASE_URL=https://api.openai.com/v1,OPENAI_TIMEOUT_MS=60000,CHAT_AUDIO_MAX_CHARS=8000,POSTGRES_HOST=/cloudsql/${CLOUDSQL_CONN},POSTGRES_PORT=5432,POSTGRES_USER=${DB_USER},POSTGRES_DB=${DB_NAME}" \
+  --set-secrets "POSTGRES_PASSWORD=DB_PASSWORD:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,JWT_SECRET=JWT_SECRET:latest,JWT_ISSUER=JWT_ISSUER:latest,JWT_AUDIENCE=JWT_AUDIENCE:latest,SETTINGS_CRYPTO_KEY=SETTINGS_CRYPTO_KEY:latest"
 ```
 
-Note: For stricter security, avoid inline secret expansion for `DATABASE_URL`. Preferred pattern is app-side assembly from secret/env pieces.
+The backend now supports database connection via discrete variables (`POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_DB`, `POSTGRES_PASSWORD`) so DB credentials do not need to be embedded in a single `DATABASE_URL` value.
 
 ## 8. Deploy Frontend to Cloud Run
 

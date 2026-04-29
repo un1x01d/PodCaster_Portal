@@ -36,6 +36,7 @@ export default function DashboardBody(props) {
 
         handleUpload,
         handleGoogleDriveImport,
+        handleGoogleConnect,
         handleDropboxImport,
         handleDropboxConnect,
         dropboxEnabled,
@@ -264,9 +265,6 @@ export default function DashboardBody(props) {
         }
     };
 
-    // Internal State for Folders (fetched here to ensure freshness)
-    const [folders, setFolders] = useState([]);
-    const [selectedFolderId, setSelectedFolderId] = useState("");
     const [selectedReportSourceId, setSelectedReportSourceId] = useState("");
     const [menuOpen, setMenuOpen] = useState(false);
     const [expandedMenus, setExpandedMenus] = useState({
@@ -393,14 +391,16 @@ export default function DashboardBody(props) {
         if (String(user.role || "").toLowerCase() === "admin") return true;
         return !!(user.is_group_admin || user.group_admin || user.is_admin);
     }, [user]);
-
-    // Fetch folders on mount
-    React.useEffect(() => {
-        if (!token) return;
-        axios.get(`${API}/folders`, { headers: { Authorization: `Bearer ${token}` } })
-            .then(r => setFolders(r.data || []))
-            .catch(e => console.error("Fetch folders failed", e));
-    }, [token, API]);
+    const canManageViews = React.useMemo(() => {
+        if (!user) return false;
+        if (String(user.role || "").toLowerCase() === "admin") return true;
+        return !!(user.is_group_admin || user.group_admin || user.is_admin);
+    }, [user]);
+    const canOpenAdminPage = React.useMemo(() => {
+        if (!user) return false;
+        if (String(user.role || "").toLowerCase() === "admin") return true;
+        return !!(user.is_group_admin || user.group_admin || user.is_admin);
+    }, [user]);
 
     React.useEffect(() => {
         if (!menuOpen) return undefined;
@@ -414,12 +414,6 @@ export default function DashboardBody(props) {
     React.useEffect(() => {
         setMenuOpen(false);
     }, [sheetId]);
-
-    const folderOptions = React.useMemo(() => {
-        return [{ value: "", label: "Select folder" }].concat(
-            folders.map((f) => ({ value: String(f.id), label: f.path || f.name }))
-        );
-    }, [folders]);
 
     const reportSourceOptions = React.useMemo(() => {
         return [{ value: "", label: "Create new report source" }].concat(
@@ -527,12 +521,19 @@ export default function DashboardBody(props) {
             setDriveEntries(normalized);
             setDriveBreadcrumbs(Array.isArray(nextBreadcrumbs) && nextBreadcrumbs.length ? nextBreadcrumbs : [{ id: "root", name: "My Drive" }]);
         } catch (e) {
+            const errCode = String(e?.response?.data?.error || "");
+            if (errCode === "google_not_connected") {
+                if (confirm("Google Drive is not connected for this user yet. Connect now?")) {
+                    handleGoogleConnect?.();
+                }
+                return;
+            }
             console.error("Fetch Google Drive entries failed:", e);
             alert(e?.response?.data?.error || "Failed to fetch Google Drive files");
         } finally {
             setDriveLoading(false);
         }
-    }, [API, token, isSupportedDriveFile]);
+    }, [API, token, isSupportedDriveFile, handleGoogleConnect]);
 
     const openDrivePicker = React.useCallback(() => {
         setSelectedDriveFile(null);
@@ -837,10 +838,10 @@ export default function DashboardBody(props) {
                                             </div>
                                         )}
                                     </div>
-                                    {user.role === "admin" ? (
+                                    {canManageViews ? (
                                         <details className="left-menu-disclosure">
                                             <summary className="left-menu-summary font-bold">
-                                                Locked Views (Admin)
+                                                Locked Views
                                                 <span className="left-menu-summary-meta">{activeView?.name || "None active"}</span>
                                             </summary>
                                             <div className="left-menu-nested space-y-2 px-0">
@@ -940,15 +941,6 @@ export default function DashboardBody(props) {
                                                             <span className="truncate">{selectedFileName || "Choose spreadsheet"}</span>
                                                         </label>
                                                         <SearchableSelect
-                                                            options={folderOptions}
-                                                            value={selectedFolderId}
-                                                            onChange={(e) => setSelectedFolderId(e.target.value)}
-                                                            placeholder="Select folder"
-                                                            className="w-full"
-                                                            {...leftMenuSelectClasses}
-                                                            panelWidth="100%"
-                                                        />
-                                                        <SearchableSelect
                                                             options={reportSourceOptions}
                                                             value={selectedReportSourceId}
                                                             onChange={(e) => {
@@ -997,16 +989,16 @@ export default function DashboardBody(props) {
                                                             onClick={() => {
                                                                 // Use fileLabel for both display_name and file_label.
                                                                 // If no source ID, use fileLabel as the source name too.
-                                                                handleUpload(file, selectedFolderId, fileLabel, selectedReportSourceId, selectedReportSourceId ? "" : fileLabel, fileLabel);
+                                                                handleUpload(file, fileLabel, selectedReportSourceId, selectedReportSourceId ? "" : fileLabel, fileLabel);
                                                                 setFileLabel("");
                                                             }}
-                                                            disabled={!file || (!selectedFolderId && !selectedReportSourceId && !fileLabel.trim()) || (selectedReportSourceId && !fileLabel.trim())}
-                                                            className={`left-menu-action ${!file || (!selectedFolderId && !selectedReportSourceId && !fileLabel.trim()) || (selectedReportSourceId && !fileLabel.trim()) ? "left-menu-action-disabled" : ""}`}
+                                                            disabled={!file || !fileLabel.trim()}
+                                                            className={`left-menu-action ${!file || !fileLabel.trim() ? "left-menu-action-disabled" : ""}`}
                                                             title={
                                                                 !file
                                                                     ? "Choose a file"
-                                                                    : (!selectedFolderId && !selectedReportSourceId && !fileLabel.trim())
-                                                                        ? "Select a folder or enter a label"
+                                                                    : (!fileLabel.trim())
+                                                                        ? "Enter a label"
                                                                         : "Upload & Load"
                                                             }
                                                         >
@@ -1119,7 +1111,7 @@ export default function DashboardBody(props) {
                             )}
                         </div>
 
-                        {user.role === "admin" && (
+                        {canOpenAdminPage && (
                             <div className="left-menu-group">
                                 <button className="left-menu-section-toggle" onClick={() => toggleMenu("admin")} aria-expanded={expandedMenus.admin}>
                                     <span>Admin</span>
@@ -1280,14 +1272,13 @@ export default function DashboardBody(props) {
                             </button>
                             <button
                                 type="button"
-                                disabled={!selectedDriveFile || (!selectedFolderId && !selectedReportSourceId && !fileLabel.trim()) || (selectedReportSourceId && !fileLabel.trim())}
+                                disabled={!selectedDriveFile || !fileLabel.trim()}
                                 onClick={() => {
                                     if (!selectedDriveFile) return;
                                     handleGoogleDriveImport({
                                         fileId: selectedDriveFile.id,
                                         name: selectedDriveFile.name,
                                         mimeType: selectedDriveFile.mimeType,
-                                        folderId: selectedFolderId,
                                         displayName: fileLabel,
                                         reportSourceId: selectedReportSourceId,
                                         reportSourceName: selectedReportSourceId ? "" : fileLabel,
@@ -1296,10 +1287,10 @@ export default function DashboardBody(props) {
                                     setFileLabel("");
                                     closeDrivePicker();
                                 }}
-                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedDriveFile || (!selectedFolderId && !selectedReportSourceId && !fileLabel.trim()) || (selectedReportSourceId && !fileLabel.trim()) ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
+                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedDriveFile || !fileLabel.trim() ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
                                 title={
-                                    (!selectedFolderId && !selectedReportSourceId && !fileLabel.trim())
-                                        ? "Select a folder or enter a label"
+                                    (!fileLabel.trim())
+                                        ? "Enter a label"
                                         : !selectedDriveFile
                                             ? "Select a Google Drive file"
                                             : "Import selected file"
@@ -1425,13 +1416,12 @@ export default function DashboardBody(props) {
                             </button>
                             <button
                                 type="button"
-                                disabled={!selectedDropboxFile || (!selectedFolderId && !selectedReportSourceId && !fileLabel.trim()) || (selectedReportSourceId && !fileLabel.trim())}
+                                disabled={!selectedDropboxFile || !fileLabel.trim()}
                                 onClick={() => {
                                     if (!selectedDropboxFile) return;
                                     handleDropboxImport({
                                         pathLower: selectedDropboxFile.pathLower,
                                         name: selectedDropboxFile.name,
-                                        folderId: selectedFolderId,
                                         displayName: fileLabel,
                                         reportSourceId: selectedReportSourceId,
                                         reportSourceName: selectedReportSourceId ? "" : fileLabel,
@@ -1440,10 +1430,10 @@ export default function DashboardBody(props) {
                                     setFileLabel("");
                                     closeDropboxPicker();
                                 }}
-                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedDropboxFile || (!selectedFolderId && !selectedReportSourceId && !fileLabel.trim()) || (selectedReportSourceId && !fileLabel.trim()) ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
+                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedDropboxFile || !fileLabel.trim() ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
                                 title={
-                                    (!selectedFolderId && !selectedReportSourceId && !fileLabel.trim())
-                                        ? "Select a folder or enter a label"
+                                    (!fileLabel.trim())
+                                        ? "Enter a label"
                                         : !selectedDropboxFile
                                             ? "Select a Dropbox file"
                                             : "Import selected file"
@@ -1568,13 +1558,12 @@ export default function DashboardBody(props) {
                             </button>
                             <button
                                 type="button"
-                                disabled={!selectedOneDriveFile || (!selectedFolderId && !selectedReportSourceId && !fileLabel.trim()) || (selectedReportSourceId && !fileLabel.trim())}
+                                disabled={!selectedOneDriveFile || !fileLabel.trim()}
                                 onClick={() => {
                                     if (!selectedOneDriveFile) return;
                                     handleOneDriveImport({
                                         itemId: selectedOneDriveFile.id,
                                         name: selectedOneDriveFile.name,
-                                        folderId: selectedFolderId,
                                         displayName: fileLabel,
                                         reportSourceId: selectedReportSourceId,
                                         reportSourceName: selectedReportSourceId ? "" : fileLabel,
@@ -1583,10 +1572,10 @@ export default function DashboardBody(props) {
                                     setFileLabel("");
                                     closeOneDrivePicker();
                                 }}
-                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedOneDriveFile || (!selectedFolderId && !selectedReportSourceId && !fileLabel.trim()) || (selectedReportSourceId && !fileLabel.trim()) ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
+                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedOneDriveFile || !fileLabel.trim() ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
                                 title={
-                                    (!selectedFolderId && !selectedReportSourceId && !fileLabel.trim())
-                                        ? "Select a folder or enter a label"
+                                    (!fileLabel.trim())
+                                        ? "Enter a label"
                                         : !selectedOneDriveFile
                                             ? "Select a OneDrive file"
                                             : "Import selected file"

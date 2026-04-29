@@ -8,27 +8,27 @@ import { Worker } from "node:worker_threads";
 test("dropbox oauth state is signed and validates for original user", async () => {
   process.env.JWT_SECRET = "test-secret";
   const mod = await import(`../src/controllers/dropboxController.js?t=${Date.now()}`);
-  const state = mod.createDropboxOauthState(42, 1_000);
-  const userId = mod.verifyDropboxOauthState(state, 1_001);
-  assert.equal(userId, 42);
+  const state = mod.createDropboxOauthState(42, 9, 1_000);
+  const verified = mod.verifyDropboxOauthState(state, 1_001);
+  assert.deepEqual(verified, { userId: 42, groupId: 9 });
 });
 
 test("dropbox oauth state rejects tampered payload", async () => {
   process.env.JWT_SECRET = "test-secret";
-  const mod = await import(`../src/controllers/dropboxController.js?t=${Date.now()}`);
-  const state = mod.createDropboxOauthState(7, 1_000);
+  const mod = await import(`../src/controllers/dropboxController.js?t=${Date.now()}_tampered`);
+  const state = mod.createDropboxOauthState(7, 9, 1_000);
   const [payload, sig] = state.split(".");
   const tampered = `${payload.replace(/.$/, "A")}.${sig}`;
-  const userId = mod.verifyDropboxOauthState(tampered, 1_001);
-  assert.equal(userId, null);
+  const verified = mod.verifyDropboxOauthState(tampered, 1_001);
+  assert.equal(verified, null);
 });
 
 test("dropbox oauth state expires", async () => {
   process.env.JWT_SECRET = "test-secret";
-  const mod = await import(`../src/controllers/dropboxController.js?t=${Date.now()}`);
-  const state = mod.createDropboxOauthState(9, 1_000);
-  const userId = mod.verifyDropboxOauthState(state, 1_000 + (5 * 60 * 1000) + 1);
-  assert.equal(userId, null);
+  const mod = await import(`../src/controllers/dropboxController.js?t=${Date.now()}_expires`);
+  const state = mod.createDropboxOauthState(9, 11, 1_000);
+  const verified = mod.verifyDropboxOauthState(state, 1_000 + (5 * 60 * 1000) + 1);
+  assert.equal(verified, null);
 });
 
 test("sheet upload role guard allows only explicit admin role", async () => {
@@ -331,6 +331,18 @@ test("chat backend applies active dashboard filters to AI execution", async () =
   assert.match(source, /case 'equals'/);
 });
 
+test("chat fallback path enforces a hard row cap before full in-memory analysis", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const controllerPath = path.join(__dirname, "..", "src", "controllers", "chatController.js");
+  const source = fs.readFileSync(controllerPath, "utf8");
+
+  assert.match(source, /const CHAT_MAX_ROWS = Number\.parseInt\(process\.env\.CHAT_MAX_ROWS \|\| "50000", 10\);/);
+  assert.match(source, /const effectiveLimit = rowLimit \|\| \(CHAT_MAX_ROWS \+ 1\);/);
+  assert.match(source, /if \(!rowLimit && rows\.length > CHAT_MAX_ROWS\)/);
+  assert.match(source, /error: "chat_dataset_too_large"/);
+});
+
 test("client spreadsheet exports neutralize formula injection values", async () => {
   const __filename = fileURLToPath(import.meta.url);
   const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
@@ -456,4 +468,74 @@ test("customer admin promotion requires explicit entitlement and frontend expose
   assert.match(uiSource, /maxUsers/);
   assert.match(uiSource, /manageGroupAdmins/);
   assert.match(uiSource, /groupId: Number\(selectedGroupId\)/);
+});
+
+test("customer-scoped SSO toggle is wired and enforced for Google auth", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
+  const entitlementsPath = path.join(repoRoot, "backend", "src", "utils", "entitlements.js");
+  const routesPath = path.join(repoRoot, "backend", "src", "routes", "userRoutes.js");
+  const userControllerPath = path.join(repoRoot, "backend", "src", "controllers", "userController.js");
+  const googleControllerPath = path.join(repoRoot, "backend", "src", "controllers", "googleController.js");
+  const uiPath = path.join(repoRoot, "frontend", "src", "UserManagement.jsx");
+  const appPath = path.join(repoRoot, "frontend", "src", "App.jsx");
+
+  const entitlementsSource = fs.readFileSync(entitlementsPath, "utf8");
+  const routesSource = fs.readFileSync(routesPath, "utf8");
+  const userControllerSource = fs.readFileSync(userControllerPath, "utf8");
+  const googleControllerSource = fs.readFileSync(googleControllerPath, "utf8");
+  const uiSource = fs.readFileSync(uiPath, "utf8");
+  const appSource = fs.readFileSync(appPath, "utf8");
+
+  assert.match(entitlementsSource, /sso:\s*true/);
+  assert.match(routesSource, /router\.get\("\/admin\/settings\/sso"/);
+  assert.match(routesSource, /router\.patch\("\/admin\/settings\/sso"/);
+  assert.match(userControllerSource, /export async function getSsoSetting/);
+  assert.match(userControllerSource, /export async function setSsoSetting/);
+  assert.match(googleControllerSource, /assertGroupFeatureEnabled\(requestedGroupId,\s*"sso"/);
+  assert.match(googleControllerSource, /assertGroupFeatureEnabled\(requiredGroupId,\s*"sso"/);
+  assert.doesNotMatch(uiSource, /\["sso",\s*"SSO"\]/);
+  assert.match(appSource, /google_sso_disabled/);
+});
+
+test("customer users are invitation-only and invitation auth flow is wired", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
+  const userControllerPath = path.join(repoRoot, "backend", "src", "controllers", "userController.js");
+  const userRoutesPath = path.join(repoRoot, "backend", "src", "routes", "userRoutes.js");
+  const authControllerPath = path.join(repoRoot, "backend", "src", "controllers", "authController.js");
+  const authRoutesPath = path.join(repoRoot, "backend", "src", "routes", "authRoutes.js");
+  const dbPath = path.join(repoRoot, "backend", "src", "config", "db.js");
+  const uiPath = path.join(repoRoot, "frontend", "src", "UserManagement.jsx");
+  const appPath = path.join(repoRoot, "frontend", "src", "App.jsx");
+
+  const userControllerSource = fs.readFileSync(userControllerPath, "utf8");
+  const userRoutesSource = fs.readFileSync(userRoutesPath, "utf8");
+  const authControllerSource = fs.readFileSync(authControllerPath, "utf8");
+  const authRoutesSource = fs.readFileSync(authRoutesPath, "utf8");
+  const dbSource = fs.readFileSync(dbPath, "utf8");
+  const uiSource = fs.readFileSync(uiPath, "utf8");
+  const appSource = fs.readFileSync(appPath, "utf8");
+
+  assert.match(userControllerSource, /customer_users_invite_only/);
+  assert.match(userControllerSource, /export async function inviteCustomerUser/);
+  assert.match(userControllerSource, /export async function listCustomerInvitations/);
+  assert.match(userControllerSource, /export async function resendCustomerInvitation/);
+  assert.match(userControllerSource, /export async function revokeCustomerInvitation/);
+  assert.match(userControllerSource, /export async function getCustomerInvitationPolicy/);
+  assert.match(userControllerSource, /export async function setCustomerInvitationPolicy/);
+  assert.match(userRoutesSource, /router\.post\("\/users\/invitations", invitationIssueRateLimit, asyncHandler\(inviteCustomerUser\)\)/);
+  assert.match(userRoutesSource, /router\.get\("\/users\/invitations", asyncHandler\(listCustomerInvitations\)\)/);
+  assert.match(userRoutesSource, /router\.post\("\/users\/invitations\/:id\/resend", invitationIssueRateLimit, asyncHandler\(resendCustomerInvitation\)\)/);
+  assert.match(userRoutesSource, /router\.post\("\/users\/invitations\/:id\/revoke", asyncHandler\(revokeCustomerInvitation\)\)/);
+  assert.match(userRoutesSource, /router\.get\("\/admin\/settings\/customer-invitations", asyncHandler\(getCustomerInvitationPolicy\)\)/);
+  assert.match(userRoutesSource, /router\.patch\("\/admin\/settings\/customer-invitations", asyncHandler\(setCustomerInvitationPolicy\)\)/);
+  assert.match(authControllerSource, /export async function getInvitationInfo/);
+  assert.match(authControllerSource, /export async function acceptInvitation/);
+  assert.match(authRoutesSource, /router\.get\("\/invitations\/:token", invitationLookupRateLimit, asyncHandler\(getInvitationInfo\)\)/);
+  assert.match(authRoutesSource, /router\.post\("\/invitations\/accept", invitationAcceptRateLimit, asyncHandler\(acceptInvitation\)\)/);
+  assert.match(dbSource, /CREATE TABLE IF NOT EXISTS customer_user_invitations/);
+  assert.match(uiSource, /\/users\/invitations/);
+  assert.match(uiSource, /\/admin\/settings\/customer-invitations/);
+  assert.match(appSource, /auth\/invitations\/accept/);
 });

@@ -432,11 +432,86 @@ function AuthScreen({ email, setEmail, password, setPassword, onSubmit, onGoogle
   );
 }
 
+function InviteAcceptScreen({
+  inviteInfo,
+  invitePassword,
+  setInvitePassword,
+  inviteRepeat,
+  setInviteRepeat,
+  onAccept,
+  loading,
+  error,
+  onBackToLogin,
+}) {
+  return (
+    <div className="min-h-screen w-full flex items-center justify-center p-6 relative bg-[#fafafa] overflow-x-hidden">
+      <div className="absolute top-[-20%] left-[-10%] w-[60%] h-[60%] bg-indigo-500/10 rounded-full blur-[140px] animate-pulse" />
+      <div className="absolute bottom-[-20%] right-[-10%] w-[60%] h-[60%] bg-cyan-500/10 rounded-full blur-[140px] animate-pulse" style={{ animationDelay: "2s" }} />
+      <div className="glass rounded-xl p-5 md:p-7 w-full max-w-[500px] relative z-10 border-white/50 shadow-[0_32px_80px_rgba(0,0,0,0.08)]">
+        <div className="mb-5 text-center">
+          <h2 className="text-xl font-[900] text-slate-900 tracking-tighter mb-1.5">Accept Invitation</h2>
+          <p className="text-slate-500 text-[10px] font-semibold opacity-70 uppercase tracking-wider">
+            Join {inviteInfo?.groupName || "customer workspace"}
+          </p>
+        </div>
+        <div className="space-y-3">
+          <input className="w-full bg-white/40 border border-slate-200 rounded-md px-3 py-1.5 text-[11px] font-bold" value={inviteInfo?.email || ""} disabled />
+          <div className="grid grid-cols-2 gap-2">
+            <input className="w-full bg-white/40 border border-slate-200 rounded-md px-3 py-1.5 text-[11px] font-bold" value={inviteInfo?.firstName || ""} disabled />
+            <input className="w-full bg-white/40 border border-slate-200 rounded-md px-3 py-1.5 text-[11px] font-bold" value={inviteInfo?.lastName || ""} disabled />
+          </div>
+          <input className="w-full bg-white/40 border border-slate-200 rounded-md px-3 py-1.5 text-[11px] font-bold" value={inviteInfo?.company || ""} disabled />
+          <input
+            type="password"
+            value={invitePassword}
+            onChange={(e) => setInvitePassword(e.target.value)}
+            placeholder="Set password"
+            className="w-full bg-white/40 border border-slate-200 rounded-md px-3 py-1.5 text-[11px] font-bold"
+          />
+          <input
+            type="password"
+            value={inviteRepeat}
+            onChange={(e) => setInviteRepeat(e.target.value)}
+            placeholder="Repeat password"
+            className="w-full bg-white/40 border border-slate-200 rounded-md px-3 py-1.5 text-[11px] font-bold"
+          />
+          {!!error && (
+            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-700">
+              {error}
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={onAccept}
+            disabled={loading || !inviteInfo}
+            className={`w-full bg-slate-900 hover:bg-black text-white rounded-md py-1.5 text-[11px] font-[900] ${loading || !inviteInfo ? "opacity-60 cursor-not-allowed" : ""}`}
+          >
+            {loading ? "Accepting..." : "Accept & Continue"}
+          </button>
+          <button
+            type="button"
+            onClick={onBackToLogin}
+            className="w-full rounded-md border border-slate-300 text-slate-700 py-1.5 text-[11px] font-semibold hover:bg-slate-50"
+          >
+            Back to Login
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(() => readStoredAuthToken());
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [inviteToken, setInviteToken] = useState("");
+  const [inviteInfo, setInviteInfo] = useState(null);
+  const [inviteLoading, setInviteLoading] = useState(false);
+  const [inviteError, setInviteError] = useState("");
+  const [invitePassword, setInvitePassword] = useState("");
+  const [inviteRepeat, setInviteRepeat] = useState("");
   const [googleEnabled, setGoogleEnabled] = useState(true);
   const [dropboxEnabled, setDropboxEnabled] = useState(true);
   const [oneDriveEnabled, setOneDriveEnabled] = useState(true);
@@ -481,12 +556,6 @@ export default function App() {
   const [reportSourceImports, setReportSourceImports] = useState({});
   const workspaceChartStateRef = useRef(null);
 
-
-  // Admin folder files view
-  const [folderFiles, setFolderFiles] = useState([]);
-  const [folderFilesMeta, setFolderFilesMeta] = useState({});
-  const [folderFilesOpen, setFolderFilesOpen] = useState(false);
-  const [folderFilesLoading, setFolderFilesLoading] = useState(false);
 
   // Views
   const [views, setViews] = useState([]);
@@ -676,41 +745,51 @@ export default function App() {
 
   const applyChartConfig = React.useCallback((config) => {
     if (!config || !config.valueColumn) return;
+    const resolveHeader = (col) => {
+      const target = String(col || "").trim().toLowerCase();
+      if (!target) return "";
+      return headers.find((h) => String(h || "").trim().toLowerCase() === target) || "";
+    };
+    const resolvedValue = resolveHeader(config.valueColumn);
+    const resolvedDate = resolveHeader(config.dateColumn);
+    const resolvedSegment = resolveHeader(config.segmentBy);
+    if (!resolvedValue) return;
+
     setTrendsOn(false);
     setPivotOn(false);
     setTwoOn(false);
     const isTemporalColumn = (col = "") => looksLikeDateColumn(col);
-    if (config.dateColumn && (!config.segmentBy || isTemporalColumn(config.segmentBy))) {
-      setTrendsValueKey(config.valueColumn);
-      setTrendsDateKey(config.dateColumn);
-      setTrendGranularity(isTemporalColumn(config.dateColumn) && /quarter|fiscal/i.test(config.dateColumn) ? "quarter" : "month");
+    if (resolvedDate && (!resolvedSegment || isTemporalColumn(resolvedSegment))) {
+      setTrendsValueKey(resolvedValue);
+      setTrendsDateKey(resolvedDate);
+      setTrendGranularity(isTemporalColumn(resolvedDate) && /quarter|fiscal/i.test(resolvedDate) ? "quarter" : "month");
       setTrendsOn(true);
-      setPendingViewName(`Trend of ${config.valueColumn}`);
+      setPendingViewName(`Trend of ${resolvedValue}`);
       return;
     }
-    if (!config.dateColumn && config.segmentBy && config.valueColumn && isTemporalColumn(config.segmentBy)) {
-      setTrendsValueKey(config.valueColumn);
-      setTrendsDateKey(config.segmentBy);
-      setTrendGranularity(/quarter|fiscal/i.test(config.segmentBy) ? "quarter" : "month");
+    if (!resolvedDate && resolvedSegment && isTemporalColumn(resolvedSegment)) {
+      setTrendsValueKey(resolvedValue);
+      setTrendsDateKey(resolvedSegment);
+      setTrendGranularity(/quarter|fiscal/i.test(resolvedSegment) ? "quarter" : "month");
       setTrendsOn(true);
-      setPendingViewName(`Trend of ${config.valueColumn}`);
+      setPendingViewName(`Trend of ${resolvedValue}`);
       return;
     }
-    if (config.segmentBy && config.valueColumn) {
-      setPivotRowKey(config.segmentBy);
-      setPivotValKey(config.valueColumn);
-      setPivotColKey(null);
+    if (resolvedSegment) {
+      setPivotRowKey(resolvedSegment);
+      setPivotValKey(resolvedValue);
+      setPivotColKey("");
       setPivotAgg(config.aggregation === "avg" ? "Average" : "Sum");
       setPivotOn(true);
-      setPendingViewName(`${config.valueColumn} by ${config.segmentBy}`);
+      setPendingViewName(`${resolvedValue} by ${resolvedSegment}`);
       return;
     }
     const dateCol = headers.find((h) => h.toLowerCase().includes("date") || h.toLowerCase().includes("time") || h.toLowerCase().includes("year"));
     if (dateCol) {
-      setTrendsValueKey(config.valueColumn);
+      setTrendsValueKey(resolvedValue);
       setTrendsDateKey(dateCol);
       setTrendsOn(true);
-      setPendingViewName(`Trend of ${config.valueColumn}`);
+      setPendingViewName(`Trend of ${resolvedValue}`);
     }
   }, [headers]);
 
@@ -923,13 +1002,60 @@ export default function App() {
     }
   };
 
+  const clearInviteQueryParam = React.useCallback(() => {
+    const params = new URLSearchParams(window.location.search);
+    params.delete("invite");
+    const next = params.toString();
+    const nextUrl = `${window.location.pathname}${next ? `?${next}` : ""}${window.location.hash || ""}`;
+    window.history.replaceState({}, document.title, nextUrl);
+  }, []);
+
+  const handleAcceptInvitation = async () => {
+    if (!inviteToken) return;
+    if (!invitePassword || !inviteRepeat) {
+      setInviteError("Password and confirmation are required.");
+      return;
+    }
+    if (invitePassword !== inviteRepeat) {
+      setInviteError("Passwords do not match.");
+      return;
+    }
+    setInviteLoading(true);
+    setInviteError("");
+    try {
+      const res = await axios.post(`${API}/auth/invitations/accept`, {
+        token: inviteToken,
+        password: invitePassword,
+      });
+      const authToken = String(res?.data?.token || "").trim();
+      if (!authToken) throw new Error("invitation_accept_missing_token");
+      localStorage.setItem("token", authToken);
+      setToken(authToken);
+      setUser(res?.data?.user || null);
+      setInvitePassword("");
+      setInviteRepeat("");
+      setInviteInfo(null);
+      setInviteToken("");
+      clearInviteQueryParam();
+    } catch (err) {
+      setInviteError(err?.response?.data?.error || "Failed to accept invitation.");
+    } finally {
+      setInviteLoading(false);
+    }
+  };
+
   const handleGoogleLogin = async () => {
     if (!googleEnabled) {
       alert("Google sign-in is disabled.");
       return;
     }
     try {
-      const res = await axios.get(`${API}/auth/google/url`);
+      const qp = new URLSearchParams(window.location.search);
+      const groupIdRaw = qp.get("groupId") || qp.get("customerGroupId") || "";
+      const groupId = Number.parseInt(groupIdRaw, 10);
+      const res = await axios.get(`${API}/auth/google/url`, {
+        params: Number.isInteger(groupId) && groupId > 0 ? { groupId } : undefined,
+      });
       const url = String(res?.data?.url || "").trim();
       if (!url) {
         alert("Google login is not configured.");
@@ -964,6 +1090,31 @@ export default function App() {
     } catch (err) {
       console.error("dropbox auth url failed:", err);
       alert(err?.response?.data?.error || "Dropbox is not configured.");
+    }
+  };
+
+  const handleGoogleConnect = async () => {
+    if (!user) {
+      alert("Sign in first.");
+      return;
+    }
+    if (!googleEnabled) {
+      alert("Google sign-in is disabled.");
+      return;
+    }
+    try {
+      const res = await axios.get(`${API}/auth/google/connect-url`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const url = String(res?.data?.url || "").trim();
+      if (!url) {
+        alert("Google login is not configured.");
+        return;
+      }
+      window.location.href = url;
+    } catch (err) {
+      console.error("google connect url failed:", err);
+      alert(err?.response?.data?.error || "Google login is not configured.");
     }
   };
 
@@ -1220,12 +1371,11 @@ export default function App() {
       });
   }, [API, token, user]);
 
-  const handleUpload = async (uploadFile, folderId, displayName, reportSourceId = "", newReportSourceName = "", fileLabel = "") => {
-    if (!uploadFile || (!folderId && !reportSourceId) || !String(displayName || "").trim()) return;
+  const handleUpload = async (uploadFile, displayName, reportSourceId = "", newReportSourceName = "", fileLabel = "") => {
+    if (!uploadFile || !String(displayName || "").trim()) return;
     if (!reportSourceId && !String(newReportSourceName || "").trim()) return;
     const formData = new FormData();
     formData.append("file", uploadFile);
-    if (folderId) formData.append("folder_id", folderId);
     formData.append("display_name", String(displayName).trim());
     formData.append("file_label", String(fileLabel || displayName).trim());
     if (reportSourceId) {
@@ -1281,8 +1431,8 @@ export default function App() {
     }
   };
 
-  const handleGoogleDriveImport = async ({ fileId, name, mimeType, folderId, displayName, reportSourceId = "", reportSourceName: newReportSourceName = "", fileLabel = "" }) => {
-    if (!fileId || (!folderId && !reportSourceId) || !String(displayName || "").trim()) return;
+  const handleGoogleDriveImport = async ({ fileId, name, mimeType, displayName, reportSourceId = "", reportSourceName: newReportSourceName = "", fileLabel = "" }) => {
+    if (!fileId || !String(displayName || "").trim()) return;
     if (!reportSourceId && !String(newReportSourceName || "").trim()) return;
     try {
       const res = await axios.post(
@@ -1291,7 +1441,6 @@ export default function App() {
           fileId,
           name,
           mimeType,
-          ...(folderId ? { folder_id: folderId } : {}),
           display_name: String(displayName).trim(),
           file_label: String(fileLabel || displayName).trim(),
           ...(reportSourceId ? { report_source_id: reportSourceId } : { report_source_name: String(newReportSourceName).trim() }),
@@ -1338,8 +1487,8 @@ export default function App() {
     }
   };
 
-  const handleDropboxImport = async ({ pathLower, name, folderId, displayName, reportSourceId = "", reportSourceName: newReportSourceName = "", fileLabel = "" }) => {
-    if (!pathLower || (!folderId && !reportSourceId) || !String(displayName || "").trim()) return;
+  const handleDropboxImport = async ({ pathLower, name, displayName, reportSourceId = "", reportSourceName: newReportSourceName = "", fileLabel = "" }) => {
+    if (!pathLower || !String(displayName || "").trim()) return;
     if (!reportSourceId && !String(newReportSourceName || "").trim()) return;
     try {
       const res = await axios.post(
@@ -1347,7 +1496,6 @@ export default function App() {
         {
           pathLower,
           name,
-          ...(folderId ? { folder_id: folderId } : {}),
           display_name: String(displayName).trim(),
           file_label: String(fileLabel || displayName).trim(),
           ...(reportSourceId ? { report_source_id: reportSourceId } : { report_source_name: String(newReportSourceName).trim() }),
@@ -1394,8 +1542,8 @@ export default function App() {
     }
   };
 
-  const handleOneDriveImport = async ({ itemId, name, folderId, displayName, reportSourceId = "", reportSourceName: newReportSourceName = "", fileLabel = "" }) => {
-    if (!itemId || (!folderId && !reportSourceId) || !String(displayName || "").trim()) return;
+  const handleOneDriveImport = async ({ itemId, name, displayName, reportSourceId = "", reportSourceName: newReportSourceName = "", fileLabel = "" }) => {
+    if (!itemId || !String(displayName || "").trim()) return;
     if (!reportSourceId && !String(newReportSourceName || "").trim()) return;
     try {
       const res = await axios.post(
@@ -1403,7 +1551,6 @@ export default function App() {
         {
           itemId,
           name,
-          ...(folderId ? { folder_id: folderId } : {}),
           display_name: String(displayName).trim(),
           file_label: String(fileLabel || displayName).trim(),
           ...(reportSourceId ? { report_source_id: reportSourceId } : { report_source_name: String(newReportSourceName).trim() }),
@@ -1643,6 +1790,30 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (user) return;
+    const params = new URLSearchParams(window.location.search);
+    const rawInvite = String(params.get("invite") || "").trim();
+    if (!rawInvite) {
+      setInviteToken("");
+      setInviteInfo(null);
+      setInviteError("");
+      return;
+    }
+    setInviteToken(rawInvite);
+    setInviteLoading(true);
+    setInviteError("");
+    axios.get(`${API}/auth/invitations/${encodeURIComponent(rawInvite)}`)
+      .then((res) => {
+        setInviteInfo(res?.data || null);
+      })
+      .catch((err) => {
+        setInviteInfo(null);
+        setInviteError(err?.response?.data?.error || "Invitation is invalid or expired.");
+      })
+      .finally(() => setInviteLoading(false));
+  }, [API, user]);
+
+  useEffect(() => {
     localStorage.removeItem("workspaceChartState:v1");
     const params = new URLSearchParams(window.location.search);
     const googleCode = params.get("google_code");
@@ -1668,6 +1839,12 @@ export default function App() {
     if (googleError) {
       const msg = googleError === "admin_manual_login_required"
         ? "Admin accounts must sign in with local credentials."
+        : googleError === "google_sso_disabled"
+          ? "Google SSO is disabled for this customer."
+          : googleError === "sso_user_not_provisioned"
+            ? "This account is not provisioned for customer SSO."
+            : googleError === "sso_group_membership_required"
+              ? "This account is not assigned to the requested customer."
         : "Google sign-in failed.";
       params.delete("google_code");
       params.delete("google_error");
@@ -1894,15 +2071,36 @@ export default function App() {
             <Route path="/" element={
               <ErrorBoundary>
                 {!user ? (
-                  <AuthScreen
-                    email={email}
-                    setEmail={setEmail}
-                    password={password}
-                    setPassword={setPassword}
-                    onSubmit={handleLogin}
-                    onGoogleLogin={handleGoogleLogin}
-                    googleEnabled={googleEnabled}
-                  />
+                  inviteToken ? (
+                    <InviteAcceptScreen
+                      inviteInfo={inviteInfo}
+                      invitePassword={invitePassword}
+                      setInvitePassword={setInvitePassword}
+                      inviteRepeat={inviteRepeat}
+                      setInviteRepeat={setInviteRepeat}
+                      onAccept={handleAcceptInvitation}
+                      loading={inviteLoading}
+                      error={inviteError}
+                      onBackToLogin={() => {
+                        setInviteToken("");
+                        setInviteInfo(null);
+                        setInvitePassword("");
+                        setInviteRepeat("");
+                        setInviteError("");
+                        clearInviteQueryParam();
+                      }}
+                    />
+                  ) : (
+                    <AuthScreen
+                      email={email}
+                      setEmail={setEmail}
+                      password={password}
+                      setPassword={setPassword}
+                      onSubmit={handleLogin}
+                      onGoogleLogin={handleGoogleLogin}
+                      googleEnabled={googleEnabled}
+                    />
+                  )
                 ) : (
                   <DashboardHome
                     user={user}
@@ -1957,15 +2155,36 @@ export default function App() {
             <Route path="/workspace" element={
               <ErrorBoundary>
                 {!user ? (
-                  <AuthScreen
-                    email={email}
-                    setEmail={setEmail}
-                    password={password}
-                    setPassword={setPassword}
-                    onSubmit={handleLogin}
-                    onGoogleLogin={handleGoogleLogin}
-                    googleEnabled={googleEnabled}
-                  />
+                  inviteToken ? (
+                    <InviteAcceptScreen
+                      inviteInfo={inviteInfo}
+                      invitePassword={invitePassword}
+                      setInvitePassword={setInvitePassword}
+                      inviteRepeat={inviteRepeat}
+                      setInviteRepeat={setInviteRepeat}
+                      onAccept={handleAcceptInvitation}
+                      loading={inviteLoading}
+                      error={inviteError}
+                      onBackToLogin={() => {
+                        setInviteToken("");
+                        setInviteInfo(null);
+                        setInvitePassword("");
+                        setInviteRepeat("");
+                        setInviteError("");
+                        clearInviteQueryParam();
+                      }}
+                    />
+                  ) : (
+                    <AuthScreen
+                      email={email}
+                      setEmail={setEmail}
+                      password={password}
+                      setPassword={setPassword}
+                      onSubmit={handleLogin}
+                      onGoogleLogin={handleGoogleLogin}
+                      googleEnabled={googleEnabled}
+                    />
+                  )
                 ) : (
                   <>
                     <DashboardBody
@@ -1983,6 +2202,7 @@ export default function App() {
                       reportSourceImports={reportSourceImports}
                       handleUpload={handleUpload}
                       handleGoogleDriveImport={handleGoogleDriveImport}
+                      handleGoogleConnect={handleGoogleConnect}
                       handleDropboxImport={handleDropboxImport}
                       handleDropboxConnect={handleDropboxConnect}
                       handleOneDriveImport={handleOneDriveImport}
@@ -2071,7 +2291,7 @@ export default function App() {
               </ErrorBoundary>
             } />
             <Route path="/users" element={
-              user?.role === "admin"
+              (user?.role === "admin" || user?.is_group_admin || user?.group_admin || user?.is_admin)
                 ? (
                   <ErrorBoundary>
                     <div className="flex-1 min-h-0 flex flex-col"><UserManagement token={token} user={user} sheetId={sheetId} /></div>
@@ -2149,7 +2369,9 @@ export default function App() {
                     onChange={(e) => setViewLevel(e.target.value)}
                     className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                   >
-                    <option value="global">Global (All Files)</option>
+                    {user?.role === "admin" && (
+                      <option value="global">Global (All Files)</option>
+                    )}
                     <option value="source">This Report Source (All Files)</option>
                     <option value="file">This File (All Revisions)</option>
                     <option value="revision">This Revision Only</option>

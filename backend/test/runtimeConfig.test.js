@@ -32,3 +32,18 @@ test("production config validation accepts strong production-like config", () =>
 
   assert.deepEqual(errors, []);
 });
+
+test("production config validation accepts discrete postgres env vars when DATABASE_URL is unset", () => {
+  const errors = validateProductionConfig({
+    NODE_ENV: "production",
+    POSTGRES_HOST: "/cloudsql/project:region:instance",
+    POSTGRES_USER: "portal",
+    POSTGRES_PASSWORD: "strong-db-password",
+    POSTGRES_DB: "portaldb",
+    JWT_SECRET: "prod-jwt-secret-with-more-than-32-characters",
+    SETTINGS_CRYPTO_KEY: "prod-settings-key-with-more-than-32-chars",
+    ALLOWED_ORIGINS: "https://portal.example.com",
+  });
+
+  assert.deepEqual(errors, []);
+});

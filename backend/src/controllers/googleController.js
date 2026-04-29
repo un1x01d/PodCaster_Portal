@@ -6,6 +6,7 @@ import path from "path";
 import { tmpdir } from "os";
 import { createHmac, randomBytes, timingSafeEqual } from "crypto";
 import { decryptSettingValue } from "../utils/settingsCrypto.js";
+import { groupHasFeature } from "../utils/entitlements.js";
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
@@ -13,17 +14,42 @@ const GOOGLE_DRIVE_FILES_URL = "https://www.googleapis.com/drive/v3/files";
 const GOOGLE_DRIVE_EXPORT_BASE = "https://www.googleapis.com/drive/v3/files";
 const GOOGLE_OAUTH_STATE_TTL_MS = 5 * 60 * 1000;
 const PROVIDER_TIMEOUT_MS = Number.parseInt(process.env.PROVIDER_FETCH_TIMEOUT_MS || "15000", 10);
+const PROVIDER_IMPORT_MAX_BYTES = Number.parseInt(process.env.PROVIDER_IMPORT_MAX_BYTES || `${100 * 1024 * 1024}`, 10);
 const GOOGLE_LOGIN_CODE_TTL_MS = 60 * 1000;
 const GOOGLE_LOGIN_CODES = new Map();
+
+function parsePositiveInt(value) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function appSettingKeyForGroup(baseKey, groupId) {
+  return Number.isInteger(groupId) && groupId > 0 ? `group:${groupId}:${baseKey}` : baseKey;
+}
+
+function oauthConfigIsComplete(cfg) {
+  return !!(
+    String(cfg?.clientId || "").trim()
+    && String(cfg?.clientSecret || "").trim()
+    && String(cfg?.redirectUri || "").trim()
+  );
+}
+
+function getGoogleStateSecret() {
+  const candidate = String(process.env.GOOGLE_OAUTH_STATE_SECRET || process.env.JWT_SECRET || "").trim();
+  if (!candidate) throw new Error("google_state_secret_missing");
+  return candidate;
+}
 
 function signGoogleState(payloadB64, secret) {
   return createHmac("sha256", secret).update(payloadB64).digest("base64url");
 }
 
-function createGoogleOauthState(secret, now = Date.now()) {
+function createGoogleOauthState({ groupId = null } = {}, secret, now = Date.now()) {
   const payload = {
     exp: now + GOOGLE_OAUTH_STATE_TTL_MS,
     nonce: randomBytes(12).toString("base64url"),
+    gid: Number.isInteger(groupId) && groupId > 0 ? groupId : null,
   };
   const payloadB64 = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
   const signature = signGoogleState(payloadB64, secret);
@@ -32,18 +58,21 @@ function createGoogleOauthState(secret, now = Date.now()) {
 
 function verifyGoogleOauthState(state, secret, now = Date.now()) {
   const raw = String(state || "").trim();
-  if (!raw || !raw.includes(".")) return false;
+  if (!raw || !raw.includes(".")) return null;
   const [payloadB64, signature] = raw.split(".");
-  if (!payloadB64 || !signature) return false;
+  if (!payloadB64 || !signature) return null;
   const expected = signGoogleState(payloadB64, secret);
   const sigBuf = Buffer.from(signature);
   const expectedBuf = Buffer.from(expected);
-  if (sigBuf.length !== expectedBuf.length || !timingSafeEqual(sigBuf, expectedBuf)) return false;
+  if (sigBuf.length !== expectedBuf.length || !timingSafeEqual(sigBuf, expectedBuf)) return null;
   try {
     const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf8"));
-    return Number(payload?.exp || 0) > now;
+    if (Number(payload?.exp || 0) <= now) return null;
+    return {
+      groupId: parsePositiveInt(payload?.gid),
+    };
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -85,6 +114,17 @@ function extFromMimeType(mimeType) {
   return ".xlsx";
 }
 
+function assertProviderContentLengthWithinLimit(response) {
+  const raw = response?.headers?.get?.("content-length");
+  const parsed = Number.parseInt(String(raw || ""), 10);
+  if (Number.isFinite(parsed) && parsed > PROVIDER_IMPORT_MAX_BYTES) {
+    const err = new Error("provider_file_too_large");
+    err.statusCode = 413;
+    err.maxBytes = PROVIDER_IMPORT_MAX_BYTES;
+    throw err;
+  }
+}
+
 async function downloadGoogleDriveFile(accessToken, fileId, mimeType) {
   if (mimeType === "application/vnd.google-apps.spreadsheet") {
     const exportUrl = `${GOOGLE_DRIVE_EXPORT_BASE}/${encodeURIComponent(fileId)}/export?mimeType=${encodeURIComponent("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}`;
@@ -95,7 +135,14 @@ async function downloadGoogleDriveFile(accessToken, fileId, mimeType) {
       const txt = await resp.text();
       throw new Error(`drive_export_failed: ${txt.slice(0, 300)}`);
     }
+    assertProviderContentLengthWithinLimit(resp);
     const buf = Buffer.from(await resp.arrayBuffer());
+    if (buf.length > PROVIDER_IMPORT_MAX_BYTES) {
+      const err = new Error("provider_file_too_large");
+      err.statusCode = 413;
+      err.maxBytes = PROVIDER_IMPORT_MAX_BYTES;
+      throw err;
+    }
     return {
       buffer: buf,
       mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -111,7 +158,14 @@ async function downloadGoogleDriveFile(accessToken, fileId, mimeType) {
     const txt = await resp.text();
     throw new Error(`drive_download_failed: ${txt.slice(0, 300)}`);
   }
+  assertProviderContentLengthWithinLimit(resp);
   const buf = Buffer.from(await resp.arrayBuffer());
+  if (buf.length > PROVIDER_IMPORT_MAX_BYTES) {
+    const err = new Error("provider_file_too_large");
+    err.statusCode = 413;
+    err.maxBytes = PROVIDER_IMPORT_MAX_BYTES;
+    throw err;
+  }
   return {
     buffer: buf,
     mimeType: mimeType || "application/octet-stream",
@@ -119,19 +173,27 @@ async function downloadGoogleDriveFile(accessToken, fileId, mimeType) {
   };
 }
 
-async function isGoogleIntegrationEnabled() {
+async function getAppSettingValueWithScopedFallback(baseKey, groupId) {
+  const scopedKey = appSettingKeyForGroup(baseKey, groupId);
+  const scopedRows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [scopedKey]);
+  if (scopedRows.length) return scopedRows[0]?.value;
+  if (!groupId) return null;
+  const globalRows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [baseKey]);
+  return globalRows[0]?.value || null;
+}
+
+async function isGoogleIntegrationEnabled(groupId = null) {
   try {
-    const rows = await query("SELECT value FROM app_settings WHERE key = 'google_integration' LIMIT 1", []);
-    if (!rows.length) return true;
-    return !!rows[0]?.value?.enabled;
+    const cfg = await getGoogleOauthConfig(groupId);
+    return oauthConfigIsComplete(cfg);
   } catch {
     return true;
   }
 }
 
-async function getGoogleOauthConfig() {
-  const rows = await query("SELECT value FROM app_settings WHERE key = 'google_oauth' LIMIT 1", []);
-  const v = rows[0]?.value || {};
+async function getGoogleOauthConfig(groupId = null) {
+  const value = await getAppSettingValueWithScopedFallback("google_oauth", groupId);
+  const v = value || {};
   return {
     clientId: decryptSettingValue(String(v.clientId || "")).trim(),
     clientSecret: decryptSettingValue(String(v.clientSecret || "")).trim(),
@@ -140,21 +202,57 @@ async function getGoogleOauthConfig() {
   };
 }
 
-async function requireGoogleConfig() {
-  const enabled = await isGoogleIntegrationEnabled();
+async function requireGoogleConfig(groupId = null) {
+  const enabled = await isGoogleIntegrationEnabled(groupId);
   if (!enabled) {
     throw new Error("google_integration_disabled");
   }
-  const cfg = await getGoogleOauthConfig();
+  const cfg = await getGoogleOauthConfig(groupId);
   if (!cfg.clientId || !cfg.clientSecret || !cfg.redirectUri) {
     throw new Error("google_oauth_not_configured");
   }
   return cfg;
 }
 
-export async function getGoogleStatus(_req, res) {
-  const enabled = await isGoogleIntegrationEnabled();
-  return res.json({ enabled });
+async function getUserGroupIds(userId) {
+  const rows = await query(
+    "SELECT group_id FROM user_groups WHERE user_id = $1 ORDER BY group_id ASC",
+    [userId]
+  );
+  return rows.map((r) => Number(r.group_id)).filter((gid) => Number.isInteger(gid) && gid > 0);
+}
+
+async function readGroupFeatureFlag(groupId, featureName) {
+  if (!Number.isInteger(groupId) || groupId <= 0) return true;
+  const rows = await query("SELECT entitlements FROM groups WHERE id = $1 LIMIT 1", [groupId]);
+  if (!rows.length) return null;
+  return groupHasFeature({ entitlements: rows[0]?.entitlements || {} }, featureName);
+}
+
+async function assertGroupFeatureEnabled(groupId, featureName, errorCode) {
+  if (!Number.isInteger(groupId) || groupId <= 0) return;
+  const enabled = await readGroupFeatureFlag(groupId, featureName);
+  if (enabled === null) throw new Error("group_not_found");
+  if (!enabled) throw new Error(errorCode);
+}
+
+async function resolveScopedGroupForGoogleAuthUser(req) {
+  const requestedGroupId = parsePositiveInt(req.query?.groupId ?? req.body?.groupId);
+  if (String(req.user?.role || "").toLowerCase() === "admin") {
+    return requestedGroupId;
+  }
+  const groups = await getUserGroupIds(req.user?.id);
+  if (!groups.length) return null;
+  if (requestedGroupId && groups.includes(requestedGroupId)) return requestedGroupId;
+  return groups[0];
+}
+
+export async function getGoogleStatus(req, res) {
+  const groupId = await resolveScopedGroupForGoogleAuthUser(req);
+  const driveFeatureEnabled = await readGroupFeatureFlag(groupId, "googleDrive");
+  const ssoFeatureEnabled = await readGroupFeatureFlag(groupId, "sso");
+  const enabled = driveFeatureEnabled !== false && await isGoogleIntegrationEnabled(groupId);
+  return res.json({ enabled, ssoEnabled: ssoFeatureEnabled !== false, groupId: groupId || null });
 }
 
 function buildGoogleAuthUrl(cfg, state) {
@@ -252,7 +350,7 @@ async function upsertGoogleTokens(userId, tokenPayload) {
   );
 }
 
-async function findOrCreateGoogleUser(googleUser) {
+async function findOrCreateGoogleUser(googleUser, { requiredGroupId = null } = {}) {
   const email = String(googleUser?.email || "").trim().toLowerCase();
   if (!email) throw new Error("google_email_missing");
 
@@ -265,11 +363,24 @@ async function findOrCreateGoogleUser(googleUser) {
     return existing[0];
   }
 
+  if (Number.isInteger(requiredGroupId) && requiredGroupId > 0) {
+    throw new Error("sso_user_not_provisioned");
+  }
+
   const created = await query(
     "INSERT INTO users (email, password, role, password_reset_required) VALUES ($1, NULL, 'user', FALSE) RETURNING id, email, role",
     [email]
   );
   return created[0];
+}
+
+async function userBelongsToGroup(userId, groupId) {
+  if (!Number.isInteger(groupId) || groupId <= 0) return true;
+  const rows = await query(
+    "SELECT 1 FROM user_groups WHERE user_id = $1 AND group_id = $2 LIMIT 1",
+    [userId, groupId]
+  );
+  return rows.length > 0;
 }
 
 async function getValidAccessTokenForUser(cfg, userId) {
@@ -303,8 +414,13 @@ async function isGroupAdminUser(userId) {
 
 export async function getGoogleLoginUrl(_req, res) {
   try {
-    const cfg = await requireGoogleConfig();
-    const state = createGoogleOauthState(cfg.clientSecret);
+    const requestedGroupId = parsePositiveInt(_req.query?.groupId);
+    await assertGroupFeatureEnabled(requestedGroupId, "sso", "google_sso_disabled");
+    const cfg = await requireGoogleConfig(requestedGroupId);
+    const state = createGoogleOauthState(
+      { groupId: requestedGroupId },
+      getGoogleStateSecret()
+    );
     const secure = _req.secure || String(_req.headers["x-forwarded-proto"] || "").toLowerCase() === "https";
     const cookie = [
       `google_oauth_state=${encodeURIComponent(state)}`,
@@ -315,7 +431,32 @@ export async function getGoogleLoginUrl(_req, res) {
       `Max-Age=${Math.floor(GOOGLE_OAUTH_STATE_TTL_MS / 1000)}`,
     ].filter(Boolean).join("; ");
     res.setHeader("Set-Cookie", cookie);
-    return res.json({ url: buildGoogleAuthUrl(cfg, state) });
+    return res.json({ url: buildGoogleAuthUrl(cfg, state), groupId: requestedGroupId || null });
+  } catch (e) {
+    return res.status(400).json({ error: e?.message || "google_oauth_not_configured" });
+  }
+}
+
+export async function getGoogleConnectUrl(req, res) {
+  try {
+    const groupId = await resolveScopedGroupForGoogleAuthUser(req);
+    await assertGroupFeatureEnabled(groupId, "googleDrive", "google_drive_disabled");
+    const cfg = await requireGoogleConfig(groupId);
+    const state = createGoogleOauthState(
+      { groupId },
+      getGoogleStateSecret()
+    );
+    const secure = req.secure || String(req.headers["x-forwarded-proto"] || "").toLowerCase() === "https";
+    const cookie = [
+      `google_oauth_state=${encodeURIComponent(state)}`,
+      "Path=/",
+      "HttpOnly",
+      "SameSite=Lax",
+      secure ? "Secure" : null,
+      `Max-Age=${Math.floor(GOOGLE_OAUTH_STATE_TTL_MS / 1000)}`,
+    ].filter(Boolean).join("; ");
+    res.setHeader("Set-Cookie", cookie);
+    return res.json({ url: buildGoogleAuthUrl(cfg, state), groupId: groupId || null });
   } catch (e) {
     return res.status(400).json({ error: e?.message || "google_oauth_not_configured" });
   }
@@ -323,23 +464,29 @@ export async function getGoogleLoginUrl(_req, res) {
 
 export async function googleCallback(req, res) {
   try {
-    const cfg = await requireGoogleConfig();
     const code = String(req.query?.code || "").trim();
     const state = String(req.query?.state || "").trim();
     const cookieState = parseCookieValue(req.headers?.cookie, "google_oauth_state");
     const stateBuf = Buffer.from(state);
     const cookieBuf = Buffer.from(cookieState);
     const stateMatchesCookie = !!state && !!cookieState && stateBuf.length === cookieBuf.length && timingSafeEqual(stateBuf, cookieBuf);
+    const statePayload = verifyGoogleOauthState(state, getGoogleStateSecret());
+    const requiredGroupId = statePayload?.groupId || null;
+    await assertGroupFeatureEnabled(requiredGroupId, "sso", "google_sso_disabled");
+    const cfg = await requireGoogleConfig(requiredGroupId);
     if (!code) {
       return res.redirect(`${cfg.frontendUrl}/?google_error=missing_code`);
     }
-    if (!stateMatchesCookie || !verifyGoogleOauthState(state, cfg.clientSecret)) {
+    if (!stateMatchesCookie || !statePayload) {
       return res.redirect(`${cfg.frontendUrl}/?google_error=invalid_state`);
     }
 
     const tokens = await exchangeCodeForTokens(cfg, code);
     const googleUser = await fetchGoogleUser(tokens.access_token);
-    const appUser = await findOrCreateGoogleUser(googleUser);
+    const appUser = await findOrCreateGoogleUser(googleUser, { requiredGroupId });
+    if (requiredGroupId && !(await userBelongsToGroup(appUser.id, requiredGroupId))) {
+      throw new Error("sso_group_membership_required");
+    }
 
     await upsertGoogleTokens(appUser.id, {
       ...tokens,
@@ -350,7 +497,9 @@ export async function googleCallback(req, res) {
     return res.redirect(`${cfg.frontendUrl}/?google_code=${encodeURIComponent(loginCode)}`);
   } catch (e) {
     console.error("google callback failed:", e?.message || e);
-    const code = e?.message === "admin_manual_login_required" ? "admin_manual_login_required" : "oauth_failed";
+    const code = e?.message === "admin_manual_login_required"
+      ? "admin_manual_login_required"
+      : (e?.message || "oauth_failed");
     const cfg = await getGoogleOauthConfig();
     return res.redirect(`${cfg.frontendUrl || "http://localhost:5173"}/?google_error=${encodeURIComponent(code)}`);
   }
@@ -370,9 +519,11 @@ export async function exchangeGoogleCode(req, res) {
 
 export async function listGoogleDriveFiles(req, res) {
   try {
-    const cfg = await requireGoogleConfig();
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const groupId = await resolveScopedGroupForGoogleAuthUser(req);
+    await assertGroupFeatureEnabled(groupId, "googleDrive", "google_drive_disabled");
+    const cfg = await requireGoogleConfig(groupId);
 
     const accessToken = await getValidAccessTokenForUser(cfg, userId);
     const parentId = String(req.query?.parentId || "root").trim() || "root";
@@ -402,6 +553,7 @@ export async function listGoogleDriveFiles(req, res) {
   } catch (e) {
     const msg = e?.message || "google_drive_failed";
     if (msg.includes("google_not_connected")) return res.status(400).json({ error: "google_not_connected" });
+    if (msg.includes("google_drive_disabled")) return res.status(403).json({ error: "google_drive_disabled" });
     console.error("google drive list failed:", msg);
     return res.status(500).json({ error: "google_drive_failed" });
   }
@@ -409,7 +561,9 @@ export async function listGoogleDriveFiles(req, res) {
 
 export async function importGoogleDriveFile(req, res) {
   try {
-    const cfg = await requireGoogleConfig();
+    const groupId = await resolveScopedGroupForGoogleAuthUser(req);
+    await assertGroupFeatureEnabled(groupId, "googleDrive", "google_drive_disabled");
+    const cfg = await requireGoogleConfig(groupId);
     const isAdmin = String(req.user?.role || "").toLowerCase() === "admin";
     const isGroupAdmin = req.user?.id ? await isGroupAdminUser(req.user.id) : false;
     if (!isAdmin && !isGroupAdmin) return res.status(403).json({ error: "Forbidden" });
@@ -418,7 +572,6 @@ export async function importGoogleDriveFile(req, res) {
     const fileName = String(req.body?.name || "google-drive-file").trim();
     const mimeType = String(req.body?.mimeType || "").trim();
     const displayName = String(req.body?.display_name || req.body?.displayName || "").trim();
-    const folderId = req.body?.folder_id ?? req.body?.folderId ?? null;
 
     if (!fileId) return res.status(400).json({ error: "file_id_required" });
     if (!displayName) return res.status(400).json({ error: "display_name_required" });
@@ -442,13 +595,16 @@ export async function importGoogleDriveFile(req, res) {
     req.body = {
       ...(req.body || {}),
       display_name: displayName,
-      folder_id: folderId,
     };
 
     return uploadSheet(req, res);
   } catch (e) {
     const msg = e?.message || "google_drive_import_failed";
     console.error("google drive import failed:", msg);
+    if (msg.includes("google_drive_disabled")) return res.status(403).json({ error: "google_drive_disabled" });
+    if (e?.statusCode === 413 || msg.includes("provider_file_too_large")) {
+      return res.status(413).json({ error: "file_too_large", maxMB: Math.floor(PROVIDER_IMPORT_MAX_BYTES / (1024 * 1024)) });
+    }
     return res.status(500).json({ error: "google_drive_import_failed" });
   }
 }

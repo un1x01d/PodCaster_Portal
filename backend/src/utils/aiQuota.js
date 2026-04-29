@@ -25,14 +25,24 @@ function quotaNumber(value) {
 async function resolveCustomerGroupForSheet(sheetId, user) {
   if (!sheetId || String(user?.role || "") === "admin") return null;
   const rows = await query(
-    `SELECT DISTINCT COALESCE(fg.group_id, f.group_id) AS group_id
-       FROM sheets s
-       LEFT JOIN folders f ON f.id = s.folder_id
-       LEFT JOIN folder_groups fg ON fg.folder_id = f.id
-       JOIN user_groups ug ON ug.user_id = $2
-        AND ug.group_id = COALESCE(fg.group_id, f.group_id)
-      WHERE s.id = $1
-        AND COALESCE(fg.group_id, f.group_id) IS NOT NULL
+    `SELECT ug.group_id
+       FROM user_groups ug
+      WHERE ug.user_id = $2
+        AND (
+          EXISTS (
+            SELECT 1
+              FROM group_permissions gp
+             WHERE gp.sheet_id = $1
+               AND gp.group_id = ug.group_id
+          )
+          OR EXISTS (
+            SELECT 1
+              FROM sheets s
+              JOIN report_sources rs ON rs.id = s.report_source_id
+             WHERE s.id = $1
+               AND rs.created_by = $2
+          )
+        )
       ORDER BY group_id ASC
       LIMIT 1`,
     [sheetId, user?.id]

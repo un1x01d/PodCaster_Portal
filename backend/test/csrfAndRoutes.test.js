@@ -35,29 +35,43 @@ test("csrf middleware allows bearer-auth mutating requests when bypass is enable
   assert.equal(nextCalled, true);
 });
 
-test("csrf middleware exempts authenticated AI mutating routes", async () => {
+test("csrf middleware enforces csrf on cookie-auth AI mutating routes", async () => {
   process.env.CSRF_BYPASS_BEARER = "true";
-  const { csrfProtect } = await import(`../src/middleware/csrf.js?t=${Date.now()}_ai_exempt`);
+  const { csrfProtect } = await import(`../src/middleware/csrf.js?t=${Date.now()}_ai_cookie_enforced`);
 
   for (const path of ["/chat/query", "/chat/audio", "/dashboard/translate"]) {
     const req = { method: "POST", path, headers: { cookie: "auth_token=abc" } };
-    const res = {};
+    const res = {
+      statusCode: 200,
+      payload: null,
+      status(code) { this.statusCode = code; return this; },
+      json(obj) { this.payload = obj; return this; },
+    };
     let nextCalled = false;
     csrfProtect(req, res, () => { nextCalled = true; });
-    assert.equal(nextCalled, true, `expected ${path} to bypass csrf`);
+    assert.equal(nextCalled, false, `expected ${path} to require csrf`);
+    assert.equal(res.statusCode, 403);
+    assert.equal(res.payload?.error, "csrf_validation_failed");
   }
 });
 
-test("csrf middleware exempts AI mutating routes with trailing slash", async () => {
+test("csrf middleware enforces csrf on cookie-auth AI mutating routes with trailing slash", async () => {
   process.env.CSRF_BYPASS_BEARER = "true";
-  const { csrfProtect } = await import(`../src/middleware/csrf.js?t=${Date.now()}_ai_exempt_slash`);
+  const { csrfProtect } = await import(`../src/middleware/csrf.js?t=${Date.now()}_ai_cookie_enforced_slash`);
 
   const req = { method: "POST", path: "/chat/query/", headers: { cookie: "auth_token=abc" } };
-  const res = {};
+  const res = {
+    statusCode: 200,
+    payload: null,
+    status(code) { this.statusCode = code; return this; },
+    json(obj) { this.payload = obj; return this; },
+  };
   let nextCalled = false;
   csrfProtect(req, res, () => { nextCalled = true; });
 
-  assert.equal(nextCalled, true);
+  assert.equal(nextCalled, false);
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.payload?.error, "csrf_validation_failed");
 });
 
 test("csrf middleware enforces bearer requests in strict mode", async () => {

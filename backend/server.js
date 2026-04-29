@@ -21,6 +21,7 @@ import dropboxRoutes from "./src/routes/dropboxRoutes.js";
 import oneDriveRoutes from "./src/routes/oneDriveRoutes.js";
 import { ensureCsrfCookie, csrfProtect } from "./src/middleware/csrf.js";
 import { recordHttpRequest, renderPrometheusMetrics } from "./src/utils/metrics.js";
+import { cleanupOldInvitations } from "./src/utils/invitationLifecycle.js";
 
 const app = express();
 // Force restart
@@ -107,7 +108,7 @@ app.get("/readyz", async (_req, res) => {
 // Routes
 app.use("/auth", authRoutes); // /auth/login, /auth/me, /auth/change-password
 app.use("/", sheetRoutes); // /sheets, /upload
-app.use("/", userRoutes);  // /users, /groups (customers), /folders, /permissions
+app.use("/", userRoutes);  // /users, /groups (customers), /permissions
 app.use("/", viewRoutes);  // /views
 app.use("/", chatRoutes);  // /chat/query
 app.use("/", insightRoutes); // /insights/:sheetId
@@ -146,7 +147,6 @@ if (fs.existsSync(frontendDist)) {
         req.path.startsWith("/sheets") || 
         req.path.startsWith("/users") || 
         req.path.startsWith("/groups") || 
-        req.path.startsWith("/folders") || 
         req.path.startsWith("/permissions") || 
         req.path.startsWith("/views") || 
         req.path.startsWith("/chat") || 
@@ -175,6 +175,21 @@ const server = app.listen(PORT, () =>
   console.log(`✅ Backend running on :${PORT} • SheetJS:`, XLSX?.version || "unknown")
 );
 
+const INVITATION_CLEANUP_INTERVAL_MS = Number.parseInt(process.env.INVITATION_CLEANUP_INTERVAL_MS || `${60 * 60 * 1000}`, 10);
+const invitationCleanupTimer = Number.isFinite(INVITATION_CLEANUP_INTERVAL_MS) && INVITATION_CLEANUP_INTERVAL_MS >= 60000
+  ? setInterval(async () => {
+      try {
+        const result = await cleanupOldInvitations();
+        if (result.deletedCount > 0) {
+          console.log(`[invitation_cleanup] deleted=${result.deletedCount} retention_days=${result.retentionDays}`);
+        }
+      } catch (err) {
+        console.error("[invitation_cleanup] failed", err?.message || err);
+      }
+    }, INVITATION_CLEANUP_INTERVAL_MS)
+  : null;
+if (invitationCleanupTimer?.unref) invitationCleanupTimer.unref();
+
 let isShuttingDown = false;
 async function shutdown(signal) {
   if (isShuttingDown) return;
@@ -188,6 +203,7 @@ async function shutdown(signal) {
   forceTimer.unref?.();
 
   try {
+    if (invitationCleanupTimer) clearInterval(invitationCleanupTimer);
     await new Promise((resolve, reject) => {
       server.close((err) => (err ? reject(err) : resolve()));
     });

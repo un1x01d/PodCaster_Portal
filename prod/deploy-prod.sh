@@ -24,8 +24,6 @@ docker build -f backend/Dockerfile -t "${BACKEND_IMAGE}" .
 docker push "${BACKEND_IMAGE}"
 
 CLOUDSQL_CONN="$(gcloud sql instances describe "$DB_INSTANCE" --format='value(connectionName)')"
-DB_PASSWORD="$(gcloud secrets versions access latest --secret=DB_PASSWORD)"
-DATABASE_URL="postgresql://${DB_USER}:${DB_PASSWORD}@/${DB_NAME}?host=/cloudsql/${CLOUDSQL_CONN}"
 
 echo "Deploying backend service: ${BACKEND_SERVICE}"
 gcloud run deploy "${BACKEND_SERVICE}" \
@@ -34,7 +32,7 @@ gcloud run deploy "${BACKEND_SERVICE}" \
   --platform managed \
   --allow-unauthenticated \
   --add-cloudsql-instances "${CLOUDSQL_CONN}" \
-  --set-env-vars "NODE_ENV=production,PORT=8080,OPENAI_MODEL=gpt-4o-mini,OPENAI_BASE_URL=https://api.openai.com/v1,OPENAI_TIMEOUT_MS=60000,CHAT_AUDIO_MAX_CHARS=8000,POSTGRES_USER=${DB_USER},POSTGRES_DB=${DB_NAME},DATABASE_URL=${DATABASE_URL}" \
+  --set-env-vars "NODE_ENV=production,PORT=8080,OPENAI_MODEL=gpt-4o-mini,OPENAI_BASE_URL=https://api.openai.com/v1,OPENAI_TIMEOUT_MS=60000,CHAT_AUDIO_MAX_CHARS=8000,POSTGRES_HOST=/cloudsql/${CLOUDSQL_CONN},POSTGRES_PORT=5432,POSTGRES_USER=${DB_USER},POSTGRES_DB=${DB_NAME}" \
   --set-secrets "POSTGRES_PASSWORD=DB_PASSWORD:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,JWT_SECRET=JWT_SECRET:latest,JWT_ISSUER=JWT_ISSUER:latest,JWT_AUDIENCE=JWT_AUDIENCE:latest,SETTINGS_CRYPTO_KEY=SETTINGS_CRYPTO_KEY:latest"
 
 BACKEND_URL="$(gcloud run services describe "${BACKEND_SERVICE}" --region "${REGION}" --format='value(status.url)')"

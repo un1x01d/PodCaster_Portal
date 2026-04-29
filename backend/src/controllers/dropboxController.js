@@ -14,6 +14,24 @@ const DROPBOX_DOWNLOAD_URL = "https://content.dropboxapi.com/2/files/download";
 const SUPPORTED_EXTS = [".csv", ".xls", ".xlsx"];
 const DROPBOX_OAUTH_STATE_TTL_MS = 5 * 60 * 1000;
 const PROVIDER_TIMEOUT_MS = Number.parseInt(process.env.PROVIDER_FETCH_TIMEOUT_MS || "15000", 10);
+const PROVIDER_IMPORT_MAX_BYTES = Number.parseInt(process.env.PROVIDER_IMPORT_MAX_BYTES || `${100 * 1024 * 1024}`, 10);
+
+function parsePositiveInt(value) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function appSettingKeyForGroup(baseKey, groupId) {
+  return Number.isInteger(groupId) && groupId > 0 ? `group:${groupId}:${baseKey}` : baseKey;
+}
+
+function oauthConfigIsComplete(cfg) {
+  return !!(
+    String(cfg?.clientId || "").trim()
+    && String(cfg?.clientSecret || "").trim()
+    && String(cfg?.redirectUri || "").trim()
+  );
+}
 
 function base64UrlEncode(value) {
   return Buffer.from(value, "utf8").toString("base64url");
@@ -33,10 +51,10 @@ function signDropboxState(payloadB64, secret) {
   return createHmac("sha256", secret).update(payloadB64).digest("base64url");
 }
 
-export function createDropboxOauthState(userId, now = Date.now()) {
+export function createDropboxOauthState(userId, groupId = null, now = Date.now()) {
   const uid = Number(userId);
   if (!Number.isInteger(uid) || uid <= 0) throw new Error("invalid_user_id");
-  const payload = { uid, exp: now + DROPBOX_OAUTH_STATE_TTL_MS };
+  const payload = { uid, gid: parsePositiveInt(groupId), exp: now + DROPBOX_OAUTH_STATE_TTL_MS };
   const payloadB64 = base64UrlEncode(JSON.stringify(payload));
   const signature = signDropboxState(payloadB64, getDropboxStateSecret());
   return `${payloadB64}.${signature}`;
@@ -63,12 +81,26 @@ export function verifyDropboxOauthState(state, now = Date.now()) {
   const exp = Number(payload?.exp || 0);
   if (!Number.isInteger(uid) || uid <= 0) return null;
   if (!Number.isFinite(exp) || exp <= now) return null;
-  return uid;
+  return {
+    userId: uid,
+    groupId: parsePositiveInt(payload?.gid),
+  };
 }
 
 function isSupportedSpreadsheetName(name) {
   const lower = String(name || "").toLowerCase();
   return SUPPORTED_EXTS.some((ext) => lower.endsWith(ext));
+}
+
+function assertProviderContentLengthWithinLimit(response) {
+  const raw = response?.headers?.get?.("content-length");
+  const parsed = Number.parseInt(String(raw || ""), 10);
+  if (Number.isFinite(parsed) && parsed > PROVIDER_IMPORT_MAX_BYTES) {
+    const err = new Error("provider_file_too_large");
+    err.statusCode = 413;
+    err.maxBytes = PROVIDER_IMPORT_MAX_BYTES;
+    throw err;
+  }
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = PROVIDER_TIMEOUT_MS) {
@@ -81,19 +113,27 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = PROVIDER_TIMEOUT_
   }
 }
 
-async function isDropboxIntegrationEnabled() {
+async function getAppSettingValueWithScopedFallback(baseKey, groupId) {
+  const scopedKey = appSettingKeyForGroup(baseKey, groupId);
+  const scopedRows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [scopedKey]);
+  if (scopedRows.length) return scopedRows[0]?.value;
+  if (!groupId) return null;
+  const globalRows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [baseKey]);
+  return globalRows[0]?.value || null;
+}
+
+async function isDropboxIntegrationEnabled(groupId = null) {
   try {
-    const rows = await query("SELECT value FROM app_settings WHERE key = 'dropbox_integration' LIMIT 1", []);
-    if (!rows.length) return true;
-    return !!rows[0]?.value?.enabled;
+    const cfg = await getDropboxOauthConfig(groupId);
+    return oauthConfigIsComplete(cfg);
   } catch {
     return true;
   }
 }
 
-async function getDropboxOauthConfig() {
-  const rows = await query("SELECT value FROM app_settings WHERE key = 'dropbox_oauth' LIMIT 1", []);
-  const v = rows[0]?.value || {};
+async function getDropboxOauthConfig(groupId = null) {
+  const value = await getAppSettingValueWithScopedFallback("dropbox_oauth", groupId);
+  const v = value || {};
   return {
     clientId: decryptSettingValue(String(v.clientId || "")).trim(),
     clientSecret: decryptSettingValue(String(v.clientSecret || "")).trim(),
@@ -102,14 +142,38 @@ async function getDropboxOauthConfig() {
   };
 }
 
-async function requireDropboxConfig() {
-  const enabled = await isDropboxIntegrationEnabled();
+async function requireDropboxConfig(groupId = null) {
+  const enabled = await isDropboxIntegrationEnabled(groupId);
   if (!enabled) throw new Error("dropbox_integration_disabled");
-  const cfg = await getDropboxOauthConfig();
+  const cfg = await getDropboxOauthConfig(groupId);
   if (!cfg.clientId || !cfg.clientSecret || !cfg.redirectUri) {
     throw new Error("dropbox_oauth_not_configured");
   }
   return cfg;
+}
+
+async function getUserGroupIds(userId) {
+  const rows = await query(
+    "SELECT group_id FROM user_groups WHERE user_id = $1 ORDER BY group_id ASC",
+    [userId]
+  );
+  return rows.map((r) => Number(r.group_id)).filter((gid) => Number.isInteger(gid) && gid > 0);
+}
+
+async function resolveScopedGroupForDropboxUser(req) {
+  const requestedGroupId = parsePositiveInt(req.query?.groupId ?? req.body?.groupId);
+  if (String(req.user?.role || "").toLowerCase() === "admin") return requestedGroupId;
+  const groups = await getUserGroupIds(req.user?.id);
+  if (!groups.length) return null;
+  if (requestedGroupId && groups.includes(requestedGroupId)) return requestedGroupId;
+  return groups[0];
+}
+
+async function resolveScopedGroupForUserId(userId, requestedGroupId = null) {
+  const groups = await getUserGroupIds(userId);
+  if (!groups.length) return null;
+  if (requestedGroupId && groups.includes(requestedGroupId)) return requestedGroupId;
+  return groups[0];
 }
 
 async function upsertDropboxTokens(userId, tokenPayload) {
@@ -203,15 +267,17 @@ async function isGroupAdminUser(userId) {
   return Number(rows?.[0]?.c || 0) > 0;
 }
 
-export async function getDropboxStatus(_req, res) {
-  const enabled = await isDropboxIntegrationEnabled();
-  return res.json({ enabled });
+export async function getDropboxStatus(req, res) {
+  const groupId = await resolveScopedGroupForDropboxUser(req);
+  const enabled = await isDropboxIntegrationEnabled(groupId);
+  return res.json({ enabled, groupId: groupId || null });
 }
 
 export async function getDropboxAuthUrl(req, res) {
   try {
-    const cfg = await requireDropboxConfig();
-    const state = createDropboxOauthState(req.user?.id);
+    const groupId = await resolveScopedGroupForDropboxUser(req);
+    const cfg = await requireDropboxConfig(groupId);
+    const state = createDropboxOauthState(req.user?.id, groupId);
     const params = new URLSearchParams({
       client_id: cfg.clientId,
       redirect_uri: cfg.redirectUri,
@@ -220,7 +286,7 @@ export async function getDropboxAuthUrl(req, res) {
       scope: "account_info.read files.metadata.read files.content.read",
       state,
     });
-    return res.json({ url: `${DROPBOX_AUTH_BASE}?${params.toString()}` });
+    return res.json({ url: `${DROPBOX_AUTH_BASE}?${params.toString()}`, groupId: groupId || null });
   } catch (e) {
     return res.status(400).json({ error: e?.message || "dropbox_oauth_not_configured" });
   }
@@ -228,17 +294,20 @@ export async function getDropboxAuthUrl(req, res) {
 
 export async function dropboxCallback(req, res) {
   try {
-    const cfg = await requireDropboxConfig();
     const code = String(req.query?.code || "").trim();
     const state = String(req.query?.state || "").trim();
     if (!code || !state) {
+      const cfg = await getDropboxOauthConfig();
       return res.redirect(`${cfg.frontendUrl}/workspace?dropbox_error=missing_code`);
     }
 
-    const userId = verifyDropboxOauthState(state);
-    if (!userId) {
+    const verified = verifyDropboxOauthState(state);
+    if (!verified?.userId) {
+      const cfg = await getDropboxOauthConfig();
       return res.redirect(`${cfg.frontendUrl}/workspace?dropbox_error=invalid_state`);
     }
+    const resolvedGroupId = await resolveScopedGroupForUserId(verified.userId, verified.groupId);
+    const cfg = await requireDropboxConfig(resolvedGroupId);
 
     const body = new URLSearchParams({
       code,
@@ -259,7 +328,7 @@ export async function dropboxCallback(req, res) {
     const tokens = await tokenRes.json();
     const account = await fetchDropboxAccount(tokens.access_token);
 
-    await upsertDropboxTokens(userId, {
+    await upsertDropboxTokens(verified.userId, {
       ...tokens,
       dropbox_account_id: account?.account_id || null,
     });
@@ -274,9 +343,10 @@ export async function dropboxCallback(req, res) {
 
 export async function listDropboxFiles(req, res) {
   try {
-    const cfg = await requireDropboxConfig();
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const groupId = await resolveScopedGroupForDropboxUser(req);
+    const cfg = await requireDropboxConfig(groupId);
 
     const accessToken = await getValidAccessTokenForUser(cfg, userId);
     const pathArg = String(req.query?.path || "").trim();
@@ -332,7 +402,8 @@ export async function listDropboxFiles(req, res) {
 
 export async function importDropboxFile(req, res) {
   try {
-    const cfg = await requireDropboxConfig();
+    const groupId = await resolveScopedGroupForDropboxUser(req);
+    const cfg = await requireDropboxConfig(groupId);
     const isAdmin = String(req.user?.role || "").toLowerCase() === "admin";
     const isGroupAdmin = req.user?.id ? await isGroupAdminUser(req.user.id) : false;
     if (!isAdmin && !isGroupAdmin) return res.status(403).json({ error: "Forbidden" });
@@ -340,7 +411,6 @@ export async function importDropboxFile(req, res) {
     const filePath = String(req.body?.pathLower || req.body?.path || "").trim();
     const fileName = String(req.body?.name || path.basename(filePath) || "dropbox-file").trim();
     const displayName = String(req.body?.display_name || req.body?.displayName || "").trim();
-    const folderId = req.body?.folder_id ?? req.body?.folderId ?? null;
 
     if (!filePath) return res.status(400).json({ error: "file_path_required" });
     if (!displayName) return res.status(400).json({ error: "display_name_required" });
@@ -358,12 +428,16 @@ export async function importDropboxFile(req, res) {
       const txt = await downloadResp.text();
       throw new Error(`dropbox_download_failed: ${txt.slice(0, 300)}`);
     }
+    assertProviderContentLengthWithinLimit(downloadResp);
 
     const ext = path.extname(fileName || "") || ".xlsx";
     const safeBase = (fileName || "dropbox-file").replace(/[^\w.-]+/g, "_");
     const originalname = safeBase.endsWith(ext) ? safeBase : `${safeBase}${ext}`;
 
     const buf = Buffer.from(await downloadResp.arrayBuffer());
+    if (buf.length > PROVIDER_IMPORT_MAX_BYTES) {
+      return res.status(413).json({ error: "file_too_large", maxMB: Math.floor(PROVIDER_IMPORT_MAX_BYTES / (1024 * 1024)) });
+    }
     const tmpPath = path.join(tmpdir(), `dropbox_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`);
     await fs.promises.writeFile(tmpPath, buf);
 
@@ -376,13 +450,15 @@ export async function importDropboxFile(req, res) {
     req.body = {
       ...(req.body || {}),
       display_name: displayName,
-      folder_id: folderId,
     };
 
     return uploadSheet(req, res);
   } catch (e) {
     const msg = e?.message || "dropbox_import_failed";
     console.error("dropbox import failed:", msg);
+    if (e?.statusCode === 413 || msg.includes("provider_file_too_large")) {
+      return res.status(413).json({ error: "file_too_large", maxMB: Math.floor(PROVIDER_IMPORT_MAX_BYTES / (1024 * 1024)) });
+    }
     return res.status(500).json({ error: "dropbox_import_failed" });
   }
 }

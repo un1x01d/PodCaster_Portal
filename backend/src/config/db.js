@@ -10,8 +10,27 @@ function parsePositiveIntEnv(name, fallback) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function buildConnectionConfig() {
+  const connectionString = String(process.env.DATABASE_URL || "").trim();
+  if (connectionString) {
+    return { connectionString };
+  }
+  const host = String(process.env.POSTGRES_HOST || process.env.PGHOST || "").trim();
+  const user = String(process.env.POSTGRES_USER || process.env.PGUSER || "").trim();
+  const database = String(process.env.POSTGRES_DB || process.env.PGDATABASE || "").trim();
+  const password = String(process.env.POSTGRES_PASSWORD || process.env.PGPASSWORD || "").trim();
+  const port = parsePositiveIntEnv("POSTGRES_PORT", parsePositiveIntEnv("PGPORT", 5432));
+  return {
+    host: host || undefined,
+    user: user || undefined,
+    database: database || undefined,
+    password: password || undefined,
+    port,
+  };
+}
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  ...buildConnectionConfig(),
   max: parsePositiveIntEnv("DB_POOL_MAX", 10),
   idleTimeoutMillis: parsePositiveIntEnv("DB_POOL_IDLE_TIMEOUT_MS", 30000),
   connectionTimeoutMillis: parsePositiveIntEnv("DB_POOL_CONNECTION_TIMEOUT_MS", 10000),
@@ -44,7 +63,11 @@ export async function initDb() {
       email TEXT NOT NULL UNIQUE,
       password TEXT,
       role TEXT NOT NULL DEFAULT 'user',
-      default_view_id INT
+      default_view_id INT,
+      two_factor_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      two_factor_method TEXT,
+      two_factor_totp_secret TEXT,
+      two_factor_phone TEXT
     );
   `);
   // Add column if missing (for existing DBs)
@@ -53,6 +76,10 @@ export async function initDb() {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name TEXT;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS company TEXT;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_required BOOLEAN DEFAULT FALSE;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_enabled BOOLEAN NOT NULL DEFAULT FALSE;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_method TEXT;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_totp_secret TEXT;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_phone TEXT;`);
   await pool.query(`ALTER TABLE users ALTER COLUMN role SET DEFAULT 'user';`);
 
   if (process.env.NODE_ENV !== "production") {
@@ -117,6 +144,66 @@ export async function initDb() {
     );
   `);
   await pool.query(`ALTER TABLE user_groups ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE;`);
+
+  // CUSTOMER USER INVITATIONS
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS customer_user_invitations (
+      id SERIAL PRIMARY KEY,
+      email TEXT NOT NULL,
+      group_id INT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+      first_name TEXT NOT NULL,
+      last_name TEXT NOT NULL,
+      company TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      invited_by_user_id INT REFERENCES users(id) ON DELETE SET NULL,
+      expires_at TIMESTAMP NOT NULL,
+      accepted_at TIMESTAMP,
+      accepted_user_id INT REFERENCES users(id) ON DELETE SET NULL,
+      revoked_at TIMESTAMP,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`ALTER TABLE customer_user_invitations ADD COLUMN IF NOT EXISTS first_name TEXT;`);
+  await pool.query(`ALTER TABLE customer_user_invitations ADD COLUMN IF NOT EXISTS last_name TEXT;`);
+  await pool.query(`ALTER TABLE customer_user_invitations ADD COLUMN IF NOT EXISTS company TEXT;`);
+  await pool.query(`ALTER TABLE customer_user_invitations ADD COLUMN IF NOT EXISTS token_hash TEXT;`);
+  await pool.query(`ALTER TABLE customer_user_invitations ADD COLUMN IF NOT EXISTS invited_by_user_id INT;`);
+  await pool.query(`ALTER TABLE customer_user_invitations ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP;`);
+  await pool.query(`ALTER TABLE customer_user_invitations ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMP;`);
+  await pool.query(`ALTER TABLE customer_user_invitations ADD COLUMN IF NOT EXISTS accepted_user_id INT;`);
+  await pool.query(`ALTER TABLE customer_user_invitations ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMP;`);
+  await pool.query(`ALTER TABLE customer_user_invitations ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_user_invitations_token_hash ON customer_user_invitations(token_hash);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_customer_user_invitations_group_email ON customer_user_invitations(group_id, email);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_customer_user_invitations_expires_at ON customer_user_invitations(expires_at);`);
+
+  // AUTH 2FA CHALLENGES
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS auth_2fa_challenges (
+      id TEXT PRIMARY KEY,
+      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      method TEXT NOT NULL,
+      context TEXT NOT NULL DEFAULT 'login',
+      code_hash TEXT,
+      phone TEXT,
+      expires_at TIMESTAMP NOT NULL,
+      consumed_at TIMESTAMP,
+      attempts INT NOT NULL DEFAULT 0,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_auth_2fa_challenges_user_created ON auth_2fa_challenges(user_id, created_at DESC);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_auth_2fa_challenges_expires ON auth_2fa_challenges(expires_at);`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_totp_pending (
+      user_id INT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      secret TEXT NOT NULL,
+      expires_at TIMESTAMP NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_user_totp_pending_expires ON user_totp_pending(expires_at);`);
 
   // FOLDERS
   await pool.query(`

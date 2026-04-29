@@ -12,12 +12,19 @@ export function validateProductionConfig(env = process.env) {
   const jwtSecret = String(env.JWT_SECRET || "").trim();
   const settingsKey = String(env.SETTINGS_CRYPTO_KEY || "").trim();
   const databaseUrl = String(env.DATABASE_URL || "").trim();
+  const dbHost = String(env.POSTGRES_HOST || env.PGHOST || "").trim();
+  const dbUser = String(env.POSTGRES_USER || env.PGUSER || "").trim();
+  const dbName = String(env.POSTGRES_DB || env.PGDATABASE || "").trim();
+  const dbPassword = String(env.POSTGRES_PASSWORD || env.PGPASSWORD || "").trim();
   const allowedOrigins = String(env.ALLOWED_ORIGINS || "")
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean);
 
-  if (!databaseUrl) errors.push("DATABASE_URL is required in production.");
+  const hasDiscreteDbConfig = !!(dbHost && dbUser && dbName && dbPassword);
+  if (!databaseUrl && !hasDiscreteDbConfig) {
+    errors.push("DATABASE_URL is required in production (or set POSTGRES_HOST, POSTGRES_USER, POSTGRES_DB, POSTGRES_PASSWORD).");
+  }
   if (!jwtSecret) errors.push("JWT_SECRET is required in production.");
   if (jwtSecret && jwtSecret.length < 32) errors.push("JWT_SECRET must be at least 32 characters in production.");
   if (jwtSecret === DEV_JWT_SECRET) errors.push("JWT_SECRET must not use the development default in production.");

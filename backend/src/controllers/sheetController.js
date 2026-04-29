@@ -6,7 +6,7 @@ import { fileURLToPath } from "url";
 import { randomUUID } from "crypto";
 import { query, getClient } from "../config/db.js";
 import { parsePagination } from "../utils/pagination.js";
-import { checkSheetAccess } from "../utils/authorization.js";
+import { checkSheetAccess, hasFolderAccess } from "../utils/authorization.js";
 import { writeAuditLog } from "../utils/auditLog.js";
 
 const MAX_UPLOAD_SHEETS = Number.parseInt(
@@ -181,36 +181,28 @@ async function isGroupAdminUser(userId) {
     return Number(rows?.[0]?.c || 0) > 0;
 }
 
-async function canWriteToFolder(client, user, folderId) {
-    if (!Number.isInteger(folderId)) return true;
+async function canWriteToReportSource(client, user, reportSourceId) {
+    if (!Number.isInteger(reportSourceId)) return false;
     const role = String(user?.role || "").toLowerCase();
     if (role === "admin") return true;
     const userId = Number(user?.id || 0);
     if (!Number.isInteger(userId) || userId <= 0) return false;
     const res = await client.query(
         `SELECT 1
-         FROM folders f
-         LEFT JOIN folder_groups fg ON fg.folder_id = f.id
-         WHERE f.id = $1
-           AND (
-             EXISTS (
-               SELECT 1
-               FROM user_groups ug
-               WHERE ug.user_id = $2 AND ug.is_admin = TRUE
-                 AND (ug.group_id = fg.group_id OR ug.group_id = f.group_id)
-             )
-           )
+         FROM report_sources rs
+         WHERE rs.id = $1
+           AND rs.created_by = $2
          LIMIT 1`,
-        [folderId, userId]
+        [reportSourceId, userId]
     );
     return res.rows.length > 0;
 }
 
-async function resolveReportSourceForUpload(client, { reportSourceId, reportSourceName, folderId, user }) {
+async function resolveReportSourceForUpload(client, { reportSourceId, reportSourceName, user }) {
     const sourceId = Number.parseInt(reportSourceId, 10);
     if (Number.isInteger(sourceId) && sourceId > 0) {
         const source = await client.query(
-            `SELECT rs.id, rs.name, rs.folder_id, rs.current_sheet_id, s.headers AS current_headers
+            `SELECT rs.id, rs.name, rs.created_by, rs.current_sheet_id, s.headers AS current_headers
              FROM report_sources rs
              LEFT JOIN sheets s ON s.id = rs.current_sheet_id
              WHERE rs.id = $1`,
@@ -222,18 +214,16 @@ async function resolveReportSourceForUpload(client, { reportSourceId, reportSour
             throw err;
         }
         const row = source.rows[0];
-        if (Number.isInteger(row.folder_id)) {
-            const canWrite = await canWriteToFolder(client, user, row.folder_id);
-            if (!canWrite) {
-                const err = new Error("report_source_forbidden");
-                err.statusCode = 403;
-                throw err;
-            }
+        const role = String(user?.role || "").toLowerCase();
+        const userId = Number(user?.id || 0);
+        if (role !== "admin" && row.created_by !== userId) {
+            const err = new Error("report_source_forbidden");
+            err.statusCode = 403;
+            throw err;
         }
         return {
             id: row.id,
             name: row.name,
-            folderId: row.folder_id ?? null,
             previousSheetId: row.current_sheet_id || null,
             previousHeaders: typeof row.current_headers === "string" ? JSON.parse(row.current_headers) : (row.current_headers || []),
             isNew: false,
@@ -247,15 +237,14 @@ async function resolveReportSourceForUpload(client, { reportSourceId, reportSour
         throw err;
     }
     const inserted = await client.query(
-        `INSERT INTO report_sources (name, folder_id, created_by, is_inferred, updated_at)
-         VALUES ($1, $2, $3, FALSE, CURRENT_TIMESTAMP)
-         RETURNING id, name, folder_id`,
-        [name, folderId, user?.id || null]
+        `INSERT INTO report_sources (name, created_by, is_inferred, updated_at)
+         VALUES ($1, $2, FALSE, CURRENT_TIMESTAMP)
+         RETURNING id, name`,
+        [name, user?.id || null]
     );
     return {
         id: inserted.rows[0].id,
         name: inserted.rows[0].name,
-        folderId: inserted.rows[0].folder_id ?? null,
         previousSheetId: null,
         previousHeaders: [],
         isNew: true,
@@ -296,15 +285,18 @@ async function carryForwardSourceSecurity(client, { previousSheetId, nextSheetId
 }
 
 // Helper to determine active sheet versioning
-async function getVersionedFilename(client, folderId, originalName) {
-    if (!folderId) return originalName; // No versioning in root? Or just basic? adhering to original logic which only checked folder
+async function getVersionedFilename(client, reportSourceId, originalName) {
+    if (!reportSourceId) return originalName;
 
     const ext = path.extname(originalName);
     const baseName = path.basename(originalName, ext);
 
     const existingFiles = await client.query(
-        `SELECT filename FROM sheets WHERE folder_id = $1 AND filename LIKE $2`,
-        [folderId, `${baseName}%`]
+        `SELECT filename
+           FROM sheets
+          WHERE report_source_id = $1
+            AND filename LIKE $2`,
+        [reportSourceId, `${baseName}%`]
     );
 
     if (existingFiles.rows.length > 0) {
@@ -351,9 +343,7 @@ function uploadRunsAsync(req) {
 
 async function userCanApproveReportSource(client, user, reportSourceId) {
     if (String(user?.role || "").toLowerCase() === "admin") return true;
-    const source = await client.query("SELECT folder_id FROM report_sources WHERE id = $1", [reportSourceId]);
-    if (!source.rows.length) return false;
-    return canWriteToFolder(client, user, source.rows[0].folder_id);
+    return canWriteToReportSource(client, user, reportSourceId);
 }
 
 async function createImportJob(client, { id, mode, requestedBy, originalFilename }) {
@@ -417,7 +407,7 @@ async function failImportJob(id, error) {
     );
 }
 
-function makeAsyncUploadRequest(req, filePath, importJobId) {
+function makeAsyncUploadRequest(req, filePayload, importJobId) {
     return {
         __asyncWorker: true,
         importJobId,
@@ -429,8 +419,9 @@ function makeAsyncUploadRequest(req, filePath, importJobId) {
         },
         file: {
             ...(req.file || {}),
-            path: filePath,
+            ...(filePayload || {}),
         },
+        fileBuffer: filePayload?.buffer || null,
         headers: { ...(req.headers || {}) },
         ip: req.ip,
         id: req.id,
@@ -509,7 +500,10 @@ export async function uploadSheet(req, res) {
     try {
         const isAdminRole = canUploadSheetsByRole(req.user?.role);
         const isGroupAdmin = req.user?.id ? await isGroupAdminUser(req.user.id) : false;
-        if (!isAdminRole && !isGroupAdmin) return res.status(403).json({ error: "Forbidden" });
+        if (!isAdminRole && !isGroupAdmin) {
+            if (filePath) fs.unlink(filePath, () => {});
+            return res.status(403).json({ error: "Forbidden" });
+        }
         if (!req.file) return res.status(400).json({ error: "No file" });
 
         const originalName = req.file.originalname || "uploaded.xlsx";
@@ -517,22 +511,30 @@ export async function uploadSheet(req, res) {
         const fileLabel = String(req.body?.file_label || req.body?.fileLabel || displayName || "File").trim();
         const approvalRequired = uploadRequiresApproval(req);
         const importJobId = req.importJobId || randomUUID();
-        const rawFolderId = req.body?.folderId ?? req.body?.folder_id;
         const rawReportSourceId = req.body?.reportSourceId ?? req.body?.report_source_id;
         const rawReportSourceName = req.body?.reportSourceName ?? req.body?.report_source_name;
-        const folderId = rawFolderId ? parseInt(rawFolderId, 10) : null;
-        if (!displayName) return res.status(400).json({ error: "display_name_required" });
+        if (!displayName) {
+            if (filePath) fs.unlink(filePath, () => {});
+            return res.status(400).json({ error: "display_name_required" });
+        }
 
-        console.log(`[upload] size=${req.file.size} folderId=${folderId ?? "none"} reportSourceId=${rawReportSourceId || "none"}`);
+        console.log(`[upload] size=${req.file.size} reportSourceId=${rawReportSourceId || "new"}`);
 
         if (!req.__asyncWorker && uploadRunsAsync(req)) {
+            const queuedBuffer = await fs.promises.readFile(filePath);
+            fs.unlink(filePath, () => {});
+            filePath = null;
             await enqueueImportJob({
                 id: importJobId,
                 requestedBy: req.user?.id,
                 originalFilename: originalName,
             });
-            const asyncReq = makeAsyncUploadRequest(req, filePath, importJobId);
-            filePath = null;
+            const asyncReq = makeAsyncUploadRequest(req, {
+                originalname: req.file?.originalname,
+                mimetype: req.file?.mimetype,
+                size: req.file?.size,
+                buffer: queuedBuffer,
+            }, importJobId);
             runAsyncUpload(asyncReq);
             await writeAuditLog({
                 req,
@@ -552,10 +554,13 @@ export async function uploadSheet(req, res) {
             });
         }
 
-        // Read file into buffer and delete temporary file immediately to free disk space
-        const fileBuffer = await fs.promises.readFile(filePath);
-        fs.unlink(filePath, () => {});
-        filePath = null;
+        // Read file into memory and remove temporary source file immediately.
+        let fileBuffer = req.fileBuffer;
+        if (!fileBuffer) {
+            fileBuffer = await fs.promises.readFile(filePath);
+            fs.unlink(filePath, () => {});
+            filePath = null;
+        }
 
         // PERF-01 Fix: Parse Workbook in a worker thread to avoid blocking the event loop
         let parsedResult;
@@ -597,76 +602,15 @@ export async function uploadSheet(req, res) {
 
             const sheetId = `${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
 
-            // Report Source / Folder Resolution & Customer Limit Check
-            let assignedFolderId = null;
+            // Report source resolution
             let reportSource = null;
             if (rawReportSourceId) {
                 reportSource = await resolveReportSourceForUpload(client, {
                     reportSourceId: rawReportSourceId,
                     reportSourceName: null,
-                    folderId: null,
                     user: req.user,
                 });
-                assignedFolderId = Number.isInteger(reportSource.folderId) ? reportSource.folderId : null;
             }
-            if (Number.isInteger(folderId)) {
-                const canWrite = await canWriteToFolder(client, req.user, folderId);
-                if (!canWrite) {
-                    await client.query('ROLLBACK');
-                    return res.status(403).json({ error: "Forbidden", message: "You do not have write access to this folder." });
-                }
-                const f = await client.query(`
-                    SELECT
-                      f.id,
-                      COALESCE(MIN(g.max_file_size_mb), 100) AS max_file_size_mb
-                    FROM folders f
-                    LEFT JOIN folder_groups fg ON fg.folder_id = f.id
-                    LEFT JOIN groups g ON g.id = fg.group_id
-                    WHERE f.id = $1
-                    GROUP BY f.id
-                    LIMIT 1
-                `, [folderId]);
-                
-                if (f.rows.length) {
-                    assignedFolderId = f.rows[0].id;
-                    const limitMb = f.rows[0].max_file_size_mb || 100;
-                    if (req.file.size > limitMb * 1024 * 1024) {
-                        await client.query('ROLLBACK');
-                        return res.status(413).json({ 
-                            error: "file_too_large", 
-                            message: `File exceeds customer limit of ${limitMb}MB`,
-                            maxMB: limitMb 
-                        });
-                    }
-                }
-            } else if (Number.isInteger(assignedFolderId)) {
-                const f = await client.query(`
-                    SELECT
-                      f.id,
-                      COALESCE(MIN(g.max_file_size_mb), 100) AS max_file_size_mb
-                    FROM folders f
-                    LEFT JOIN folder_groups fg ON fg.folder_id = f.id
-                    LEFT JOIN groups g ON g.id = fg.group_id
-                    WHERE f.id = $1
-                    GROUP BY f.id
-                    LIMIT 1
-                `, [assignedFolderId]);
-
-                if (f.rows.length) {
-                    const limitMb = f.rows[0].max_file_size_mb || 100;
-                    if (req.file.size > limitMb * 1024 * 1024) {
-                        await client.query('ROLLBACK');
-                        return res.status(413).json({
-                            error: "file_too_large",
-                            message: `File exceeds customer limit of ${limitMb}MB`,
-                            maxMB: limitMb
-                        });
-                    }
-                }
-            }
-
-            // Versioning
-            const versionedFilename = await getVersionedFilename(client, assignedFolderId, originalName);
 
             // Get headers from FIRST tab
             const firstTabName = sheetNames[0];
@@ -696,10 +640,10 @@ export async function uploadSheet(req, res) {
                 reportSource = await resolveReportSourceForUpload(client, {
                     reportSourceId: null,
                     reportSourceName: rawReportSourceName,
-                    folderId: assignedFolderId,
                     user: req.user,
                 });
             }
+            const versionedFilename = await getVersionedFilename(client, reportSource.id, originalName);
             const headerDiff = buildHeaderDiff(reportSource.previousHeaders, headers);
             const schemaStatus = getSchemaStatus(headerDiff);
             const versionRes = await client.query(
@@ -715,9 +659,9 @@ export async function uploadSheet(req, res) {
 
             // Insert Sheet Record
             await client.query(
-                `INSERT INTO sheets (id, headers, active, filename, display_name, folder_id, stored_path, tab_name, tabs, report_source_id, source_version) 
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-                [sheetId, JSON.stringify(headers), !approvalRequired, versionedFilename, displayName, assignedFolderId, null, firstTabName, JSON.stringify(sheetNames), reportSource.id, sourceVersion]
+                `INSERT INTO sheets (id, headers, active, filename, display_name, stored_path, tab_name, tabs, report_source_id, source_version) 
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+                [sheetId, JSON.stringify(headers), !approvalRequired, versionedFilename, displayName, null, firstTabName, JSON.stringify(sheetNames), reportSource.id, sourceVersion]
             );
 
             // Insert Rows in Chunks per Tab
@@ -794,18 +738,16 @@ export async function uploadSheet(req, res) {
                 await client.query(
                     `UPDATE report_sources
                         SET current_sheet_id = $1,
-                            folder_id = COALESCE(folder_id, $2),
                             updated_at = CURRENT_TIMESTAMP
-                      WHERE id = $3`,
-                    [sheetId, assignedFolderId, reportSource.id]
+                      WHERE id = $2`,
+                    [sheetId, reportSource.id]
                 );
             } else {
                 await client.query(
                     `UPDATE report_sources
-                        SET folder_id = COALESCE(folder_id, $1),
-                            updated_at = CURRENT_TIMESTAMP
-                      WHERE id = $2`,
-                    [assignedFolderId, reportSource.id]
+                        SET updated_at = CURRENT_TIMESTAMP
+                      WHERE id = $1`,
+                    [reportSource.id]
                 );
             }
 
@@ -828,7 +770,6 @@ export async function uploadSheet(req, res) {
                 active: !approvalRequired,
                 filename: versionedFilename,
                 display_name: displayName,
-                folderId: assignedFolderId,
                 tabs: sheetNames
             };
 
@@ -898,26 +839,10 @@ export async function getUniqueValues(req, res) {
     let hasFullAccess = req.user.role === "admin";
     let rowFiltersList = [];
 
-    // For non-admin users without folder-wide access, require explicit column permissions
+    // For non-admin users without report-source owner access, require explicit column permissions
     // and apply the same row filters used by the main sheet data endpoint.
     if (req.user.role !== "admin") {
-        const folderAccess = await query(
-            `SELECT 1
-             FROM sheets s
-             LEFT JOIN folders f ON f.id = s.folder_id
-             WHERE s.id = $1
-               AND (
-                 EXISTS (
-                   SELECT 1
-                   FROM folder_groups fg
-                   JOIN user_groups ug ON ug.group_id = fg.group_id
-                   WHERE fg.folder_id = f.id AND ug.user_id = $2
-                 )
-                 OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)
-               )`,
-            [id, userId]
-        );
-        hasFullAccess = folderAccess.length > 0;
+        hasFullAccess = await hasFolderAccess(id, userId);
         if (!hasFullAccess) {
             const perms = await query(
                 `SELECT allowed_columns, row_filters FROM permissions WHERE user_id = $2 AND sheet_id = $1
@@ -996,19 +921,10 @@ export async function getActiveSheet(req, res) {
             `SELECT DISTINCT s.id, s.headers, s.filename, s.display_name, s.totals_column,
                     s.report_source_id, s.source_version, rs.name AS report_source_name
              FROM sheets s
-             LEFT JOIN folders f ON f.id = s.folder_id
              LEFT JOIN report_sources rs ON rs.id = s.report_source_id
              WHERE s.active = TRUE
                AND (
-                 (
-                   EXISTS (
-                     SELECT 1
-                     FROM folder_groups fg
-                     JOIN user_groups ug ON ug.group_id = fg.group_id
-                     WHERE fg.folder_id = f.id AND ug.user_id = $1
-                   )
-                   OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $1)
-                 )
+                 rs.created_by = $1
                  OR (s.id IN (SELECT sheet_id FROM permissions WHERE user_id = $1))
                  OR (s.id IN (SELECT sheet_id FROM group_permissions WHERE group_id IN (SELECT group_id FROM user_groups WHERE user_id = $1)))
                )
@@ -1039,11 +955,10 @@ export async function listMySheets(req, res) {
 
     if (req.user.role === "admin") {
         const rows = await query(
-            `SELECT s.id, s.filename, s.display_name, s.uploaded_at, s.folder_id, f.name AS folder_name,
+            `SELECT s.id, s.filename, s.display_name, s.uploaded_at,
                     s.active, s.report_source_id, s.source_version, rs.name AS report_source_name,
                     (rs.current_sheet_id = s.id) AS is_current_source_version
              FROM sheets s
-             LEFT JOIN folders f ON f.id = s.folder_id
              LEFT JOIN report_sources rs ON rs.id = s.report_source_id
              ORDER BY s.uploaded_at DESC${suffix}`,
             paginationParams
@@ -1052,22 +967,13 @@ export async function listMySheets(req, res) {
     }
 
     const rows = await query(
-        `SELECT DISTINCT s.id, s.filename, s.display_name, s.uploaded_at, s.folder_id, f.name AS folder_name,
+        `SELECT DISTINCT s.id, s.filename, s.display_name, s.uploaded_at,
                 s.active, s.report_source_id, s.source_version, rs.name AS report_source_name,
                 (rs.current_sheet_id = s.id) AS is_current_source_version
          FROM sheets s
-         LEFT JOIN folders f ON f.id = s.folder_id
          LEFT JOIN report_sources rs ON rs.id = s.report_source_id
          WHERE (
-             (
-               EXISTS (
-                 SELECT 1
-                 FROM folder_groups fg
-                 JOIN user_groups ug ON ug.group_id = fg.group_id
-                 WHERE fg.folder_id = f.id AND ug.user_id = $1
-               )
-               OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $1) -- legacy compatibility
-             )
+             rs.created_by = $1
              OR
              (s.id IN (SELECT sheet_id FROM permissions WHERE user_id = $1))
              OR 
@@ -1084,11 +990,10 @@ export async function listAllSheets(req, res) {
     const pagination = parsePagination(req.query, { maxLimit: MAX_SHEET_DATA_LIMIT });
     if (pagination.error) return res.status(400).json({ error: pagination.error });
     const rows = await query(
-        `SELECT s.id, s.filename, s.display_name, s.uploaded_at, s.folder_id, f.name AS folder_name,
+        `SELECT s.id, s.filename, s.display_name, s.uploaded_at,
                 s.active, s.report_source_id, s.source_version, rs.name AS report_source_name,
                 (rs.current_sheet_id = s.id) AS is_current_source_version
          FROM sheets s
-         LEFT JOIN folders f ON f.id = s.folder_id
          LEFT JOIN report_sources rs ON rs.id = s.report_source_id
          ORDER BY s.uploaded_at DESC${pagination.hasPagination ? " LIMIT $1 OFFSET $2" : ""}`,
         pagination.hasPagination ? [pagination.limit, pagination.offset] : []
@@ -1105,11 +1010,10 @@ export async function listReportSources(req, res) {
 
     if (req.user.role === "admin") {
         const rows = await query(
-            `SELECT rs.id, rs.name, rs.folder_id, f.name AS folder_name, rs.current_sheet_id, rs.is_inferred,
+            `SELECT rs.id, rs.name, rs.current_sheet_id, rs.is_inferred,
                     rs.created_at, rs.updated_at,
                     COALESCE(import_counts.import_count, 0)::int AS import_count
              FROM report_sources rs
-             LEFT JOIN folders f ON f.id = rs.folder_id
              LEFT JOIN (
                SELECT report_source_id, COUNT(*) AS import_count
                FROM report_source_imports
@@ -1122,27 +1026,18 @@ export async function listReportSources(req, res) {
     }
 
     const rows = await query(
-        `SELECT DISTINCT rs.id, rs.name, rs.folder_id, f.name AS folder_name, rs.current_sheet_id, rs.is_inferred,
+        `SELECT DISTINCT rs.id, rs.name, rs.current_sheet_id, rs.is_inferred,
                 rs.created_at, rs.updated_at,
                 COALESCE(import_counts.import_count, 0)::int AS import_count
          FROM report_sources rs
          LEFT JOIN sheets s ON s.id = rs.current_sheet_id
-         LEFT JOIN folders f ON f.id = rs.folder_id
          LEFT JOIN (
            SELECT report_source_id, COUNT(*) AS import_count
            FROM report_source_imports
            GROUP BY report_source_id
          ) import_counts ON import_counts.report_source_id = rs.id
          WHERE (
-           (
-             EXISTS (
-               SELECT 1
-               FROM folder_groups fg
-               JOIN user_groups ug ON ug.group_id = fg.group_id
-               WHERE fg.folder_id = f.id AND ug.user_id = $1
-             )
-             OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $1)
-           )
+           rs.created_by = $1
            OR s.id IN (SELECT sheet_id FROM permissions WHERE user_id = $1)
            OR s.id IN (
              SELECT sheet_id
@@ -1161,23 +1056,13 @@ export async function getReportSourceImports(req, res) {
     if (!Number.isInteger(sourceId) || sourceId <= 0) {
         return res.status(400).json({ error: "invalid_report_source_id" });
     }
-    const [source] = await query("SELECT current_sheet_id, folder_id FROM report_sources WHERE id = $1", [sourceId]);
+    const [source] = await query("SELECT current_sheet_id FROM report_sources WHERE id = $1", [sourceId]);
     if (!source) return res.status(404).json({ error: "not_found" });
     if (source.current_sheet_id) {
         const hasAccess = await checkSheetAccess(source.current_sheet_id, req.user);
         if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
     } else if (req.user.role !== "admin") {
-        const folderAccess = await query(
-            `SELECT 1
-               FROM folders f
-               LEFT JOIN folder_groups fg ON fg.folder_id = f.id
-               JOIN user_groups ug ON ug.user_id = $2
-              WHERE f.id = $1
-                AND (ug.group_id = fg.group_id OR ug.group_id = f.group_id)
-              LIMIT 1`,
-            [source.folder_id, req.user.id]
-        );
-        if (!folderAccess.length) return res.status(403).json({ error: "Forbidden" });
+        return res.status(403).json({ error: "Forbidden" });
     }
     const rows = await query(
         `SELECT rsi.id, rsi.report_source_id, rsi.sheet_id, rsi.import_version, rsi.file_label,
@@ -1209,11 +1094,8 @@ export async function listImportJobs(req, res) {
           OR EXISTS (
             SELECT 1
             FROM report_sources rs
-            LEFT JOIN folders f ON f.id = rs.folder_id
-            LEFT JOIN folder_groups fg ON fg.folder_id = f.id
-            JOIN user_groups ug ON ug.user_id = $1
             WHERE rs.id = ij.report_source_id
-              AND (ug.group_id = fg.group_id OR ug.group_id = f.group_id)
+              AND rs.created_by = $1
           )
         )`;
     }
@@ -1273,8 +1155,7 @@ export async function publishReportSourceImport(req, res) {
     try {
         await client.query("BEGIN");
         const importRes = await client.query(
-            `SELECT rsi.id, rsi.report_source_id, rsi.sheet_id, rsi.status, rsi.file_label, rsi.job_id,
-                    rs.folder_id
+            `SELECT rsi.id, rsi.report_source_id, rsi.sheet_id, rsi.status, rsi.file_label, rsi.job_id
                FROM report_source_imports rsi
                JOIN report_sources rs ON rs.id = rsi.report_source_id
               WHERE rsi.id = $1
@@ -1461,23 +1342,8 @@ export async function getSheetDetails(req, res) {
 
     // Enforce allowed_columns on the headers array returned
     if (req.user.role !== "admin") {
-        const folderAccess = await query(
-            `SELECT 1
-             FROM sheets s
-             LEFT JOIN folders f ON f.id = s.folder_id
-             WHERE s.id = $1
-               AND (
-                 EXISTS (
-                   SELECT 1
-                   FROM folder_groups fg
-                   JOIN user_groups ug ON ug.group_id = fg.group_id
-                   WHERE fg.folder_id = f.id AND ug.user_id = $2
-                 )
-                 OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2) -- legacy compatibility
-               )`,
-            [req.params.id, req.user.id]
-        );
-        if (folderAccess.length === 0) {
+        const hasOwnerAccess = await hasFolderAccess(req.params.id, req.user.id);
+        if (!hasOwnerAccess) {
             const userPerms = await query(
                 `SELECT allowed_columns FROM permissions WHERE user_id = $2 AND sheet_id = $1
                  UNION ALL
@@ -1578,23 +1444,7 @@ export async function getSheetData(req, res) {
 
     // 2. Resolve Base Permissions
     if (req.user.role !== "admin") {
-        const folderAccess = await query(
-            `SELECT 1
-             FROM sheets s
-             LEFT JOIN folders f ON f.id = s.folder_id
-             WHERE s.id = $1
-               AND (
-                 EXISTS (
-                   SELECT 1
-                   FROM folder_groups fg
-                   JOIN user_groups ug ON ug.group_id = fg.group_id
-                   WHERE fg.folder_id = f.id AND ug.user_id = $2
-                 )
-                 OR f.group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)
-               )`,
-            [id, userId]
-        );
-        if (folderAccess.length > 0) hasFullAccess = true;
+        hasFullAccess = await hasFolderAccess(id, userId);
 
         const userPerms = await query(
             `SELECT allowed_columns, row_filters FROM permissions WHERE user_id = $2 AND sheet_id = $1`,
@@ -1786,7 +1636,7 @@ export async function deleteSheet(req, res) {
     try {
         await client.query("BEGIN");
 
-        const s = await client.query("SELECT id, folder_id FROM sheets WHERE id = $1", [id]);
+        const s = await client.query("SELECT id FROM sheets WHERE id = $1", [id]);
         if (!s.rows.length) {
             await client.query("ROLLBACK");
             return res.status(404).json({ error: "not_found" });

@@ -9,9 +9,7 @@ const CSRF_EXEMPT_PATHS = new Set([
   "/auth/login",
   "/auth/logout",
   "/auth/google/exchange",
-  "/chat/query",
-  "/chat/audio",
-  "/dashboard/translate",
+  "/auth/invitations/accept",
 ]);
 
 function normalizePathname(pathname) {

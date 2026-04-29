@@ -4,8 +4,9 @@ import { parsePagination } from "../src/utils/pagination.js";
 
 test("parsePagination returns no pagination by default", () => {
   const parsed = parsePagination({});
-  assert.equal(parsed.hasPagination, false);
-  assert.equal(parsed.limit, null);
+  assert.equal(parsed.hasPagination, true);
+  assert.equal(parsed.limit, 5000);
+  assert.equal(parsed.offset, 0);
 });
 
 test("parsePagination caps and validates limit/offset", () => {

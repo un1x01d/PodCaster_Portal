@@ -29,13 +29,13 @@ const DEFAULT_GROUP_ENTITLEMENTS = {
   features: {
     manageUsers: true,
     managePermissions: true,
-    manageFolders: true,
     manageGroupAdmins: false,
     ai: true,
     exports: true,
     imports: true,
     approvalFlow: false,
     auditLogs: false,
+    sso: true,
     googleDrive: true,
     dropbox: true,
     oneDrive: true,
@@ -99,8 +99,6 @@ export default function UserManagement({ token, user, sheetId }) {
     password: "",
     repeat: "",
   });
-  const [googleIntegrationEnabled, setGoogleIntegrationEnabled] = useState(true);
-  const [googleIntegrationSaving, setGoogleIntegrationSaving] = useState(false);
   const [googleOauthMeta, setGoogleOauthMeta] = useState({
     hasClientId: false,
     hasClientSecret: false,
@@ -116,8 +114,7 @@ export default function UserManagement({ token, user, sheetId }) {
     frontendUrl: "",
   });
   const [googleOauthSaving, setGoogleOauthSaving] = useState(false);
-  const [dropboxIntegrationEnabled, setDropboxIntegrationEnabled] = useState(true);
-  const [dropboxIntegrationSaving, setDropboxIntegrationSaving] = useState(false);
+  const [googleOauthTesting, setGoogleOauthTesting] = useState(false);
   const [dropboxOauthMeta, setDropboxOauthMeta] = useState({
     hasClientId: false,
     hasClientSecret: false,
@@ -133,8 +130,7 @@ export default function UserManagement({ token, user, sheetId }) {
     frontendUrl: "",
   });
   const [dropboxOauthSaving, setDropboxOauthSaving] = useState(false);
-  const [oneDriveIntegrationEnabled, setOneDriveIntegrationEnabled] = useState(true);
-  const [oneDriveIntegrationSaving, setOneDriveIntegrationSaving] = useState(false);
+  const [dropboxOauthTesting, setDropboxOauthTesting] = useState(false);
   const [oneDriveOauthMeta, setOneDriveOauthMeta] = useState({
     hasClientId: false,
     hasClientSecret: false,
@@ -150,6 +146,32 @@ export default function UserManagement({ token, user, sheetId }) {
     frontendUrl: "",
   });
   const [oneDriveOauthSaving, setOneDriveOauthSaving] = useState(false);
+  const [oneDriveOauthTesting, setOneDriveOauthTesting] = useState(false);
+  const [smtpMeta, setSmtpMeta] = useState({
+    hasPassword: false,
+    passwordMasked: "",
+    host: "",
+    port: 587,
+    secure: false,
+    username: "",
+    fromEmail: "",
+    fromName: "",
+  });
+  const [smtpForm, setSmtpForm] = useState({
+    host: "",
+    port: 587,
+    secure: false,
+    username: "",
+    password: "",
+    fromEmail: "",
+    fromName: "",
+  });
+  const [smtpSaving, setSmtpSaving] = useState(false);
+  const [pendingInvitations, setPendingInvitations] = useState([]);
+  const [invitationsLoading, setInvitationsLoading] = useState(false);
+  const [inviteActionBusyId, setInviteActionBusyId] = useState(null);
+  const [invitePolicy, setInvitePolicy] = useState({ ttlHours: 72, retentionDays: 30 });
+  const [invitePolicySaving, setInvitePolicySaving] = useState(false);
 
   // user-level permissions UI (select a sheet from user's groups)
   const [selectedUserId, setSelectedUserId] = useState(null);
@@ -167,6 +189,8 @@ export default function UserManagement({ token, user, sheetId }) {
   const [selectedGroupId, setSelectedGroupId] = useState(null);
   const [groupMembers, setGroupMembers] = useState([]);
   const [groupAddUserId, setGroupAddUserId] = useState("");
+  const [groupSettingsDraft, setGroupSettingsDraft] = useState(null);
+  const [groupSettingsSaving, setGroupSettingsSaving] = useState(false);
 
   // customer permissions (per-sheet)
   const [groupAllowedCols, setGroupAllowedCols] = useState(new Set());
@@ -178,90 +202,6 @@ export default function UserManagement({ token, user, sheetId }) {
 
   // Templates (now scoped by group)
   const [templates, setTemplates] = useState(loadTemplates());
-  // ...
-
-  // Folders
-  const [folders, setFolders] = useState([]);
-  const [newFolderName, setNewFolderName] = useState("");
-  const [folderOwnershipType, setFolderOwnershipType] = useState("group");
-  const [folderOwnerUserId, setFolderOwnerUserId] = useState("");
-  const [folderOwnerGroupId, setFolderOwnerGroupId] = useState("");
-  const [folderMaxFileSizeMb, setFolderMaxFileSizeMb] = useState("100");
-  const [folderMaxTotalSizeMb, setFolderMaxTotalSizeMb] = useState("1024");
-  const [selectedFolderId, setSelectedFolderId] = useState("");
-
-  const fetchFolders = async () => {
-    try {
-      const res = await axios.get(`${API}/folders`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      setFolders(res.data || []);
-    } catch (e) { console.error(e); }
-  };
-
-  const createFolder = async () => {
-    if (!newFolderName.trim()) return;
-    try {
-      let effectiveGroupIds = [];
-      if (folderOwnershipType === "group") {
-        if (!folderOwnerGroupId) {
-          alert("Select an owner customer");
-          return;
-        }
-        effectiveGroupIds = [Number(folderOwnerGroupId)];
-      } else if (folderOwnershipType === "user") {
-        if (!folderOwnerUserId) {
-          alert("Select an owner user");
-          return;
-        }
-        effectiveGroupIds = await getGroupsForUser(folderOwnerUserId);
-        if (!effectiveGroupIds.length) {
-          alert("Selected user does not belong to any customers");
-          return;
-        }
-      } else {
-        alert("Select a valid folder ownership mode");
-        return;
-      }
-      await axios.post(`${API}/folders`, {
-        name: newFolderName,
-        groupIds: effectiveGroupIds,
-        ownerUserId: folderOwnershipType === "user" ? Number(folderOwnerUserId) : null,
-        maxFileSizeMb: Number(folderMaxFileSizeMb || 100),
-        maxTotalSizeMb: Number(folderMaxTotalSizeMb || 1024),
-      }, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      setNewFolderName("");
-      setFolderOwnershipType("group");
-      setFolderOwnerUserId("");
-      setFolderOwnerGroupId("");
-      setFolderMaxFileSizeMb("100");
-      setFolderMaxTotalSizeMb("1024");
-      fetchFolders();
-    } catch (e) {
-      if (e.response && e.response.status === 409) {
-        alert("A folder with this name already exists.");
-      } else {
-        alert("Create folder failed");
-        console.error(e);
-      }
-    }
-  };
-
-  const deleteFolder = async (fid) => {
-    if (!confirm("Delete folder?")) return;
-    try {
-      await axios.delete(`${API}/folders/${fid}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      fetchFolders();
-    } catch (e) { alert("Delete folder failed"); }
-  };
-
-  useEffect(() => {
-    fetchFolders();
-  }, []);
 
   // ... rest of state
   const [newTplNameUser, setNewTplNameUser] = useState("");
@@ -275,10 +215,6 @@ export default function UserManagement({ token, user, sheetId }) {
   const [groupViews, setGroupViews] = useState(new Set());
   const [selectedUserGroupIds, setSelectedUserGroupIds] = useState(new Set());
   const [userGroupMap, setUserGroupMap] = useState({});
-  const [editingFolderId, setEditingFolderId] = useState(null);
-  const [editingFolderOwnerGroupId, setEditingFolderOwnerGroupId] = useState("");
-  const [editingFolderMaxFileSizeMb, setEditingFolderMaxFileSizeMb] = useState("100");
-  const [editingFolderMaxTotalSizeMb, setEditingFolderMaxTotalSizeMb] = useState("1024");
   const [editingUserId, setEditingUserId] = useState(null);
   const [editingUserForm, setEditingUserForm] = useState({ firstName: "", lastName: "", company: "", email: "" });
 
@@ -289,14 +225,6 @@ export default function UserManagement({ token, user, sheetId }) {
     });
     return m;
   }, [users]);
-
-  const folderById = useMemo(() => {
-    const m = new Map();
-    (folders || []).forEach((f) => {
-        if (f && f.id) m.set(f.id, f);
-    });
-    return m;
-  }, [folders]);
 
   const uniqueGroupMembers = useMemo(() => {
     const m = new Map();
@@ -313,6 +241,16 @@ export default function UserManagement({ token, user, sheetId }) {
     });
     return Array.from(m.values());
   }, [users]);
+
+  const isSuperAdmin = String(user?.role || "").toLowerCase() === "admin";
+  const isCustomerAdmin = !!(user?.is_group_admin || user?.group_admin || user?.is_admin);
+  const canManageIntegrations = isSuperAdmin || isCustomerAdmin;
+
+  const integrationScopeParams = useMemo(() => {
+    const gid = Number(selectedGroupId);
+    if (Number.isInteger(gid) && gid > 0) return { groupId: gid };
+    return {};
+  }, [selectedGroupId]);
 
   const fetchReportSources = async () => {
     try {
@@ -348,39 +286,13 @@ export default function UserManagement({ token, user, sheetId }) {
     }
   };
 
-  const fetchGoogleIntegrationSetting = async () => {
-    if (user?.role !== "admin") return;
-    try {
-      const res = await axios.get(`${API}/admin/settings/google-integration`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      setGoogleIntegrationEnabled(!!res?.data?.enabled);
-    } catch (e) {
-      console.error("fetchGoogleIntegrationSetting failed", e);
-    }
-  };
-
-  const toggleGoogleIntegration = async () => {
-    if (user?.role !== "admin" || googleIntegrationSaving) return;
-    const nextEnabled = !googleIntegrationEnabled;
-    setGoogleIntegrationSaving(true);
-    try {
-      await axios.patch(`${API}/admin/settings/google-integration`, { enabled: nextEnabled }, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      setGoogleIntegrationEnabled(nextEnabled);
-    } catch (e) {
-      alert(e.response?.data?.error || "Failed to update Google integration");
-    } finally {
-      setGoogleIntegrationSaving(false);
-    }
-  };
-
   const fetchGoogleOauthSetting = async () => {
-    if (user?.role !== "admin") return;
+    if (!canManageIntegrations) return;
+    if (!isSuperAdmin && !selectedGroupId) return;
     try {
       const res = await axios.get(`${API}/admin/settings/google-oauth`, {
         headers: { Authorization: `Bearer ${token}` },
+        params: integrationScopeParams,
       });
       const data = res?.data || {};
       setGoogleOauthMeta({
@@ -403,8 +315,33 @@ export default function UserManagement({ token, user, sheetId }) {
     }
   };
 
+  const testGoogleOauthSetting = async () => {
+    if (!canManageIntegrations || googleOauthTesting) return;
+    if (!isSuperAdmin && !selectedGroupId) {
+      alert("Select a customer first.");
+      return;
+    }
+    setGoogleOauthTesting(true);
+    try {
+      const res = await axios.post(`${API}/admin/settings/google-oauth/test`, { ...integrationScopeParams }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      alert(res?.data?.message === "oauth_credentials_valid_code_rejected"
+        ? "Google OAuth credentials validated."
+        : "Google OAuth probe completed.");
+    } catch (e) {
+      alert(e.response?.data?.error || "Google OAuth test failed");
+    } finally {
+      setGoogleOauthTesting(false);
+    }
+  };
+
   const saveGoogleOauthSetting = async () => {
-    if (user?.role !== "admin" || googleOauthSaving) return;
+    if (!canManageIntegrations || googleOauthSaving) return;
+    if (!isSuperAdmin && !selectedGroupId) {
+      alert("Select a customer first.");
+      return;
+    }
     setGoogleOauthSaving(true);
     try {
       const payload = {
@@ -412,6 +349,7 @@ export default function UserManagement({ token, user, sheetId }) {
         clientSecret: googleOauthForm.clientSecret || "***",
         redirectUri: googleOauthForm.redirectUri || "",
         frontendUrl: googleOauthForm.frontendUrl || "",
+        ...integrationScopeParams,
       };
       const res = await axios.patch(`${API}/admin/settings/google-oauth`, payload, {
         headers: { Authorization: `Bearer ${token}` },
@@ -438,39 +376,13 @@ export default function UserManagement({ token, user, sheetId }) {
     }
   };
 
-  const fetchDropboxIntegrationSetting = async () => {
-    if (user?.role !== "admin") return;
-    try {
-      const res = await axios.get(`${API}/admin/settings/dropbox-integration`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      setDropboxIntegrationEnabled(!!res?.data?.enabled);
-    } catch (e) {
-      console.error("fetchDropboxIntegrationSetting failed", e);
-    }
-  };
-
-  const toggleDropboxIntegration = async () => {
-    if (user?.role !== "admin" || dropboxIntegrationSaving) return;
-    const nextEnabled = !dropboxIntegrationEnabled;
-    setDropboxIntegrationSaving(true);
-    try {
-      await axios.patch(`${API}/admin/settings/dropbox-integration`, { enabled: nextEnabled }, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      setDropboxIntegrationEnabled(nextEnabled);
-    } catch (e) {
-      alert(e.response?.data?.error || "Failed to update Dropbox integration");
-    } finally {
-      setDropboxIntegrationSaving(false);
-    }
-  };
-
   const fetchDropboxOauthSetting = async () => {
-    if (user?.role !== "admin") return;
+    if (!canManageIntegrations) return;
+    if (!isSuperAdmin && !selectedGroupId) return;
     try {
       const res = await axios.get(`${API}/admin/settings/dropbox-oauth`, {
         headers: { Authorization: `Bearer ${token}` },
+        params: integrationScopeParams,
       });
       const data = res?.data || {};
       setDropboxOauthMeta({
@@ -493,8 +405,33 @@ export default function UserManagement({ token, user, sheetId }) {
     }
   };
 
+  const testDropboxOauthSetting = async () => {
+    if (!canManageIntegrations || dropboxOauthTesting) return;
+    if (!isSuperAdmin && !selectedGroupId) {
+      alert("Select a customer first.");
+      return;
+    }
+    setDropboxOauthTesting(true);
+    try {
+      const res = await axios.post(`${API}/admin/settings/dropbox-oauth/test`, { ...integrationScopeParams }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      alert(res?.data?.message === "oauth_credentials_valid_code_rejected"
+        ? "Dropbox OAuth credentials validated."
+        : "Dropbox OAuth probe completed.");
+    } catch (e) {
+      alert(e.response?.data?.error || "Dropbox OAuth test failed");
+    } finally {
+      setDropboxOauthTesting(false);
+    }
+  };
+
   const saveDropboxOauthSetting = async () => {
-    if (user?.role !== "admin" || dropboxOauthSaving) return;
+    if (!canManageIntegrations || dropboxOauthSaving) return;
+    if (!isSuperAdmin && !selectedGroupId) {
+      alert("Select a customer first.");
+      return;
+    }
     setDropboxOauthSaving(true);
     try {
       const payload = {
@@ -502,6 +439,7 @@ export default function UserManagement({ token, user, sheetId }) {
         clientSecret: dropboxOauthForm.clientSecret || "***",
         redirectUri: dropboxOauthForm.redirectUri || "",
         frontendUrl: dropboxOauthForm.frontendUrl || "",
+        ...integrationScopeParams,
       };
       const res = await axios.patch(`${API}/admin/settings/dropbox-oauth`, payload, {
         headers: { Authorization: `Bearer ${token}` },
@@ -528,39 +466,13 @@ export default function UserManagement({ token, user, sheetId }) {
     }
   };
 
-  const fetchOneDriveIntegrationSetting = async () => {
-    if (user?.role !== "admin") return;
-    try {
-      const res = await axios.get(`${API}/admin/settings/onedrive-integration`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      setOneDriveIntegrationEnabled(!!res?.data?.enabled);
-    } catch (e) {
-      console.error("fetchOneDriveIntegrationSetting failed", e);
-    }
-  };
-
-  const toggleOneDriveIntegration = async () => {
-    if (user?.role !== "admin" || oneDriveIntegrationSaving) return;
-    const nextEnabled = !oneDriveIntegrationEnabled;
-    setOneDriveIntegrationSaving(true);
-    try {
-      await axios.patch(`${API}/admin/settings/onedrive-integration`, { enabled: nextEnabled }, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      setOneDriveIntegrationEnabled(nextEnabled);
-    } catch (e) {
-      alert(e.response?.data?.error || "Failed to update OneDrive integration");
-    } finally {
-      setOneDriveIntegrationSaving(false);
-    }
-  };
-
   const fetchOneDriveOauthSetting = async () => {
-    if (user?.role !== "admin") return;
+    if (!canManageIntegrations) return;
+    if (!isSuperAdmin && !selectedGroupId) return;
     try {
       const res = await axios.get(`${API}/admin/settings/onedrive-oauth`, {
         headers: { Authorization: `Bearer ${token}` },
+        params: integrationScopeParams,
       });
       const data = res?.data || {};
       setOneDriveOauthMeta({
@@ -583,8 +495,33 @@ export default function UserManagement({ token, user, sheetId }) {
     }
   };
 
+  const testOneDriveOauthSetting = async () => {
+    if (!canManageIntegrations || oneDriveOauthTesting) return;
+    if (!isSuperAdmin && !selectedGroupId) {
+      alert("Select a customer first.");
+      return;
+    }
+    setOneDriveOauthTesting(true);
+    try {
+      const res = await axios.post(`${API}/admin/settings/onedrive-oauth/test`, { ...integrationScopeParams }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      alert(res?.data?.message === "oauth_credentials_valid_code_rejected"
+        ? "OneDrive OAuth credentials validated."
+        : "OneDrive OAuth probe completed.");
+    } catch (e) {
+      alert(e.response?.data?.error || "OneDrive OAuth test failed");
+    } finally {
+      setOneDriveOauthTesting(false);
+    }
+  };
+
   const saveOneDriveOauthSetting = async () => {
-    if (user?.role !== "admin" || oneDriveOauthSaving) return;
+    if (!canManageIntegrations || oneDriveOauthSaving) return;
+    if (!isSuperAdmin && !selectedGroupId) {
+      alert("Select a customer first.");
+      return;
+    }
     setOneDriveOauthSaving(true);
     try {
       const payload = {
@@ -592,6 +529,7 @@ export default function UserManagement({ token, user, sheetId }) {
         clientSecret: oneDriveOauthForm.clientSecret || "***",
         redirectUri: oneDriveOauthForm.redirectUri || "",
         frontendUrl: oneDriveOauthForm.frontendUrl || "",
+        ...integrationScopeParams,
       };
       const res = await axios.patch(`${API}/admin/settings/onedrive-oauth`, payload, {
         headers: { Authorization: `Bearer ${token}` },
@@ -615,6 +553,164 @@ export default function UserManagement({ token, user, sheetId }) {
       alert(e.response?.data?.error || "Failed to update OneDrive OAuth settings");
     } finally {
       setOneDriveOauthSaving(false);
+    }
+  };
+
+  const fetchSmtpSetting = async () => {
+    if (!isSuperAdmin) return;
+    try {
+      const res = await axios.get(`${API}/admin/settings/smtp`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || {};
+      setSmtpMeta({
+        hasPassword: !!data.hasPassword,
+        passwordMasked: data.passwordMasked || "",
+        host: data.host || "",
+        port: Number(data.port || 587),
+        secure: !!data.secure,
+        username: data.username || "",
+        fromEmail: data.fromEmail || "",
+        fromName: data.fromName || "",
+      });
+      setSmtpForm((prev) => ({
+        ...prev,
+        host: data.host || "",
+        port: Number(data.port || 587),
+        secure: !!data.secure,
+        username: data.username || "",
+        password: "",
+        fromEmail: data.fromEmail || "",
+        fromName: data.fromName || "",
+      }));
+    } catch (e) {
+      console.error("fetchSmtpSetting failed", e);
+    }
+  };
+
+  const saveSmtpSetting = async () => {
+    if (!isSuperAdmin || smtpSaving) return;
+    setSmtpSaving(true);
+    try {
+      const payload = {
+        host: smtpForm.host || "",
+        port: Number.parseInt(smtpForm.port, 10) || 587,
+        secure: !!smtpForm.secure,
+        username: smtpForm.username || "",
+        password: smtpForm.password || "***",
+        fromEmail: smtpForm.fromEmail || "",
+        fromName: smtpForm.fromName || "",
+      };
+      const res = await axios.patch(`${API}/admin/settings/smtp`, payload, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || {};
+      setSmtpMeta({
+        hasPassword: !!data.hasPassword,
+        passwordMasked: data.passwordMasked || "",
+        host: data.host || "",
+        port: Number(data.port || 587),
+        secure: !!data.secure,
+        username: data.username || "",
+        fromEmail: data.fromEmail || "",
+        fromName: data.fromName || "",
+      });
+      setSmtpForm((prev) => ({ ...prev, password: "" }));
+      alert("SMTP settings updated");
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to update SMTP settings");
+    } finally {
+      setSmtpSaving(false);
+    }
+  };
+
+  const fetchInvitationPolicy = async () => {
+    if (!isSuperAdmin) return;
+    try {
+      const res = await axios.get(`${API}/admin/settings/customer-invitations`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setInvitePolicy({
+        ttlHours: Number(res?.data?.ttlHours || 72),
+        retentionDays: Number(res?.data?.retentionDays || 30),
+      });
+    } catch (e) {
+      console.error("fetchInvitationPolicy failed", e);
+    }
+  };
+
+  const saveInvitationPolicy = async () => {
+    if (!isSuperAdmin || invitePolicySaving) return;
+    setInvitePolicySaving(true);
+    try {
+      const payload = {
+        ttlHours: Number.parseInt(String(invitePolicy.ttlHours || "").trim(), 10) || 72,
+        retentionDays: Number.parseInt(String(invitePolicy.retentionDays || "").trim(), 10) || 30,
+      };
+      const res = await axios.patch(`${API}/admin/settings/customer-invitations`, payload, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setInvitePolicy({
+        ttlHours: Number(res?.data?.ttlHours || payload.ttlHours),
+        retentionDays: Number(res?.data?.retentionDays || payload.retentionDays),
+      });
+      alert("Invitation policy saved");
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to save invitation policy");
+    } finally {
+      setInvitePolicySaving(false);
+    }
+  };
+
+  const fetchPendingInvitations = async (gid = selectedGroupId) => {
+    if (!gid) {
+      setPendingInvitations([]);
+      return;
+    }
+    setInvitationsLoading(true);
+    try {
+      const res = await axios.get(`${API}/users/invitations`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { groupId: Number(gid) },
+      });
+      setPendingInvitations(Array.isArray(res.data) ? res.data : []);
+    } catch (e) {
+      console.error("fetchPendingInvitations failed", e);
+      setPendingInvitations([]);
+    } finally {
+      setInvitationsLoading(false);
+    }
+  };
+
+  const resendInvitation = async (invitationId) => {
+    if (!invitationId || inviteActionBusyId) return;
+    setInviteActionBusyId(`resend:${invitationId}`);
+    try {
+      await axios.post(`${API}/users/invitations/${invitationId}/resend`, {}, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      alert("Invitation resent");
+      fetchPendingInvitations();
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to resend invitation");
+    } finally {
+      setInviteActionBusyId(null);
+    }
+  };
+
+  const revokeInvitation = async (invitationId) => {
+    if (!invitationId || inviteActionBusyId) return;
+    if (!window.confirm("Revoke this pending invitation?")) return;
+    setInviteActionBusyId(`revoke:${invitationId}`);
+    try {
+      await axios.post(`${API}/users/invitations/${invitationId}/revoke`, {}, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      fetchPendingInvitations();
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to revoke invitation");
+    } finally {
+      setInviteActionBusyId(null);
     }
   };
 
@@ -758,14 +854,21 @@ export default function UserManagement({ token, user, sheetId }) {
       fetchGroups();
       fetchAllViews();
       fetchReportSources();
-      fetchGoogleIntegrationSetting();
       fetchGoogleOauthSetting();
-      fetchDropboxIntegrationSetting();
       fetchDropboxOauthSetting();
-      fetchOneDriveIntegrationSetting();
       fetchOneDriveOauthSetting();
+      fetchSmtpSetting();
+      fetchInvitationPolicy();
     }
   }, [token]);
+
+  useEffect(() => {
+    if (!token || !canManageIntegrations) return;
+    fetchGoogleOauthSetting();
+    fetchDropboxOauthSetting();
+    fetchOneDriveOauthSetting();
+    fetchSmtpSetting();
+  }, [token, canManageIntegrations, selectedGroupId]);
 
 
 
@@ -879,11 +982,14 @@ export default function UserManagement({ token, user, sheetId }) {
   useEffect(() => {
     if (selectedGroupId) {
       fetchGroupMembers(selectedGroupId);
+      fetchPendingInvitations(selectedGroupId);
       fetchGroupViews(selectedGroupId);
       setGroupAllowedCols(new Set());
       setGroupRowFilters([{ key: "", value: "" }]);
       setGroupSheetHeaders([]);
       setSelectedTplGroup("");
+    } else {
+      setPendingInvitations([]);
     }
   }, [selectedGroupId]);
 
@@ -917,26 +1023,44 @@ export default function UserManagement({ token, user, sheetId }) {
 
   // --- Actions: users ---
   const addUser = async () => {
-    if (!String(newUser.firstName || "").trim() || !String(newUser.lastName || "").trim() || !String(newUser.company || "").trim() || !String(newUser.email || "").trim() || !String(newUser.password || "").trim()) {
-      alert("First name, last name, company, email, and password are required.");
+    if (!String(newUser.firstName || "").trim() || !String(newUser.lastName || "").trim() || !String(newUser.company || "").trim() || !String(newUser.email || "").trim()) {
+      alert("First name, last name, company, and email are required.");
       return;
     }
-    if (user?.role !== "admin" && !selectedGroupId) {
-      alert("Select a customer before creating a customer user.");
+    const isSuperAdminCreatingAdmin = user?.role === "admin" && String(newUser.role || "user") === "admin";
+    if (isSuperAdminCreatingAdmin && !String(newUser.password || "").trim()) {
+      alert("Password is required for admin account creation.");
+      return;
+    }
+    if (!isSuperAdminCreatingAdmin && !selectedGroupId) {
+      alert("Select a customer before inviting a customer user.");
       return;
     }
     try {
-      await axios.post(`${API}/users`, {
-        ...newUser,
-        role: user?.role === "admin" ? newUser.role : "user",
-        ...(selectedGroupId ? { groupId: Number(selectedGroupId) } : {}),
-      }, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      if (isSuperAdminCreatingAdmin) {
+        await axios.post(`${API}/users`, {
+          ...newUser,
+          role: "admin",
+        }, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      } else {
+        await axios.post(`${API}/users/invitations`, {
+          firstName: newUser.firstName,
+          lastName: newUser.lastName,
+          company: newUser.company,
+          email: newUser.email,
+          groupId: Number(selectedGroupId),
+        }, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        alert("Invitation sent.");
+      }
       setNewUser({ firstName: "", lastName: "", company: "", email: "", password: "", role: "user" });
       fetchUsers();
+      if (selectedGroupId) fetchPendingInvitations(selectedGroupId);
     } catch (e) {
-      alert(e.response?.data?.error || "Failed to create user");
+      alert(e.response?.data?.error || "Failed to invite/create user");
     }
   };
 
@@ -1075,32 +1199,6 @@ export default function UserManagement({ token, user, sheetId }) {
       alert(e.response?.data?.error || "Failed to update customer membership");
     }
   };
-  const startEditFolder = (folder) => {
-    setEditingFolderId(folder.id);
-    setEditingFolderOwnerGroupId(String((folder.group_ids || [])[0] || ""));
-    setEditingFolderMaxFileSizeMb(String(folder.max_file_size_mb || 100));
-    setEditingFolderMaxTotalSizeMb(String(folder.max_total_size_mb || 1024));
-  };
-  const cancelEditFolder = () => {
-    setEditingFolderId(null);
-    setEditingFolderOwnerGroupId("");
-  };
-  const saveEditFolder = async (folderId) => {
-    try {
-      await axios.patch(`${API}/folders/${folderId}`, {
-        groupIds: editingFolderOwnerGroupId ? [Number(editingFolderOwnerGroupId)] : [],
-        maxFileSizeMb: Number(editingFolderMaxFileSizeMb || 100),
-        maxTotalSizeMb: Number(editingFolderMaxTotalSizeMb || 1024),
-      }, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      cancelEditFolder();
-      fetchFolders();
-    } catch (e) {
-      alert(e.response?.data?.error || "Failed to update folder settings");
-    }
-  };
-
   const saveUserPermissions = async () => {
     if (!selectedUserId || !selectedUserSheetId) {
       alert("Pick a user and a report source first.");
@@ -1373,25 +1471,6 @@ export default function UserManagement({ token, user, sheetId }) {
     setSelectedReportSourceId(source ? String(source.id) : null);
     setSelectedUserSheetId(source?.current_sheet_id || null);
   };
-  const visibleFolders = useMemo(
-    () => folders.filter((f) => !selectedGroupId || (f.group_ids || []).includes(Number(selectedGroupId))),
-    [folders, selectedGroupId]
-  );
-  const selectedFolder = useMemo(
-    () => visibleFolders.find((f) => Number(f.id) === Number(selectedFolderId)) || null,
-    [visibleFolders, selectedFolderId]
-  );
-  useEffect(() => {
-    if (!visibleFolders.length) {
-      setSelectedFolderId("");
-      return;
-    }
-    if (!visibleFolders.some((f) => Number(f.id) === Number(selectedFolderId))) {
-      setSelectedFolderId("");
-    }
-  }, [visibleFolders, selectedFolderId]);
-
-
 
   const authBadgeClass = (provider) => (
     provider === "google"
@@ -1411,23 +1490,78 @@ export default function UserManagement({ token, user, sheetId }) {
     () => normalizeGroupEntitlements(selectedGroup?.entitlements || {}),
     [selectedGroup]
   );
-  const updateSelectedGroupEntitlements = (nextPatch) => {
-    if (!selectedGroupId || user?.role !== "admin") return;
-    updateGroup(selectedGroupId, {
-      entitlements: normalizeGroupEntitlements({
-        ...selectedGroupEntitlements,
-        ...nextPatch,
-        features: {
-          ...selectedGroupEntitlements.features,
-          ...(nextPatch.features || {}),
-        },
-      }),
+  useEffect(() => {
+    if (!selectedGroup) {
+      setGroupSettingsDraft(null);
+      return;
+    }
+    const ent = normalizeGroupEntitlements(selectedGroup.entitlements || {});
+    setGroupSettingsDraft({
+      maxFileSizeMb: String(selectedGroup.max_file_size_mb || 100),
+      maxTotalStorageMb: String(selectedGroup.max_total_storage_mb || 10240),
+      maxUsers: ent.maxUsers ?? "",
+      maxReportSources: ent.maxReportSources ?? "",
+      maxAiQueriesPerMonth: ent.maxAiQueriesPerMonth ?? "",
+      aiMonthlyBudgetUsd: ent.aiMonthlyBudgetUsd ?? "",
+      features: { ...(ent.features || {}) },
     });
+  }, [selectedGroup]);
+
+  const updateGroupSettingsDraft = (patch) => {
+    setGroupSettingsDraft((prev) => {
+      const current = prev || {
+        maxFileSizeMb: "",
+        maxTotalStorageMb: "",
+        maxUsers: "",
+        maxReportSources: "",
+        maxAiQueriesPerMonth: "",
+        aiMonthlyBudgetUsd: "",
+        features: {},
+      };
+      return {
+        ...current,
+        ...patch,
+        features: {
+          ...(current.features || {}),
+          ...(patch.features || {}),
+        },
+      };
+    });
+  };
+
+  const saveGroupSettings = async () => {
+    if (!selectedGroupId || user?.role !== "admin" || !groupSettingsDraft || groupSettingsSaving) return;
+    setGroupSettingsSaving(true);
+    try {
+      const maxFileSizeMb = Number.parseInt(String(groupSettingsDraft.maxFileSizeMb || "").trim(), 10);
+      const maxTotalStorageMb = Number.parseInt(String(groupSettingsDraft.maxTotalStorageMb || "").trim(), 10);
+      const entitlements = normalizeGroupEntitlements({
+        ...selectedGroupEntitlements,
+        maxUsers: groupSettingsDraft.maxUsers === "" ? null : Number(groupSettingsDraft.maxUsers),
+        maxReportSources: groupSettingsDraft.maxReportSources === "" ? null : Number(groupSettingsDraft.maxReportSources),
+        maxAiQueriesPerMonth: groupSettingsDraft.maxAiQueriesPerMonth === "" ? null : Number(groupSettingsDraft.maxAiQueriesPerMonth),
+        aiMonthlyBudgetUsd: groupSettingsDraft.aiMonthlyBudgetUsd === "" ? null : Number(groupSettingsDraft.aiMonthlyBudgetUsd),
+        features: { ...(groupSettingsDraft.features || {}) },
+      });
+      await axios.patch(`${API}/groups/${selectedGroupId}`, {
+        maxFileSizeMb: Number.isInteger(maxFileSizeMb) && maxFileSizeMb > 0 ? maxFileSizeMb : 100,
+        maxTotalStorageMb: Number.isInteger(maxTotalStorageMb) && maxTotalStorageMb > 0 ? maxTotalStorageMb : 10240,
+        entitlements,
+      }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      fetchGroups();
+      alert("Customer settings saved");
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to save customer settings");
+    } finally {
+      setGroupSettingsSaving(false);
+    }
   };
   const [collapsedSections, setCollapsedSections] = useState({
     users: false,
     groups: false,
-    folders: false,
+    integrations: false,
     permissions: true,
   });
   const toggleSection = (key) => {
@@ -1479,7 +1613,7 @@ export default function UserManagement({ token, user, sheetId }) {
           <div className="flex items-center gap-2 text-xs">
             <span className="rounded-md border border-slate-600 bg-slate-800 px-2.5 py-1 font-medium">Users {users.length}</span>
             <span className="rounded-md border border-slate-600 bg-slate-800 px-2.5 py-1 font-medium">Customers {groups.length}</span>
-            <span className="rounded-md border border-slate-600 bg-slate-800 px-2.5 py-1 font-medium">Folders {folders.length}</span>
+            <span className="rounded-md border border-slate-600 bg-slate-800 px-2.5 py-1 font-medium">Sources {reportSourceOptions.length}</span>
           </div>
         </div>
       </div>
@@ -1528,13 +1662,15 @@ export default function UserManagement({ token, user, sheetId }) {
             value={newUser.email}
             onChange={e => setNewUser({ ...newUser, email: e.target.value })}
           />
-          <input
-            className="input-premium"
-            placeholder="Password"
-            type="password"
-            value={newUser.password}
-            onChange={e => setNewUser({ ...newUser, password: e.target.value })}
-          />
+          {user?.role === "admin" && newUser.role === "admin" && (
+            <input
+              className="input-premium"
+              placeholder="Password"
+              type="password"
+              value={newUser.password}
+              onChange={e => setNewUser({ ...newUser, password: e.target.value })}
+            />
+          )}
           <div className="flex items-center gap-3">
             {user?.role === "admin" ? (
               <select
@@ -1559,7 +1695,7 @@ export default function UserManagement({ token, user, sheetId }) {
               className="btn-premium bg-slate-900 hover:bg-slate-800 text-white flex-1 py-2.5 shadow-sm"
               onClick={addUser}
             >
-              {user?.role === "admin" ? "Add User" : "Add Customer User"}
+              {user?.role === "admin" && newUser.role === "admin" ? "Add Admin User" : "Send Customer Invitation"}
             </button>
           </div>
         </div>
@@ -1666,6 +1802,54 @@ export default function UserManagement({ token, user, sheetId }) {
                 })}
                 {!uniqueGroupMembers.length && <div className="text-[10px] text-slate-400 italic">No users in this customer.</div>}
               </div>
+              <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-2.5">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500">Pending Invitations</div>
+                  <button
+                    type="button"
+                    className="text-[10px] font-semibold text-slate-600 hover:text-slate-900"
+                    onClick={() => fetchPendingInvitations(selectedGroupId)}
+                  >
+                    Refresh
+                  </button>
+                </div>
+                {invitationsLoading ? (
+                  <div className="text-[10px] text-slate-500">Loading invitations...</div>
+                ) : pendingInvitations.length ? (
+                  <div className="space-y-1.5 max-h-36 overflow-auto pr-1 custom-scrollbar">
+                    {pendingInvitations.map((inv) => (
+                      <div key={inv.id} className="flex items-center justify-between rounded-md border border-slate-200 bg-white p-1.5">
+                        <div className="min-w-0 pr-2">
+                          <div className="text-[11px] font-semibold text-slate-700 truncate">{inv.email}</div>
+                          <div className="text-[9px] text-slate-500">
+                            Expires {inv.expires_at ? new Date(inv.expires_at).toLocaleString() : "-"}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            className={`text-[9px] font-semibold px-1.5 py-1 rounded border border-slate-300 text-slate-600 hover:bg-slate-100 ${inviteActionBusyId ? "opacity-60 cursor-not-allowed" : ""}`}
+                            disabled={!!inviteActionBusyId}
+                            onClick={() => resendInvitation(inv.id)}
+                          >
+                            {inviteActionBusyId === `resend:${inv.id}` ? "Resending..." : "Resend"}
+                          </button>
+                          <button
+                            type="button"
+                            className={`text-[9px] font-semibold px-1.5 py-1 rounded border border-red-200 text-red-600 hover:bg-red-50 ${inviteActionBusyId ? "opacity-60 cursor-not-allowed" : ""}`}
+                            disabled={!!inviteActionBusyId}
+                            onClick={() => revokeInvitation(inv.id)}
+                          >
+                            {inviteActionBusyId === `revoke:${inv.id}` ? "Revoking..." : "Revoke"}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-[10px] text-slate-400 italic">No pending invitations.</div>
+                )}
+              </div>
               {editingUserId && (
                 <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3 space-y-2">
                   <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500">Edit Selected User</div>
@@ -1687,64 +1871,48 @@ export default function UserManagement({ token, user, sheetId }) {
                   <input
                     type="number"
                     className="input-premium py-1.5"
-                    defaultValue={(Array.isArray(groups) && groups.find((g) => Number(g.id) === Number(selectedGroupId))?.max_file_size_mb) || 100}
-                    onBlur={(e) => {
-                      const val = parseInt(e.target.value, 10);
-                      if (!Number.isNaN(val)) {
-                        const g = Array.isArray(groups) && groups.find((x) => Number(x.id) === Number(selectedGroupId));
-                        updateGroup(selectedGroupId, { maxFileSizeMb: val, maxTotalStorageMb: g?.max_total_storage_mb || 10240 });
-                      }
-                    }}
+                    value={groupSettingsDraft?.maxFileSizeMb ?? ""}
+                    onChange={(e) => updateGroupSettingsDraft({ maxFileSizeMb: e.target.value })}
                   />
                   <label className="text-[10px] font-semibold text-slate-500">Total Storage (MB)</label>
                   <input
                     type="number"
                     className="input-premium py-1.5"
-                    defaultValue={(Array.isArray(groups) && groups.find((g) => Number(g.id) === Number(selectedGroupId))?.max_total_storage_mb) || 10240}
-                    onBlur={(e) => {
-                      const val = parseInt(e.target.value, 10);
-                      if (!Number.isNaN(val)) {
-                        const g = Array.isArray(groups) && groups.find((x) => Number(x.id) === Number(selectedGroupId));
-                        updateGroup(selectedGroupId, { maxFileSizeMb: g?.max_file_size_mb || 100, maxTotalStorageMb: val });
-                      }
-                    }}
+                    value={groupSettingsDraft?.maxTotalStorageMb ?? ""}
+                    onChange={(e) => updateGroupSettingsDraft({ maxTotalStorageMb: e.target.value })}
                   />
                   <label className="text-[10px] font-semibold text-slate-500">Max Users</label>
                   <input
-                    key={`max-users-${selectedGroupId}-${selectedGroupEntitlements.maxUsers || ""}`}
                     type="number"
                     className="input-premium py-1.5"
-                    defaultValue={selectedGroupEntitlements.maxUsers || ""}
+                    value={groupSettingsDraft?.maxUsers ?? ""}
                     placeholder="Unlimited"
-                    onBlur={(e) => updateSelectedGroupEntitlements({ maxUsers: e.target.value ? Number(e.target.value) : null })}
+                    onChange={(e) => updateGroupSettingsDraft({ maxUsers: e.target.value })}
                   />
                   <label className="text-[10px] font-semibold text-slate-500">Max Sources</label>
                   <input
-                    key={`max-sources-${selectedGroupId}-${selectedGroupEntitlements.maxReportSources || ""}`}
                     type="number"
                     className="input-premium py-1.5"
-                    defaultValue={selectedGroupEntitlements.maxReportSources || ""}
+                    value={groupSettingsDraft?.maxReportSources ?? ""}
                     placeholder="Unlimited"
-                    onBlur={(e) => updateSelectedGroupEntitlements({ maxReportSources: e.target.value ? Number(e.target.value) : null })}
+                    onChange={(e) => updateGroupSettingsDraft({ maxReportSources: e.target.value })}
                   />
                   <label className="text-[10px] font-semibold text-slate-500">AI Queries / Month</label>
                   <input
-                    key={`max-ai-queries-${selectedGroupId}-${selectedGroupEntitlements.maxAiQueriesPerMonth || ""}`}
                     type="number"
                     className="input-premium py-1.5"
-                    defaultValue={selectedGroupEntitlements.maxAiQueriesPerMonth || ""}
+                    value={groupSettingsDraft?.maxAiQueriesPerMonth ?? ""}
                     placeholder="Unlimited"
-                    onBlur={(e) => updateSelectedGroupEntitlements({ maxAiQueriesPerMonth: e.target.value ? Number(e.target.value) : null })}
+                    onChange={(e) => updateGroupSettingsDraft({ maxAiQueriesPerMonth: e.target.value })}
                   />
                   <label className="text-[10px] font-semibold text-slate-500">AI Budget / Month ($)</label>
                   <input
-                    key={`ai-budget-${selectedGroupId}-${selectedGroupEntitlements.aiMonthlyBudgetUsd || ""}`}
                     type="number"
                     step="0.01"
                     className="input-premium py-1.5"
-                    defaultValue={selectedGroupEntitlements.aiMonthlyBudgetUsd || ""}
+                    value={groupSettingsDraft?.aiMonthlyBudgetUsd ?? ""}
                     placeholder="Unlimited"
-                    onBlur={(e) => updateSelectedGroupEntitlements({ aiMonthlyBudgetUsd: e.target.value ? Number(e.target.value) : null })}
+                    onChange={(e) => updateGroupSettingsDraft({ aiMonthlyBudgetUsd: e.target.value })}
                   />
                   <div className="col-span-2 rounded-md border border-sky-100 bg-sky-50 px-2 py-1.5 text-[10px] leading-snug text-sky-800">
                     OpenAI estimate with gpt-4.1-mini: about $0.40 / 1M input tokens and $1.60 / 1M output tokens. A typical compact spreadsheet question is usually well below one cent.
@@ -1755,7 +1923,6 @@ export default function UserManagement({ token, user, sheetId }) {
                       {[
                         ["manageUsers", "Manage users"],
                         ["managePermissions", "Permissions"],
-                        ["manageFolders", "Folders"],
                         ["manageGroupAdmins", "Promote admins"],
                         ["ai", "AI"],
                         ["exports", "Exports"],
@@ -1769,13 +1936,21 @@ export default function UserManagement({ token, user, sheetId }) {
                         <label key={key} className="flex items-center gap-1.5 text-[10px] font-semibold text-slate-600">
                           <input
                             type="checkbox"
-                            checked={selectedGroupEntitlements.features?.[key] !== false}
-                            onChange={(e) => updateSelectedGroupEntitlements({ features: { [key]: e.target.checked } })}
+                            checked={groupSettingsDraft?.features?.[key] !== false}
+                            onChange={(e) => updateGroupSettingsDraft({ features: { [key]: e.target.checked } })}
                           />
                           {label}
                         </label>
                       ))}
                     </div>
+                    <button
+                      type="button"
+                      onClick={saveGroupSettings}
+                      disabled={groupSettingsSaving}
+                      className={`mt-3 btn-premium bg-slate-800 text-white w-full py-2 ${groupSettingsSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                    >
+                      {groupSettingsSaving ? "Saving..." : "Save Customer Settings"}
+                    </button>
                   </div>
                 </div>
               )}
@@ -1949,206 +2124,155 @@ export default function UserManagement({ token, user, sheetId }) {
 
       </div>
 
-      {/* 3. FOLDERS PANEL */}
+      {/* 3. INTEGRATIONS PANEL */}
       <section className="lg:col-span-7 flex flex-col">
         <div className="flex items-center justify-between mb-4 border-b border-slate-300 pb-2">
-          <h3 className="font-semibold text-base text-slate-900">Folders</h3>
+          <h3 className="font-semibold text-base text-slate-900">Integrations</h3>
           <div className="flex items-center gap-2">
-            <span className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600">{folders.length} total</span>
-            <button className="rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50" onClick={() => toggleSection("folders")}>
-              {collapsedSections.folders ? "Expand" : "Collapse"}
+            <span className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600">{reportSourceOptions.length} sources</span>
+            <button className="rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50" onClick={() => toggleSection("integrations")}>
+              {collapsedSections.integrations ? "Expand" : "Collapse"}
             </button>
           </div>
         </div>
-        {!collapsedSections.folders && (
+        {!collapsedSections.integrations && (
         <>
-        {user?.role === "admin" && (
+        {canManageIntegrations && (
           <div className="mb-4 rounded-md border border-slate-200 bg-slate-50 p-4 space-y-3">
             <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Cloud Storage</div>
-            <button type="button" onClick={toggleGoogleIntegration} disabled={googleIntegrationSaving} className={`w-full flex items-center justify-between px-3 py-2 rounded-md border text-xs font-bold uppercase tracking-wider transition-colors ${googleIntegrationEnabled ? "bg-blue-50 border-blue-200 text-blue-700" : "bg-slate-100 border-slate-200 text-slate-600"} ${googleIntegrationSaving ? "opacity-60 cursor-not-allowed" : ""}`} title="Enable or disable Google SSO integration"><span className="inline-flex items-center gap-2"><img src="https://upload.wikimedia.org/wikipedia/commons/1/12/Google_Drive_icon_%282020%29.svg" alt="Google Drive" className="h-3.5 w-3.5" /><span>Google Sign-In</span></span><span>{googleIntegrationEnabled ? "Enabled" : "Disabled"}</span></button>
-            {googleIntegrationEnabled && (
-              <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+            {!isSuperAdmin && !selectedGroupId && (
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
+                Select a customer to configure scoped integration credentials.
+              </div>
+            )}
+            <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+              <div className="flex items-center justify-between">
                 <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Google OAuth Configuration</div>
-                <input type="password" className="input-premium" placeholder={googleOauthMeta.hasClientId ? "***" : "Google Client ID"} value={googleOauthForm.clientId} onChange={(e) => setGoogleOauthForm((prev) => ({ ...prev, clientId: e.target.value }))} autoComplete="new-password" />
-                <input type="password" className="input-premium" placeholder={googleOauthMeta.hasClientSecret ? "***" : "Google Client Secret"} value={googleOauthForm.clientSecret} onChange={(e) => setGoogleOauthForm((prev) => ({ ...prev, clientSecret: e.target.value }))} autoComplete="new-password" />
-                <input className="input-premium" placeholder="Redirect URI" value={googleOauthForm.redirectUri} onChange={(e) => setGoogleOauthForm((prev) => ({ ...prev, redirectUri: e.target.value }))} />
-                <input className="input-premium" placeholder="Frontend URL" value={googleOauthForm.frontendUrl} onChange={(e) => setGoogleOauthForm((prev) => ({ ...prev, frontendUrl: e.target.value }))} />
+                <span className={`text-[10px] font-semibold ${googleOauthMeta.hasClientId && googleOauthMeta.hasClientSecret && googleOauthMeta.redirectUri ? "text-emerald-600" : "text-slate-400"}`}>
+                  {googleOauthMeta.hasClientId && googleOauthMeta.hasClientSecret && googleOauthMeta.redirectUri ? "Configured" : "Not configured"}
+                </span>
+              </div>
+              <input type="password" className="input-premium" placeholder={googleOauthMeta.hasClientId ? "***" : "Google Client ID"} value={googleOauthForm.clientId} onChange={(e) => setGoogleOauthForm((prev) => ({ ...prev, clientId: e.target.value }))} autoComplete="new-password" />
+              <input type="password" className="input-premium" placeholder={googleOauthMeta.hasClientSecret ? "***" : "Google Client Secret"} value={googleOauthForm.clientSecret} onChange={(e) => setGoogleOauthForm((prev) => ({ ...prev, clientSecret: e.target.value }))} autoComplete="new-password" />
+              <input className="input-premium" placeholder="Redirect URI" value={googleOauthForm.redirectUri} onChange={(e) => setGoogleOauthForm((prev) => ({ ...prev, redirectUri: e.target.value }))} />
+              <input className="input-premium" placeholder="Frontend URL" value={googleOauthForm.frontendUrl} onChange={(e) => setGoogleOauthForm((prev) => ({ ...prev, frontendUrl: e.target.value }))} />
+              <div className="grid grid-cols-2 gap-2">
                 <button type="button" onClick={saveGoogleOauthSetting} disabled={googleOauthSaving} className={`btn-premium bg-slate-800 text-white w-full py-2 ${googleOauthSaving ? "opacity-60 cursor-not-allowed" : ""}`}>{googleOauthSaving ? "Saving..." : "Save Google OAuth"}</button>
-                <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600 space-y-1">
-                  <div className="font-semibold text-slate-700">Setup help</div>
-                  <a className="block text-blue-700 hover:underline" href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer">Configure credentials in Google Cloud Console</a>
-                  <div className="text-slate-500">Required Scopes: `drive.readonly`, `openid`, `email`, `profile`</div>
-                  <a className="block text-blue-700 hover:underline" href="https://developers.google.com/identity/protocols/oauth2/web-server" target="_blank" rel="noreferrer">Google OAuth2 Web Server guide</a>
-                </div>
+                <button type="button" onClick={testGoogleOauthSetting} disabled={googleOauthTesting} className={`btn-premium bg-indigo-600 text-white w-full py-2 ${googleOauthTesting ? "opacity-60 cursor-not-allowed" : ""}`}>{googleOauthTesting ? "Testing..." : "Test Google OAuth"}</button>
               </div>
-            )}
-            <button type="button" onClick={toggleDropboxIntegration} disabled={dropboxIntegrationSaving} className={`w-full flex items-center justify-between px-3 py-2 rounded-md border text-xs font-bold uppercase tracking-wider transition-colors ${dropboxIntegrationEnabled ? "bg-blue-50 border-blue-200 text-blue-700" : "bg-slate-100 border-slate-200 text-slate-600"} ${dropboxIntegrationSaving ? "opacity-60 cursor-not-allowed" : ""}`} title="Enable or disable Dropbox integration"><span className="inline-flex items-center gap-2"><img src="https://upload.wikimedia.org/wikipedia/commons/7/78/Dropbox_Icon.svg" alt="Dropbox" className="h-3.5 w-3.5" /><span>Dropbox Integration</span></span><span>{dropboxIntegrationEnabled ? "Enabled" : "Disabled"}</span></button>
-            {dropboxIntegrationEnabled && (
-              <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600 space-y-1">
+                <div className="font-semibold text-slate-700">Setup help</div>
+                <a className="block text-blue-700 hover:underline" href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer">Configure credentials in Google Cloud Console</a>
+                <div className="text-slate-500">Required Scopes: `drive.readonly`, `openid`, `email`, `profile`</div>
+                <a className="block text-blue-700 hover:underline" href="https://developers.google.com/identity/protocols/oauth2/web-server" target="_blank" rel="noreferrer">Google OAuth2 Web Server guide</a>
+              </div>
+            </div>
+            <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+              <div className="flex items-center justify-between">
                 <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Dropbox OAuth Configuration</div>
-                <input type="password" className="input-premium" placeholder={dropboxOauthMeta.hasClientId ? "***" : "Dropbox App Key (Client ID)"} value={dropboxOauthForm.clientId} onChange={(e) => setDropboxOauthForm((prev) => ({ ...prev, clientId: e.target.value }))} autoComplete="new-password" />
-                <input type="password" className="input-premium" placeholder={dropboxOauthMeta.hasClientSecret ? "***" : "Dropbox App Secret (Client Secret)"} value={dropboxOauthForm.clientSecret} onChange={(e) => setDropboxOauthForm((prev) => ({ ...prev, clientSecret: e.target.value }))} autoComplete="new-password" />
-                <input className="input-premium" placeholder="Redirect URI" value={dropboxOauthForm.redirectUri} onChange={(e) => setDropboxOauthForm((prev) => ({ ...prev, redirectUri: e.target.value }))} />
-                <input className="input-premium" placeholder="Frontend URL" value={dropboxOauthForm.frontendUrl} onChange={(e) => setDropboxOauthForm((prev) => ({ ...prev, frontendUrl: e.target.value }))} />
+                <span className={`text-[10px] font-semibold ${dropboxOauthMeta.hasClientId && dropboxOauthMeta.hasClientSecret && dropboxOauthMeta.redirectUri ? "text-emerald-600" : "text-slate-400"}`}>
+                  {dropboxOauthMeta.hasClientId && dropboxOauthMeta.hasClientSecret && dropboxOauthMeta.redirectUri ? "Configured" : "Not configured"}
+                </span>
+              </div>
+              <input type="password" className="input-premium" placeholder={dropboxOauthMeta.hasClientId ? "***" : "Dropbox App Key (Client ID)"} value={dropboxOauthForm.clientId} onChange={(e) => setDropboxOauthForm((prev) => ({ ...prev, clientId: e.target.value }))} autoComplete="new-password" />
+              <input type="password" className="input-premium" placeholder={dropboxOauthMeta.hasClientSecret ? "***" : "Dropbox App Secret (Client Secret)"} value={dropboxOauthForm.clientSecret} onChange={(e) => setDropboxOauthForm((prev) => ({ ...prev, clientSecret: e.target.value }))} autoComplete="new-password" />
+              <input className="input-premium" placeholder="Redirect URI" value={dropboxOauthForm.redirectUri} onChange={(e) => setDropboxOauthForm((prev) => ({ ...prev, redirectUri: e.target.value }))} />
+              <input className="input-premium" placeholder="Frontend URL" value={dropboxOauthForm.frontendUrl} onChange={(e) => setDropboxOauthForm((prev) => ({ ...prev, frontendUrl: e.target.value }))} />
+              <div className="grid grid-cols-2 gap-2">
                 <button type="button" onClick={saveDropboxOauthSetting} disabled={dropboxOauthSaving} className={`btn-premium bg-slate-800 text-white w-full py-2 ${dropboxOauthSaving ? "opacity-60 cursor-not-allowed" : ""}`}>{dropboxOauthSaving ? "Saving..." : "Save Dropbox OAuth"}</button>
-                <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600 space-y-1">
-                  <div className="font-semibold text-slate-700">Setup help</div>
-                  <a className="block text-blue-700 hover:underline" href="https://www.dropbox.com/developers/apps" target="_blank" rel="noreferrer">Create/Manage apps in Dropbox Console</a>
-                  <div className="text-slate-500">Required Permissions: `files.metadata.read`, `files.content.read`</div>
-                  <a className="block text-blue-700 hover:underline" href="https://www.dropbox.com/developers/documentation/http/documentation#oauth2-authorize" target="_blank" rel="noreferrer">Dropbox OAuth2 guide</a>
-                </div>
+                <button type="button" onClick={testDropboxOauthSetting} disabled={dropboxOauthTesting} className={`btn-premium bg-indigo-600 text-white w-full py-2 ${dropboxOauthTesting ? "opacity-60 cursor-not-allowed" : ""}`}>{dropboxOauthTesting ? "Testing..." : "Test Dropbox OAuth"}</button>
               </div>
-            )}
-            <button type="button" onClick={toggleOneDriveIntegration} disabled={oneDriveIntegrationSaving} className={`w-full flex items-center justify-between px-3 py-2 rounded-md border text-xs font-bold uppercase tracking-wider transition-colors ${oneDriveIntegrationEnabled ? "bg-blue-50 border-blue-200 text-blue-700" : "bg-slate-100 border-slate-200 text-slate-600"} ${oneDriveIntegrationSaving ? "opacity-60 cursor-not-allowed" : ""}`} title="Enable or disable OneDrive integration"><span className="inline-flex items-center gap-2"><img src="https://upload.wikimedia.org/wikipedia/commons/e/e7/Microsoft_OneDrive_Icon_%282025_-_present%29.svg" alt="OneDrive" className="h-3.5 w-3.5" /><span>OneDrive Integration</span></span><span>{oneDriveIntegrationEnabled ? "Enabled" : "Disabled"}</span></button>
-            {oneDriveIntegrationEnabled && (
-              <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600 space-y-1">
+                <div className="font-semibold text-slate-700">Setup help</div>
+                <a className="block text-blue-700 hover:underline" href="https://www.dropbox.com/developers/apps" target="_blank" rel="noreferrer">Create/Manage apps in Dropbox Console</a>
+                <div className="text-slate-500">Required Permissions: `files.metadata.read`, `files.content.read`</div>
+                <a className="block text-blue-700 hover:underline" href="https://www.dropbox.com/developers/documentation/http/documentation#oauth2-authorize" target="_blank" rel="noreferrer">Dropbox OAuth2 guide</a>
+              </div>
+            </div>
+            <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+              <div className="flex items-center justify-between">
                 <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">OneDrive OAuth Configuration</div>
-                <input type="password" className="input-premium" placeholder={oneDriveOauthMeta.hasClientId ? "***" : "Microsoft Application (Client) ID"} value={oneDriveOauthForm.clientId} onChange={(e) => setOneDriveOauthForm((prev) => ({ ...prev, clientId: e.target.value }))} autoComplete="new-password" />
-                <input type="password" className="input-premium" placeholder={oneDriveOauthMeta.hasClientSecret ? "***" : "Microsoft Client Secret"} value={oneDriveOauthForm.clientSecret} onChange={(e) => setOneDriveOauthForm((prev) => ({ ...prev, clientSecret: e.target.value }))} autoComplete="new-password" />
-                <input className="input-premium" placeholder="Redirect URI" value={oneDriveOauthForm.redirectUri} onChange={(e) => setOneDriveOauthForm((prev) => ({ ...prev, redirectUri: e.target.value }))} />
-                <input className="input-premium" placeholder="Frontend URL" value={oneDriveOauthForm.frontendUrl} onChange={(e) => setOneDriveOauthForm((prev) => ({ ...prev, frontendUrl: e.target.value }))} />
-                <button type="button" onClick={saveOneDriveOauthSetting} disabled={oneDriveOauthSaving} className={`btn-premium bg-slate-800 text-white w-full py-2 ${oneDriveOauthSaving ? "opacity-60 cursor-not-allowed" : ""}`}>{oneDriveOauthSaving ? "Saving..." : "Save OneDrive OAuth"}</button>
-                <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600 space-y-1">
-                  <div className="font-semibold text-slate-700">Setup help</div>
-                  <a className="block text-blue-700 hover:underline" href="https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app" target="_blank" rel="noreferrer">Register app in Microsoft Entra ID</a>
-                  <a className="block text-blue-700 hover:underline" href="https://learn.microsoft.com/en-us/graph/permissions-reference#filesread" target="_blank" rel="noreferrer">Required Microsoft Graph scopes: `Files.Read`, `User.Read`, `offline_access`</a>
-                  <a className="block text-blue-700 hover:underline" href="https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow" target="_blank" rel="noreferrer">Authorization code flow guide</a>
-                </div>
+                <span className={`text-[10px] font-semibold ${oneDriveOauthMeta.hasClientId && oneDriveOauthMeta.hasClientSecret && oneDriveOauthMeta.redirectUri ? "text-emerald-600" : "text-slate-400"}`}>
+                  {oneDriveOauthMeta.hasClientId && oneDriveOauthMeta.hasClientSecret && oneDriveOauthMeta.redirectUri ? "Configured" : "Not configured"}
+                </span>
               </div>
+              <input type="password" className="input-premium" placeholder={oneDriveOauthMeta.hasClientId ? "***" : "Microsoft Application (Client) ID"} value={oneDriveOauthForm.clientId} onChange={(e) => setOneDriveOauthForm((prev) => ({ ...prev, clientId: e.target.value }))} autoComplete="new-password" />
+              <input type="password" className="input-premium" placeholder={oneDriveOauthMeta.hasClientSecret ? "***" : "Microsoft Client Secret"} value={oneDriveOauthForm.clientSecret} onChange={(e) => setOneDriveOauthForm((prev) => ({ ...prev, clientSecret: e.target.value }))} autoComplete="new-password" />
+              <input className="input-premium" placeholder="Redirect URI" value={oneDriveOauthForm.redirectUri} onChange={(e) => setOneDriveOauthForm((prev) => ({ ...prev, redirectUri: e.target.value }))} />
+              <input className="input-premium" placeholder="Frontend URL" value={oneDriveOauthForm.frontendUrl} onChange={(e) => setOneDriveOauthForm((prev) => ({ ...prev, frontendUrl: e.target.value }))} />
+              <div className="grid grid-cols-2 gap-2">
+                <button type="button" onClick={saveOneDriveOauthSetting} disabled={oneDriveOauthSaving} className={`btn-premium bg-slate-800 text-white w-full py-2 ${oneDriveOauthSaving ? "opacity-60 cursor-not-allowed" : ""}`}>{oneDriveOauthSaving ? "Saving..." : "Save OneDrive OAuth"}</button>
+                <button type="button" onClick={testOneDriveOauthSetting} disabled={oneDriveOauthTesting} className={`btn-premium bg-indigo-600 text-white w-full py-2 ${oneDriveOauthTesting ? "opacity-60 cursor-not-allowed" : ""}`}>{oneDriveOauthTesting ? "Testing..." : "Test OneDrive OAuth"}</button>
+              </div>
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600 space-y-1">
+                <div className="font-semibold text-slate-700">Setup help</div>
+                <a className="block text-blue-700 hover:underline" href="https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app" target="_blank" rel="noreferrer">Register app in Microsoft Entra ID</a>
+                <a className="block text-blue-700 hover:underline" href="https://learn.microsoft.com/en-us/graph/permissions-reference#filesread" target="_blank" rel="noreferrer">Required Microsoft Graph scopes: `Files.Read`, `User.Read`, `offline_access`</a>
+                <a className="block text-blue-700 hover:underline" href="https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow" target="_blank" rel="noreferrer">Authorization code flow guide</a>
+              </div>
+            </div>
+            {isSuperAdmin && (
+              <>
+                <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">SMTP Configuration</div>
+                    <span className={`text-[10px] font-semibold ${smtpMeta.host && smtpMeta.username && smtpMeta.hasPassword ? "text-emerald-600" : "text-slate-400"}`}>
+                      {smtpMeta.host && smtpMeta.username && smtpMeta.hasPassword ? "Configured" : "Not configured"}
+                    </span>
+                  </div>
+                  <input className="input-premium" placeholder="SMTP Host" value={smtpForm.host} onChange={(e) => setSmtpForm((prev) => ({ ...prev, host: e.target.value }))} />
+                  <div className="grid grid-cols-2 gap-2">
+                    <input className="input-premium" type="number" min="1" placeholder="Port" value={smtpForm.port} onChange={(e) => setSmtpForm((prev) => ({ ...prev, port: e.target.value }))} />
+                    <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-600 px-2">
+                      <input type="checkbox" checked={!!smtpForm.secure} onChange={(e) => setSmtpForm((prev) => ({ ...prev, secure: e.target.checked }))} />
+                      Use TLS
+                    </label>
+                  </div>
+                  <input className="input-premium" placeholder="SMTP Username" value={smtpForm.username} onChange={(e) => setSmtpForm((prev) => ({ ...prev, username: e.target.value }))} />
+                  <input type="password" className="input-premium" placeholder={smtpMeta.hasPassword ? "***" : "SMTP Password"} value={smtpForm.password} onChange={(e) => setSmtpForm((prev) => ({ ...prev, password: e.target.value }))} autoComplete="new-password" />
+                  <input className="input-premium" placeholder="From Email" value={smtpForm.fromEmail} onChange={(e) => setSmtpForm((prev) => ({ ...prev, fromEmail: e.target.value }))} />
+                  <input className="input-premium" placeholder="From Name" value={smtpForm.fromName} onChange={(e) => setSmtpForm((prev) => ({ ...prev, fromName: e.target.value }))} />
+                  <button type="button" onClick={saveSmtpSetting} disabled={smtpSaving} className={`btn-premium bg-slate-800 text-white w-full py-2 ${smtpSaving ? "opacity-60 cursor-not-allowed" : ""}`}>{smtpSaving ? "Saving..." : "Save SMTP Settings"}</button>
+                </div>
+                <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Customer Invitation Policy</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <input
+                      className="input-premium"
+                      type="number"
+                      min="1"
+                      max="720"
+                      placeholder="TTL Hours"
+                      value={invitePolicy.ttlHours}
+                      onChange={(e) => setInvitePolicy((prev) => ({ ...prev, ttlHours: e.target.value }))}
+                    />
+                    <input
+                      className="input-premium"
+                      type="number"
+                      min="1"
+                      max="365"
+                      placeholder="Retention Days"
+                      value={invitePolicy.retentionDays}
+                      onChange={(e) => setInvitePolicy((prev) => ({ ...prev, retentionDays: e.target.value }))}
+                    />
+                  </div>
+                  <div className="text-[10px] text-slate-500">
+                    TTL controls invitation expiry. Retention controls cleanup of old accepted/revoked/expired records.
+                  </div>
+                  <button
+                    type="button"
+                    onClick={saveInvitationPolicy}
+                    disabled={invitePolicySaving}
+                    className={`btn-premium bg-slate-800 text-white w-full py-2 ${invitePolicySaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                  >
+                    {invitePolicySaving ? "Saving..." : "Save Invitation Policy"}
+                  </button>
+                </div>
+              </>
             )}
           </div>
         )}
 
-        <div className="flex flex-col gap-3 mb-5 bg-white p-3 rounded-md border border-slate-200">
-          <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 ml-1">Folders</label>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-            <input
-              className="input-premium"
-              placeholder="Folder name"
-              value={newFolderName}
-              onChange={(e) => setNewFolderName(e.target.value)}
-            />
-            <select
-              className="input-premium"
-              value={folderOwnershipType}
-              onChange={(e) => setFolderOwnershipType(e.target.value)}
-            >
-              <option value="group">Customer-owned</option>
-              <option value="user">User-owned (via user customer access)</option>
-            </select>
-            {folderOwnershipType === "group" && (
-              <select
-                className="input-premium"
-                value={folderOwnerGroupId}
-                onChange={(e) => setFolderOwnerGroupId(e.target.value)}
-              >
-                <option value="">Select owner customer…</option>
-                {groups.map((g) => (
-                  <option key={g.id} value={g.id}>{g.name}</option>
-                ))}
-              </select>
-            )}
-            {folderOwnershipType === "user" && (
-              <select
-                className="input-premium"
-                value={folderOwnerUserId}
-                onChange={(e) => setFolderOwnerUserId(e.target.value)}
-              >
-                <option value="">Select owner user…</option>
-                {uniqueUsers.map((u) => (
-                  <option key={u.id} value={u.id}>{u.email} ({u.auth_provider === "google" ? "Google" : "Local"})</option>
-                ))}
-              </select>
-            )}
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 items-center">
-            <label className="text-[10px] font-semibold text-slate-500">File Limit (MB)</label>
-            <input className="input-premium" type="number" min="1" value={folderMaxFileSizeMb} onChange={(e) => setFolderMaxFileSizeMb(e.target.value)} />
-            <label className="text-[10px] font-semibold text-slate-500">Total Limit (MB)</label>
-            <input className="input-premium" type="number" min="1" value={folderMaxTotalSizeMb} onChange={(e) => setFolderMaxTotalSizeMb(e.target.value)} />
-          </div>
-          <button
-            className="btn-premium bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 shadow-sm self-start"
-            onClick={createFolder}
-          >
-            Create
-          </button>
-          {visibleFolders.length > 0 && (
-            <div className="space-y-2 border-t border-slate-200 pt-3">
-              <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Select Folder</label>
-              <select
-                className="input-premium"
-                value={selectedFolderId}
-                onChange={(e) => {
-                  setSelectedFolderId(e.target.value);
-                  setEditingFolderId(null);
-                }}
-              >
-                <option value="">None</option>
-                {visibleFolders.map((f) => (
-                  <option key={f.id} value={f.id}>
-                    {f.path || f.name}
-                  </option>
-                ))}
-              </select>
-              {selectedFolder && (
-                <div className="flex items-center justify-between rounded-md border border-slate-200 bg-slate-50 p-2.5">
-                  <div className="min-w-0">
-                    <div className="text-xs font-semibold text-slate-800 truncate">{selectedFolder.path || selectedFolder.name}</div>
-                    <div className="text-[10px] text-slate-500 whitespace-nowrap">
-                      Current Size {formatBytes(selectedFolder.total_size_bytes)} / {Number(selectedFolder.max_total_size_mb || 1024)} MB total · File {Number(selectedFolder.max_file_size_mb || 100)} MB
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 ml-2">
-                    <button
-                      className="px-2 py-1 text-xs rounded-md border border-slate-200 text-slate-600 hover:bg-slate-100"
-                      onClick={() => startEditFolder(selectedFolder)}
-                    >
-                      Edit
-                    </button>
-                    <button
-                      className="p-2 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all font-bold"
-                      onClick={() => deleteFolder(selectedFolder.id)}
-                    >
-                      🗑️
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-          {selectedFolder && editingFolderId === selectedFolder.id && (
-            <div className="mt-1 rounded-md border border-slate-200 bg-white p-3 space-y-2">
-              <div className="grid grid-cols-2 gap-2 items-center">
-                <label className="text-[10px] font-semibold text-slate-500">File Limit (MB)</label>
-                <input className="input-premium" type="number" min="1" value={editingFolderMaxFileSizeMb} onChange={(e) => setEditingFolderMaxFileSizeMb(e.target.value)} />
-                <label className="text-[10px] font-semibold text-slate-500">Total Limit (MB)</label>
-                <input className="input-premium" type="number" min="1" value={editingFolderMaxTotalSizeMb} onChange={(e) => setEditingFolderMaxTotalSizeMb(e.target.value)} />
-              </div>
-              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Owner Customer</div>
-              <select
-                className="input-premium"
-                value={editingFolderOwnerGroupId}
-                onChange={(e) => setEditingFolderOwnerGroupId(e.target.value)}
-              >
-                <option value="">None</option>
-                {groups.map((g) => (
-                  <option key={g.id} value={g.id}>{g.name}</option>
-                ))}
-              </select>
-              <div className="flex justify-end gap-2">
-                <button className="px-3 py-1.5 text-xs rounded-md border border-slate-300 text-slate-600 hover:bg-slate-100" onClick={cancelEditFolder}>Cancel</button>
-                <button className="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-800" onClick={() => saveEditFolder(selectedFolder.id)}>Save</button>
-              </div>
-            </div>
-          )}
-          {!visibleFolders.length && (
-            <div className="p-8 text-center bg-white/30 rounded-md border border-dashed border-slate-300">
-              <div className="text-3xl mb-2 opacity-30">📂</div>
-              <div className="text-xs text-slate-400 font-medium">No folders found</div>
-            </div>
-          )}
-        </div>
         </>
         )}
       {/* 4. OVERRIDES & PERMISSIONS PANEL */}

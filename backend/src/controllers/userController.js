@@ -4,6 +4,9 @@ import { decryptSettingValue, encryptSettingValue } from "../utils/settingsCrypt
 import { parsePagination } from "../utils/pagination.js";
 import { writeAuditLog } from "../utils/auditLog.js";
 import { normalizeGroupEntitlements, groupHasFeature } from "../utils/entitlements.js";
+import { sendInvitationEmail } from "../utils/smtpMailer.js";
+import { loadInvitationPolicy, saveInvitationPolicy, computeInvitationExpiryDate } from "../utils/invitationLifecycle.js";
+import { randomBytes, createHash } from "crypto";
 
 const EXPOSE_TEMP_PASSWORDS = process.env.EXPOSE_TEMP_PASSWORDS
     ? process.env.EXPOSE_TEMP_PASSWORDS === "true"
@@ -13,6 +16,7 @@ const HEAVY_LIST_CACHE = new Map();
 const HEAVY_LIST_CACHE_TTL_MS = Number.parseInt(process.env.HEAVY_LIST_CACHE_TTL_MS || "20000", 10);
 const HEAVY_LIST_CACHE_MAX = Number.parseInt(process.env.HEAVY_LIST_CACHE_MAX || "200", 10);
 const ENABLE_STORAGE_USAGE_METRICS = String(process.env.ENABLE_STORAGE_USAGE_METRICS || "").toLowerCase() === "true";
+const CUSTOMER_INVITE_BASE_URL = String(process.env.CUSTOMER_INVITE_BASE_URL || "").trim();
 
 function normalizeRole(value, fallback = "user") {
     const normalized = String(value || fallback).trim().toLowerCase();
@@ -21,6 +25,27 @@ function normalizeRole(value, fallback = "user") {
 
 function normalizeEmail(email) {
     return String(email || "").trim().toLowerCase();
+}
+
+function parsePositiveInt(value) {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function createInviteTokenPair() {
+    const token = randomBytes(32).toString("base64url");
+    const tokenHash = createHash("sha256").update(token).digest("hex");
+    return { token, tokenHash };
+}
+
+function resolveInviteBaseUrl(req) {
+    if (/^https?:\/\//i.test(CUSTOMER_INVITE_BASE_URL)) return CUSTOMER_INVITE_BASE_URL.replace(/\/+$/, "");
+    const frontendUrl = String(process.env.FRONTEND_URL || "").trim();
+    if (/^https?:\/\//i.test(frontendUrl)) return frontendUrl.replace(/\/+$/, "");
+    const originHeader = String(req.headers?.origin || "").trim();
+    if (/^https?:\/\//i.test(originHeader)) return originHeader.replace(/\/+$/, "");
+    const fallback = "http://localhost:5173";
+    return fallback.replace(/\/+$/, "");
 }
 
 function getHeavyListCache(key) {
@@ -133,6 +158,16 @@ async function assertGroupUserLimitAvailable(groupId, additionalUsers = 1) {
     return group;
 }
 
+async function getCustomerAdminManageableGroups(userId) {
+    const adminGroups = await getAdminGroups(userId);
+    if (!adminGroups.length) return [];
+    const rows = await query("SELECT id, entitlements FROM groups WHERE id = ANY($1::int[])", [adminGroups]);
+    return rows
+        .filter((group) => groupHasFeature(group, "manageUsers"))
+        .map((group) => Number(group.id))
+        .filter((groupId) => Number.isInteger(groupId) && groupId > 0);
+}
+
 function parseEntitlementsInput(value) {
     if (value === undefined) return undefined;
     return normalizeGroupEntitlements(value);
@@ -242,6 +277,9 @@ export async function createUser(req, res) {
     if (!emailText || !firstNameText || !lastNameText || !companyText) {
         return res.status(400).json({ error: "first_name_last_name_email_company_required" });
     }
+    if (desiredRole === "user" && Number.isInteger(targetGroupId) && targetGroupId > 0) {
+        return res.status(400).json({ error: "customer_users_invite_only" });
+    }
 
     const temporaryPassword = password || generateComplexPassword(16);
     const hashedFn = await hashPassword(temporaryPassword);
@@ -282,6 +320,256 @@ export async function createUser(req, res) {
     } catch (e) {
         if (String(e).includes("unique constraint")) return res.status(400).json({ error: "Email exists" });
         res.status(500).json({ error: "failed" });
+    }
+}
+
+export async function inviteCustomerUser(req, res) {
+    const isGlobalAdmin = req.user.role === "admin";
+    const targetGroupId = parsePositiveInt(req.body?.groupId ?? req.body?.group_id);
+    const emailText = normalizeEmail(req.body?.email);
+    const firstNameText = String(req.body?.firstName || "").trim();
+    const lastNameText = String(req.body?.lastName || "").trim();
+    const companyText = String(req.body?.company || "").trim();
+    const inviteBaseUrl = resolveInviteBaseUrl(req);
+
+    if (!Number.isInteger(targetGroupId) || targetGroupId <= 0) {
+        return res.status(400).json({ error: "managed_group_required" });
+    }
+    if (!emailText || !firstNameText || !lastNameText || !companyText) {
+        return res.status(400).json({ error: "first_name_last_name_email_company_required" });
+    }
+
+    try {
+        if (!isGlobalAdmin) {
+            const adminGroups = await getAdminGroups(req.user.id);
+            if (!adminGroups.length || !adminGroups.includes(targetGroupId)) {
+                return res.status(403).json({ error: "Forbidden" });
+            }
+        } else {
+            const targetGroup = await loadGroupForAdminAction(targetGroupId);
+            if (!targetGroup) return res.status(400).json({ error: "invalid_group_id" });
+        }
+
+        const targetGroup = await assertGroupUserLimitAvailable(targetGroupId, 1);
+        const existingUsers = await query(
+            "SELECT id, role FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1",
+            [emailText]
+        );
+        const existingUser = existingUsers[0] || null;
+        if (existingUser?.role === "admin") {
+            return res.status(403).json({ error: "admin_email_not_allowed" });
+        }
+        if (existingUser?.id) {
+            const existingMembership = await query(
+                "SELECT 1 FROM user_groups WHERE user_id = $1 AND group_id = $2 LIMIT 1",
+                [existingUser.id, targetGroupId]
+            );
+            if (existingMembership.length) {
+                return res.status(400).json({ error: "user_already_in_customer" });
+            }
+        }
+
+        const { token, tokenHash } = createInviteTokenPair();
+        const invitePolicy = await loadInvitationPolicy();
+        const expiresAt = computeInvitationExpiryDate(invitePolicy);
+
+        const inserted = await query(
+            `INSERT INTO customer_user_invitations
+                (email, group_id, first_name, last_name, company, token_hash, invited_by_user_id, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             RETURNING id, expires_at`,
+            [emailText, targetGroupId, firstNameText, lastNameText, companyText, tokenHash, req.user.id, expiresAt.toISOString()]
+        );
+        const invitation = inserted[0];
+        const inviteUrl = `${inviteBaseUrl}/?invite=${encodeURIComponent(token)}`;
+
+        try {
+            await sendInvitationEmail({
+                toEmail: emailText,
+                inviteUrl,
+                customerName: String(targetGroup?.name || `Customer ${targetGroupId}`),
+                inviterEmail: String(req.user?.email || ""),
+                expiresAt: invitation.expires_at || expiresAt.toISOString(),
+            });
+        } catch (mailErr) {
+            await query("UPDATE customer_user_invitations SET revoked_at = CURRENT_TIMESTAMP WHERE id = $1", [invitation.id]);
+            return res.status(mailErr?.statusCode || 500).json({ error: mailErr?.message || "invitation_email_failed" });
+        }
+
+        await writeAuditLog({
+            req,
+            action: "customer_user.invited",
+            resourceType: "group",
+            resourceId: targetGroupId,
+            metadata: {
+                invite_id: invitation.id,
+                email: emailText,
+                expires_at: invitation.expires_at || expiresAt.toISOString(),
+            },
+        });
+        clearHeavyListCache();
+        return res.json({
+            success: true,
+            invitationId: invitation.id,
+            email: emailText,
+            groupId: targetGroupId,
+            expiresAt: invitation.expires_at || expiresAt.toISOString(),
+        });
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ error: err.message || "invitation_failed" });
+    }
+}
+
+export async function listCustomerInvitations(req, res) {
+    const isGlobalAdmin = req.user.role === "admin";
+    const requestedGroupId = parsePositiveInt(req.query?.groupId);
+    const pagination = parsePagination(req.query, { maxLimit: 250 });
+    if (pagination.error) return res.status(400).json({ error: pagination.error });
+
+    const params = [];
+    const where = [
+        "cui.accepted_at IS NULL",
+        "cui.revoked_at IS NULL",
+    ];
+
+    try {
+        if (isGlobalAdmin) {
+            if (requestedGroupId) {
+                const group = await loadGroupForAdminAction(requestedGroupId);
+                if (!group) return res.status(404).json({ error: "group_not_found" });
+                where.push(`cui.group_id = $${params.push(requestedGroupId)}`);
+            }
+        } else {
+            const manageableGroupIds = await getCustomerAdminManageableGroups(req.user.id);
+            if (!manageableGroupIds.length) return res.status(403).json({ error: "Forbidden" });
+            if (requestedGroupId && !manageableGroupIds.includes(requestedGroupId)) {
+                return res.status(403).json({ error: "Forbidden" });
+            }
+            if (requestedGroupId) {
+                where.push(`cui.group_id = $${params.push(requestedGroupId)}`);
+            } else {
+                where.push(`cui.group_id = ANY($${params.push(manageableGroupIds)}::int[])`);
+            }
+        }
+
+        let limitSql = "";
+        if (pagination.hasPagination) {
+            params.push(pagination.limit, pagination.offset);
+            limitSql = ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
+        }
+        const rows = await query(
+            `SELECT cui.id, cui.email, cui.group_id, g.name AS group_name, cui.first_name, cui.last_name, cui.company,
+                    cui.expires_at, cui.created_at, cui.invited_by_user_id, iu.email AS invited_by_email
+               FROM customer_user_invitations cui
+               JOIN groups g ON g.id = cui.group_id
+               LEFT JOIN users iu ON iu.id = cui.invited_by_user_id
+              WHERE ${where.join(" AND ")}
+              ORDER BY cui.created_at DESC${limitSql}`,
+            params
+        );
+        return res.json(rows.map((row) => ({
+            ...row,
+            is_expired: row.expires_at ? new Date(row.expires_at).getTime() <= Date.now() : false,
+        })));
+    } catch (err) {
+        return res.status(500).json({ error: "invitation_list_failed" });
+    }
+}
+
+export async function resendCustomerInvitation(req, res) {
+    const invitationId = parsePositiveInt(req.params?.id);
+    if (!invitationId) return res.status(400).json({ error: "invalid_invitation_id" });
+    const isGlobalAdmin = req.user.role === "admin";
+    const inviteBaseUrl = resolveInviteBaseUrl(req);
+
+    try {
+        const rows = await query(
+            `SELECT cui.id, cui.email, cui.group_id, cui.first_name, cui.last_name, cui.company, cui.accepted_at, cui.revoked_at,
+                    g.name AS group_name
+               FROM customer_user_invitations cui
+               JOIN groups g ON g.id = cui.group_id
+              WHERE cui.id = $1
+              LIMIT 1`,
+            [invitationId]
+        );
+        if (!rows.length) return res.status(404).json({ error: "invitation_not_found" });
+        const invitation = rows[0];
+        if (invitation.accepted_at) return res.status(400).json({ error: "invitation_already_accepted" });
+        if (invitation.revoked_at) return res.status(400).json({ error: "invitation_revoked" });
+
+        if (!isGlobalAdmin) {
+            const manageableGroupIds = await getCustomerAdminManageableGroups(req.user.id);
+            if (!manageableGroupIds.includes(Number(invitation.group_id))) {
+                return res.status(403).json({ error: "Forbidden" });
+            }
+        }
+
+        const { token, tokenHash } = createInviteTokenPair();
+        const invitePolicy = await loadInvitationPolicy();
+        const expiresAt = computeInvitationExpiryDate(invitePolicy);
+        await query(
+            `UPDATE customer_user_invitations
+                SET token_hash = $2,
+                    invited_by_user_id = $3,
+                    expires_at = $4
+              WHERE id = $1`,
+            [invitation.id, tokenHash, req.user.id, expiresAt.toISOString()]
+        );
+        const inviteUrl = `${inviteBaseUrl}/?invite=${encodeURIComponent(token)}`;
+        await sendInvitationEmail({
+            toEmail: invitation.email,
+            inviteUrl,
+            customerName: String(invitation.group_name || `Customer ${invitation.group_id}`),
+            inviterEmail: String(req.user?.email || ""),
+            expiresAt: expiresAt.toISOString(),
+        });
+        await writeAuditLog({
+            req,
+            action: "customer_user.invitation_resent",
+            resourceType: "group",
+            resourceId: invitation.group_id,
+            metadata: { invite_id: invitation.id, email: invitation.email, expires_at: expiresAt.toISOString() },
+        });
+        return res.json({ success: true, invitationId: invitation.id, expiresAt: expiresAt.toISOString() });
+    } catch (err) {
+        return res.status(500).json({ error: "invitation_resend_failed" });
+    }
+}
+
+export async function revokeCustomerInvitation(req, res) {
+    const invitationId = parsePositiveInt(req.params?.id);
+    if (!invitationId) return res.status(400).json({ error: "invalid_invitation_id" });
+    const isGlobalAdmin = req.user.role === "admin";
+
+    try {
+        const rows = await query(
+            `SELECT id, group_id, email, accepted_at, revoked_at
+               FROM customer_user_invitations
+              WHERE id = $1
+              LIMIT 1`,
+            [invitationId]
+        );
+        if (!rows.length) return res.status(404).json({ error: "invitation_not_found" });
+        const invitation = rows[0];
+        if (invitation.accepted_at) return res.status(400).json({ error: "invitation_already_accepted" });
+        if (invitation.revoked_at) return res.status(400).json({ error: "invitation_already_revoked" });
+        if (!isGlobalAdmin) {
+            const manageableGroupIds = await getCustomerAdminManageableGroups(req.user.id);
+            if (!manageableGroupIds.includes(Number(invitation.group_id))) {
+                return res.status(403).json({ error: "Forbidden" });
+            }
+        }
+        await query("UPDATE customer_user_invitations SET revoked_at = CURRENT_TIMESTAMP WHERE id = $1", [invitation.id]);
+        await writeAuditLog({
+            req,
+            action: "customer_user.invitation_revoked",
+            resourceType: "group",
+            resourceId: invitation.group_id,
+            metadata: { invite_id: invitation.id, email: invitation.email },
+        });
+        return res.json({ success: true, invitationId: invitation.id });
+    } catch (err) {
+        return res.status(500).json({ error: "invitation_revoke_failed" });
     }
 }
 
@@ -460,23 +748,32 @@ export async function setDefaultView(req, res) {
 }
 
 export async function getGoogleIntegrationSetting(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const rows = await query("SELECT value FROM app_settings WHERE key = 'google_integration' LIMIT 1", []);
-    const enabled = rows.length ? !!rows[0]?.value?.enabled : true;
-    res.json({ enabled });
+    try {
+        const scope = await resolveScopedGroupForIntegrationSettings(req);
+        const value = await getAppSettingValueWithScopedFallback("google_integration", scope.groupId);
+        const enabled = value ? !!value?.enabled : true;
+        res.json({ enabled, groupId: scope.groupId || null });
+    } catch (err) {
+        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
 }
 
 export async function setGoogleIntegrationSetting(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const enabled = !!req.body?.enabled;
-    await query(
-        `INSERT INTO app_settings (key, value, updated_at)
-         VALUES ('google_integration', $1::jsonb, CURRENT_TIMESTAMP)
-         ON CONFLICT (key)
-         DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
-        [JSON.stringify({ enabled })]
-    );
-    res.json({ success: true, enabled });
+    try {
+        const scope = await resolveScopedGroupForIntegrationSettings(req);
+        const enabled = !!req.body?.enabled;
+        const key = appSettingKeyForGroup("google_integration", scope.groupId);
+        await query(
+            `INSERT INTO app_settings (key, value, updated_at)
+             VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+             ON CONFLICT (key)
+             DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+            [key, JSON.stringify({ enabled })]
+        );
+        res.json({ success: true, enabled, groupId: scope.groupId || null });
+    } catch (err) {
+        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
 }
 
 function maskIfPresent(value) {
@@ -510,178 +807,547 @@ function normalizeOauthConfigForSave(current, body) {
     };
 }
 
-export async function getGoogleOauthSetting(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const rows = await query("SELECT value FROM app_settings WHERE key = 'google_oauth' LIMIT 1", []);
-    const cfg = decryptOauthConfig(rows[0]?.value || {});
-    const clientId = String(cfg.clientId || "");
-    const clientSecret = String(cfg.clientSecret || "");
-    const redirectUri = String(cfg.redirectUri || "");
-    const frontendUrl = String(cfg.frontendUrl || "");
+function appSettingKeyForGroup(baseKey, groupId) {
+    return Number.isInteger(groupId) && groupId > 0 ? `group:${groupId}:${baseKey}` : baseKey;
+}
 
-    res.json({
-        hasClientId: !!clientId,
-        hasClientSecret: !!clientSecret,
-        clientIdMasked: maskIfPresent(clientId),
-        clientSecretMasked: maskIfPresent(clientSecret),
-        redirectUri,
-        frontendUrl,
-    });
+async function resolveScopedGroupForIntegrationSettings(req) {
+    const requestedGroupId = parsePositiveInt(req.query?.groupId ?? req.body?.groupId);
+    if (req.user.role === "admin") {
+        return { groupId: requestedGroupId };
+    }
+
+    const adminGroups = await getAdminGroups(req.user.id);
+    if (!adminGroups.length) {
+        const err = new Error("Forbidden");
+        err.statusCode = 403;
+        throw err;
+    }
+    if (requestedGroupId) {
+        if (!adminGroups.includes(requestedGroupId)) {
+            const err = new Error("Forbidden");
+            err.statusCode = 403;
+            throw err;
+        }
+        return { groupId: requestedGroupId };
+    }
+    if (adminGroups.length === 1) {
+        return { groupId: adminGroups[0] };
+    }
+    const err = new Error("group_id_required");
+    err.statusCode = 400;
+    throw err;
+}
+
+async function getAppSettingValueWithScopedFallback(baseKey, groupId) {
+    const scopedKey = appSettingKeyForGroup(baseKey, groupId);
+    const scopedRows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [scopedKey]);
+    if (scopedRows.length) return scopedRows[0]?.value;
+    if (!groupId) return null;
+    const globalRows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [baseKey]);
+    return globalRows[0]?.value || null;
+}
+
+function oauthConfigIsComplete(cfg) {
+    return !!(
+        String(cfg?.clientId || "").trim()
+        && String(cfg?.clientSecret || "").trim()
+        && String(cfg?.redirectUri || "").trim()
+    );
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+async function runOauthCredentialsProbe(provider, cfg) {
+    if (!oauthConfigIsComplete(cfg)) {
+        return { ok: false, error: "oauth_not_configured" };
+    }
+
+    const redirectUri = String(cfg.redirectUri || "").trim();
+    const clientId = String(cfg.clientId || "").trim();
+    const clientSecret = String(cfg.clientSecret || "").trim();
+    let tokenUrl = "";
+    let body;
+    let headers = { "Content-Type": "application/x-www-form-urlencoded" };
+
+    if (provider === "google") {
+        tokenUrl = "https://oauth2.googleapis.com/token";
+        body = new URLSearchParams({
+            client_id: clientId,
+            client_secret: clientSecret,
+            code: "codex_probe_invalid_code",
+            grant_type: "authorization_code",
+            redirect_uri: redirectUri,
+        });
+    } else if (provider === "dropbox") {
+        tokenUrl = "https://api.dropboxapi.com/oauth2/token";
+        body = new URLSearchParams({
+            client_id: clientId,
+            client_secret: clientSecret,
+            code: "codex_probe_invalid_code",
+            grant_type: "authorization_code",
+            redirect_uri: redirectUri,
+        });
+    } else if (provider === "onedrive") {
+        tokenUrl = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
+        body = new URLSearchParams({
+            client_id: clientId,
+            client_secret: clientSecret,
+            code: "codex_probe_invalid_code",
+            grant_type: "authorization_code",
+            redirect_uri: redirectUri,
+            scope: "offline_access User.Read Files.Read",
+        });
+    } else {
+        return { ok: false, error: "unknown_provider" };
+    }
+
+    try {
+        const res = await fetchWithTimeout(tokenUrl, {
+            method: "POST",
+            headers,
+            body,
+        });
+        const text = await res.text();
+        const lower = String(text || "").toLowerCase();
+        if (res.ok) {
+            return { ok: true, message: "oauth_probe_success" };
+        }
+        if (
+            lower.includes("invalid_client")
+            || lower.includes("unauthorized_client")
+            || lower.includes("client authentication failed")
+        ) {
+            return { ok: false, error: "invalid_client_credentials" };
+        }
+        if (
+            lower.includes("invalid_grant")
+            || lower.includes("bad_verification_code")
+            || lower.includes("authorization code")
+            || lower.includes("invalid code")
+        ) {
+            return { ok: true, message: "oauth_credentials_valid_code_rejected" };
+        }
+        return { ok: false, error: "oauth_probe_failed", details: text.slice(0, 300) };
+    } catch (err) {
+        return { ok: false, error: "oauth_probe_network_error", details: String(err?.message || err) };
+    }
+}
+
+export async function getGoogleOauthSetting(req, res) {
+    try {
+        const scope = await resolveScopedGroupForIntegrationSettings(req);
+        const value = await getAppSettingValueWithScopedFallback("google_oauth", scope.groupId);
+        const cfg = decryptOauthConfig(value || {});
+        const clientId = String(cfg.clientId || "");
+        const clientSecret = String(cfg.clientSecret || "");
+        const redirectUri = String(cfg.redirectUri || "");
+        const frontendUrl = String(cfg.frontendUrl || "");
+
+        res.json({
+            hasClientId: !!clientId,
+            hasClientSecret: !!clientSecret,
+            clientIdMasked: maskIfPresent(clientId),
+            clientSecretMasked: maskIfPresent(clientSecret),
+            redirectUri,
+            frontendUrl,
+            groupId: scope.groupId || null,
+        });
+    } catch (err) {
+        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
 }
 
 export async function setGoogleOauthSetting(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    try {
+        const scope = await resolveScopedGroupForIntegrationSettings(req);
+        const key = appSettingKeyForGroup("google_oauth", scope.groupId);
+        const currentRaw = await getAppSettingValueWithScopedFallback("google_oauth", scope.groupId);
+        const current = decryptOauthConfig(currentRaw || {});
+        const next = normalizeOauthConfigForSave(current, req.body);
 
-    const rows = await query("SELECT value FROM app_settings WHERE key = 'google_oauth' LIMIT 1", []);
-    const current = decryptOauthConfig(rows[0]?.value || {});
-    const next = normalizeOauthConfigForSave(current, req.body);
+        await query(
+            `INSERT INTO app_settings (key, value, updated_at)
+             VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+             ON CONFLICT (key)
+             DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+            [key, JSON.stringify(next)]
+        );
 
-    await query(
-        `INSERT INTO app_settings (key, value, updated_at)
-         VALUES ('google_oauth', $1::jsonb, CURRENT_TIMESTAMP)
-         ON CONFLICT (key)
-         DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
-        [JSON.stringify(next)]
-    );
-
-    res.json({
-        success: true,
-        hasClientId: !!decryptSettingValue(next.clientId),
-        hasClientSecret: !!decryptSettingValue(next.clientSecret),
-        clientIdMasked: maskIfPresent(decryptSettingValue(next.clientId)),
-        clientSecretMasked: maskIfPresent(decryptSettingValue(next.clientSecret)),
-        redirectUri: next.redirectUri,
-        frontendUrl: next.frontendUrl,
-    });
+        res.json({
+            success: true,
+            hasClientId: !!decryptSettingValue(next.clientId),
+            hasClientSecret: !!decryptSettingValue(next.clientSecret),
+            clientIdMasked: maskIfPresent(decryptSettingValue(next.clientId)),
+            clientSecretMasked: maskIfPresent(decryptSettingValue(next.clientSecret)),
+            redirectUri: next.redirectUri,
+            frontendUrl: next.frontendUrl,
+            groupId: scope.groupId || null,
+        });
+    } catch (err) {
+        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
 }
 
 export async function getDropboxIntegrationSetting(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const rows = await query("SELECT value FROM app_settings WHERE key = 'dropbox_integration' LIMIT 1", []);
-    const enabled = rows.length ? !!rows[0]?.value?.enabled : true;
-    res.json({ enabled });
+    try {
+        const scope = await resolveScopedGroupForIntegrationSettings(req);
+        const value = await getAppSettingValueWithScopedFallback("dropbox_integration", scope.groupId);
+        const enabled = value ? !!value?.enabled : true;
+        res.json({ enabled, groupId: scope.groupId || null });
+    } catch (err) {
+        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
 }
 
 export async function setDropboxIntegrationSetting(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const enabled = !!req.body?.enabled;
-    await query(
-        `INSERT INTO app_settings (key, value, updated_at)
-         VALUES ('dropbox_integration', $1::jsonb, CURRENT_TIMESTAMP)
-         ON CONFLICT (key)
-         DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
-        [JSON.stringify({ enabled })]
-    );
-    res.json({ success: true, enabled });
+    try {
+        const scope = await resolveScopedGroupForIntegrationSettings(req);
+        const enabled = !!req.body?.enabled;
+        const key = appSettingKeyForGroup("dropbox_integration", scope.groupId);
+        await query(
+            `INSERT INTO app_settings (key, value, updated_at)
+             VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+             ON CONFLICT (key)
+             DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+            [key, JSON.stringify({ enabled })]
+        );
+        res.json({ success: true, enabled, groupId: scope.groupId || null });
+    } catch (err) {
+        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
 }
 
 export async function getDropboxOauthSetting(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const rows = await query("SELECT value FROM app_settings WHERE key = 'dropbox_oauth' LIMIT 1", []);
-    const cfg = decryptOauthConfig(rows[0]?.value || {});
-    const clientId = String(cfg.clientId || "");
-    const clientSecret = String(cfg.clientSecret || "");
-    const redirectUri = String(cfg.redirectUri || "");
-    const frontendUrl = String(cfg.frontendUrl || "");
+    try {
+        const scope = await resolveScopedGroupForIntegrationSettings(req);
+        const value = await getAppSettingValueWithScopedFallback("dropbox_oauth", scope.groupId);
+        const cfg = decryptOauthConfig(value || {});
+        const clientId = String(cfg.clientId || "");
+        const clientSecret = String(cfg.clientSecret || "");
+        const redirectUri = String(cfg.redirectUri || "");
+        const frontendUrl = String(cfg.frontendUrl || "");
 
-    res.json({
-        hasClientId: !!clientId,
-        hasClientSecret: !!clientSecret,
-        clientIdMasked: maskIfPresent(clientId),
-        clientSecretMasked: maskIfPresent(clientSecret),
-        redirectUri,
-        frontendUrl,
-    });
+        res.json({
+            hasClientId: !!clientId,
+            hasClientSecret: !!clientSecret,
+            clientIdMasked: maskIfPresent(clientId),
+            clientSecretMasked: maskIfPresent(clientSecret),
+            redirectUri,
+            frontendUrl,
+            groupId: scope.groupId || null,
+        });
+    } catch (err) {
+        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
 }
 
 export async function setDropboxOauthSetting(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    try {
+        const scope = await resolveScopedGroupForIntegrationSettings(req);
+        const key = appSettingKeyForGroup("dropbox_oauth", scope.groupId);
+        const currentRaw = await getAppSettingValueWithScopedFallback("dropbox_oauth", scope.groupId);
+        const current = decryptOauthConfig(currentRaw || {});
+        const next = normalizeOauthConfigForSave(current, req.body);
 
-    const rows = await query("SELECT value FROM app_settings WHERE key = 'dropbox_oauth' LIMIT 1", []);
-    const current = decryptOauthConfig(rows[0]?.value || {});
-    const next = normalizeOauthConfigForSave(current, req.body);
+        await query(
+            `INSERT INTO app_settings (key, value, updated_at)
+             VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+             ON CONFLICT (key)
+             DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+            [key, JSON.stringify(next)]
+        );
 
-    await query(
-        `INSERT INTO app_settings (key, value, updated_at)
-         VALUES ('dropbox_oauth', $1::jsonb, CURRENT_TIMESTAMP)
-         ON CONFLICT (key)
-         DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
-        [JSON.stringify(next)]
-    );
-
-    res.json({
-        success: true,
-        hasClientId: !!decryptSettingValue(next.clientId),
-        hasClientSecret: !!decryptSettingValue(next.clientSecret),
-        clientIdMasked: maskIfPresent(decryptSettingValue(next.clientId)),
-        clientSecretMasked: maskIfPresent(decryptSettingValue(next.clientSecret)),
-        redirectUri: next.redirectUri,
-        frontendUrl: next.frontendUrl,
-    });
+        res.json({
+            success: true,
+            hasClientId: !!decryptSettingValue(next.clientId),
+            hasClientSecret: !!decryptSettingValue(next.clientSecret),
+            clientIdMasked: maskIfPresent(decryptSettingValue(next.clientId)),
+            clientSecretMasked: maskIfPresent(decryptSettingValue(next.clientSecret)),
+            redirectUri: next.redirectUri,
+            frontendUrl: next.frontendUrl,
+            groupId: scope.groupId || null,
+        });
+    } catch (err) {
+        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
 }
 
 export async function getOneDriveIntegrationSetting(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const rows = await query("SELECT value FROM app_settings WHERE key = 'onedrive_integration' LIMIT 1", []);
-    const enabled = rows.length ? !!rows[0]?.value?.enabled : true;
-    res.json({ enabled });
+    try {
+        const scope = await resolveScopedGroupForIntegrationSettings(req);
+        const value = await getAppSettingValueWithScopedFallback("onedrive_integration", scope.groupId);
+        const enabled = value ? !!value?.enabled : true;
+        res.json({ enabled, groupId: scope.groupId || null });
+    } catch (err) {
+        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
 }
 
 export async function setOneDriveIntegrationSetting(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const enabled = !!req.body?.enabled;
-    await query(
-        `INSERT INTO app_settings (key, value, updated_at)
-         VALUES ('onedrive_integration', $1::jsonb, CURRENT_TIMESTAMP)
-         ON CONFLICT (key)
-         DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
-        [JSON.stringify({ enabled })]
-    );
-    res.json({ success: true, enabled });
+    try {
+        const scope = await resolveScopedGroupForIntegrationSettings(req);
+        const enabled = !!req.body?.enabled;
+        const key = appSettingKeyForGroup("onedrive_integration", scope.groupId);
+        await query(
+            `INSERT INTO app_settings (key, value, updated_at)
+             VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+             ON CONFLICT (key)
+             DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+            [key, JSON.stringify({ enabled })]
+        );
+        res.json({ success: true, enabled, groupId: scope.groupId || null });
+    } catch (err) {
+        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
 }
 
 export async function getOneDriveOauthSetting(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const rows = await query("SELECT value FROM app_settings WHERE key = 'onedrive_oauth' LIMIT 1", []);
-    const cfg = decryptOauthConfig(rows[0]?.value || {});
-    const clientId = String(cfg.clientId || "");
-    const clientSecret = String(cfg.clientSecret || "");
-    const redirectUri = String(cfg.redirectUri || "");
-    const frontendUrl = String(cfg.frontendUrl || "");
+    try {
+        const scope = await resolveScopedGroupForIntegrationSettings(req);
+        const value = await getAppSettingValueWithScopedFallback("onedrive_oauth", scope.groupId);
+        const cfg = decryptOauthConfig(value || {});
+        const clientId = String(cfg.clientId || "");
+        const clientSecret = String(cfg.clientSecret || "");
+        const redirectUri = String(cfg.redirectUri || "");
+        const frontendUrl = String(cfg.frontendUrl || "");
 
-    res.json({
-        hasClientId: !!clientId,
-        hasClientSecret: !!clientSecret,
-        clientIdMasked: maskIfPresent(clientId),
-        clientSecretMasked: maskIfPresent(clientSecret),
-        redirectUri,
-        frontendUrl,
-    });
+        res.json({
+            hasClientId: !!clientId,
+            hasClientSecret: !!clientSecret,
+            clientIdMasked: maskIfPresent(clientId),
+            clientSecretMasked: maskIfPresent(clientSecret),
+            redirectUri,
+            frontendUrl,
+            groupId: scope.groupId || null,
+        });
+    } catch (err) {
+        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
 }
 
 export async function setOneDriveOauthSetting(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const rows = await query("SELECT value FROM app_settings WHERE key = 'onedrive_oauth' LIMIT 1", []);
-    const current = decryptOauthConfig(rows[0]?.value || {});
-    const next = normalizeOauthConfigForSave(current, req.body);
+    try {
+        const scope = await resolveScopedGroupForIntegrationSettings(req);
+        const key = appSettingKeyForGroup("onedrive_oauth", scope.groupId);
+        const currentRaw = await getAppSettingValueWithScopedFallback("onedrive_oauth", scope.groupId);
+        const current = decryptOauthConfig(currentRaw || {});
+        const next = normalizeOauthConfigForSave(current, req.body);
 
+        await query(
+            `INSERT INTO app_settings (key, value, updated_at)
+             VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+             ON CONFLICT (key)
+             DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+            [key, JSON.stringify(next)]
+        );
+
+        res.json({
+            success: true,
+            hasClientId: !!decryptSettingValue(next.clientId),
+            hasClientSecret: !!decryptSettingValue(next.clientSecret),
+            clientIdMasked: maskIfPresent(decryptSettingValue(next.clientId)),
+            clientSecretMasked: maskIfPresent(decryptSettingValue(next.clientSecret)),
+            redirectUri: next.redirectUri,
+            frontendUrl: next.frontendUrl,
+            groupId: scope.groupId || null,
+        });
+    } catch (err) {
+        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
+}
+
+async function loadScopedDecryptedOauthConfig(req, baseKey) {
+    const scope = await resolveScopedGroupForIntegrationSettings(req);
+    const value = await getAppSettingValueWithScopedFallback(baseKey, scope.groupId);
+    const cfg = decryptOauthConfig(value || {});
+    return { scope, cfg };
+}
+
+export async function testGoogleOauthSetting(req, res) {
+    try {
+        const { scope, cfg } = await loadScopedDecryptedOauthConfig(req, "google_oauth");
+        const result = await runOauthCredentialsProbe("google", cfg);
+        if (!result.ok) return res.status(400).json({ ...result, groupId: scope.groupId || null });
+        return res.json({ ...result, groupId: scope.groupId || null });
+    } catch (err) {
+        return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
+}
+
+export async function testDropboxOauthSetting(req, res) {
+    try {
+        const { scope, cfg } = await loadScopedDecryptedOauthConfig(req, "dropbox_oauth");
+        const result = await runOauthCredentialsProbe("dropbox", cfg);
+        if (!result.ok) return res.status(400).json({ ...result, groupId: scope.groupId || null });
+        return res.json({ ...result, groupId: scope.groupId || null });
+    } catch (err) {
+        return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
+}
+
+export async function testOneDriveOauthSetting(req, res) {
+    try {
+        const { scope, cfg } = await loadScopedDecryptedOauthConfig(req, "onedrive_oauth");
+        const result = await runOauthCredentialsProbe("onedrive", cfg);
+        if (!result.ok) return res.status(400).json({ ...result, groupId: scope.groupId || null });
+        return res.json({ ...result, groupId: scope.groupId || null });
+    } catch (err) {
+        return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
+}
+
+function decryptSmtpConfig(raw) {
+    const cfg = raw && typeof raw === "object" ? raw : {};
+    return {
+        host: String(cfg.host || ""),
+        port: Number.parseInt(cfg.port, 10) || 587,
+        secure: !!cfg.secure,
+        username: String(cfg.username || ""),
+        password: decryptSettingValue(String(cfg.password || "")),
+        fromEmail: String(cfg.fromEmail || ""),
+        fromName: String(cfg.fromName || ""),
+    };
+}
+
+function normalizeSmtpConfigForSave(current, body) {
+    const incomingPasswordRaw = typeof body?.password === "string" ? body.password.trim() : undefined;
+    const nextPassword = (incomingPasswordRaw && incomingPasswordRaw !== "***")
+        ? incomingPasswordRaw
+        : String(current.password || "");
+    const portCandidate = Number.parseInt(body?.port, 10);
+    const safePort = Number.isInteger(portCandidate) && portCandidate > 0 ? portCandidate : Number(current.port || 587) || 587;
+
+    return {
+        host: typeof body?.host === "string" ? body.host.trim() : String(current.host || ""),
+        port: safePort,
+        secure: body?.secure === undefined ? !!current.secure : !!body.secure,
+        username: typeof body?.username === "string" ? body.username.trim() : String(current.username || ""),
+        password: encryptSettingValue(nextPassword),
+        fromEmail: typeof body?.fromEmail === "string" ? body.fromEmail.trim() : String(current.fromEmail || ""),
+        fromName: typeof body?.fromName === "string" ? body.fromName.trim() : String(current.fromName || ""),
+    };
+}
+
+export async function getSmtpSetting(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const rows = await query("SELECT value FROM app_settings WHERE key = 'smtp_config' LIMIT 1", []);
+    const cfg = decryptSmtpConfig(rows[0]?.value || {});
+    res.json({
+        hasPassword: !!String(cfg.password || "").trim(),
+        passwordMasked: maskIfPresent(cfg.password),
+        host: cfg.host,
+        port: cfg.port,
+        secure: cfg.secure,
+        username: cfg.username,
+        fromEmail: cfg.fromEmail,
+        fromName: cfg.fromName,
+    });
+}
+
+export async function setSmtpSetting(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const rows = await query("SELECT value FROM app_settings WHERE key = 'smtp_config' LIMIT 1", []);
+    const current = decryptSmtpConfig(rows[0]?.value || {});
+    const next = normalizeSmtpConfigForSave(current, req.body);
     await query(
         `INSERT INTO app_settings (key, value, updated_at)
-         VALUES ('onedrive_oauth', $1::jsonb, CURRENT_TIMESTAMP)
+         VALUES ('smtp_config', $1::jsonb, CURRENT_TIMESTAMP)
          ON CONFLICT (key)
          DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
         [JSON.stringify(next)]
     );
-
     res.json({
         success: true,
-        hasClientId: !!decryptSettingValue(next.clientId),
-        hasClientSecret: !!decryptSettingValue(next.clientSecret),
-        clientIdMasked: maskIfPresent(decryptSettingValue(next.clientId)),
-        clientSecretMasked: maskIfPresent(decryptSettingValue(next.clientSecret)),
-        redirectUri: next.redirectUri,
-        frontendUrl: next.frontendUrl,
+        hasPassword: !!decryptSettingValue(next.password),
+        passwordMasked: maskIfPresent(decryptSettingValue(next.password)),
+        host: next.host,
+        port: next.port,
+        secure: next.secure,
+        username: next.username,
+        fromEmail: next.fromEmail,
+        fromName: next.fromName,
     });
+}
+
+export async function getCustomerInvitationPolicy(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const policy = await loadInvitationPolicy();
+    return res.json(policy);
+}
+
+export async function setCustomerInvitationPolicy(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const policy = await saveInvitationPolicy(req.body || {});
+    await writeAuditLog({
+        req,
+        action: "customer_invitation.policy_updated",
+        resourceType: "app_settings",
+        resourceId: "customer_invitation_policy",
+        metadata: policy,
+    });
+    return res.json({ success: true, ...policy });
+}
+
+function resolveSsoFeatureValue(entitlements) {
+    const normalized = normalizeGroupEntitlements(entitlements || {});
+    return normalized.features?.sso !== false;
+}
+
+export async function getSsoSetting(req, res) {
+    try {
+        const scope = await resolveScopedGroupForIntegrationSettings(req);
+        if (!Number.isInteger(scope.groupId) || scope.groupId <= 0) {
+            return res.status(400).json({ error: "group_id_required" });
+        }
+        const rows = await query("SELECT id, entitlements FROM groups WHERE id = $1 LIMIT 1", [scope.groupId]);
+        if (!rows.length) return res.status(404).json({ error: "group_not_found" });
+        return res.json({
+            groupId: scope.groupId,
+            enabled: resolveSsoFeatureValue(rows[0]?.entitlements || {}),
+        });
+    } catch (err) {
+        return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
+}
+
+export async function setSsoSetting(req, res) {
+    try {
+        const scope = await resolveScopedGroupForIntegrationSettings(req);
+        if (!Number.isInteger(scope.groupId) || scope.groupId <= 0) {
+            return res.status(400).json({ error: "group_id_required" });
+        }
+        const rows = await query("SELECT id, entitlements FROM groups WHERE id = $1 LIMIT 1", [scope.groupId]);
+        if (!rows.length) return res.status(404).json({ error: "group_not_found" });
+        const enabled = !!req.body?.enabled;
+        const normalized = normalizeGroupEntitlements(rows[0]?.entitlements || {});
+        const next = {
+            ...normalized,
+            features: {
+                ...normalized.features,
+                sso: enabled,
+            },
+        };
+        await query("UPDATE groups SET entitlements = $2::jsonb WHERE id = $1", [scope.groupId, JSON.stringify(next)]);
+        await writeAuditLog({
+            req,
+            action: "group.sso_feature_updated",
+            resourceType: "group",
+            resourceId: scope.groupId,
+            metadata: { enabled },
+        });
+        return res.json({ success: true, groupId: scope.groupId, enabled });
+    } catch (err) {
+        return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
 }
 
 // --- Groups ---
@@ -694,43 +1360,10 @@ export async function listGroups(req, res) {
         const cacheKey = `listGroups:admin:${ENABLE_STORAGE_USAGE_METRICS ? "usage" : "lite"}${pageTag}`;
         const cached = getHeavyListCache(cacheKey);
         if (cached) return res.json(cached);
-        let sql;
+        let sql = `SELECT g.*, 0::bigint AS used_storage_bytes
+                   FROM groups g
+                   ORDER BY g.id ASC`;
         const params = [];
-        if (ENABLE_STORAGE_USAGE_METRICS) {
-            sql = `WITH group_folders AS (
-                     SELECT DISTINCT fg.group_id, fg.folder_id
-                     FROM folder_groups fg
-                     UNION
-                     SELECT g.id AS group_id, f.id AS folder_id
-                     FROM groups g
-                     JOIN folders f ON f.group_id = g.id
-                   ),
-                   folder_usage AS (
-                     SELECT
-                       s.folder_id,
-                       COALESCE(SUM(pg_column_size(sr.row_data)), 0)::bigint AS total_size_bytes
-                     FROM sheets s
-                     LEFT JOIN sheet_rows sr ON sr.sheet_id = s.id
-                     GROUP BY s.folder_id
-                   ),
-                   group_usage AS (
-                     SELECT
-                       gf.group_id,
-                       COALESCE(SUM(fu.total_size_bytes), 0)::bigint AS used_storage_bytes
-                     FROM group_folders gf
-                     LEFT JOIN folder_usage fu ON fu.folder_id = gf.folder_id
-                     GROUP BY gf.group_id
-                   )
-                   SELECT g.*,
-                          COALESCE(gu.used_storage_bytes, 0)::bigint AS used_storage_bytes
-                   FROM groups g
-                   LEFT JOIN group_usage gu ON gu.group_id = g.id
-                   ORDER BY g.id ASC`;
-        } else {
-            sql = `SELECT g.*, 0::bigint AS used_storage_bytes
-                   FROM groups g
-                   ORDER BY g.id ASC`;
-        }
         if (pagination.hasPagination) {
             sql += ` LIMIT $1 OFFSET $2`;
             params.push(pagination.limit, pagination.offset);
@@ -747,46 +1380,10 @@ export async function listGroups(req, res) {
     if (cached) return res.json(cached);
 
     const params = [adminGroups];
-    let sql;
-    if (ENABLE_STORAGE_USAGE_METRICS) {
-        sql = `WITH group_folders AS (
-                 SELECT DISTINCT fg.group_id, fg.folder_id
-                 FROM folder_groups fg
-                 WHERE fg.group_id = ANY($1::int[])
-                 UNION
-                 SELECT g.id AS group_id, f.id AS folder_id
-                 FROM groups g
-                 JOIN folders f ON f.group_id = g.id
-                 WHERE g.id = ANY($1::int[])
-               ),
-               folder_usage AS (
-                 SELECT
-                   s.folder_id,
-                   COALESCE(SUM(pg_column_size(sr.row_data)), 0)::bigint AS total_size_bytes
-                 FROM sheets s
-                 LEFT JOIN sheet_rows sr ON sr.sheet_id = s.id
-                 GROUP BY s.folder_id
-               ),
-               group_usage AS (
-                 SELECT
-                   gf.group_id,
-                   COALESCE(SUM(fu.total_size_bytes), 0)::bigint AS used_storage_bytes
-                 FROM group_folders gf
-                 LEFT JOIN folder_usage fu ON fu.folder_id = gf.folder_id
-                 GROUP BY gf.group_id
-               )
-               SELECT g.*,
-                      COALESCE(gu.used_storage_bytes, 0)::bigint AS used_storage_bytes
-               FROM groups g
-               LEFT JOIN group_usage gu ON gu.group_id = g.id
-               WHERE g.id = ANY($1::int[])
-               ORDER BY g.id ASC`;
-    } else {
-        sql = `SELECT g.*, 0::bigint AS used_storage_bytes
+    let sql = `SELECT g.*, 0::bigint AS used_storage_bytes
                FROM groups g
                WHERE g.id = ANY($1::int[])
                ORDER BY g.id ASC`;
-    }
     if (pagination.hasPagination) {
         sql += ` LIMIT $2 OFFSET $3`;
         params.push(pagination.limit, pagination.offset);
@@ -851,7 +1448,7 @@ export async function deleteGroup(req, res) {
             return res.status(400).json({ error: "group_not_empty", message: "Cannot delete customer with users. Remove all users first." });
         }
         
-        // Cleanup other dependencies (folders might still exist, user didn't specify checking those, but permissions should be cleaned)
+        // Cleanup dependencies that are not cascade-linked.
         await client.query("DELETE FROM group_permissions WHERE group_id = $1", [id]);
         await client.query("DELETE FROM view_group_permissions WHERE group_id = $1", [id]);
         
@@ -1015,313 +1612,24 @@ export async function getGroupSheets(req, res) {
         if (!adminGroups.includes(gid)) return res.status(403).json({ error: "Forbidden" });
     }
     const rows = await query(
-        `SELECT DISTINCT s.id, s.filename, s.display_name, s.uploaded_at, s.folder_id, f.name AS folder_name
+        `SELECT DISTINCT s.id, s.filename, s.display_name, s.uploaded_at,
+                s.report_source_id, rs.name AS report_source_name
          FROM sheets s
-         LEFT JOIN folders f ON f.id = s.folder_id
+         LEFT JOIN report_sources rs ON rs.id = s.report_source_id
          LEFT JOIN group_permissions gp ON gp.sheet_id = s.id AND gp.group_id = $1
          WHERE (
-            EXISTS (SELECT 1 FROM folder_groups fg WHERE fg.folder_id = f.id AND fg.group_id = $1)
-            OR f.group_id = $1 -- legacy compatibility
-            OR (gp.group_id IS NOT NULL)
+            gp.group_id IS NOT NULL
+            OR EXISTS (
+                SELECT 1
+                FROM user_groups ug
+                WHERE ug.group_id = $1
+                  AND ug.user_id = rs.created_by
+            )
          )
          ORDER BY s.uploaded_at DESC`,
         [gid]
     );
     res.json(rows);
-}
-
-// --- Folders ---
-
-export async function listFolders(req, res) {
-    const pagination = parsePagination(req.query, { maxLimit: 1000 });
-    if (pagination.error) return res.status(400).json({ error: pagination.error });
-    const userId = Number(req.user?.id || 0);
-    const role = String(req.user?.role || "");
-    const pageTag = pagination.hasPagination ? `:l${pagination.limit}:o${pagination.offset}` : ":all";
-    let cacheKey = `listFolders:${role}:${userId}:${ENABLE_STORAGE_USAGE_METRICS ? "usage" : "lite"}${pageTag}`;
-    let rows;
-    if (req.user.role === "admin") {
-        const cached = getHeavyListCache(cacheKey);
-        if (cached) return res.json(cached);
-        const params = [];
-        let sql;
-        if (ENABLE_STORAGE_USAGE_METRICS) {
-            sql = `
-                WITH folder_usage AS (
-                  SELECT
-                    s.folder_id,
-                    COUNT(DISTINCT s.id)::int AS sheet_count,
-                    COALESCE(SUM(pg_column_size(sr.row_data)), 0)::bigint AS total_size_bytes
-                  FROM sheets s
-                  LEFT JOIN sheet_rows sr ON sr.sheet_id = s.id
-                  GROUP BY s.folder_id
-                )
-                SELECT
-                  f.id,
-                  f.name,
-                  f.parent_id,
-                  f.created_at,
-                  f.group_id AS legacy_group_id,
-                  f.owner_user_id,
-                  f.max_file_size_mb,
-                  f.max_total_size_mb,
-                  ou.email AS owner_user_email,
-                  COALESCE(fu.sheet_count, 0) AS sheet_count,
-                  COALESCE(fu.total_size_bytes, 0) AS total_size_bytes,
-                  COALESCE(
-                    ARRAY_AGG(DISTINCT fg.group_id) FILTER (WHERE fg.group_id IS NOT NULL),
-                    ARRAY[]::INT[]
-                  ) AS group_ids
-                FROM folders f
-                LEFT JOIN folder_groups fg ON fg.folder_id = f.id
-                LEFT JOIN users ou ON ou.id = f.owner_user_id
-                LEFT JOIN folder_usage fu ON fu.folder_id = f.id
-                GROUP BY f.id, f.name, f.parent_id, f.created_at, f.group_id, f.owner_user_id, f.max_file_size_mb, f.max_total_size_mb, ou.email, fu.sheet_count, fu.total_size_bytes
-                ORDER BY f.name ASC`;
-        } else {
-            sql = `
-                SELECT
-                  f.id,
-                  f.name,
-                  f.parent_id,
-                  f.created_at,
-                  f.group_id AS legacy_group_id,
-                  f.owner_user_id,
-                  f.max_file_size_mb,
-                  f.max_total_size_mb,
-                  ou.email AS owner_user_email,
-                  0::int AS sheet_count,
-                  0::bigint AS total_size_bytes,
-                  COALESCE(
-                    ARRAY_AGG(DISTINCT fg.group_id) FILTER (WHERE fg.group_id IS NOT NULL),
-                    ARRAY[]::INT[]
-                  ) AS group_ids
-                FROM folders f
-                LEFT JOIN folder_groups fg ON fg.folder_id = f.id
-                LEFT JOIN users ou ON ou.id = f.owner_user_id
-                GROUP BY f.id, f.name, f.parent_id, f.created_at, f.group_id, f.owner_user_id, f.max_file_size_mb, f.max_total_size_mb, ou.email
-                ORDER BY f.name ASC`;
-        }
-        if (pagination.hasPagination) {
-            sql += ` LIMIT $1 OFFSET $2`;
-            params.push(pagination.limit, pagination.offset);
-        }
-        rows = await query(sql, params);
-    } else {
-        const adminGroups = await getAdminGroups(req.user.id);
-        if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
-        cacheKey = `listFolders:${role}:${userId}:${[...adminGroups].sort((a, b) => a - b).join(",")}:${ENABLE_STORAGE_USAGE_METRICS ? "usage" : "lite"}${pageTag}`;
-        const cached = getHeavyListCache(cacheKey);
-        if (cached) return res.json(cached);
-        const params = [adminGroups];
-        let sql;
-        if (ENABLE_STORAGE_USAGE_METRICS) {
-            sql = `
-                WITH folder_usage AS (
-                  SELECT
-                    s.folder_id,
-                    COUNT(DISTINCT s.id)::int AS sheet_count,
-                    COALESCE(SUM(pg_column_size(sr.row_data)), 0)::bigint AS total_size_bytes
-                  FROM sheets s
-                  LEFT JOIN sheet_rows sr ON sr.sheet_id = s.id
-                  GROUP BY s.folder_id
-                )
-                SELECT
-                  f.id,
-                  f.name,
-                  f.parent_id,
-                  f.created_at,
-                  f.group_id AS legacy_group_id,
-                  f.owner_user_id,
-                  f.max_file_size_mb,
-                  f.max_total_size_mb,
-                  ou.email AS owner_user_email,
-                  COALESCE(fu.sheet_count, 0) AS sheet_count,
-                  COALESCE(fu.total_size_bytes, 0) AS total_size_bytes,
-                  COALESCE(
-                    ARRAY_AGG(DISTINCT fg.group_id) FILTER (WHERE fg.group_id IS NOT NULL),
-                    ARRAY[]::INT[]
-                  ) AS group_ids
-                FROM folders f
-                LEFT JOIN folder_groups fg ON fg.folder_id = f.id
-                LEFT JOIN users ou ON ou.id = f.owner_user_id
-                LEFT JOIN folder_usage fu ON fu.folder_id = f.id
-                WHERE (
-                  f.group_id = ANY($1::int[])
-                  OR EXISTS (
-                    SELECT 1
-                    FROM folder_groups fg2
-                    WHERE fg2.folder_id = f.id
-                      AND fg2.group_id = ANY($1::int[])
-                  )
-                )
-                GROUP BY f.id, f.name, f.parent_id, f.created_at, f.group_id, f.owner_user_id, f.max_file_size_mb, f.max_total_size_mb, ou.email, fu.sheet_count, fu.total_size_bytes
-                ORDER BY f.name ASC`;
-        } else {
-            sql = `
-                SELECT
-                  f.id,
-                  f.name,
-                  f.parent_id,
-                  f.created_at,
-                  f.group_id AS legacy_group_id,
-                  f.owner_user_id,
-                  f.max_file_size_mb,
-                  f.max_total_size_mb,
-                  ou.email AS owner_user_email,
-                  0::int AS sheet_count,
-                  0::bigint AS total_size_bytes,
-                  COALESCE(
-                    ARRAY_AGG(DISTINCT fg.group_id) FILTER (WHERE fg.group_id IS NOT NULL),
-                    ARRAY[]::INT[]
-                  ) AS group_ids
-                FROM folders f
-                LEFT JOIN folder_groups fg ON fg.folder_id = f.id
-                LEFT JOIN users ou ON ou.id = f.owner_user_id
-                WHERE (
-                  f.group_id = ANY($1::int[])
-                  OR EXISTS (
-                    SELECT 1
-                    FROM folder_groups fg2
-                    WHERE fg2.folder_id = f.id
-                      AND fg2.group_id = ANY($1::int[])
-                  )
-                )
-                GROUP BY f.id, f.name, f.parent_id, f.created_at, f.group_id, f.owner_user_id, f.max_file_size_mb, f.max_total_size_mb, ou.email
-                ORDER BY f.name ASC`;
-        }
-        if (pagination.hasPagination) {
-            sql += ` LIMIT $2 OFFSET $3`;
-            params.push(pagination.limit, pagination.offset);
-        }
-        rows = await query(sql, params);
-    }
-
-    const byId = new Map(rows.map(r => [r.id, r]));
-    const pathCache = new Map();
-    const buildPath = (folderId, seen = new Set()) => {
-      if (!folderId || !byId.has(folderId)) return "";
-      if (pathCache.has(folderId)) return pathCache.get(folderId);
-      if (seen.has(folderId)) return byId.get(folderId).name; // cycle guard
-      seen.add(folderId);
-      const f = byId.get(folderId);
-      const parentPath = f.parent_id ? buildPath(f.parent_id, seen) : "";
-      const p = parentPath ? `${parentPath} / ${f.name}` : f.name;
-      pathCache.set(folderId, p);
-      return p;
-    };
-
-    const normalized = rows.map((r) => {
-      const legacy = Number.isInteger(r.legacy_group_id) ? [r.legacy_group_id] : [];
-      const gids = Array.from(new Set([...(r.group_ids || []), ...legacy]));
-      return {
-        ...r,
-        group_ids: gids,
-        path: buildPath(r.id),
-      };
-    });
-
-    setHeavyListCache(cacheKey, normalized);
-    res.json(normalized);
-}
-
-export async function createFolder(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const { name, groupId, groupIds, parentId, ownerUserId, maxFileSizeMb, maxTotalSizeMb } = req.body;
-    try {
-        const normalizedGroupIds = Array.isArray(groupIds)
-          ? groupIds.map((g) => parseInt(g, 10)).filter((g) => Number.isInteger(g))
-          : (groupId ? [parseInt(groupId, 10)].filter((g) => Number.isInteger(g)) : []);
-        if (!String(name || "").trim()) return res.status(400).json({ error: "name_required" });
-        if (!normalizedGroupIds.length) return res.status(400).json({ error: "group_required" });
-        const parent = parentId ? parseInt(parentId, 10) : null;
-        const ownerUser = ownerUserId ? parseInt(ownerUserId, 10) : null;
-        const maxFile = Number.isFinite(Number(maxFileSizeMb)) ? Number(maxFileSizeMb) : 100;
-        const maxTotal = Number.isFinite(Number(maxTotalSizeMb)) ? Number(maxTotalSizeMb) : 1024;
-
-        const client = await getClient();
-        try {
-          await client.query("BEGIN");
-          const r = await client.query(
-            "INSERT INTO folders (name, group_id, parent_id, owner_user_id, max_file_size_mb, max_total_size_mb) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
-            [name, normalizedGroupIds[0] || null, parent, ownerUser, maxFile, maxTotal]
-          );
-          const folder = r.rows[0];
-          for (const gid of normalizedGroupIds) {
-            await client.query(
-              "INSERT INTO folder_groups (folder_id, group_id) VALUES ($1, $2) ON CONFLICT (folder_id, group_id) DO NOTHING",
-              [folder.id, gid]
-            );
-          }
-          await client.query("COMMIT");
-          clearHeavyListCache();
-          res.json({ ...folder, group_ids: normalizedGroupIds });
-        } catch (e) {
-          await client.query("ROLLBACK");
-          throw e;
-        } finally {
-          client.release();
-        }
-    } catch {
-        res.status(400).json({ error: "failed" });
-    }
-}
-
-export async function updateFolder(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const folderId = parseInt(req.params.id, 10);
-    if (!Number.isInteger(folderId)) return res.status(400).json({ error: "invalid_folder_id" });
-    const { groupIds, maxFileSizeMb, maxTotalSizeMb } = req.body || {};
-    try {
-        const normalizedGroupIds = Array.isArray(groupIds)
-          ? groupIds.map((g) => parseInt(g, 10)).filter((g) => Number.isInteger(g))
-          : [];
-        if (!normalizedGroupIds.length) return res.status(400).json({ error: "group_required" });
-        const maxFile = Number.isFinite(Number(maxFileSizeMb)) ? Number(maxFileSizeMb) : 100;
-        const maxTotal = Number.isFinite(Number(maxTotalSizeMb)) ? Number(maxTotalSizeMb) : 1024;
-
-        const client = await getClient();
-        try {
-          await client.query("BEGIN");
-          const updatedRows = await client.query(
-            `UPDATE folders
-             SET group_id = $1,
-                 max_file_size_mb = $2,
-                 max_total_size_mb = $3
-             WHERE id = $4
-             RETURNING *`,
-            [normalizedGroupIds[0] || null, maxFile, maxTotal, folderId]
-          );
-          if (!updatedRows.rows.length) {
-            await client.query("ROLLBACK");
-            return res.status(404).json({ error: "not_found" });
-          }
-          await client.query("DELETE FROM folder_groups WHERE folder_id = $1", [folderId]);
-          for (const gid of normalizedGroupIds) {
-            await client.query(
-              "INSERT INTO folder_groups (folder_id, group_id) VALUES ($1, $2) ON CONFLICT (folder_id, group_id) DO NOTHING",
-              [folderId, gid]
-            );
-          }
-          await client.query("COMMIT");
-          clearHeavyListCache();
-          return res.json({ ...updatedRows.rows[0], group_ids: normalizedGroupIds });
-        } catch (e) {
-          await client.query("ROLLBACK");
-          throw e;
-        } finally {
-          client.release();
-        }
-    } catch {
-        return res.status(400).json({ error: "failed" });
-    }
-}
-
-export async function deleteFolder(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    await query("DELETE FROM folders WHERE id=$1", [req.params.id]);
-    clearHeavyListCache();
-    res.json({ success: true });
 }
 
 // --- Permissions ---
