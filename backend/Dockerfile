@@ -1,6 +1,7 @@
 # backend/Dockerfile
 FROM node:22-alpine
 WORKDIR /app
+ENV NODE_ENV=production
 
 # copy ONLY backend deps, then install
 COPY backend/package.json ./package.json

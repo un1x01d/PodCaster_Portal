@@ -1,7 +1,7 @@
 import { createHash } from "crypto";
 import { query } from "../config/db.js";
 import { isEnglishLocale, normalizeLocale, translateDashboardCards } from "../utils/dashboardLocalization.js";
-import { checkSheetAccess, hasFolderAccess, loadSheetPermissionSets } from "../utils/authorization.js";
+import { checkSheetAccess, hasReportSourceOwnerAccess, loadSheetPermissionSets } from "../utils/authorization.js";
 
 const INSIGHT_MAX_ROWS = Number.parseInt(process.env.INSIGHT_MAX_ROWS || "100000", 10);
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
@@ -487,7 +487,7 @@ async function loadAccessibleRows(sheetId, user) {
   const params = [sheetId];
   let where = "WHERE sheet_id = $1";
 
-  const hasFullAccess = user.role === "admin" || await hasFolderAccess(sheetId, user.id);
+  const hasFullAccess = user.role === "admin" || await hasReportSourceOwnerAccess(sheetId, user.id);
   if (!hasFullAccess) {
     const { allPerms, validCols: validColsArray, rowFiltersList } = await loadSheetPermissionSets(sheetId, user.id);
     if (!allPerms.length) return { headers: [], rows: [], tooLarge: false, forbidden: true };

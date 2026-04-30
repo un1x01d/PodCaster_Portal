@@ -72,6 +72,7 @@ export function useChatbotLogic({
   data,
   headers,
   activeFilters,
+  splitContext,
   onApplyFilter,
   onUpdateChart,
   activeTab,
@@ -222,6 +223,7 @@ export function useChatbotLogic({
         activeTab: activeTab || null,
         message: q,
         activeFilters: serializeActiveFilters(activeFilters),
+        splitContext: splitContext && typeof splitContext === "object" ? splitContext : null,
         conversationHistory: buildConversationHistory(messages),
         locale,
       });
@@ -232,19 +234,20 @@ export function useChatbotLogic({
         : (copy.chatNoResponse || "I could not produce a response.");
 
       const actions = payload.actions || {};
-      const filters = Array.isArray(actions.filters) ? actions.filters : [];
+      const allowUiActions = meta?.applyActions === true;
+      const filters = allowUiActions && Array.isArray(actions.filters) ? actions.filters : [];
 
-      if (onApplyFilter && actions.reset_filters) {
+      if (allowUiActions && onApplyFilter && actions.reset_filters) {
         onApplyFilter("RESET_ALL");
       }
-      if (onApplyFilter && filters.length) {
+      if (allowUiActions && onApplyFilter && filters.length) {
         filters.forEach((f) => {
           if (!f?.column) return;
           onApplyFilter(f.column, String(f.value ?? ""), f.operator || "contains");
         });
       }
 
-      if (onUpdateChart && actions.chart && actions.chart.valueColumn) {
+      if (allowUiActions && onUpdateChart && actions.chart && actions.chart.valueColumn) {
         onUpdateChart({
           dateColumn: actions.chart.dateColumn || null,
           valueColumn: actions.chart.valueColumn,
@@ -266,7 +269,7 @@ export function useChatbotLogic({
     } finally {
       setIsSending(false);
     }
-  }, [sheetId, activeTab, isSending, activeFilters, messages, onApplyFilter, onUpdateChart, locale, copy.appliedFilters, copy.chatRequestFailed, clearMessages]);
+  }, [sheetId, activeTab, isSending, activeFilters, splitContext, messages, onApplyFilter, onUpdateChart, locale, copy.appliedFilters, copy.chatRequestFailed, clearMessages]);
 
   const handleSend = useCallback(async () => {
     const q = input.trim();
@@ -276,10 +279,10 @@ export function useChatbotLogic({
   }, [input, sendMessage]);
 
   // Keep state refs for the event listener to avoid re-binding
-  const stateRef = useRef({ sheetId, activeTab, activeFilters, messages, locale });
+  const stateRef = useRef({ sheetId, activeTab, activeFilters, splitContext, messages, locale });
   useEffect(() => {
-    stateRef.current = { sheetId, activeTab, activeFilters, messages, locale };
-  }, [sheetId, activeTab, activeFilters, messages, locale]);
+    stateRef.current = { sheetId, activeTab, activeFilters, splitContext, messages, locale };
+  }, [sheetId, activeTab, activeFilters, splitContext, messages, locale]);
 
   useEffect(() => {
     const onExternalSubmit = (event) => {
@@ -300,6 +303,7 @@ export function useChatbotLogic({
               activeTab: current.activeTab || null,
               message,
               activeFilters: serializeActiveFilters(current.activeFilters),
+              splitContext: current.splitContext && typeof current.splitContext === "object" ? current.splitContext : null,
               conversationHistory: buildConversationHistory(current.messages),
               locale: requestLocale,
             });

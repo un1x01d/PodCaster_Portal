@@ -34,5 +34,9 @@ export function validateProductionConfig(env = process.env) {
   if (!allowedOrigins.length) errors.push("ALLOWED_ORIGINS is required in production.");
   if (allowedOrigins.some(isLocalOrigin)) errors.push("ALLOWED_ORIGINS must not include localhost origins in production.");
 
+  if (String(env.ALLOW_LEGACY_PLAINTEXT_PASSWORDS || "").toLowerCase() === "true") {
+    errors.push("ALLOW_LEGACY_PLAINTEXT_PASSWORDS must be disabled in production.");
+  }
+
   return errors;
 }

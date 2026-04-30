@@ -71,6 +71,9 @@ Frontend:
 Database:
 
 - PostgreSQL.
+- One control database plus one dedicated customer database per customer.
+- The control database stores super-admin/global state and the `customers` registry.
+- Customer databases store customer-owned users, report sources, sheets, rows, views, permissions, integrations, audit logs, import jobs, and AI usage.
 - Runtime schema initialization exists in backend DB setup. Treat this as development-friendly behavior, not a substitute for reviewed production migrations.
 
 External providers:
@@ -106,6 +109,10 @@ DATABASE_URL=postgres://USER:PASSWORD@HOST:5432/DBNAME
 JWT_SECRET=<strong random secret, 32+ chars>
 SETTINGS_CRYPTO_KEY=<strong random key, 32+ chars>
 ALLOWED_ORIGINS=https://app.example.com
+TENANT_DB_ISOLATION_ENABLED=true
+TENANT_DB_PREFIX=tenant
+TENANT_DB_POOL_MAX=3
+TENANT_DB_POOL_IDLE_TIMEOUT_MS=30000
 ```
 
 Security and auth controls:
@@ -125,6 +132,9 @@ MAX_IMPORT_COLUMNS=200
 MAX_EXPORT_ROWS=50000
 MAX_QUERY_LIMIT=1000
 DEFAULT_QUERY_LIMIT=100
+XLSX_WORKER_DEFAULT_MEMORY_MB=512
+XLSX_WORKER_MIN_MEMORY_MB=64
+XLSX_WORKER_MAX_MEMORY_MB=4096
 AI_MAX_ROWS=500
 AI_MAX_COLUMNS=50
 AI_TIMEOUT_MS=30000
@@ -288,19 +298,27 @@ Use immutable tags based on commit SHA. Avoid deploying `latest` to production.
 Production database requirements:
 
 - PostgreSQL reachable only on private IP.
+- Create the control database, normally `portaldb`.
+- Enable dedicated customer databases by default: `TENANT_DB_ISOLATION_ENABLED=true`.
+- Customer databases are created in the same PostgreSQL instance using names like `tenant_g123`.
+- The provisioning identity must be able to create databases, or a separate migration/admin identity must run customer DB provisioning.
 - Dedicated application database user with least privilege.
-- Separate migration/admin user if migrations need elevated privileges.
+- Separate migration/admin user if runtime app credentials should not have `CREATE DATABASE`.
 - Daily backups enabled.
 - Point-in-time recovery enabled.
 - Restore tested before launch.
 
 Before production:
 
-1. Create database and app user.
-2. Run reviewed migrations or controlled initialization.
-3. Seed only required production admin account through a controlled script.
-4. Force admin password reset on first login if using generated bootstrap credentials.
-5. Confirm `ALLOW_LEGACY_PLAINTEXT_PASSWORDS=false`.
+1. Create the Cloud SQL/PostgreSQL instance.
+2. Create the control database (`POSTGRES_DB`, normally `portaldb`).
+3. Create the app user and decide whether it may create tenant databases.
+4. If app user cannot create tenant databases, create a migration/admin user and run customer provisioning/migration with that identity.
+5. Run reviewed migrations or controlled initialization for the control DB.
+6. For existing customers, run `POST /groups/:id/provision-database` or `npm run migrate:tenants` from a trusted admin environment.
+7. Seed only required production admin account through a controlled script.
+8. Force admin password reset on first login if using generated bootstrap credentials.
+9. Confirm `ALLOW_LEGACY_PLAINTEXT_PASSWORDS=false`.
 
 Do not use development bootstrap passwords in production.
 
@@ -439,7 +457,7 @@ Operational guidance:
 
 Required controls:
 
-- AI routes must enforce the same sheet/folder/customer authorization as normal data access.
+- AI routes must enforce the same sheet/report-source/customer authorization as normal data access.
 - Row filters and restricted columns must be applied before sending data to AI.
 - AI prompts and responses must not be logged with sensitive data.
 - AI calls must have timeouts and row/column/token bounds.
@@ -454,12 +472,98 @@ Cost and abuse controls:
 
 ## 17. Backup and Restore
 
-Database:
+Database model:
 
-- Enable automated backups.
-- Enable point-in-time recovery.
+- Back up the control database and every active customer database.
+- The control DB alone is not enough. It points to customer DB names through `customers.db_name`.
+- A customer DB alone is not enough for full auth/routing. Restore it with the matching control DB row.
+- Enable automated backups for the Cloud SQL/PostgreSQL instance.
+- Enable point-in-time recovery for the instance.
 - Keep backups in the same region for recovery speed and consider cross-region copies for disaster recovery.
 - Test restore into a staging database before launch.
+
+What to create for exports:
+
+1. A private backup bucket with retention policy, for example `gs://PROJECT-prod-db-exports`.
+2. IAM so the Cloud SQL service account can write/read export objects.
+3. A scheduled export job or runbook execution account.
+4. A secure way to query the control DB for active tenant DB names.
+
+Cloud SQL service account:
+
+```bash
+export PROJECT_ID="your-project-id"
+export DB_INSTANCE="data-insights-pg"
+export BACKUP_BUCKET="PROJECT-prod-db-exports"
+
+CLOUDSQL_SA="$(gcloud sql instances describe "$DB_INSTANCE" --format='value(serviceAccountEmailAddress)')"
+gcloud storage buckets add-iam-policy-binding "gs://${BACKUP_BUCKET}" \
+  --member="serviceAccount:${CLOUDSQL_SA}" \
+  --role="roles/storage.objectAdmin"
+```
+
+Export the control DB and each customer DB separately:
+
+```bash
+export DB_INSTANCE="data-insights-pg"
+export CONTROL_DB="portaldb"
+export BACKUP_BUCKET="PROJECT-prod-db-exports"
+export STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+
+gcloud sql export sql "$DB_INSTANCE" \
+  "gs://${BACKUP_BUCKET}/${STAMP}/control-${CONTROL_DB}.sql.gz" \
+  --database="$CONTROL_DB"
+
+# Run this query against the control DB and review the result before exporting:
+# SELECT db_name FROM customers WHERE status = 'active' ORDER BY id;
+
+for TENANT_DB in tenant_g123 tenant_g456; do
+  gcloud sql export sql "$DB_INSTANCE" \
+    "gs://${BACKUP_BUCKET}/${STAMP}/${TENANT_DB}.sql.gz" \
+    --database="$TENANT_DB"
+done
+```
+
+If using `pg_dump` instead of Cloud SQL native export, use custom-format dumps and export one file per database:
+
+```bash
+pg_dump --format=custom --no-owner --no-acl --dbname="$CONTROL_DATABASE_URL" --file="control.dump"
+pg_dump --format=custom --no-owner --no-acl --dbname="$TENANT_DATABASE_URL" --file="tenant_g123.dump"
+```
+
+Full environment restore:
+
+1. Prefer Cloud SQL point-in-time restore to a new instance when recovering the whole environment.
+2. Do not overwrite production in place. Restore to a new instance/database set first.
+3. Restore/import the control DB.
+4. Restore/import every tenant DB using the exact `db_name` values stored in `customers.db_name`.
+5. Point staging backend to the restored instance and run smoke/permission checks.
+6. Cut production over only after validation.
+
+Cloud SQL import pattern:
+
+```bash
+gcloud sql databases create "$CONTROL_DB" --instance="$RESTORE_INSTANCE"
+gcloud sql import sql "$RESTORE_INSTANCE" \
+  "gs://${BACKUP_BUCKET}/${STAMP}/control-${CONTROL_DB}.sql.gz" \
+  --database="$CONTROL_DB"
+
+for TENANT_DB in tenant_g123 tenant_g456; do
+  gcloud sql databases create "$TENANT_DB" --instance="$RESTORE_INSTANCE"
+  gcloud sql import sql "$RESTORE_INSTANCE" \
+    "gs://${BACKUP_BUCKET}/${STAMP}/${TENANT_DB}.sql.gz" \
+    --database="$TENANT_DB"
+done
+```
+
+Single-customer restore:
+
+1. Block or pause access for that customer before cutover.
+2. Restore the customer DB dump into a new database name, for example `tenant_g123_restore_20260430`.
+3. Run validation queries against the restored customer DB.
+4. In the control DB, update only that customer row: `UPDATE customers SET db_name = 'tenant_g123_restore_20260430', updated_at = CURRENT_TIMESTAMP WHERE group_id = 123;`.
+5. Force affected users to log in again so new JWTs carry the new tenant DB name.
+6. Keep the old tenant DB read-only until the rollback window expires.
 
 Files/uploads:
 
@@ -470,9 +574,10 @@ Files/uploads:
 Restore test:
 
 1. Restore latest backup to staging.
-2. Point staging backend to restored DB.
-3. Verify login, sheet listing, dashboards, export, and AI permission paths.
-4. Verify no production users are accidentally emailed or notified from staging.
+2. Point staging backend to the restored control DB and restored customer DBs.
+3. Verify login, customer routing, sheet listing, dashboards, export, and AI permission paths.
+4. Verify a user from customer A cannot access customer B data after restore.
+5. Verify no production users are accidentally emailed or notified from staging.
 
 ## 18. Rollback Plan
 
@@ -523,7 +628,7 @@ Run after every production deployment:
 Authorization:
 
 - Normal user cannot access another user's sheet by changing `sheetId`.
-- Normal user cannot access another folder/customer by changing IDs.
+- Normal user cannot access another report source/customer by changing IDs.
 - Viewer cannot update, delete, share, or export beyond allowed permissions.
 - Admin routes reject normal users.
 - Export and AI routes enforce the same authorization as sheet viewing.

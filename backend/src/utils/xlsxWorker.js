@@ -2,6 +2,47 @@ import { parentPort, workerData } from 'worker_threads';
 import * as XLSX from 'xlsx';
 
 const SHEET_NAME_MAX_CHARS = Number.parseInt(process.env.XLSX_SHEET_NAME_MAX_CHARS || "120", 10);
+const memoryLimitMb = Number.parseInt(workerData?.memoryLimitMb || "0", 10);
+const memoryLimitBytes = Number.isInteger(memoryLimitMb) && memoryLimitMb > 0
+  ? memoryLimitMb * 1024 * 1024
+  : 0;
+
+function memorySnapshot(stage) {
+  const usage = process.memoryUsage();
+  return {
+    stage,
+    rss: usage.rss,
+    heapUsed: usage.heapUsed,
+    external: usage.external,
+    limitBytes: memoryLimitBytes,
+  };
+}
+
+function assertWithinMemoryLimit(stage) {
+  if (!memoryLimitBytes) return;
+  const snapshot = memorySnapshot(stage);
+  if (snapshot.heapUsed > memoryLimitBytes || snapshot.rss > memoryLimitBytes) {
+    const err = new Error("xlsx_worker_memory_limit_exceeded");
+    err.memory = snapshot;
+    throw err;
+  }
+}
+
+const monitor = memoryLimitBytes
+  ? setInterval(() => {
+      try {
+        assertWithinMemoryLimit("monitor");
+      } catch (err) {
+        parentPort.postMessage({
+          success: false,
+          error: "xlsx_worker_memory_limit_exceeded",
+          memory: err.memory || memorySnapshot("monitor"),
+        });
+        process.exit(1);
+      }
+    }, 50)
+  : null;
+if (monitor?.unref) monitor.unref();
 
 function cleanSheetName(name, fallbackIndex) {
   const cleaned = String(name || `Sheet ${fallbackIndex + 1}`)
@@ -67,6 +108,7 @@ function rowsFromWorksheet(ws) {
 
 try {
   const { buffer, options } = workerData;
+  assertWithinMemoryLimit("start");
   const wb = XLSX.read(buffer, {
     type: 'buffer',
     cellDates: true,
@@ -82,6 +124,7 @@ try {
     WTF: false,
     ...options
   });
+  assertWithinMemoryLimit("after_workbook_read");
   
   const result = {
     sheetNames: [],
@@ -96,14 +139,22 @@ try {
   for (let i = 0; i < wb.SheetNames.length; i += 1) {
     const originalName = wb.SheetNames[i];
     const cleanName = uniqueSheetName(cleanSheetName(originalName, i), usedSheetNames);
+    assertWithinMemoryLimit(`before_sheet_${i}`);
     const stats = stripWorksheetFeatures(wb.Sheets[originalName]);
     result.cleanup.formulasStripped += stats.formulas;
     result.cleanup.metadataEntriesStripped += stats.metadata;
     result.sheetNames.push(cleanName);
     result.sheets[cleanName] = rowsFromWorksheet(wb.Sheets[originalName]);
+    assertWithinMemoryLimit(`after_sheet_${i}`);
   }
 
+  if (monitor) clearInterval(monitor);
   parentPort.postMessage({ success: true, result });
 } catch (e) {
-  parentPort.postMessage({ success: false, error: e.message });
+  if (monitor) clearInterval(monitor);
+  parentPort.postMessage({
+    success: false,
+    error: e.message,
+    memory: e.memory || (e.message === "xlsx_worker_memory_limit_exceeded" ? memorySnapshot("catch") : undefined),
+  });
 }

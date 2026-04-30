@@ -65,15 +65,6 @@ CREATE TABLE IF NOT EXISTS group_members (
   UNIQUE (group_id, user_id)
 );
 
--- FOLDERS
-CREATE TABLE IF NOT EXISTS folders (
-  id SERIAL PRIMARY KEY,
-  group_id INT NOT NULL,
-  name TEXT NOT NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE (group_id, name)
-);
-
 -- db/init/040_groups.sql
 CREATE TABLE IF NOT EXISTS groups (
   id SERIAL PRIMARY KEY,

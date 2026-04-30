@@ -32,6 +32,35 @@ test("generateToken includes issuer/audience when configured", async () => {
   assert.equal(decoded.aud, "audience-test");
 });
 
+test("generateToken carries tenant routing claims when present", async () => {
+  process.env.JWT_SECRET = "test-secret";
+  process.env.JWT_EXPIRES_IN = "1h";
+  delete process.env.JWT_ISSUER;
+  delete process.env.JWT_AUDIENCE;
+  const { generateToken } = await import(`../src/middleware/auth.js?t=${Date.now()}_tenant`);
+
+  const token = generateToken({
+    id: 3,
+    email: "tenant@example.com",
+    role: "user",
+    customer_id: 7,
+    customer_group_id: 11,
+    tenant_database: "tenant_g11",
+  });
+  const decoded = jwt.decode(token);
+
+  assert.equal(decoded.customer_id, 7);
+  assert.equal(decoded.customer_group_id, 11);
+  assert.equal(decoded.tenant_database, "tenant_g11");
+});
+
+test("tenant database names are deterministic and identifier-safe", async () => {
+  const { tenantDatabaseNameForGroupId } = await import(`../src/config/db.js?t=${Date.now()}_tenant_name`);
+
+  assert.equal(tenantDatabaseNameForGroupId(42), "tenant_g42");
+  assert.throws(() => tenantDatabaseNameForGroupId("bad"), /invalid_group_id/);
+});
+
 test("auth middleware rejects token signed with unexpected algorithm", async () => {
   process.env.JWT_SECRET = "test-secret";
   delete process.env.JWT_ISSUER;

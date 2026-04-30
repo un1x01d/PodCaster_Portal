@@ -4,10 +4,11 @@ import fs from "fs";
 import { Worker } from "worker_threads";
 import { fileURLToPath } from "url";
 import { randomUUID } from "crypto";
-import { query, getClient } from "../config/db.js";
+import { forEachActiveTenantPool, query, getClient } from "../config/db.js";
 import { parsePagination } from "../utils/pagination.js";
-import { checkSheetAccess, hasFolderAccess } from "../utils/authorization.js";
+import { checkSheetAccess, hasReportSourceOwnerAccess } from "../utils/authorization.js";
 import { writeAuditLog } from "../utils/auditLog.js";
+import { normalizeGroupEntitlements } from "../utils/entitlements.js";
 
 const MAX_UPLOAD_SHEETS = Number.parseInt(
     process.env.MAX_UPLOAD_SHEETS || (process.env.NODE_ENV === "production" ? "20" : "50"),
@@ -30,6 +31,17 @@ const SHEET_DATA_HARD_CAP = Number.parseInt(
     process.env.SHEET_DATA_HARD_CAP || (process.env.NODE_ENV === "production" ? "20000" : "0"),
     10
 );
+// Durable DB-backed import queue controls (no external queue dependency).
+const IMPORT_DB_QUEUE_ENABLED = !["0", "false", "no", "off"].includes(String(process.env.IMPORT_DB_QUEUE_ENABLED || "true").trim().toLowerCase());
+const IMPORT_JOB_MAX_ATTEMPTS = Math.max(1, Number.parseInt(process.env.IMPORT_JOB_MAX_ATTEMPTS || "3", 10) || 3);
+const IMPORT_JOB_LEASE_MS = Math.max(10000, Number.parseInt(process.env.IMPORT_JOB_LEASE_MS || "120000", 10) || 120000);
+const IMPORT_JOB_POLL_MS = Math.max(500, Number.parseInt(process.env.IMPORT_JOB_POLL_MS || "2000", 10) || 2000);
+const IMPORT_JOB_MAX_CLAIMS_PER_TICK = Math.max(1, Number.parseInt(process.env.IMPORT_JOB_MAX_CLAIMS_PER_TICK || "1", 10) || 1);
+const IMPORT_JOB_PAYLOAD_TTL_HOURS = Math.max(1, Number.parseInt(process.env.IMPORT_JOB_PAYLOAD_TTL_HOURS || "24", 10) || 24);
+
+let importWorkerTimer = null;
+let importWorkerRunning = false;
+let importWorkerOwnerId = null;
 
 function normalizeSheetCellValue(value) {
     if (value instanceof Date && !Number.isNaN(value.getTime())) {
@@ -251,6 +263,36 @@ async function resolveReportSourceForUpload(client, { reportSourceId, reportSour
     };
 }
 
+async function loadReportSourceForImport(client, reportSourceId) {
+    const sourceId = Number.parseInt(reportSourceId, 10);
+    if (!Number.isInteger(sourceId) || sourceId <= 0) {
+        const err = new Error("invalid_report_source_id");
+        err.statusCode = 400;
+        throw err;
+    }
+    const source = await client.query(
+        `SELECT rs.id, rs.name, rs.current_sheet_id, s.headers AS current_headers
+         FROM report_sources rs
+         LEFT JOIN sheets s ON s.id = rs.current_sheet_id
+         WHERE rs.id = $1
+         FOR UPDATE`,
+        [sourceId]
+    );
+    if (!source.rows.length) {
+        const err = new Error("report_source_not_found");
+        err.statusCode = 404;
+        throw err;
+    }
+    const row = source.rows[0];
+    return {
+        id: row.id,
+        name: row.name,
+        previousSheetId: row.current_sheet_id || null,
+        previousHeaders: typeof row.current_headers === "string" ? JSON.parse(row.current_headers) : (row.current_headers || []),
+        isNew: false,
+    };
+}
+
 async function carryForwardSourceSecurity(client, { previousSheetId, nextSheetId, previousHeaders, nextHeaders }) {
     if (!previousSheetId || !nextSheetId) return;
     await client.query(
@@ -324,21 +366,24 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const XLSX_WORKER_PATH = path.join(__dirname, "..", "utils", "xlsxWorker.js");
 const XLSX_WORKER_TIMEOUT_MS = Number.parseInt(process.env.XLSX_WORKER_TIMEOUT_MS || "45000", 10);
-
-function truthyFlag(value) {
-    return ["1", "true", "yes", "on"].includes(String(value || "").trim().toLowerCase());
-}
+const XLSX_WORKER_DEFAULT_MEMORY_MB = Number.parseInt(process.env.XLSX_WORKER_DEFAULT_MEMORY_MB || "512", 10);
+const XLSX_WORKER_MIN_MEMORY_MB = Number.parseInt(process.env.XLSX_WORKER_MIN_MEMORY_MB || "64", 10);
+const XLSX_WORKER_MAX_MEMORY_MB = Number.parseInt(process.env.XLSX_WORKER_MAX_MEMORY_MB || "4096", 10);
 
 function uploadRequiresApproval(req) {
     const requested = req.body?.approval_required ?? req.body?.approvalRequired;
-    if (requested !== undefined) return truthyFlag(requested);
-    return truthyFlag(process.env.IMPORT_REQUIRE_APPROVAL);
+    if (requested !== undefined) {
+        return ["1", "true", "yes", "on"].includes(String(requested || "").trim().toLowerCase());
+    }
+    return ["1", "true", "yes", "on"].includes(String(process.env.IMPORT_REQUIRE_APPROVAL || "").trim().toLowerCase());
 }
 
-function uploadRunsAsync(req) {
-    const requested = req.body?.async_import ?? req.body?.asyncImport;
-    if (requested !== undefined) return truthyFlag(requested);
-    return truthyFlag(process.env.IMPORT_ASYNC_UPLOADS);
+function uploadUsesDbQueue(req) {
+    const requested = req.body?.async_import ?? req.body?.asyncImport ?? req.body?.queue_import ?? req.body?.queueImport;
+    if (requested !== undefined) {
+        return ["1", "true", "yes", "on"].includes(String(requested || "").trim().toLowerCase());
+    }
+    return IMPORT_DB_QUEUE_ENABLED;
 }
 
 async function userCanApproveReportSource(client, user, reportSourceId) {
@@ -346,25 +391,37 @@ async function userCanApproveReportSource(client, user, reportSourceId) {
     return canWriteToReportSource(client, user, reportSourceId);
 }
 
-async function createImportJob(client, { id, mode, requestedBy, originalFilename }) {
+async function createImportJob(client, { id, mode, status = "running", stage = "processing", requestedBy, originalFilename, reportSourceId = null, maxAttempts = IMPORT_JOB_MAX_ATTEMPTS }) {
     await client.query(
-        `INSERT INTO import_jobs (id, status, mode, stage, requested_by, original_filename, started_at, updated_at)
-         VALUES ($1, 'running', $2, 'processing', $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        `INSERT INTO import_jobs
+            (id, status, mode, stage, requested_by, report_source_id, original_filename, started_at, updated_at, max_attempts, attempts, next_attempt_at, lease_owner, lease_expires_at, error)
+         VALUES
+            ($1, $2, $3, $4, $5, $6, $7,
+             CASE WHEN $2 = 'running' THEN CURRENT_TIMESTAMP ELSE NULL END,
+             CURRENT_TIMESTAMP, GREATEST($8, 1), CASE WHEN $2 = 'running' THEN 1 ELSE 0 END,
+             NULL, NULL, NULL, NULL)
          ON CONFLICT (id)
-         DO UPDATE SET status = 'running',
+         DO UPDATE SET status = EXCLUDED.status,
                        mode = EXCLUDED.mode,
-                       stage = 'processing',
-                       started_at = COALESCE(import_jobs.started_at, CURRENT_TIMESTAMP),
+                       stage = EXCLUDED.stage,
+                       requested_by = COALESCE(EXCLUDED.requested_by, import_jobs.requested_by),
+                       report_source_id = COALESCE(EXCLUDED.report_source_id, import_jobs.report_source_id),
+                       original_filename = COALESCE(EXCLUDED.original_filename, import_jobs.original_filename),
+                       started_at = CASE
+                           WHEN EXCLUDED.status = 'running' THEN COALESCE(import_jobs.started_at, CURRENT_TIMESTAMP)
+                           ELSE import_jobs.started_at
+                       END,
+                       attempts = CASE
+                           WHEN EXCLUDED.status = 'running' THEN GREATEST(import_jobs.attempts, 1)
+                           ELSE import_jobs.attempts
+                       END,
+                       max_attempts = GREATEST(COALESCE(EXCLUDED.max_attempts, import_jobs.max_attempts, 1), 1),
+                       next_attempt_at = NULL,
+                       lease_owner = NULL,
+                       lease_expires_at = NULL,
+                       error = NULL,
                        updated_at = CURRENT_TIMESTAMP`,
-        [id, mode, requestedBy || null, originalFilename || null]
-    );
-}
-
-async function enqueueImportJob({ id, requestedBy, originalFilename }) {
-    await query(
-        `INSERT INTO import_jobs (id, status, mode, stage, requested_by, original_filename, updated_at)
-         VALUES ($1, 'queued', 'async', 'queued', $2, $3, CURRENT_TIMESTAMP)`,
-        [id, requestedBy || null, originalFilename || null]
+        [id, status, mode, stage, requestedBy || null, reportSourceId, originalFilename || null, maxAttempts]
     );
 }
 
@@ -379,6 +436,9 @@ async function finishImportJob(client, { id, status, reportSourceId, sheetId, im
                 result = $7::jsonb,
                 error = $8,
                 finished_at = CURRENT_TIMESTAMP,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                next_attempt_at = NULL,
                 updated_at = CURRENT_TIMESTAMP
           WHERE id = $1`,
         [
@@ -394,71 +454,79 @@ async function finishImportJob(client, { id, status, reportSourceId, sheetId, im
     );
 }
 
-async function failImportJob(id, error) {
-    await query(
-        `UPDATE import_jobs
-            SET status = 'failed',
-                stage = 'failed',
-                error = $2,
-                finished_at = CURRENT_TIMESTAMP,
-                updated_at = CURRENT_TIMESTAMP
-          WHERE id = $1`,
-        [id, String(error?.message || error || "import_failed").slice(0, 1000)]
-    );
+function jobBackoffMs(attempts) {
+    const attempt = Math.max(1, Number(attempts || 1));
+    return Math.min(5 * 60 * 1000, 2000 * (2 ** (attempt - 1)));
 }
 
-function makeAsyncUploadRequest(req, filePayload, importJobId) {
-    return {
-        __asyncWorker: true,
-        importJobId,
-        user: { ...(req.user || {}) },
-        body: {
-            ...(req.body || {}),
-            async_import: "false",
-            asyncImport: "false",
-        },
-        file: {
-            ...(req.file || {}),
-            ...(filePayload || {}),
-        },
-        fileBuffer: filePayload?.buffer || null,
-        headers: { ...(req.headers || {}) },
-        ip: req.ip,
-        id: req.id,
-        requestId: req.requestId,
-    };
+function isRetryableImportError(err) {
+    if (!err) return false;
+    if (Number.isInteger(err.statusCode) && err.statusCode >= 400 && err.statusCode < 500) return false;
+    const code = String(err?.message || "").trim().toLowerCase();
+    const nonRetryable = new Set([
+        "invalid_report_source_id",
+        "report_source_not_found",
+        "report_source_forbidden",
+        "report_source_name_required",
+        "display_name_required",
+        "unreadable_spreadsheet",
+        "xlsx_worker_timeout",
+        "no_sheets",
+        "empty_sheet",
+        "too_many_sheets",
+        "too_many_columns",
+        "too_many_rows_in_sheet",
+        "too_many_total_rows",
+        "xlsx_worker_memory_limit_exceeded",
+    ]);
+    return !nonRetryable.has(code);
 }
 
-function runAsyncUpload(req) {
-    const fakeRes = {
-        statusCode: 200,
-        status(code) {
-            this.statusCode = code;
-            return this;
-        },
-        json(payload) {
-            if (this.statusCode >= 400) {
-                const err = new Error(payload?.error || payload?.message || "async_upload_failed");
-                err.payload = payload;
-                throw err;
-            }
-            return payload;
-        },
-    };
-    setImmediate(async () => {
-        try {
-            await uploadSheet(req, fakeRes);
-        } catch (err) {
-            await failImportJob(req.importJobId, err).catch(() => {});
-            console.error("[import_job] async upload failed:", err?.message || err);
+function normalizeWorkerMemoryLimitMb(value, fallback = XLSX_WORKER_DEFAULT_MEMORY_MB) {
+    const parsed = Number.parseInt(value, 10);
+    const fallbackParsed = Number.parseInt(fallback, 10);
+    const base = Number.isInteger(parsed) && parsed > 0
+        ? parsed
+        : (Number.isInteger(fallbackParsed) && fallbackParsed > 0 ? fallbackParsed : 512);
+    const min = Math.max(16, Number.isInteger(XLSX_WORKER_MIN_MEMORY_MB) ? XLSX_WORKER_MIN_MEMORY_MB : 64);
+    const max = Math.max(min, Number.isInteger(XLSX_WORKER_MAX_MEMORY_MB) ? XLSX_WORKER_MAX_MEMORY_MB : 4096);
+    return Math.min(max, Math.max(min, base));
+}
+
+async function resolveTenantParseMemoryLimitMb(user) {
+    const defaultLimit = normalizeWorkerMemoryLimitMb(null);
+    const groupId = Number.parseInt(user?.customer_group_id ?? user?.group_id, 10);
+    try {
+        let rows = [];
+        if (Number.isInteger(groupId) && groupId > 0) {
+            rows = await query("SELECT entitlements FROM groups WHERE id = $1 LIMIT 1", [groupId]);
+        } else if (Number.isInteger(Number(user?.id)) && Number(user?.id) > 0) {
+            rows = await query(
+                `SELECT g.entitlements
+                   FROM groups g
+                   JOIN user_groups ug ON ug.group_id = g.id
+                  WHERE ug.user_id = $1
+                  ORDER BY g.id ASC
+                  LIMIT 1`,
+                [user.id]
+            );
         }
-    });
+        const entitlements = normalizeGroupEntitlements(rows?.[0]?.entitlements || {});
+        return normalizeWorkerMemoryLimitMb(entitlements.maxImportParseMemoryMb, defaultLimit);
+    } catch (err) {
+        console.warn("[upload] failed to resolve tenant parse memory limit:", err?.message || err);
+        return defaultLimit;
+    }
 }
 
-function parseWorkbookInWorker(buffer) {
+function parseWorkbookInWorker(buffer, { memoryLimitMb } = {}) {
     return new Promise((resolve, reject) => {
+        const parseMemoryLimitMb = normalizeWorkerMemoryLimitMb(memoryLimitMb);
         const worker = new Worker(XLSX_WORKER_PATH, {
-            workerData: { buffer }
+            workerData: { buffer, memoryLimitMb: parseMemoryLimitMb },
+            resourceLimits: {
+                maxOldGenerationSizeMb: parseMemoryLimitMb,
+            },
         });
         let settled = false;
         const cleanup = () => {
@@ -485,18 +553,535 @@ function parseWorkbookInWorker(buffer) {
         worker.on('error', (err) => {
             if (settled) return;
             cleanup();
+            if (String(err?.message || "").toLowerCase().includes("memory")) {
+                reject(new Error("xlsx_worker_memory_limit_exceeded"));
+                return;
+            }
             reject(err);
         });
         worker.on('exit', (code) => {
             if (settled) return;
             cleanup();
-            if (code !== 0) reject(new Error(`Worker stopped with exit code ${code}`));
+            if (code !== 0) reject(new Error("xlsx_worker_memory_limit_exceeded"));
         });
     });
 }
 
+function toImportError(code, statusCode = 400, message = null) {
+    const err = new Error(code);
+    err.statusCode = statusCode;
+    if (message) err.publicMessage = message;
+    return err;
+}
+
+async function parseWorkbookBufferOrThrow(fileBuffer, options = {}) {
+    try {
+        return await parseWorkbookInWorker(fileBuffer, options);
+    } catch (err) {
+        if (String(err?.message || "") === "xlsx_worker_memory_limit_exceeded") {
+            const mapped = toImportError(
+                "xlsx_worker_memory_limit_exceeded",
+                413,
+                "Spreadsheet parsing exceeded this customer's memory limit. Reduce the file size/complexity or raise the customer import memory limit."
+            );
+            mapped.cause = err;
+            throw mapped;
+        }
+        const mapped = toImportError(
+            "unreadable_spreadsheet",
+            400,
+            "Could not parse file as CSV/XLSX/XML/HTML-table."
+        );
+        mapped.cause = err;
+        throw mapped;
+    }
+}
+
+async function executeImportFromParsedWorkbook({
+    parsedResult,
+    approvalRequired,
+    importJobId,
+    reportSourceId,
+    reportSourceName,
+    displayName,
+    fileLabel,
+    originalName,
+    user,
+    enforceOwnership = true,
+}) {
+    const { sheetNames, sheets, cleanup } = parsedResult || {};
+    if (cleanup && (cleanup.formulasStripped || cleanup.metadataEntriesStripped)) {
+        console.info(
+            `[upload_cleanup] formulas_stripped=${Number(cleanup.formulasStripped || 0)} metadata_entries_stripped=${Number(cleanup.metadataEntriesStripped || 0)}`
+        );
+    }
+    if (!sheetNames || sheetNames.length === 0) {
+        throw toImportError("no_sheets", 400);
+    }
+    if (sheetNames.length > MAX_UPLOAD_SHEETS) {
+        const err = toImportError("too_many_sheets", 413);
+        err.details = { maxSheets: MAX_UPLOAD_SHEETS };
+        throw err;
+    }
+
+    const client = await getClient();
+    try {
+        await client.query("BEGIN");
+
+        let reportSource = null;
+        if (enforceOwnership) {
+            reportSource = await resolveReportSourceForUpload(client, {
+                reportSourceId: reportSourceId || null,
+                reportSourceName: reportSourceName || null,
+                user,
+            });
+        } else {
+            reportSource = await loadReportSourceForImport(client, reportSourceId);
+        }
+
+        const sheetId = `${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+        const firstTabName = sheetNames[0];
+        const firstTabRowsRaw = sheets[firstTabName];
+        if (!firstTabRowsRaw || firstTabRowsRaw.length === 0) {
+            throw toImportError("empty_sheet", 400, "The first tab of the uploaded file appears to be empty.");
+        }
+
+        const headers = Object.keys(firstTabRowsRaw[0]).filter((h) => !!h && !h.startsWith("__rowNum__"));
+        if (headers.length > MAX_UPLOAD_COLUMNS) {
+            const err = toImportError("too_many_columns", 413);
+            err.details = { maxColumns: MAX_UPLOAD_COLUMNS };
+            throw err;
+        }
+
+        const versionedFilename = await getVersionedFilename(client, reportSource.id, originalName);
+        const headerDiff = buildHeaderDiff(reportSource.previousHeaders, headers);
+        const schemaStatus = getSchemaStatus(headerDiff);
+        const versionRes = await client.query(
+            "SELECT COALESCE(MAX(import_version), 0)::int + 1 AS next_version FROM report_source_imports WHERE report_source_id = $1 AND file_label = $2",
+            [reportSource.id, fileLabel]
+        );
+        const sourceVersion = Number(versionRes.rows?.[0]?.next_version || 1);
+
+        await client.query(
+            `INSERT INTO sheets (id, headers, active, filename, display_name, stored_path, tab_name, tabs, report_source_id, source_version)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+            [sheetId, JSON.stringify(headers), !approvalRequired, versionedFilename, displayName, null, firstTabName, JSON.stringify(sheetNames), reportSource.id, sourceVersion]
+        );
+
+        let totalRows = 0;
+        for (const sn of sheetNames) {
+            const rows = sheets[sn];
+            if (rows.length > MAX_UPLOAD_ROWS_PER_SHEET) {
+                const err = toImportError("too_many_rows_in_sheet", 413);
+                err.details = { tab: sn, maxRowsPerSheet: MAX_UPLOAD_ROWS_PER_SHEET };
+                throw err;
+            }
+            totalRows += rows.length;
+            if (totalRows > MAX_UPLOAD_TOTAL_ROWS) {
+                const err = toImportError("too_many_total_rows", 413);
+                err.details = { maxTotalRows: MAX_UPLOAD_TOTAL_ROWS };
+                throw err;
+            }
+
+            const CHUNK_SIZE = 500;
+            for (let j = 0; j < rows.length; j += CHUNK_SIZE) {
+                const chunk = rows.slice(j, j + CHUNK_SIZE);
+                const values = [];
+                const placeHolders = [];
+                let pIdx = 1;
+
+                chunk.forEach((r, idx) => {
+                    const normalizedRow = normalizeSheetRow(r);
+                    values.push(sheetId, j + idx, JSON.stringify(normalizedRow), sn);
+                    placeHolders.push(`($${pIdx++}, $${pIdx++}, $${pIdx++}, $${pIdx++})`);
+                });
+
+                const sql = `INSERT INTO sheet_rows (sheet_id, row_index, row_data, tab_name) VALUES ${placeHolders.join(",")}`;
+                await client.query(sql, values);
+            }
+        }
+
+        await carryForwardSourceSecurity(client, {
+            previousSheetId: reportSource.previousSheetId,
+            nextSheetId: sheetId,
+            previousHeaders: reportSource.previousHeaders,
+            nextHeaders: headers,
+        });
+
+        const importStatus = approvalRequired ? "pending_approval" : "published";
+        const importRes = await client.query(
+            `INSERT INTO report_source_imports
+               (report_source_id, sheet_id, import_version, file_label, original_filename, imported_by,
+                schema_status, schema_diff, status, published_at, published_by, job_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                     CASE WHEN $9 = 'published' THEN CURRENT_TIMESTAMP ELSE NULL END,
+                     CASE WHEN $9 = 'published' THEN $6 ELSE NULL END,
+                     $10)
+             RETURNING id`,
+            [
+                reportSource.id,
+                sheetId,
+                sourceVersion,
+                fileLabel,
+                originalName,
+                user?.id || null,
+                schemaStatus,
+                JSON.stringify(headerDiff),
+                importStatus,
+                importJobId,
+            ]
+        );
+        const importId = importRes.rows[0].id;
+
+        if (!approvalRequired) {
+            await client.query(
+                `UPDATE report_sources
+                    SET current_sheet_id = $1,
+                        updated_at = CURRENT_TIMESTAMP
+                  WHERE id = $2`,
+                [sheetId, reportSource.id]
+            );
+        } else {
+            await client.query(
+                `UPDATE report_sources
+                    SET updated_at = CURRENT_TIMESTAMP
+                  WHERE id = $1`,
+                [reportSource.id]
+            );
+        }
+
+        const responsePayload = {
+            sheetId,
+            importId,
+            import_id: importId,
+            importJobId,
+            import_job_id: importJobId,
+            import_status: importStatus,
+            status: importStatus,
+            reportSourceId: reportSource.id,
+            report_source_id: reportSource.id,
+            report_source_name: reportSource.name,
+            source_version: sourceVersion,
+            schema_status: schemaStatus,
+            schema_diff: headerDiff,
+            headers,
+            rows: totalRows,
+            active: !approvalRequired,
+            filename: versionedFilename,
+            display_name: displayName,
+            tabs: sheetNames
+        };
+
+        await finishImportJob(client, {
+            id: importJobId,
+            status: importStatus,
+            reportSourceId: reportSource.id,
+            sheetId,
+            importId,
+            result: responsePayload,
+        });
+
+        await client.query("COMMIT");
+
+        return { responsePayload, importStatus };
+    } catch (err) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw err;
+    } finally {
+        client.release();
+    }
+}
+
+async function enqueueDbImportJob({
+    user,
+    approvalRequired,
+    importJobId,
+    originalName,
+    displayName,
+    fileLabel,
+    rawReportSourceId,
+    rawReportSourceName,
+    fileBuffer,
+    contentType,
+    fileSize,
+    parseMemoryLimitMb,
+}) {
+    // Persist both the job and payload in one transaction so a restart cannot drop queued work.
+    const payloadMeta = {
+        approvalRequired: !!approvalRequired,
+        displayName,
+        fileLabel,
+        reportSourceId: rawReportSourceId ? Number.parseInt(rawReportSourceId, 10) : null,
+        reportSourceName: rawReportSourceName || null,
+        queuedByUserId: user?.id || null,
+        parseMemoryLimitMb: normalizeWorkerMemoryLimitMb(parseMemoryLimitMb),
+    };
+    const client = await getClient();
+    try {
+        await client.query("BEGIN");
+        const resolvedSource = await resolveReportSourceForUpload(client, {
+            reportSourceId: rawReportSourceId || null,
+            reportSourceName: rawReportSourceName || null,
+            user,
+        });
+        payloadMeta.reportSourceId = resolvedSource.id;
+        payloadMeta.reportSourceName = resolvedSource.name;
+
+        await createImportJob(client, {
+            id: importJobId,
+            mode: approvalRequired ? "async_pending_approval" : "async",
+            status: "queued",
+            stage: "queued",
+            requestedBy: user?.id || null,
+            originalFilename: originalName,
+            reportSourceId: resolvedSource.id,
+            maxAttempts: IMPORT_JOB_MAX_ATTEMPTS,
+        });
+
+        await client.query(
+            `INSERT INTO import_job_payloads (job_id, file_bytes, content_type, byte_size, payload_meta, expires_at)
+             VALUES ($1, $2, $3, $4, $5::jsonb, CURRENT_TIMESTAMP + (($6 || ' hour')::interval))
+             ON CONFLICT (job_id)
+             DO UPDATE SET file_bytes = EXCLUDED.file_bytes,
+                           content_type = EXCLUDED.content_type,
+                           byte_size = EXCLUDED.byte_size,
+                           payload_meta = EXCLUDED.payload_meta,
+                           expires_at = EXCLUDED.expires_at`,
+            [importJobId, fileBuffer, contentType || null, Number(fileSize || fileBuffer?.length || 0), JSON.stringify(payloadMeta), String(IMPORT_JOB_PAYLOAD_TTL_HOURS)]
+        );
+
+        await client.query("COMMIT");
+        return resolvedSource;
+    } catch (err) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw err;
+    } finally {
+        client.release();
+    }
+}
+
+async function claimNextImportJob(ownerId) {
+    const client = await getClient();
+    try {
+        await client.query("BEGIN");
+        // Lease-based claim: one worker instance claims one eligible job at a time.
+        const claimed = await client.query(
+            `WITH candidate AS (
+                SELECT id
+                FROM import_jobs
+                WHERE status IN ('queued', 'retryable')
+                  AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP)
+                  AND (lease_expires_at IS NULL OR lease_expires_at <= CURRENT_TIMESTAMP)
+                ORDER BY created_at ASC
+                FOR UPDATE SKIP LOCKED
+                LIMIT 1
+            )
+            UPDATE import_jobs ij
+               SET status = 'running',
+                   stage = 'processing',
+                   started_at = COALESCE(ij.started_at, CURRENT_TIMESTAMP),
+                   attempts = COALESCE(ij.attempts, 0) + 1,
+                   lease_owner = $1,
+                   lease_expires_at = CURRENT_TIMESTAMP + (($2 || ' milliseconds')::interval),
+                   error = NULL,
+                   updated_at = CURRENT_TIMESTAMP
+              FROM candidate c
+             WHERE ij.id = c.id
+         RETURNING ij.id, ij.mode, ij.status, ij.stage, ij.requested_by, ij.report_source_id, ij.original_filename,
+                   ij.attempts, ij.max_attempts`,
+            [ownerId, String(IMPORT_JOB_LEASE_MS)]
+        );
+        await client.query("COMMIT");
+        return claimed.rows[0] || null;
+    } catch (err) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw err;
+    } finally {
+        client.release();
+    }
+}
+
+async function markImportJobRetryable({ id, attempts, maxAttempts, error }) {
+    const exhausted = Number(attempts || 0) >= Number(maxAttempts || IMPORT_JOB_MAX_ATTEMPTS);
+    if (exhausted || !isRetryableImportError(error)) {
+        await query(
+            `UPDATE import_jobs
+                SET status = 'failed',
+                    stage = 'failed',
+                    error = $2,
+                    finished_at = CURRENT_TIMESTAMP,
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    next_attempt_at = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+              WHERE id = $1`,
+            [id, String(error?.message || "import_failed").slice(0, 500)]
+        );
+        await query("DELETE FROM import_job_payloads WHERE job_id = $1", [id]);
+        return "failed";
+    }
+
+    const delayMs = jobBackoffMs(attempts);
+    await query(
+        `UPDATE import_jobs
+            SET status = 'retryable',
+                stage = 'queued',
+                error = $2,
+                next_attempt_at = CURRENT_TIMESTAMP + (($3 || ' milliseconds')::interval),
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                updated_at = CURRENT_TIMESTAMP
+          WHERE id = $1`,
+        [id, String(error?.message || "import_retryable_failure").slice(0, 500), String(delayMs)]
+    );
+    return "retryable";
+}
+
+async function executeQueuedImportJob(job) {
+    // Payload lives in DB until the job reaches a terminal state.
+    const payloadRows = await query(
+        `SELECT file_bytes, payload_meta, byte_size
+           FROM import_job_payloads
+          WHERE job_id = $1
+          LIMIT 1`,
+        [job.id]
+    );
+    if (!payloadRows.length) {
+        throw toImportError("import_payload_missing", 500);
+    }
+    const payload = payloadRows[0];
+    const payloadMeta = parseJsonMaybe(payload.payload_meta, {}) || {};
+    const displayName = sanitizeDisplayName(payloadMeta.displayName);
+    const fileLabel = String(payloadMeta.fileLabel || displayName || "File").trim();
+    if (!displayName) throw toImportError("display_name_required", 400);
+
+    const parsedResult = await parseWorkbookBufferOrThrow(payload.file_bytes, {
+        memoryLimitMb: payloadMeta.parseMemoryLimitMb,
+    });
+    const { responsePayload } = await executeImportFromParsedWorkbook({
+        parsedResult,
+        approvalRequired: !!payloadMeta.approvalRequired,
+        importJobId: job.id,
+        reportSourceId: payloadMeta.reportSourceId || job.report_source_id,
+        reportSourceName: payloadMeta.reportSourceName || null,
+        displayName,
+        fileLabel,
+        originalName: String(job.original_filename || "uploaded.xlsx"),
+        user: { id: job.requested_by || null, role: "admin" },
+        enforceOwnership: false,
+    });
+
+    await query("DELETE FROM import_job_payloads WHERE job_id = $1", [job.id]);
+    await writeAuditLog({
+        actorUserId: job.requested_by || null,
+        action: responsePayload.import_status === "pending_approval" ? "import.pending_approval" : "import.published",
+        resourceType: "report_source_import",
+        resourceId: responsePayload.importId,
+        metadata: {
+            report_source_id: responsePayload.report_source_id,
+            sheet_id: responsePayload.sheetId,
+            job_id: job.id,
+            rows: responsePayload.rows,
+            tabs: Array.isArray(responsePayload.tabs) ? responsePayload.tabs.length : 0,
+            schema_status: responsePayload.schema_status,
+            mode: "async_db_queue",
+        },
+    });
+}
+
+async function processNextImportJob(ownerId) {
+    const job = await claimNextImportJob(ownerId);
+    if (!job) return false;
+    try {
+        await executeQueuedImportJob(job);
+    } catch (err) {
+        const outcome = await markImportJobRetryable({
+            id: job.id,
+            attempts: job.attempts,
+            maxAttempts: job.max_attempts,
+            error: err,
+        });
+        if (outcome === "failed") {
+            console.error(`[import_worker] job=${job.id} failed:`, err?.message || err);
+            await writeAuditLog({
+                actorUserId: job.requested_by || null,
+                action: "import.failed",
+                resourceType: "import_job",
+                resourceId: job.id,
+                metadata: {
+                    attempts: job.attempts,
+                    max_attempts: job.max_attempts,
+                    error: String(err?.message || "import_failed").slice(0, 500),
+                },
+            });
+        } else {
+            console.warn(`[import_worker] job=${job.id} retry scheduled`);
+        }
+    }
+    return true;
+}
+
+async function processImportJobsForCurrentDb(ownerId) {
+    let claimedAny = false;
+    for (let i = 0; i < IMPORT_JOB_MAX_CLAIMS_PER_TICK; i += 1) {
+        const didWork = await processNextImportJob(ownerId);
+        if (!didWork) break;
+        claimedAny = true;
+    }
+    if (claimedAny) {
+        // Keep queued payload storage bounded once jobs reach a terminal state.
+        await query(
+            `DELETE FROM import_job_payloads p
+              USING import_jobs j
+             WHERE p.job_id = j.id
+               AND p.expires_at IS NOT NULL
+               AND p.expires_at <= CURRENT_TIMESTAMP
+               AND j.status IN ('published', 'pending_approval', 'rejected', 'failed')`
+        );
+    }
+    return claimedAny;
+}
+
+export function startImportJobWorker() {
+    if (!IMPORT_DB_QUEUE_ENABLED) {
+        console.info("[import_worker] disabled via IMPORT_DB_QUEUE_ENABLED=false");
+        return;
+    }
+    if (importWorkerTimer) return;
+    importWorkerOwnerId = `${process.pid}:${randomUUID().slice(0, 8)}`;
+    importWorkerTimer = setInterval(async () => {
+        if (importWorkerRunning) return;
+        importWorkerRunning = true;
+        try {
+            await processImportJobsForCurrentDb(importWorkerOwnerId);
+            await forEachActiveTenantPool(async (tenant) => {
+                await processImportJobsForCurrentDb(`${importWorkerOwnerId}:${tenant.db_name}`);
+            });
+        } catch (err) {
+            console.error("[import_worker] tick failed:", err?.message || err);
+        } finally {
+            importWorkerRunning = false;
+        }
+    }, IMPORT_JOB_POLL_MS);
+    if (importWorkerTimer.unref) importWorkerTimer.unref();
+    console.log(`[import_worker] started owner=${importWorkerOwnerId} poll_ms=${IMPORT_JOB_POLL_MS}`);
+}
+
+export async function stopImportJobWorker() {
+    if (importWorkerTimer) {
+        clearInterval(importWorkerTimer);
+        importWorkerTimer = null;
+    }
+    while (importWorkerRunning) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    importWorkerOwnerId = null;
+}
+
 export async function uploadSheet(req, res) {
     let filePath = req.file?.path;
+    let importJobId = req.importJobId || randomUUID();
+    let importJobCreated = false;
     try {
         const isAdminRole = canUploadSheetsByRole(req.user?.role);
         const isGroupAdmin = req.user?.id ? await isGroupAdminUser(req.user.id) : false;
@@ -510,7 +1095,6 @@ export async function uploadSheet(req, res) {
         const displayName = sanitizeDisplayName(req.body?.display_name);
         const fileLabel = String(req.body?.file_label || req.body?.fileLabel || displayName || "File").trim();
         const approvalRequired = uploadRequiresApproval(req);
-        const importJobId = req.importJobId || randomUUID();
         const rawReportSourceId = req.body?.reportSourceId ?? req.body?.report_source_id;
         const rawReportSourceName = req.body?.reportSourceName ?? req.body?.report_source_name;
         if (!displayName) {
@@ -519,42 +1103,8 @@ export async function uploadSheet(req, res) {
         }
 
         console.log(`[upload] size=${req.file.size} reportSourceId=${rawReportSourceId || "new"}`);
+        const parseMemoryLimitMb = await resolveTenantParseMemoryLimitMb(req.user);
 
-        if (!req.__asyncWorker && uploadRunsAsync(req)) {
-            const queuedBuffer = await fs.promises.readFile(filePath);
-            fs.unlink(filePath, () => {});
-            filePath = null;
-            await enqueueImportJob({
-                id: importJobId,
-                requestedBy: req.user?.id,
-                originalFilename: originalName,
-            });
-            const asyncReq = makeAsyncUploadRequest(req, {
-                originalname: req.file?.originalname,
-                mimetype: req.file?.mimetype,
-                size: req.file?.size,
-                buffer: queuedBuffer,
-            }, importJobId);
-            runAsyncUpload(asyncReq);
-            await writeAuditLog({
-                req,
-                action: "import.queued",
-                resourceType: "import_job",
-                resourceId: importJobId,
-                metadata: {
-                    original_filename: originalName,
-                    approval_required: approvalRequired,
-                },
-            });
-            return res.status(202).json({
-                status: "queued",
-                import_status: "queued",
-                importJobId,
-                import_job_id: importJobId,
-            });
-        }
-
-        // Read file into memory and remove temporary source file immediately.
         let fileBuffer = req.fileBuffer;
         if (!fileBuffer) {
             fileBuffer = await fs.promises.readFile(filePath);
@@ -562,260 +1112,131 @@ export async function uploadSheet(req, res) {
             filePath = null;
         }
 
-        // PERF-01 Fix: Parse Workbook in a worker thread to avoid blocking the event loop
-        let parsedResult;
-        try {
-            parsedResult = await parseWorkbookInWorker(fileBuffer);
-        } catch (err) {
-            console.error("XLSX read failure:", err);
-            return res.status(400).json({
-                error: "unreadable_spreadsheet",
-                message: "Could not parse file as CSV/XLSX/XML/HTML-table."
-            });
-        }
-
-        const { sheetNames, sheets, cleanup } = parsedResult;
-        if (cleanup && (cleanup.formulasStripped || cleanup.metadataEntriesStripped)) {
-            console.info(
-                `[upload_cleanup] formulas_stripped=${Number(cleanup.formulasStripped || 0)} metadata_entries_stripped=${Number(cleanup.metadataEntriesStripped || 0)}`
-            );
-        }
-        if (!sheetNames || sheetNames.length === 0) {
-            return res.status(400).json({ error: "no_sheets" });
-        }
-        if (sheetNames.length > MAX_UPLOAD_SHEETS) {
-            return res.status(413).json({
-                error: "too_many_sheets",
-                maxSheets: MAX_UPLOAD_SHEETS
-            });
-        }
-
-        const client = await getClient();
-        try {
-            await client.query('BEGIN');
-            await createImportJob(client, {
-                id: importJobId,
-                mode: approvalRequired ? "sync_pending_approval" : "sync",
-                requestedBy: req.user?.id,
-                originalFilename: originalName,
-            });
-
-            const sheetId = `${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
-
-            // Report source resolution
-            let reportSource = null;
-            if (rawReportSourceId) {
-                reportSource = await resolveReportSourceForUpload(client, {
-                    reportSourceId: rawReportSourceId,
-                    reportSourceName: null,
-                    user: req.user,
-                });
-            }
-
-            // Get headers from FIRST tab
-            const firstTabName = sheetNames[0];
-            const firstTabRowsRaw = sheets[firstTabName];
-            
-            // STAB-01 Fix: Check if sheet has data
-            if (!firstTabRowsRaw || firstTabRowsRaw.length === 0) {
-                await client.query('ROLLBACK');
-                return res.status(400).json({ error: "empty_sheet", message: "The first tab of the uploaded file appears to be empty." });
-            }
-
-            // In worker, we used sheet_to_json directly for efficiency, 
-            // so we need to get headers differently if we want the raw array.
-            // However, the existing code expected header:1 for headers.
-            // Let's adjust the worker to return headers too, or just extract from objects.
-            const headers = Object.keys(firstTabRowsRaw[0]).filter(h => !!h && !h.startsWith("__rowNum__"));
-            
-            if (headers.length > MAX_UPLOAD_COLUMNS) {
-                await client.query('ROLLBACK');
-                return res.status(413).json({
-                    error: "too_many_columns",
-                    maxColumns: MAX_UPLOAD_COLUMNS
-                });
-            }
-
-            if (!reportSource) {
-                reportSource = await resolveReportSourceForUpload(client, {
-                    reportSourceId: null,
-                    reportSourceName: rawReportSourceName,
-                    user: req.user,
-                });
-            }
-            const versionedFilename = await getVersionedFilename(client, reportSource.id, originalName);
-            const headerDiff = buildHeaderDiff(reportSource.previousHeaders, headers);
-            const schemaStatus = getSchemaStatus(headerDiff);
-            const versionRes = await client.query(
-                "SELECT COALESCE(MAX(import_version), 0)::int + 1 AS next_version FROM report_source_imports WHERE report_source_id = $1 AND file_label = $2",
-                [reportSource.id, fileLabel]
-            );
-            const sourceVersion = Number(versionRes.rows?.[0]?.next_version || 1);
-
-            if (!approvalRequired) {
-                // Preserve existing behavior: successful uploads immediately become the active sheet.
-                await client.query("UPDATE sheets SET active = FALSE WHERE active = TRUE");
-            }
-
-            // Insert Sheet Record
-            await client.query(
-                `INSERT INTO sheets (id, headers, active, filename, display_name, stored_path, tab_name, tabs, report_source_id, source_version) 
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-                [sheetId, JSON.stringify(headers), !approvalRequired, versionedFilename, displayName, null, firstTabName, JSON.stringify(sheetNames), reportSource.id, sourceVersion]
-            );
-
-            // Insert Rows in Chunks per Tab
-            let totalRows = 0;
-            for (const sn of sheetNames) {
-                const rows = sheets[sn];
-                
-                if (rows.length > MAX_UPLOAD_ROWS_PER_SHEET) {
-                    await client.query('ROLLBACK');
-                    return res.status(413).json({
-                        error: "too_many_rows_in_sheet",
-                        tab: sn,
-                        maxRowsPerSheet: MAX_UPLOAD_ROWS_PER_SHEET
-                    });
-                }
-                totalRows += rows.length;
-                if (totalRows > MAX_UPLOAD_TOTAL_ROWS) {
-                    await client.query('ROLLBACK');
-                    return res.status(413).json({
-                        error: "too_many_total_rows",
-                        maxTotalRows: MAX_UPLOAD_TOTAL_ROWS
-                    });
-                }
-
-                const CHUNK_SIZE = 500; // Smaller chunk size for JSONB insertion
-                for (let j = 0; j < rows.length; j += CHUNK_SIZE) {
-                    const chunk = rows.slice(j, j + CHUNK_SIZE);
-                    const values = [];
-                    const placeHolders = [];
-                    let pIdx = 1;
-
-                    chunk.forEach((r, idx) => {
-                        const normalizedRow = normalizeSheetRow(r);
-                        values.push(sheetId, j + idx, JSON.stringify(normalizedRow), sn);
-                        placeHolders.push(`($${pIdx++}, $${pIdx++}, $${pIdx++}, $${pIdx++})`);
-                    });
-
-                    const sql = `INSERT INTO sheet_rows (sheet_id, row_index, row_data, tab_name) VALUES ${placeHolders.join(",")}`;
-                    await client.query(sql, values);
-                }
-            }
-
-            await carryForwardSourceSecurity(client, {
-                previousSheetId: reportSource.previousSheetId,
-                nextSheetId: sheetId,
-                previousHeaders: reportSource.previousHeaders,
-                nextHeaders: headers,
-            });
-            const importStatus = approvalRequired ? "pending_approval" : "published";
-            const importRes = await client.query(
-                `INSERT INTO report_source_imports
-                   (report_source_id, sheet_id, import_version, file_label, original_filename, imported_by,
-                    schema_status, schema_diff, status, published_at, published_by, job_id)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
-                         CASE WHEN $9 = 'published' THEN CURRENT_TIMESTAMP ELSE NULL END,
-                         CASE WHEN $9 = 'published' THEN $6 ELSE NULL END,
-                         $10)
-                 RETURNING id`,
-                [
-                    reportSource.id,
-                    sheetId,
-                    sourceVersion,
-                    fileLabel,
-                    originalName,
-                    req.user?.id || null,
-                    schemaStatus,
-                    JSON.stringify(headerDiff),
-                    importStatus,
-                    importJobId,
-                ]
-            );
-            const importId = importRes.rows[0].id;
-            if (!approvalRequired) {
-                await client.query(
-                    `UPDATE report_sources
-                        SET current_sheet_id = $1,
-                            updated_at = CURRENT_TIMESTAMP
-                      WHERE id = $2`,
-                    [sheetId, reportSource.id]
-                );
-            } else {
-                await client.query(
-                    `UPDATE report_sources
-                        SET updated_at = CURRENT_TIMESTAMP
-                      WHERE id = $1`,
-                    [reportSource.id]
-                );
-            }
-
-            const responsePayload = {
-                sheetId,
-                importId,
-                import_id: importId,
+        if (uploadUsesDbQueue(req)) {
+            // Fast path for API latency: enqueue and return; worker finalizes import.
+            const resolvedSource = await enqueueDbImportJob({
+                user: req.user,
+                approvalRequired,
                 importJobId,
-                import_job_id: importJobId,
-                import_status: importStatus,
-                status: importStatus,
-                reportSourceId: reportSource.id,
-                report_source_id: reportSource.id,
-                report_source_name: reportSource.name,
-                source_version: sourceVersion,
-                schema_status: schemaStatus,
-                schema_diff: headerDiff,
-                headers,
-                rows: totalRows,
-                active: !approvalRequired,
-                filename: versionedFilename,
-                display_name: displayName,
-                tabs: sheetNames
-            };
-
-            await finishImportJob(client, {
-                id: importJobId,
-                status: importStatus,
-                reportSourceId: reportSource.id,
-                sheetId,
-                importId,
-                result: responsePayload,
+                originalName,
+                displayName,
+                fileLabel,
+                rawReportSourceId,
+                rawReportSourceName,
+                fileBuffer,
+                contentType: req.file?.mimetype || null,
+                fileSize: req.file?.size || fileBuffer.length || 0,
+                parseMemoryLimitMb,
             });
-
-            await client.query('COMMIT');
-
             await writeAuditLog({
                 req,
-                action: approvalRequired ? "import.pending_approval" : "import.published",
-                resourceType: "report_source_import",
-                resourceId: importId,
+                action: "import.queued",
+                resourceType: "import_job",
+                resourceId: importJobId,
                 metadata: {
-                    report_source_id: reportSource.id,
-                    sheet_id: sheetId,
-                    job_id: importJobId,
-                    rows: totalRows,
-                    tabs: sheetNames.length,
-                    schema_status: schemaStatus,
+                    report_source_id: resolvedSource.id,
+                    report_source_name: resolvedSource.name,
+                    approval_required: !!approvalRequired,
+                    mode: "async_db_queue",
+                    file_size: Number(req.file?.size || fileBuffer.length || 0),
                 },
             });
-            res.json(responsePayload);
-
-        } catch (txErr) {
-            await client.query('ROLLBACK');
-            throw txErr;
-        } finally {
-            client.release();
+            return res.status(202).json({
+                status: "queued",
+                import_status: "queued",
+                importJobId,
+                import_job_id: importJobId,
+                reportSourceId: resolvedSource.id,
+                report_source_id: resolvedSource.id,
+                report_source_name: resolvedSource.name,
+                filename: originalName,
+                display_name: displayName,
+            });
         }
 
+        // Compatibility fallback: preserve synchronous import behavior when queueing is disabled.
+        const jobClient = await getClient();
+        try {
+            await jobClient.query("BEGIN");
+            await createImportJob(jobClient, {
+                id: importJobId,
+                mode: approvalRequired ? "sync_pending_approval" : "sync",
+                status: "running",
+                stage: "processing",
+                requestedBy: req.user?.id || null,
+                originalFilename: originalName,
+                maxAttempts: 1,
+            });
+            await jobClient.query("COMMIT");
+            importJobCreated = true;
+        } catch (err) {
+            await jobClient.query("ROLLBACK").catch(() => {});
+            throw err;
+        } finally {
+            jobClient.release();
+        }
+
+        const parsedResult = await parseWorkbookBufferOrThrow(fileBuffer, { memoryLimitMb: parseMemoryLimitMb });
+        const { responsePayload, importStatus } = await executeImportFromParsedWorkbook({
+            parsedResult,
+            approvalRequired,
+            importJobId,
+            reportSourceId: rawReportSourceId || null,
+            reportSourceName: rawReportSourceName || null,
+            displayName,
+            fileLabel,
+            originalName,
+            user: req.user,
+            enforceOwnership: true,
+        });
+
+        await writeAuditLog({
+            req,
+            action: importStatus === "pending_approval" ? "import.pending_approval" : "import.published",
+            resourceType: "report_source_import",
+            resourceId: responsePayload.importId,
+            metadata: {
+                report_source_id: responsePayload.report_source_id,
+                sheet_id: responsePayload.sheetId,
+                job_id: importJobId,
+                rows: responsePayload.rows,
+                tabs: Array.isArray(responsePayload.tabs) ? responsePayload.tabs.length : 0,
+                schema_status: responsePayload.schema_status,
+                mode: "sync_fallback",
+            },
+        });
+        return res.json(responsePayload);
     } catch (e) {
         console.error("upload failed:", e);
+        if (importJobCreated) {
+            try {
+                await query(
+                    `UPDATE import_jobs
+                        SET status = 'failed',
+                            stage = 'failed',
+                            error = $2,
+                            finished_at = CURRENT_TIMESTAMP,
+                            lease_owner = NULL,
+                            lease_expires_at = NULL,
+                            next_attempt_at = NULL,
+                            updated_at = CURRENT_TIMESTAMP
+                      WHERE id = $1`,
+                    [importJobId, String(e?.message || "upload_failed").slice(0, 500)]
+                );
+            } catch {
+                // Keep original upload error response.
+            }
+        }
         if (e?.code === "LIMIT_FILE_SIZE") {
             return res.status(413).json({ error: "file_too_large", maxMB: 100 });
         }
         if (e?.statusCode) {
-            return res.status(e.statusCode).json({ error: e.message || "upload_failed" });
+            const body = { error: e.message || "upload_failed" };
+            if (e.publicMessage) body.message = e.publicMessage;
+            if (e.details && typeof e.details === "object") Object.assign(body, e.details);
+            return res.status(e.statusCode).json(body);
         }
-        res.status(500).json({ error: "upload_failed", message: e.message || "An unexpected error occurred during upload." });
+        return res.status(500).json({ error: "upload_failed", message: e.message || "An unexpected error occurred during upload." });
     } finally {
         if (filePath) {
             fs.unlink(filePath, () => {});
@@ -842,7 +1263,7 @@ export async function getUniqueValues(req, res) {
     // For non-admin users without report-source owner access, require explicit column permissions
     // and apply the same row filters used by the main sheet data endpoint.
     if (req.user.role !== "admin") {
-        hasFullAccess = await hasFolderAccess(id, userId);
+        hasFullAccess = await hasReportSourceOwnerAccess(id, userId);
         if (!hasFullAccess) {
             const perms = await query(
                 `SELECT allowed_columns, row_filters FROM permissions WHERE user_id = $2 AND sheet_id = $1
@@ -913,6 +1334,7 @@ export async function getActiveSheet(req, res) {
              FROM sheets s
              LEFT JOIN report_sources rs ON rs.id = s.report_source_id
              WHERE s.active = TRUE
+             ORDER BY s.uploaded_at DESC, s.id DESC
              LIMIT 1`,
             []
         );
@@ -928,6 +1350,7 @@ export async function getActiveSheet(req, res) {
                  OR (s.id IN (SELECT sheet_id FROM permissions WHERE user_id = $1))
                  OR (s.id IN (SELECT sheet_id FROM group_permissions WHERE group_id IN (SELECT group_id FROM user_groups WHERE user_id = $1)))
                )
+             ORDER BY s.uploaded_at DESC, s.id DESC
              LIMIT 1`,
             [req.user.id]
         );
@@ -1110,6 +1533,7 @@ export async function listImportJobs(req, res) {
     const rows = await query(
         `SELECT ij.id, ij.status, ij.mode, ij.stage, ij.requested_by, ij.report_source_id,
                 ij.sheet_id, ij.import_id, ij.original_filename, ij.error, ij.result,
+                ij.attempts, ij.max_attempts, ij.next_attempt_at, ij.lease_owner, ij.lease_expires_at,
                 ij.created_at, ij.started_at, ij.finished_at, ij.updated_at,
                 rs.name AS report_source_name
            FROM import_jobs ij
@@ -1128,6 +1552,7 @@ export async function getImportJob(req, res) {
     const rows = await query(
         `SELECT ij.id, ij.status, ij.mode, ij.stage, ij.requested_by, ij.report_source_id,
                 ij.sheet_id, ij.import_id, ij.original_filename, ij.error, ij.result,
+                ij.attempts, ij.max_attempts, ij.next_attempt_at, ij.lease_owner, ij.lease_expires_at,
                 ij.created_at, ij.started_at, ij.finished_at, ij.updated_at,
                 rs.name AS report_source_name
            FROM import_jobs ij
@@ -1177,7 +1602,6 @@ export async function publishReportSourceImport(req, res) {
             return res.status(409).json({ error: "import_rejected" });
         }
 
-        await client.query("UPDATE sheets SET active = FALSE WHERE active = TRUE");
         await client.query("UPDATE sheets SET active = TRUE WHERE id = $1", [record.sheet_id]);
         await client.query(
             `UPDATE report_sources
@@ -1342,7 +1766,7 @@ export async function getSheetDetails(req, res) {
 
     // Enforce allowed_columns on the headers array returned
     if (req.user.role !== "admin") {
-        const hasOwnerAccess = await hasFolderAccess(req.params.id, req.user.id);
+        const hasOwnerAccess = await hasReportSourceOwnerAccess(req.params.id, req.user.id);
         if (!hasOwnerAccess) {
             const userPerms = await query(
                 `SELECT allowed_columns FROM permissions WHERE user_id = $2 AND sheet_id = $1
@@ -1444,7 +1868,7 @@ export async function getSheetData(req, res) {
 
     // 2. Resolve Base Permissions
     if (req.user.role !== "admin") {
-        hasFullAccess = await hasFolderAccess(id, userId);
+        hasFullAccess = await hasReportSourceOwnerAccess(id, userId);
 
         const userPerms = await query(
             `SELECT allowed_columns, row_filters FROM permissions WHERE user_id = $2 AND sheet_id = $1`,
@@ -1636,17 +2060,24 @@ export async function deleteSheet(req, res) {
     try {
         await client.query("BEGIN");
 
-        const s = await client.query("SELECT id FROM sheets WHERE id = $1", [id]);
+        const s = await client.query("SELECT id FROM sheets WHERE id = $1 LIMIT 1 FOR UPDATE", [id]);
         if (!s.rows.length) {
             await client.query("ROLLBACK");
             return res.status(404).json({ error: "not_found" });
         }
 
-        // Delete permissions manually (no FK cascade in DB schema for these)
+        // Capture related import ids before deletion so dangling job references can be scrubbed.
+        const linkedImports = await client.query(
+            "SELECT id FROM report_source_imports WHERE sheet_id = $1 FOR UPDATE",
+            [id]
+        );
+        const importIds = linkedImports.rows.map((r) => Number(r.id)).filter((n) => Number.isInteger(n) && n > 0);
+
+        // Explicit permission cleanup (kept even with FK cascade for deterministic behavior).
         await client.query("DELETE FROM permissions WHERE sheet_id = $1", [id]);
         await client.query("DELETE FROM group_permissions WHERE sheet_id = $1", [id]);
 
-        // Bug 2: Cleanup views and their permissions
+        // Cleanup views bound to this sheet and their permissions.
         const viewsRes = await client.query("SELECT id FROM views WHERE sheet_id = $1", [id]);
         const viewIds = viewsRes.rows.map(v => v.id);
         if (viewIds.length > 0) {
@@ -1654,6 +2085,31 @@ export async function deleteSheet(req, res) {
             await client.query("DELETE FROM view_group_permissions WHERE view_id = ANY($1::int[])", [viewIds]);
             await client.query("DELETE FROM views WHERE id = ANY($1::int[])", [viewIds]);
         }
+
+        // Ensure report source pointers are cleared before removing sheet/import rows.
+        await client.query("UPDATE report_sources SET current_sheet_id = NULL WHERE current_sheet_id = $1", [id]);
+
+        // Delete imports tied to this sheet and scrub jobs that referenced those imports.
+        if (importIds.length > 0) {
+            await client.query(
+                `UPDATE import_jobs
+                    SET import_id = NULL,
+                        sheet_id = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                  WHERE import_id = ANY($1::int[])`,
+                [importIds]
+            );
+            await client.query("DELETE FROM report_source_imports WHERE id = ANY($1::int[])", [importIds]);
+        }
+
+        // Cleanup jobs directly keyed by the sheet id.
+        await client.query(
+            `UPDATE import_jobs
+                SET sheet_id = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+              WHERE sheet_id = $1`,
+            [id]
+        );
 
         // Delete Sheet (Rows cascade via FK)
         await client.query("DELETE FROM sheets WHERE id = $1", [id]);

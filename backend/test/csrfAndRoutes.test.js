@@ -25,6 +25,7 @@ test("csrf middleware blocks cookie-auth mutating requests without matching CSRF
 
 test("csrf middleware allows bearer-auth mutating requests when bypass is enabled", async () => {
   process.env.CSRF_BYPASS_BEARER = "true";
+  process.env.CSRF_STRICT_MODE = "false";
   const { csrfProtect } = await import(`../src/middleware/csrf.js?t=${Date.now()}_bearer`);
 
   const req = { method: "PATCH", headers: { authorization: "Bearer token" } };
@@ -33,6 +34,7 @@ test("csrf middleware allows bearer-auth mutating requests when bypass is enable
   csrfProtect(req, res, () => { nextCalled = true; });
 
   assert.equal(nextCalled, true);
+  delete process.env.CSRF_STRICT_MODE;
 });
 
 test("csrf middleware enforces csrf on cookie-auth AI mutating routes", async () => {

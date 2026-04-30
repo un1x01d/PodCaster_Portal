@@ -1,10 +1,18 @@
-import { query, getClient } from "../config/db.js";
+import {
+    query,
+    getClient,
+    isTenantDbIsolationEnabled,
+    provisionCustomerDatabase,
+    removeCustomerPrincipalFromTenant,
+    syncCustomerGroupToTenant,
+    syncCustomerPrincipalToTenant,
+} from "../config/db.js";
 import { hashPassword, generateComplexPassword } from "../utils/security.js";
 import { decryptSettingValue, encryptSettingValue } from "../utils/settingsCrypto.js";
 import { parsePagination } from "../utils/pagination.js";
 import { writeAuditLog } from "../utils/auditLog.js";
 import { normalizeGroupEntitlements, groupHasFeature } from "../utils/entitlements.js";
-import { sendInvitationEmail } from "../utils/smtpMailer.js";
+import { sendInvitationEmail, loadInviteEmailTemplate, normalizeInviteEmailTemplateForSave, renderInviteTemplate } from "../utils/smtpMailer.js";
 import { loadInvitationPolicy, saveInvitationPolicy, computeInvitationExpiryDate } from "../utils/invitationLifecycle.js";
 import { randomBytes, createHash } from "crypto";
 
@@ -843,9 +851,7 @@ async function getAppSettingValueWithScopedFallback(baseKey, groupId) {
     const scopedKey = appSettingKeyForGroup(baseKey, groupId);
     const scopedRows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [scopedKey]);
     if (scopedRows.length) return scopedRows[0]?.value;
-    if (!groupId) return null;
-    const globalRows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [baseKey]);
-    return globalRows[0]?.value || null;
+    return null;
 }
 
 function oauthConfigIsComplete(cfg) {
@@ -1278,6 +1284,47 @@ export async function setSmtpSetting(req, res) {
     });
 }
 
+export async function getInviteEmailTemplateSetting(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const template = await loadInviteEmailTemplate();
+    return res.json(template);
+}
+
+export async function setInviteEmailTemplateSetting(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const current = await loadInviteEmailTemplate();
+    const next = normalizeInviteEmailTemplateForSave(req.body || {}, current);
+    await query(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ('invite_email_template', $1::jsonb, CURRENT_TIMESTAMP)
+         ON CONFLICT (key)
+         DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+        [JSON.stringify(next)]
+    );
+    await writeAuditLog({
+        req,
+        action: "invite_email_template.updated",
+        resourceType: "app_settings",
+        resourceId: "invite_email_template",
+    });
+    return res.json({ success: true, ...next });
+}
+
+export async function previewInviteEmailTemplate(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const current = await loadInviteEmailTemplate();
+    const template = normalizeInviteEmailTemplateForSave(req.body || {}, current);
+    const sample = req.body && typeof req.body === "object" ? req.body : {};
+    const rendered = renderInviteTemplate(template, {
+        customerName: String(sample.customerName || "Acme Corp"),
+        inviterEmail: String(sample.inviterEmail || req.user.email || "admin@example.com"),
+        inviteUrl: String(sample.inviteUrl || "https://app.example.com/?invite=preview-token"),
+        expiresAt: String(sample.expiresAt || new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString()),
+        logoUrl: String(sample.logoUrl || template.logoUrl || ""),
+    });
+    return res.json(rendered);
+}
+
 export async function getCustomerInvitationPolicy(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     const policy = await loadInvitationPolicy();
@@ -1360,8 +1407,10 @@ export async function listGroups(req, res) {
         const cacheKey = `listGroups:admin:${ENABLE_STORAGE_USAGE_METRICS ? "usage" : "lite"}${pageTag}`;
         const cached = getHeavyListCache(cacheKey);
         if (cached) return res.json(cached);
-        let sql = `SELECT g.*, 0::bigint AS used_storage_bytes
+        let sql = `SELECT g.*, c.id AS customer_id, c.db_name AS customer_db_name, c.status AS customer_db_status,
+                          0::bigint AS used_storage_bytes
                    FROM groups g
+                   LEFT JOIN customers c ON c.group_id = g.id
                    ORDER BY g.id ASC`;
         const params = [];
         if (pagination.hasPagination) {
@@ -1402,11 +1451,34 @@ export async function createGroup(req, res) {
             "INSERT INTO groups (name, max_file_size_mb, max_total_storage_mb, entitlements) VALUES ($1, $2, $3, $4::jsonb) RETURNING *",
             [name, maxFileSizeMb || 100, maxTotalStorageMb || 10240, JSON.stringify(entitlements || {})]
         );
+        if (isTenantDbIsolationEnabled()) {
+            const customer = await provisionCustomerDatabase({ groupId: r[0].id, name: r[0].name });
+            r[0].customer_id = customer?.id || null;
+            r[0].customer_db_status = customer?.status || null;
+        }
         clearHeavyListCache();
         res.json(r[0]);
     } catch (e) {
         if (String(e).includes("unique")) return res.status(400).json({ error: "Name exists" });
         throw e;
+    }
+}
+
+export async function provisionGroupDatabase(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const gid = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(gid) || gid <= 0) return res.status(400).json({ error: "invalid_group_id" });
+    try {
+        const customer = await provisionCustomerDatabase({ groupId: gid });
+        const members = await query("SELECT user_id FROM user_groups WHERE group_id = $1", [gid]);
+        for (const member of members) {
+            await syncCustomerPrincipalToTenant({ groupId: gid, userId: member.user_id });
+        }
+        clearHeavyListCache();
+        res.json({ success: true, customer, syncedUsers: members.length });
+    } catch (err) {
+        console.error("[tenant-db] provision customer database failed:", err?.message || err);
+        res.status(500).json({ error: "tenant_database_provision_failed" });
     }
 }
 
@@ -1427,6 +1499,11 @@ export async function updateGroup(req, res) {
             [name, maxFileSizeMb, maxTotalStorageMb, entitlements === undefined ? null : JSON.stringify(entitlements), id]
         );
         if (!r.length) return res.status(404).json({ error: "not_found" });
+        if (isTenantDbIsolationEnabled()) {
+            await syncCustomerGroupToTenant(id).catch((err) => {
+                console.error("[tenant-db] sync customer group failed:", err?.message || err);
+            });
+        }
         clearHeavyListCache();
         res.json(r[0]);
     } catch (e) {
@@ -1512,6 +1589,9 @@ export async function updateGroupMembers(req, res) {
             return res.status(403).json({ error: "group_user_limit_exceeded", maxUsers: entitlements.maxUsers });
         }
     }
+    const previousUserIds = isTenantDbIsolationEnabled()
+        ? (await query("SELECT user_id FROM user_groups WHERE group_id = $1", [gid])).map((r) => Number(r.user_id))
+        : [];
 
     // H9: wrap in transaction to eliminate DELETE+INSERT race condition
     const client = await getClient();
@@ -1531,6 +1611,21 @@ export async function updateGroupMembers(req, res) {
             );
         }
         await client.query("COMMIT");
+        if (isTenantDbIsolationEnabled()) {
+            const nextSet = new Set(userIds.map((id) => Number(id)));
+            for (const uid of nextSet) {
+                await syncCustomerPrincipalToTenant({ groupId: gid, userId: uid }).catch((err) => {
+                    console.error("[tenant-db] sync group member failed:", err?.message || err);
+                });
+            }
+            for (const uid of previousUserIds) {
+                if (!nextSet.has(uid)) {
+                    await removeCustomerPrincipalFromTenant({ groupId: gid, userId: uid }).catch((err) => {
+                        console.error("[tenant-db] remove group member failed:", err?.message || err);
+                    });
+                }
+            }
+        }
         clearHeavyListCache();
         res.json({ success: true });
     } catch (e) {
@@ -1558,6 +1653,11 @@ export async function addUserToGroup(req, res) {
         }
     }
     await query("INSERT INTO user_groups (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [gid, userId]);
+    if (isTenantDbIsolationEnabled()) {
+        await syncCustomerPrincipalToTenant({ groupId: gid, userId }).catch((err) => {
+            console.error("[tenant-db] sync customer principal failed:", err?.message || err);
+        });
+    }
     clearHeavyListCache();
     res.json({ success: true });
 }
@@ -1575,6 +1675,11 @@ export async function removeUserFromGroup(req, res) {
     }
     const { userId } = req.params;
     await query("DELETE FROM user_groups WHERE group_id=$1 AND user_id=$2", [gid, userId]);
+    if (isTenantDbIsolationEnabled()) {
+        await removeCustomerPrincipalFromTenant({ groupId: gid, userId }).catch((err) => {
+            console.error("[tenant-db] remove customer principal failed:", err?.message || err);
+        });
+    }
     clearHeavyListCache();
     res.json({ success: true });
 }
@@ -1597,6 +1702,11 @@ export async function toggleGroupAdmin(req, res) {
             "UPDATE user_groups SET is_admin = $1 WHERE group_id = $2 AND user_id = $3",
             [!!isAdmin, gid, userId]
         );
+        if (isTenantDbIsolationEnabled()) {
+            await syncCustomerPrincipalToTenant({ groupId: gid, userId }).catch((err) => {
+                console.error("[tenant-db] sync group admin flag failed:", err?.message || err);
+            });
+        }
         clearHeavyListCache();
         res.json({ success: true });
     } catch (e) {

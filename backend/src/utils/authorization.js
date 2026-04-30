@@ -22,7 +22,7 @@ export async function checkSheetAccess(sheetId, user) {
   return rows.length > 0;
 }
 
-export async function hasFolderAccess(sheetId, userId) {
+export async function hasReportSourceOwnerAccess(sheetId, userId) {
   const rows = await query(
     `SELECT 1
      FROM sheets s

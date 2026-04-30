@@ -29,6 +29,7 @@ export FRONTEND_SERVICE="data-insights-frontend"
 export DB_INSTANCE="data-insights-pg"
 export DB_NAME="portaldb"
 export DB_USER="portal"
+export TENANT_DB_PREFIX="tenant"
 ```
 
 ```bash
@@ -59,12 +60,16 @@ gcloud sql instances create "$DB_INSTANCE" \
 gcloud sql databases create "$DB_NAME" --instance="$DB_INSTANCE"
 ```
 
+`$DB_NAME` is the control database. The app creates one additional database per customer by default, using names like `tenant_g123`.
+
 Create DB password and user:
 
 ```bash
 export DB_PASSWORD="$(openssl rand -base64 32 | tr -d '\n')"
 gcloud sql users create "$DB_USER" --instance="$DB_INSTANCE" --password="$DB_PASSWORD"
 ```
+
+The runtime/provisioning DB user must be able to create customer databases. If your production policy does not allow runtime `CREATE DATABASE`, use a separate migration/admin user for customer provisioning and tenant migrations.
 
 ## 5. Create Secrets
 
@@ -125,11 +130,12 @@ gcloud run deploy "$BACKEND_SERVICE" \
   --platform managed \
   --allow-unauthenticated \
   --add-cloudsql-instances "$CLOUDSQL_CONN" \
-  --set-env-vars "NODE_ENV=production,PORT=8080,OPENAI_MODEL=gpt-4o-mini,OPENAI_BASE_URL=https://api.openai.com/v1,OPENAI_TIMEOUT_MS=60000,CHAT_AUDIO_MAX_CHARS=8000,POSTGRES_HOST=/cloudsql/${CLOUDSQL_CONN},POSTGRES_PORT=5432,POSTGRES_USER=${DB_USER},POSTGRES_DB=${DB_NAME}" \
+  --set-env-vars "NODE_ENV=production,PORT=8080,TENANT_DB_ISOLATION_ENABLED=true,TENANT_DB_PREFIX=${TENANT_DB_PREFIX},TENANT_DB_POOL_MAX=3,XLSX_WORKER_DEFAULT_MEMORY_MB=512,XLSX_WORKER_MIN_MEMORY_MB=64,XLSX_WORKER_MAX_MEMORY_MB=4096,OPENAI_MODEL=gpt-4o-mini,OPENAI_BASE_URL=https://api.openai.com/v1,OPENAI_TIMEOUT_MS=60000,CHAT_AUDIO_MAX_CHARS=8000,POSTGRES_HOST=/cloudsql/${CLOUDSQL_CONN},POSTGRES_PORT=5432,POSTGRES_USER=${DB_USER},POSTGRES_DB=${DB_NAME}" \
   --set-secrets "POSTGRES_PASSWORD=DB_PASSWORD:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,JWT_SECRET=JWT_SECRET:latest,JWT_ISSUER=JWT_ISSUER:latest,JWT_AUDIENCE=JWT_AUDIENCE:latest,SETTINGS_CRYPTO_KEY=SETTINGS_CRYPTO_KEY:latest"
 ```
 
 The backend now supports database connection via discrete variables (`POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_DB`, `POSTGRES_PASSWORD`) so DB credentials do not need to be embedded in a single `DATABASE_URL` value.
+`TENANT_DB_ISOLATION_ENABLED=true` is the intended production default. New customers receive dedicated databases automatically.
 
 ## 8. Deploy Frontend to Cloud Run
 
@@ -173,13 +179,83 @@ gcloud run services update "$BACKEND_SERVICE" \
 
 If using custom domains, include both production and admin domains in comma-separated form.
 
-## 10. DB Initialization and Volume Behavior
+## 10. DB Initialization and Tenant Databases
 
 - This app runs DB init automatically on backend startup (`initDb()`).
 - On fresh environments (new Cloud SQL instance), tables/settings are created automatically.
+- The control DB gets the `customers` registry.
+- Each customer DB gets the same application schema and a customer shell record.
+- Existing customers can be provisioned with `POST /groups/:id/provision-database`.
+- Tenant migrations can be run with `cd backend && npm run migrate:tenants` from a trusted environment with DB access.
 - No Docker volume persistence is needed on Cloud Run + Cloud SQL.
 
-## 11. Post-Deploy Checks
+## 11. Export and Restore Databases
+
+Create a private export bucket and grant Cloud SQL access:
+
+```bash
+export BACKUP_BUCKET="${PROJECT_ID}-prod-db-exports"
+gcloud storage buckets create "gs://${BACKUP_BUCKET}" --location="$REGION"
+
+CLOUDSQL_SA="$(gcloud sql instances describe "$DB_INSTANCE" --format='value(serviceAccountEmailAddress)')"
+gcloud storage buckets add-iam-policy-binding "gs://${BACKUP_BUCKET}" \
+  --member="serviceAccount:${CLOUDSQL_SA}" \
+  --role="roles/storage.objectAdmin"
+```
+
+Export the control DB and every active customer DB separately:
+
+```bash
+export STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+
+gcloud sql export sql "$DB_INSTANCE" \
+  "gs://${BACKUP_BUCKET}/${STAMP}/control-${DB_NAME}.sql.gz" \
+  --database="$DB_NAME"
+
+# Get active tenant DBs from the control DB:
+# SELECT db_name FROM customers WHERE status = 'active' ORDER BY id;
+
+for TENANT_DB in tenant_g123 tenant_g456; do
+  gcloud sql export sql "$DB_INSTANCE" \
+    "gs://${BACKUP_BUCKET}/${STAMP}/${TENANT_DB}.sql.gz" \
+    --database="$TENANT_DB"
+done
+```
+
+Full restore:
+
+1. Prefer Cloud SQL point-in-time restore to a new instance for full-environment recovery.
+2. If restoring exports manually, create/import the control DB first.
+3. Create/import every customer DB using the exact names stored in `customers.db_name`.
+4. Point staging to the restored instance and verify login, customer routing, sheet data, exports, and AI permissions before production cutover.
+
+Manual import pattern:
+
+```bash
+export RESTORE_INSTANCE="data-insights-pg-restore"
+
+gcloud sql databases create "$DB_NAME" --instance="$RESTORE_INSTANCE"
+gcloud sql import sql "$RESTORE_INSTANCE" \
+  "gs://${BACKUP_BUCKET}/${STAMP}/control-${DB_NAME}.sql.gz" \
+  --database="$DB_NAME"
+
+for TENANT_DB in tenant_g123 tenant_g456; do
+  gcloud sql databases create "$TENANT_DB" --instance="$RESTORE_INSTANCE"
+  gcloud sql import sql "$RESTORE_INSTANCE" \
+    "gs://${BACKUP_BUCKET}/${STAMP}/${TENANT_DB}.sql.gz" \
+    --database="$TENANT_DB"
+done
+```
+
+Single-customer restore:
+
+1. Restore that tenant dump to a new DB name such as `tenant_g123_restore_20260430`.
+2. Validate row counts, report sources, permissions, views, and imports.
+3. Update the control DB row: `UPDATE customers SET db_name = 'tenant_g123_restore_20260430', updated_at = CURRENT_TIMESTAMP WHERE group_id = 123;`.
+4. Force affected users to log in again so JWTs carry the new tenant DB.
+5. Keep the old tenant DB read-only through the rollback window.
+
+## 12. Post-Deploy Checks
 
 Health checks:
 
@@ -196,21 +272,23 @@ Smoke tests:
 - Dashboard KPI + AI actions
 - Translation locale switch
 
-## 12. Operations and Hardening
+## 13. Operations and Hardening
 
 - Set Cloud Run min instances for lower cold starts.
 - Configure request timeout and concurrency per service.
 - Enable Cloud Run CPU always allocated only if needed.
+- Watch Cloud SQL connection count. One DB per customer means tenant pool limits matter.
 - Add Cloud Monitoring alerts:
   - 5xx rate
   - latency p95
   - Cloud SQL CPU/storage
+  - Cloud SQL connection saturation
   - error logs with `internal_server_error`
 - Rotate secrets regularly (Secret Manager versions).
 - Restrict ingress if app is private (IAP or internal LB).
 - Use least-privilege service accounts (do not use default SA in strict environments).
 
-## 13. Rollback
+## 14. Rollback
 
 Cloud Run revisions make rollback easy:
 
@@ -221,7 +299,7 @@ gcloud run services update-traffic "$BACKEND_SERVICE" --region "$REGION" --to-re
 
 Repeat for frontend service if needed.
 
-## 14. Optional: CI/CD
+## 15. Optional: CI/CD
 
 Use Cloud Build triggers on `main`:
 - Build backend/frontend images

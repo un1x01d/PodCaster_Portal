@@ -33,6 +33,8 @@ export default function DashboardBody(props) {
         setReportSourceName = () => {},
         reportSources = [],
         reportSourceImports = {},
+        uploadInProgress = false,
+        uploadPercent = 0,
 
         handleUpload,
         handleGoogleDriveImport,
@@ -50,6 +52,8 @@ export default function DashboardBody(props) {
         setViews,
         setPendingViewName,
         setShowColumnSelector,
+        setVisibleColumns,
+        setSaveViewConfigOverride,
 
         // Data & State
         sortedData,
@@ -277,6 +281,20 @@ export default function DashboardBody(props) {
         danger: false
     });
     const [insightsOn, setInsightsOn] = useState(false);
+    const [selectionModeOn, setSelectionModeOn] = useState(false);
+    const [isSelecting, setIsSelecting] = useState(false);
+    const [selectionAnchor, setSelectionAnchor] = useState(null);
+    const [selectionFocus, setSelectionFocus] = useState(null);
+    const [selectedRowIndexes, setSelectedRowIndexes] = useState(() => new Set());
+    const [selectedColIndexes, setSelectedColIndexes] = useState(() => new Set());
+    const [lastRowSelectionIndex, setLastRowSelectionIndex] = useState(null);
+    const [lastColSelectionIndex, setLastColSelectionIndex] = useState(null);
+    const isSelectingRef = useRef(false);
+    const selectionFocusRef = useRef(null);
+    const pendingSelectionFocusRef = useRef(null);
+    const selectionFocusRafRef = useRef(null);
+    const dragPointerRef = useRef(null);
+    const dragAutoScrollRafRef = useRef(null);
 
     // Comparison View State
     const [comparisonOn, setComparisonOn] = useState(false);
@@ -311,6 +329,7 @@ export default function DashboardBody(props) {
     const primaryGridRef = useRef(null);
     const secondaryGridRef = useRef(null);
     const primaryListRef = useRef(null);
+    const primaryOuterRef = useRef(null);
     const secondaryListRef = useRef(null);
 
     const handleMouseDown = (e) => {
@@ -386,6 +405,230 @@ export default function DashboardBody(props) {
     };
 
     const activeView = views.find((v) => String(v.id) === String(selectedViewId));
+
+    const clearSelection = React.useCallback(() => {
+        setSelectionAnchor(null);
+        setSelectionFocus(null);
+        selectionFocusRef.current = null;
+        pendingSelectionFocusRef.current = null;
+        if (selectionFocusRafRef.current) {
+            cancelAnimationFrame(selectionFocusRafRef.current);
+            selectionFocusRafRef.current = null;
+        }
+        if (dragAutoScrollRafRef.current) {
+            cancelAnimationFrame(dragAutoScrollRafRef.current);
+            dragAutoScrollRafRef.current = null;
+        }
+        setIsSelecting(false);
+        isSelectingRef.current = false;
+        dragPointerRef.current = null;
+        document.body.style.userSelect = "";
+        document.body.style.cursor = "";
+        setSelectedRowIndexes(new Set());
+        setSelectedColIndexes(new Set());
+        setLastRowSelectionIndex(null);
+        setLastColSelectionIndex(null);
+    }, []);
+
+    const clearExplicitSelections = React.useCallback(() => {
+        setSelectedRowIndexes(new Set());
+        setSelectedColIndexes(new Set());
+        setLastRowSelectionIndex(null);
+        setLastColSelectionIndex(null);
+    }, []);
+
+    useEffect(() => {
+        const stopSelecting = () => {
+            if (!isSelectingRef.current) return;
+            isSelectingRef.current = false;
+            setIsSelecting(false);
+            document.body.style.userSelect = "";
+            document.body.style.cursor = "";
+            const pending = pendingSelectionFocusRef.current;
+            if (
+                pending
+                && (!selectionFocusRef.current || pending.row !== selectionFocusRef.current.row || pending.col !== selectionFocusRef.current.col)
+            ) {
+                selectionFocusRef.current = pending;
+                setSelectionFocus(pending);
+            }
+            if (selectionFocusRafRef.current) {
+                cancelAnimationFrame(selectionFocusRafRef.current);
+                selectionFocusRafRef.current = null;
+            }
+            if (dragAutoScrollRafRef.current) {
+                cancelAnimationFrame(dragAutoScrollRafRef.current);
+                dragAutoScrollRafRef.current = null;
+            }
+            dragPointerRef.current = null;
+        };
+        window.addEventListener("mouseup", stopSelecting);
+        return () => window.removeEventListener("mouseup", stopSelecting);
+    }, []);
+
+    useEffect(() => {
+        selectionFocusRef.current = selectionFocus;
+    }, [selectionFocus]);
+
+    useEffect(() => () => {
+        if (selectionFocusRafRef.current) {
+            cancelAnimationFrame(selectionFocusRafRef.current);
+            selectionFocusRafRef.current = null;
+        }
+        if (dragAutoScrollRafRef.current) {
+            cancelAnimationFrame(dragAutoScrollRafRef.current);
+            dragAutoScrollRafRef.current = null;
+        }
+        dragPointerRef.current = null;
+        document.body.style.userSelect = "";
+        document.body.style.cursor = "";
+    }, []);
+
+    const queueSelectionFocusUpdate = React.useCallback((nextFocus) => {
+        pendingSelectionFocusRef.current = nextFocus;
+        if (selectionFocusRafRef.current) return;
+        selectionFocusRafRef.current = requestAnimationFrame(() => {
+            selectionFocusRafRef.current = null;
+            const pending = pendingSelectionFocusRef.current;
+            if (!pending) return;
+            const current = selectionFocusRef.current;
+            if (current && current.row === pending.row && current.col === pending.col) return;
+            selectionFocusRef.current = pending;
+            setSelectionFocus(pending);
+        });
+    }, []);
+
+
+    const selectionBounds = React.useMemo(() => {
+        if (!selectionAnchor || !selectionFocus) return null;
+        const rowStart = Math.max(0, Math.min(selectionAnchor.row, selectionFocus.row));
+        const rowEnd = Math.min(sortedData.length - 1, Math.max(selectionAnchor.row, selectionFocus.row));
+        const colStart = Math.max(0, Math.min(selectionAnchor.col, selectionFocus.col));
+        const colEnd = Math.min(activePrimaryFields.length - 1, Math.max(selectionAnchor.col, selectionFocus.col));
+        if (rowEnd < rowStart || colEnd < colStart) return null;
+        return { rowStart, rowEnd, colStart, colEnd };
+    }, [selectionAnchor, selectionFocus, sortedData.length, activePrimaryFields.length]);
+
+    const selectedPrimaryColumns = React.useMemo(() => {
+        if (selectedColIndexes.size > 0) {
+            return Array.from(selectedColIndexes)
+                .sort((a, b) => a - b)
+                .map((idx) => activePrimaryFields[idx])
+                .filter(Boolean);
+        }
+        if (!selectionBounds) return [];
+        return activePrimaryFields.slice(selectionBounds.colStart, selectionBounds.colEnd + 1);
+    }, [selectedColIndexes, selectionBounds, activePrimaryFields]);
+
+    const selectedPrimaryRowIndexes = React.useMemo(() => {
+        if (selectedRowIndexes.size > 0) return Array.from(selectedRowIndexes).sort((a, b) => a - b);
+        if (!selectionBounds) return [];
+        const rows = [];
+        for (let i = selectionBounds.rowStart; i <= selectionBounds.rowEnd; i += 1) rows.push(i);
+        return rows;
+    }, [selectedRowIndexes, selectionBounds]);
+
+    const buildSelectionFilters = React.useCallback(() => {
+        if (selectedPrimaryColumns.length === 0 || selectedPrimaryRowIndexes.length === 0) return null;
+        const next = {};
+        selectedPrimaryColumns.forEach((col) => {
+            next[col] = new Set();
+        });
+        for (const rowIndex of selectedPrimaryRowIndexes) {
+            const row = sortedData[rowIndex] || {};
+            selectedPrimaryColumns.forEach((col) => {
+                next[col].add(String(row?.[col] ?? ""));
+            });
+        }
+        return next;
+    }, [sortedData, selectedPrimaryColumns, selectedPrimaryRowIndexes]);
+
+    const isPrimaryCellSelected = React.useCallback((rowIndex, colIndex) => {
+        if (selectedRowIndexes.size > 0 && selectedColIndexes.size > 0) {
+            return selectedRowIndexes.has(rowIndex) && selectedColIndexes.has(colIndex);
+        }
+        if (selectedRowIndexes.size > 0) return selectedRowIndexes.has(rowIndex);
+        if (selectedColIndexes.size > 0) return selectedColIndexes.has(colIndex);
+        if (!selectionBounds) return false;
+        return rowIndex >= selectionBounds.rowStart
+            && rowIndex <= selectionBounds.rowEnd
+            && colIndex >= selectionBounds.colStart
+            && colIndex <= selectionBounds.colEnd;
+    }, [selectionBounds, selectedRowIndexes, selectedColIndexes]);
+
+    const isPrimaryColumnSelected = React.useCallback((colIndex) => (
+        selectedColIndexes.has(colIndex)
+        || (selectionBounds && colIndex >= selectionBounds.colStart && colIndex <= selectionBounds.colEnd)
+    ), [selectedColIndexes, selectionBounds]);
+
+    const applyColumnSelection = React.useCallback((colIndex, evt) => {
+        const withShift = !!evt?.shiftKey;
+        const withCtrl = !!(evt?.ctrlKey || evt?.metaKey);
+        setSelectedColIndexes((prev) => {
+            const next = new Set(prev);
+            if (withShift && lastColSelectionIndex !== null) {
+                const start = Math.min(lastColSelectionIndex, colIndex);
+                const end = Math.max(lastColSelectionIndex, colIndex);
+                for (let i = start; i <= end; i += 1) next.add(i);
+            } else if (withCtrl) {
+                if (next.has(colIndex)) next.delete(colIndex);
+                else next.add(colIndex);
+                setLastColSelectionIndex(colIndex);
+                return next;
+            } else {
+                next.clear();
+                next.add(colIndex);
+            }
+            return next;
+        });
+        setLastColSelectionIndex(colIndex);
+    }, [lastColSelectionIndex]);
+
+    const applyRowSelection = React.useCallback((rowIndex, evt) => {
+        const withShift = !!evt?.shiftKey;
+        const withCtrl = !!(evt?.ctrlKey || evt?.metaKey);
+        setSelectedRowIndexes((prev) => {
+            const next = new Set(prev);
+            if (withShift && lastRowSelectionIndex !== null) {
+                const start = Math.min(lastRowSelectionIndex, rowIndex);
+                const end = Math.max(lastRowSelectionIndex, rowIndex);
+                for (let i = start; i <= end; i += 1) next.add(i);
+            } else if (withCtrl) {
+                if (next.has(rowIndex)) next.delete(rowIndex);
+                else next.add(rowIndex);
+                setLastRowSelectionIndex(rowIndex);
+                return next;
+            } else {
+                next.clear();
+                next.add(rowIndex);
+            }
+            return next;
+        });
+        setLastRowSelectionIndex(rowIndex);
+    }, [lastRowSelectionIndex]);
+
+    const createLockedViewFromSelection = React.useCallback(() => {
+        if (selectedPrimaryColumns.length === 0 || selectedPrimaryRowIndexes.length === 0) return;
+        const filters = buildSelectionFilters();
+        const rowCount = selectedPrimaryRowIndexes.length;
+        const colCount = selectedPrimaryColumns.length;
+        const suggestedName = `Selection ${rowCount}x${colCount}`;
+        setPendingViewName(suggestedName);
+        setVisibleColumns(selectedPrimaryColumns);
+        setSaveViewConfigOverride({
+            columnFilters: filters || {},
+            visibleColumns: selectedPrimaryColumns,
+        });
+        setShowColumnSelector(true);
+    }, [
+        selectedPrimaryColumns,
+        selectedPrimaryRowIndexes,
+        buildSelectionFilters,
+        setPendingViewName,
+        setVisibleColumns,
+        setSaveViewConfigOverride,
+        setShowColumnSelector,
+    ]);
     const canImportFromDrive = React.useMemo(() => {
         if (!user) return false;
         if (String(user.role || "").toLowerCase() === "admin") return true;
@@ -401,6 +644,69 @@ export default function DashboardBody(props) {
         if (String(user.role || "").toLowerCase() === "admin") return true;
         return !!(user.is_group_admin || user.group_admin || user.is_admin);
     }, [user]);
+
+    const resolveFileLabel = React.useCallback((item) => (
+        item?.file_label || item?.display_name || item?.import_name || item?.original_filename || item?.filename || `Version ${item?.import_version || ""}`.trim()
+    ), []);
+    const [primarySourcePickerOpen, setPrimarySourcePickerOpen] = useState(false);
+    const [secondarySourcePickerOpen, setSecondarySourcePickerOpen] = useState(false);
+    const [primarySourceQuery, setPrimarySourceQuery] = useState("");
+    const [secondarySourceQuery, setSecondarySourceQuery] = useState("");
+    const [primaryExpandedSources, setPrimaryExpandedSources] = useState(() => new Set());
+    const [secondaryExpandedSources, setSecondaryExpandedSources] = useState(() => new Set());
+    const [primaryFileVersionMenuKey, setPrimaryFileVersionMenuKey] = useState(null);
+    const [secondaryFileVersionMenuKey, setSecondaryFileVersionMenuKey] = useState(null);
+    const primarySourcePickerRef = React.useRef(null);
+    const secondarySourcePickerRef = React.useRef(null);
+
+    const explicitSources = React.useMemo(() => (
+        (reportSources || [])
+            .filter((source) => source && !source.is_inferred)
+            .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
+    ), [reportSources]);
+
+    const trunc = React.useCallback((str, n) => {
+        if (!str) return "";
+        return str.length > n ? str.substring(0, n - 1) + "..." : str;
+    }, []);
+
+    const getSelectedSourceMeta = React.useCallback((targetSheetId) => {
+        const selectedSource = explicitSources.find((source) => String(source.current_sheet_id) === String(targetSheetId))
+            || explicitSources.find((source) => (reportSourceImports[String(source.id)] || []).some((item) => String(item.sheet_id) === String(targetSheetId)));
+        const selectedImport = selectedSource
+            ? (reportSourceImports[String(selectedSource.id)] || []).find((item) => String(item.sheet_id) === String(targetSheetId))
+            : null;
+        return { selectedSource, selectedImport };
+    }, [explicitSources, reportSourceImports]);
+
+    const primaryPickerLabel = React.useMemo(() => {
+        const { selectedSource, selectedImport } = getSelectedSourceMeta(sheetId);
+        return selectedImport
+            ? `${selectedSource?.name || "Report source"} / ${resolveFileLabel(selectedImport)}`
+            : (selectedSource?.name || props.activeFilename || "Select sheet");
+    }, [getSelectedSourceMeta, sheetId, resolveFileLabel, props.activeFilename]);
+
+    const secondaryPickerLabel = React.useMemo(() => {
+        const { selectedSource, selectedImport } = getSelectedSourceMeta(secondarySheetId);
+        if (selectedImport) return `${selectedSource?.name || "Report source"} / ${resolveFileLabel(selectedImport)}`;
+        const sheet = (props.myFiles || []).find((f) => String(f.id) === String(secondarySheetId));
+        return sheet?.display_name || sheet?.filename || "Select sheet";
+    }, [getSelectedSourceMeta, secondarySheetId, resolveFileLabel, props.myFiles]);
+
+    React.useEffect(() => {
+        const onDocClick = (event) => {
+            if (!primarySourcePickerRef.current?.contains(event.target)) {
+                setPrimarySourcePickerOpen(false);
+                setPrimaryFileVersionMenuKey(null);
+            }
+            if (!secondarySourcePickerRef.current?.contains(event.target)) {
+                setSecondarySourcePickerOpen(false);
+                setSecondaryFileVersionMenuKey(null);
+            }
+        };
+        document.addEventListener("mousedown", onDocClick);
+        return () => document.removeEventListener("mousedown", onDocClick);
+    }, []);
 
     React.useEffect(() => {
         if (!menuOpen) return undefined;
@@ -641,6 +947,88 @@ export default function DashboardBody(props) {
         return activePrimaryFields?.reduce((sum, h) => sum + (colWidths[h] || 180), 0) || 0;
     }, [activePrimaryFields, colWidths]);
 
+    const getColumnIndexFromX = React.useCallback((xOffset) => {
+        if (!activePrimaryFields.length) return 0;
+        const clampedX = Math.max(0, Math.min(totalRowWidth - 1, xOffset));
+        let running = 0;
+        for (let i = 0; i < activePrimaryFields.length; i += 1) {
+            running += colWidths[activePrimaryFields[i]] || 180;
+            if (clampedX < running) return i;
+        }
+        return activePrimaryFields.length - 1;
+    }, [activePrimaryFields, colWidths, totalRowWidth]);
+
+    useEffect(() => {
+        const onPointerMove = (event) => {
+            if (!isSelectingRef.current) return;
+            dragPointerRef.current = { clientX: event.clientX, clientY: event.clientY };
+        };
+        window.addEventListener("mousemove", onPointerMove);
+        return () => window.removeEventListener("mousemove", onPointerMove);
+    }, []);
+
+    useEffect(() => {
+        if (!isSelecting) return undefined;
+
+        const step = () => {
+            if (!isSelectingRef.current) {
+                dragAutoScrollRafRef.current = null;
+                return;
+            }
+            const pointer = dragPointerRef.current;
+            const outer = primaryOuterRef.current;
+            if (pointer && outer) {
+                const rect = outer.getBoundingClientRect();
+                const threshold = 48;
+                const maxStep = 24;
+                let verticalDelta = 0;
+                let horizontalDelta = 0;
+                if (pointer.clientY < rect.top + threshold) {
+                    const t = (rect.top + threshold - pointer.clientY) / threshold;
+                    verticalDelta = -Math.ceil(maxStep * Math.min(1, Math.max(0, t)));
+                } else if (pointer.clientY > rect.bottom - threshold) {
+                    const t = (pointer.clientY - (rect.bottom - threshold)) / threshold;
+                    verticalDelta = Math.ceil(maxStep * Math.min(1, Math.max(0, t)));
+                }
+                if (pointer.clientX < rect.left + threshold) {
+                    const t = (rect.left + threshold - pointer.clientX) / threshold;
+                    horizontalDelta = -Math.ceil(maxStep * Math.min(1, Math.max(0, t)));
+                } else if (pointer.clientX > rect.right - threshold) {
+                    const t = (pointer.clientX - (rect.right - threshold)) / threshold;
+                    horizontalDelta = Math.ceil(maxStep * Math.min(1, Math.max(0, t)));
+                }
+
+                if (verticalDelta !== 0) {
+                    const nextTop = Math.max(0, Math.min(outer.scrollHeight - outer.clientHeight, outer.scrollTop + verticalDelta));
+                    if (nextTop !== outer.scrollTop) {
+                        primaryListRef.current.scrollTo(nextTop);
+                    }
+                }
+                if (horizontalDelta !== 0) {
+                    const nextLeft = Math.max(0, Math.min(outer.scrollWidth - outer.clientWidth, outer.scrollLeft + horizontalDelta));
+                    if (nextLeft !== outer.scrollLeft) {
+                        outer.scrollLeft = nextLeft;
+                    }
+                }
+
+                const rowOffset = outer.scrollTop + (pointer.clientY - rect.top);
+                const colOffset = outer.scrollLeft + (pointer.clientX - rect.left);
+                const rowIndex = Math.max(0, Math.min(sortedData.length - 1, Math.floor(rowOffset / 36)));
+                const colIndex = getColumnIndexFromX(colOffset);
+                queueSelectionFocusUpdate({ row: rowIndex, col: colIndex });
+            }
+            dragAutoScrollRafRef.current = requestAnimationFrame(step);
+        };
+
+        dragAutoScrollRafRef.current = requestAnimationFrame(step);
+        return () => {
+            if (dragAutoScrollRafRef.current) {
+                cancelAnimationFrame(dragAutoScrollRafRef.current);
+                dragAutoScrollRafRef.current = null;
+            }
+        };
+    }, [isSelecting, sortedData.length, getColumnIndexFromX, queueSelectionFocusUpdate]);
+
     const secondaryTotalWidth = React.useMemo(() => {
         return activeSecondaryFields?.reduce((sum, h) => sum + 180, 0) || 0;
     }, [activeSecondaryFields]);
@@ -800,30 +1188,13 @@ export default function DashboardBody(props) {
                                             <div className="mt-4 space-y-1.5 px-0 animate-in slide-in-from-left-2 duration-300 border-t border-white/10 pt-3">
                                                 <div className="flex items-center gap-1.5 mb-1 px-3 opacity-70">
                                                     <div className="w-0.5 h-2 bg-emerald-400"></div>
-                                                    <label className="text-[9px] text-white font-bold uppercase tracking-[0.1em]">Second Spreadsheet</label>
-                                                </div>
-                                                <div className="px-2">
-                                                    <SearchableSelect
-                                                        options={props.myFiles.map(f => ({ value: String(f.id), label: f.display_name || f.filename }))}
-                                                        value={secondarySheetId}
-                                                        onChange={(e) => {
-                                                            setSecondarySheetId(e.target.value);
-                                                        }}
-                                                        placeholder="Select sheet…"
-                                                        className="w-full"
-                                                        buttonClassName="!bg-white !border-slate-300 !text-slate-900 !h-8 !rounded-lg !text-[11px] !font-bold hover:!border-slate-400 hover:!bg-slate-50 transition-all shadow-sm"
-                                                        panelClassName="!bg-white !border-slate-200 !shadow-2xl !rounded-xl !mt-1"
-                                                        optionClassName="hover:!bg-indigo-50 !text-slate-600 hover:!text-slate-900 !rounded-lg"
-                                                        optionTextClassName="!font-bold !text-[11px] !text-inherit"
-                                                        searchInputClassName="!bg-slate-50 !border-slate-100 !text-slate-900 !placeholder-slate-400 !rounded-lg"
-                                                        panelWidth={200}
-                                                    />
+                                                    <label className="text-[9px] text-white font-bold uppercase tracking-[0.1em]">Secondary Fields</label>
                                                 </div>
                                                 {secondarySheetId && (
                                                     <div className="mt-2 px-2 space-y-1.5">
                                                         <div className="flex items-center gap-2 opacity-70">
                                                             <div className="w-1 h-1 rounded-full bg-emerald-400"></div>
-                                                            <label className="text-[9px] text-white font-bold uppercase tracking-[0.1em]">Secondary Fields</label>
+                                                            <label className="text-[9px] text-white font-bold uppercase tracking-[0.1em]">Columns</label>
                                                         </div>
                                                         <MultiSelect
                                                             options={secondaryHeaders}
@@ -872,12 +1243,45 @@ export default function DashboardBody(props) {
                                                         onClick={() => {
                                                             const name = prompt("Enter a name for this Locked View (includes current filters/pivots):");
                                                             if (name) {
+                                                                setSaveViewConfigOverride(null);
                                                                 setPendingViewName(name);
                                                                 setShowColumnSelector(true);
                                                             }
                                                         }}
                                                     >
                                                         Create Locked View
+                                                    </button>
+                                                </div>
+                                                <div className="px-1 grid grid-cols-2 gap-1.5">
+                                                    <button
+                                                        type="button"
+                                                        className={`btn-premium py-1.5 text-[10px] font-bold rounded-md border-none ${selectionModeOn ? "bg-emerald-600 text-white hover:bg-emerald-700" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
+                                                        onClick={() => {
+                                                            setSelectionModeOn((v) => {
+                                                                const next = !v;
+                                                                if (!next) clearSelection();
+                                                                return next;
+                                                            });
+                                                        }}
+                                                    >
+                                                        {selectionModeOn ? "Selection On" : "Selection Off"}
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className="btn-premium bg-slate-100 text-slate-700 hover:bg-slate-200 py-1.5 text-[10px] font-bold rounded-md border-none"
+                                                        onClick={clearSelection}
+                                                    >
+                                                        Clear
+                                                    </button>
+                                                </div>
+                                                <div className="px-1">
+                                                    <button
+                                                        type="button"
+                                                        disabled={selectedPrimaryColumns.length === 0 || selectedPrimaryRowIndexes.length === 0}
+                                                        className={`w-full btn-premium py-1.5 text-[10px] font-bold rounded-md border-none ${(selectedPrimaryColumns.length > 0 && selectedPrimaryRowIndexes.length > 0) ? "bg-emerald-600 text-white hover:bg-emerald-700" : "bg-slate-200 text-slate-500 cursor-not-allowed"}`}
+                                                        onClick={createLockedViewFromSelection}
+                                                    >
+                                                        Create View From Selection
                                                     </button>
                                                 </div>
                                             </div>
@@ -992,17 +1396,19 @@ export default function DashboardBody(props) {
                                                                 handleUpload(file, fileLabel, selectedReportSourceId, selectedReportSourceId ? "" : fileLabel, fileLabel);
                                                                 setFileLabel("");
                                                             }}
-                                                            disabled={!file || !fileLabel.trim()}
-                                                            className={`left-menu-action ${!file || !fileLabel.trim() ? "left-menu-action-disabled" : ""}`}
+                                                            disabled={uploadInProgress || !file || !fileLabel.trim()}
+                                                            className={`left-menu-action ${uploadInProgress || !file || !fileLabel.trim() ? "left-menu-action-disabled" : ""}`}
                                                             title={
-                                                                !file
+                                                                uploadInProgress
+                                                                    ? "Upload in progress"
+                                                                    : !file
                                                                     ? "Choose a file"
                                                                     : (!fileLabel.trim())
                                                                         ? "Enter a label"
                                                                         : "Upload & Load"
                                                             }
                                                         >
-                                                            Upload & Load
+                                                            {uploadInProgress ? `Uploading ${Math.max(0, Math.min(100, uploadPercent))}%` : "Upload & Load"}
                                                         </button>
                                                     </>
                                                 )}
@@ -1651,11 +2057,151 @@ export default function DashboardBody(props) {
                         className={`flex flex-col h-full min-h-0 min-w-0 ${comparisonOn ? '' : 'flex-1'}`}
                         style={comparisonOn ? { width: `${splitWidth}%`, flex: `0 0 ${splitWidth}%` } : {}}
                     >
+                        <div className="sticky top-0 bg-slate-50/95 backdrop-blur border-b border-slate-200 z-30 px-3 py-2 shrink-0">
+                            <div className="mb-1 text-[11px] font-bold text-slate-700">Primary Sheet</div>
+                            <div className="grid grid-cols-1 gap-1.5">
+                                <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-2">
+                                    <span className="text-[11px] font-bold text-slate-600">Sheet</span>
+                                    <div className="relative w-full max-w-[420px] min-w-0" ref={primarySourcePickerRef}>
+                                        <button
+                                            type="button"
+                                            onClick={() => setPrimarySourcePickerOpen((v) => !v)}
+                                            className="w-full h-8 px-2.5 rounded-lg border border-slate-300 bg-white text-slate-900 text-[11px] font-bold shadow-sm hover:border-slate-400 transition-all flex items-center justify-between gap-2 overflow-hidden"
+                                            title={primaryPickerLabel}
+                                        >
+                                            <span className="truncate text-left">{trunc(primaryPickerLabel, 90)}</span>
+                                            <span className={`opacity-50 shrink-0 text-[10px] transition-transform ${primarySourcePickerOpen ? "rotate-180" : ""}`}>▼</span>
+                                        </button>
+                                        {primarySourcePickerOpen && (
+                                            <div className="absolute left-0 mt-1 w-[min(620px,calc(100vw-2rem))] rounded-xl border border-slate-200 bg-white shadow-2xl z-[80] p-2">
+                                                        <input
+                                                            autoFocus
+                                                            value={primarySourceQuery}
+                                                            onChange={(e) => setPrimarySourceQuery(e.target.value)}
+                                                            placeholder="Search report sources or files..."
+                                                            className="w-full border border-slate-100 rounded-lg px-3 py-2 mb-2 focus:outline-none focus:ring focus:ring-slate-100 placeholder:text-slate-400 text-[11px] font-bold"
+                                                        />
+                                                        <div className="max-h-80 overflow-auto custom-scrollbar space-y-1">
+                                                            {explicitSources.filter((source) => {
+                                                                const q = primarySourceQuery.trim().toLowerCase();
+                                                                if (!q) return true;
+                                                                const imports = reportSourceImports[String(source.id)] || [];
+                                                                return String(source.name || "").toLowerCase().includes(q)
+                                                                    || imports.some((item) => String(resolveFileLabel(item)).toLowerCase().includes(q));
+                                                            }).map((source) => {
+                                                                const key = String(source.id);
+                                                                const imports = reportSourceImports[key] || [];
+                                                                const isExpanded = primaryExpandedSources.has(key) || !!primarySourceQuery.trim();
+                                                                const groups = {};
+                                                                imports.forEach((item) => {
+                                                                    const label = resolveFileLabel(item);
+                                                                    if (!groups[label]) groups[label] = [];
+                                                                    groups[label].push(item);
+                                                                });
+                                                                Object.values(groups).forEach((g) => g.sort((a, b) => (b.import_version || 0) - (a.import_version || 0)));
+                                                                const sortedGroups = Object.values(groups).sort((a, b) => new Date(b[0]?.uploaded_at || 0) - new Date(a[0]?.uploaded_at || 0));
+
+                                                                return (
+                                                                    <div key={key} className="rounded-lg border border-slate-100 bg-slate-50/60 overflow-hidden">
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => setPrimaryExpandedSources((prev) => {
+                                                                                const next = new Set(prev);
+                                                                                if (next.has(key)) next.delete(key); else next.add(key);
+                                                                                return next;
+                                                                            })}
+                                                                            className="w-full flex items-center justify-between gap-3 px-3 py-2 hover:bg-slate-100 transition-colors"
+                                                                        >
+                                                                            <div className="min-w-0 text-left text-[11px] font-black text-slate-800 truncate">
+                                                                                {source.name || `Report source ${source.id}`} · <span className="text-slate-500">{imports.length} file{imports.length === 1 ? "" : "s"}</span>
+                                                                            </div>
+                                                                            <span className={`text-[10px] text-slate-400 transition-transform ${isExpanded ? "rotate-180" : ""}`}>▼</span>
+                                                                        </button>
+                                                                        {isExpanded && (
+                                                                            <div className="bg-white border-t border-slate-100 py-1">
+                                                                                {sortedGroups.map((group) => {
+                                                                                    const latest = group[0];
+                                                                                    const label = resolveFileLabel(latest);
+                                                                                    const fileKey = `${key}:${label}`;
+                                                                                    const revisionMenuChars = Math.min(100, Math.max(38, String(label || "").length + 20));
+                                                                                    const isSelectedGroup = group.some((i) => String(i.sheet_id) === String(sheetId));
+                                                                                    return (
+                                                                                        <div
+                                                                                            key={fileKey}
+                                                                                            className={`group flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors ${isSelectedGroup ? "bg-indigo-50" : "hover:bg-indigo-50/70"}`}
+                                                                                            onClick={() => {
+                                                                                                const nextSheetId = String(latest?.sheet_id || "");
+                                                                                                if (nextSheetId && nextSheetId !== String(sheetId || "")) props.loadStored && props.loadStored(nextSheetId);
+                                                                                                setPrimaryFileVersionMenuKey(null);
+                                                                                                setPrimarySourcePickerOpen(false);
+                                                                                            }}
+                                                                                        >
+                                                                                            <div className="relative w-10 shrink-0 flex justify-center file-version-dropdown-container">
+                                                                                                <button
+                                                                                                    type="button"
+                                                                                                    onClick={(e) => {
+                                                                                                        e.stopPropagation();
+                                                                                                        setPrimaryFileVersionMenuKey(primaryFileVersionMenuKey === fileKey ? null : fileKey);
+                                                                                                    }}
+                                                                                                    className={`px-1.5 py-0.5 rounded-[4px] bg-slate-100 text-[9px] font-black text-slate-500 hover:bg-slate-200 transition-colors flex items-center gap-1 ${primaryFileVersionMenuKey === fileKey ? "ring-2 ring-indigo-100 bg-slate-200" : ""}`}
+                                                                                                >
+                                                                                                    v{latest.import_version || "-"}<span className={`text-[8px] opacity-40 transition-transform ${primaryFileVersionMenuKey === fileKey ? "rotate-180" : ""}`}>▼</span>
+                                                                                                </button>
+                                                                                                {primaryFileVersionMenuKey === fileKey && (
+                                                                                                    <div
+                                                                                                        className="absolute left-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-xl z-[90] py-1"
+                                                                                                        style={{ width: `${revisionMenuChars}ch`, maxWidth: "min(90vw, 980px)" }}
+                                                                                                    >
+                                                                                                        <div className="max-h-48 overflow-auto custom-scrollbar">
+                                                                                                            {group.map((v) => (
+                                                                                                                <button
+                                                                                                                    key={String(v.sheet_id)}
+                                                                                                                    onClick={(e) => {
+                                                                                                                        e.stopPropagation();
+                                                                                                                        const nextSheetId = String(v.sheet_id || "");
+                                                                                                                        if (nextSheetId && nextSheetId !== String(sheetId || "")) props.loadStored && props.loadStored(nextSheetId);
+                                                                                                                        setPrimaryFileVersionMenuKey(null);
+                                                                                                                        setPrimarySourcePickerOpen(false);
+                                                                                                                    }}
+                                                                                                                    className={`w-full text-left px-2 py-1.5 hover:bg-slate-50 flex items-center gap-2 ${String(v.sheet_id) === String(sheetId) ? "bg-indigo-50/50" : ""}`}
+                                                                                                                >
+                                                                                                                    <span className="w-7 shrink-0 text-[8px] font-black text-slate-400 text-center">v{v.import_version}</span>
+                                                                                                                    <div className="min-w-0 flex-1">
+                                                                                                                        <div className="text-[10px] font-medium text-slate-700 whitespace-nowrap">
+                                                                                                                            {label}
+                                                                                                                            {v.uploaded_at ? ` · Updated: ${new Date(v.uploaded_at).toLocaleDateString()}` : ""}
+                                                                                                                        </div>
+                                                                                                                    </div>
+                                                                                                                </button>
+                                                                                                            ))}
+                                                                                                        </div>
+                                                                                                    </div>
+                                                                                                )}
+                                                                                            </div>
+                                                                                            <div className="min-w-0 flex-1">
+                                                                                                <div className="text-[11px] font-bold text-slate-800 truncate">
+                                                                                                    {label}
+                                                                                                    {latest.uploaded_at ? ` · Updated: ${new Date(latest.uploaded_at).toLocaleDateString()}` : ""}
+                                                                                                </div>
+                                                                                            </div>
+                                                                                        </div>
+                                                                                    );
+                                                                                })}
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                );
+                                                            })}
+                                                        </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
                         {sortedData?.length > 0 ? (
                             <>
-                                <div className="sticky top-0 bg-slate-50/90 backdrop-blur text-slate-500 font-semibold border-b border-slate-200 z-10 px-4 py-2 text-[10px] uppercase tracking-wider flex justify-between items-center shrink-0">
-                                    <span>Primary: <b className="text-indigo-600">{props.activeFilename || "Current Sheet"}</b></span>
-                                </div>
 
                                 <div className="flex-1 w-full flex flex-col min-h-0">
                                     <div
@@ -1664,16 +2210,24 @@ export default function DashboardBody(props) {
                                         ref={headerRef}
                                     >
                                         <div style={{ display: 'flex', width: totalRowWidth, height: '100%' }}>
-                                            {activePrimaryFields.map((h) => (
+                                            {activePrimaryFields.map((h, colIndex) => (
                                                 <div
                                                     key={h}
                                                     ref={(el) => {
                                                         if (filterAnchorRefs?.current) filterAnchorRefs.current[h] = el;
                                                     }}
                                                     style={{ width: colWidths[h] || 180, minWidth: colWidths[h] || 180 }}
-                                                    className="table-pro-text relative border-r border-slate-200 px-3 py-1.5 text-[11px] text-left cursor-pointer group flex items-center justify-between hover:bg-slate-200 transition-colors bg-slate-100 text-slate-800 font-bold h-full"
+                                                    className={`table-pro-text relative border-r border-slate-200 px-3 py-1.5 text-[11px] text-left cursor-pointer group flex items-center justify-between hover:bg-slate-200 transition-colors text-slate-800 font-bold h-full ${isPrimaryColumnSelected(colIndex) ? "bg-indigo-100" : "bg-slate-100"}`}
                                                     onClick={(e) => {
                                                         const isFilterBtn = e.target.closest && e.target.closest(".filter-btn");
+                                                        if (selectionModeOn && !isFilterBtn) {
+                                                            e.preventDefault();
+                                                            if (!e.shiftKey && !e.ctrlKey && !e.metaKey) {
+                                                                clearExplicitSelections();
+                                                            }
+                                                            applyColumnSelection(colIndex, e);
+                                                            return;
+                                                        }
                                                         if (!isFilterBtn) requestSort(h);
                                                     }}
                                                 >
@@ -1739,6 +2293,7 @@ export default function DashboardBody(props) {
                                                 {({ height, width }) => (
                                                     <List
                                                         ref={primaryListRef}
+                                                        outerRef={primaryOuterRef}
                                                         height={height}
                                                         itemCount={sortedData.length}
                                                         itemSize={36}
@@ -1757,8 +2312,32 @@ export default function DashboardBody(props) {
                                                                     style={{ ...style, width: totalRowWidth, minWidth: "100%" }}
                                                                     className={`flex ${index % 2 === 1 ? "bg-slate-50" : "bg-white"} hover:bg-indigo-50/50 transition-colors border-b border-slate-100 items-center h-8`}
                                                                 >
-                                                                    {activePrimaryFields.map((h) => (
-                                                                        <div key={h} style={{ width: colWidths[h] || 180, minWidth: colWidths[h] || 180 }} className="border-r border-slate-100 px-3 text-[11px] text-slate-700 truncate h-full flex items-center">
+                                                                    {activePrimaryFields.map((h, colIndex) => (
+                                                                        <div
+                                                                            key={h}
+                                                                            style={{ width: colWidths[h] || 180, minWidth: colWidths[h] || 180 }}
+                                                                            className={`border-r border-slate-100 px-3 text-[11px] text-slate-700 truncate h-full flex items-center ${selectionModeOn ? "cursor-crosshair select-none" : ""} ${isPrimaryCellSelected(index, colIndex) ? "bg-indigo-100 ring-1 ring-inset ring-indigo-300" : ""}`}
+                                                                            onMouseDown={(e) => {
+                                                                                if (!selectionModeOn) return;
+                                                                                e.preventDefault();
+                                                                                if (e.shiftKey || e.ctrlKey || e.metaKey) {
+                                                                                    applyRowSelection(index, e);
+                                                                                    return;
+                                                                                }
+                                                                                clearExplicitSelections();
+                                                                                isSelectingRef.current = true;
+                                                                                dragPointerRef.current = { clientX: e.clientX, clientY: e.clientY };
+                                                                                setIsSelecting(true);
+                                                                                document.body.style.userSelect = "none";
+                                                                                document.body.style.cursor = "crosshair";
+                                                                                setSelectionAnchor({ row: index, col: colIndex });
+                                                                                queueSelectionFocusUpdate({ row: index, col: colIndex });
+                                                                            }}
+                                                                            onMouseEnter={() => {
+                                                                                if (!selectionModeOn || !isSelectingRef.current) return;
+                                                                                queueSelectionFocusUpdate({ row: index, col: colIndex });
+                                                                            }}
+                                                                        >
                                                                             {typeof row[h] === 'number' ? formatSmart(row[h], h) : renderMaybeDate(h, row[h])}
                                                                         </div>
                                                                     ))}
@@ -1808,12 +2387,119 @@ export default function DashboardBody(props) {
                             className="flex flex-col h-full min-h-0 min-w-0 bg-slate-50/30"
                             style={{ width: `${100 - splitWidth}%`, flex: `1 1 ${100 - splitWidth}%` }}
                         >
+                            <div className="sticky top-0 bg-slate-100/95 backdrop-blur border-b border-slate-200 z-30 px-3 py-2 shrink-0">
+                                <div className="mb-1 text-[11px] font-bold text-slate-700">Secondary Sheet</div>
+                                <div className="grid grid-cols-1 gap-1.5">
+                                    <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-2">
+                                        <span className="text-[11px] font-bold text-slate-600">Sheet</span>
+                                        <div className="relative w-full max-w-[420px] min-w-0" ref={secondarySourcePickerRef}>
+                                            <button
+                                                type="button"
+                                                onClick={() => setSecondarySourcePickerOpen((v) => !v)}
+                                                className="w-full h-8 px-2.5 rounded-lg border border-slate-300 bg-white text-slate-900 text-[11px] font-bold shadow-sm hover:border-slate-400 transition-all flex items-center justify-between gap-2 overflow-hidden"
+                                                title={secondaryPickerLabel}
+                                            >
+                                                <span className="truncate text-left">{trunc(secondaryPickerLabel, 90)}</span>
+                                                <span className={`opacity-50 shrink-0 text-[10px] transition-transform ${secondarySourcePickerOpen ? "rotate-180" : ""}`}>▼</span>
+                                            </button>
+                                            {secondarySourcePickerOpen && (
+                                                <div className="absolute left-0 mt-1 w-[min(620px,calc(100vw-2rem))] rounded-xl border border-slate-200 bg-white shadow-2xl z-[80] p-2">
+                                                    <input
+                                                        autoFocus
+                                                        value={secondarySourceQuery}
+                                                        onChange={(e) => setSecondarySourceQuery(e.target.value)}
+                                                        placeholder="Search report sources or files..."
+                                                        className="w-full border border-slate-100 rounded-lg px-3 py-2 mb-2 focus:outline-none focus:ring focus:ring-slate-100 placeholder:text-slate-400 text-[11px] font-bold"
+                                                    />
+                                                    <div className="max-h-80 overflow-auto custom-scrollbar space-y-1">
+                                                        {explicitSources.filter((source) => {
+                                                            const q = secondarySourceQuery.trim().toLowerCase();
+                                                            if (!q) return true;
+                                                            const imports = reportSourceImports[String(source.id)] || [];
+                                                            return String(source.name || "").toLowerCase().includes(q)
+                                                                || imports.some((item) => String(resolveFileLabel(item)).toLowerCase().includes(q));
+                                                        }).map((source) => {
+                                                            const key = String(source.id);
+                                                            const imports = reportSourceImports[key] || [];
+                                                            const isExpanded = secondaryExpandedSources.has(key) || !!secondarySourceQuery.trim();
+                                                            const groups = {};
+                                                            imports.forEach((item) => {
+                                                                const label = resolveFileLabel(item);
+                                                                if (!groups[label]) groups[label] = [];
+                                                                groups[label].push(item);
+                                                            });
+                                                            Object.values(groups).forEach((g) => g.sort((a, b) => (b.import_version || 0) - (a.import_version || 0)));
+                                                            const sortedGroups = Object.values(groups).sort((a, b) => new Date(b[0]?.uploaded_at || 0) - new Date(a[0]?.uploaded_at || 0));
+
+                                                            return (
+                                                                <div key={key} className="rounded-lg border border-slate-100 bg-slate-50/60 overflow-hidden">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => setSecondaryExpandedSources((prev) => {
+                                                                            const next = new Set(prev);
+                                                                            if (next.has(key)) next.delete(key); else next.add(key);
+                                                                            return next;
+                                                                        })}
+                                                                        className="w-full flex items-center justify-between gap-3 px-3 py-2 hover:bg-slate-100 transition-colors"
+                                                                    >
+                                                                        <div className="min-w-0 text-left text-[11px] font-black text-slate-800 truncate">
+                                                                            {source.name || `Report source ${source.id}`} · <span className="text-slate-500">{imports.length} file{imports.length === 1 ? "" : "s"}</span>
+                                                                        </div>
+                                                                        <span className={`text-[10px] text-slate-400 transition-transform ${isExpanded ? "rotate-180" : ""}`}>▼</span>
+                                                                    </button>
+                                                                    {isExpanded && (
+                                                                        <div className="bg-white border-t border-slate-100 py-1">
+                                                                            {sortedGroups.map((group) => {
+                                                                                const latest = group[0];
+                                                                                const label = resolveFileLabel(latest);
+                                                                                const fileKey = `${key}:${label}`;
+                                                                                const isSelectedGroup = group.some((i) => String(i.sheet_id) === String(secondarySheetId));
+                                                                                return (
+                                                                                    <div
+                                                                                        key={fileKey}
+                                                                                        className={`group flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors ${isSelectedGroup ? "bg-emerald-50" : "hover:bg-emerald-50/70"}`}
+                                                                                        onClick={() => {
+                                                                                            const nextSheetId = String(latest?.sheet_id || "");
+                                                                                            if (nextSheetId) setSecondarySheetId(nextSheetId);
+                                                                                            setSecondaryFileVersionMenuKey(null);
+                                                                                            setSecondarySourcePickerOpen(false);
+                                                                                        }}
+                                                                                    >
+                                                                                        <div className="relative w-10 shrink-0 flex justify-center file-version-dropdown-container">
+                                                                                            <button
+                                                                                                type="button"
+                                                                                                onClick={(e) => {
+                                                                                                    e.stopPropagation();
+                                                                                                    setSecondaryFileVersionMenuKey(secondaryFileVersionMenuKey === fileKey ? null : fileKey);
+                                                                                                }}
+                                                                                                className={`px-1.5 py-0.5 rounded-[4px] bg-slate-100 text-[9px] font-black text-slate-500 hover:bg-slate-200 transition-colors flex items-center gap-1 ${secondaryFileVersionMenuKey === fileKey ? "ring-2 ring-emerald-100 bg-slate-200" : ""}`}
+                                                                                            >
+                                                                                                v{latest.import_version || "-"}<span className={`text-[8px] opacity-40 transition-transform ${secondaryFileVersionMenuKey === fileKey ? "rotate-180" : ""}`}>▼</span>
+                                                                                            </button>
+                                                                                        </div>
+                                                                                        <div className="min-w-0 flex-1">
+                                                                                            <div className="text-[11px] font-bold text-slate-800 truncate">
+                                                                                                {label}
+                                                                                                {latest.uploaded_at ? ` · Updated: ${new Date(latest.uploaded_at).toLocaleDateString()}` : ""}
+                                                                                            </div>
+                                                                                        </div>
+                                                                                    </div>
+                                                                                );
+                                                                            })}
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                             {secondaryData?.length > 0 ? (
                                 <>
-                                    <div className="sticky top-0 bg-slate-100/90 backdrop-blur text-slate-500 font-semibold border-b border-slate-200 z-10 px-4 py-2 text-[10px] uppercase tracking-wider flex justify-between items-center shrink-0">
-                                        <span>Secondary: <b className="text-emerald-600">{props.myFiles.find(f => String(f.id) === String(secondarySheetId))?.display_name || "Sheet B"}</b></span>
-                                    </div>
-
                                     <div className="flex-1 w-full flex flex-col min-h-0">
                                         <div 
                                             className="flex bg-slate-200/50 border-b border-slate-200 shadow-sm z-10 overflow-hidden shrink-0 h-10 items-center"

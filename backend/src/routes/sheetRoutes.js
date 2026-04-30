@@ -21,6 +21,7 @@ import {
 } from "../controllers/sheetController.js";
 import { auth } from "../middleware/auth.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
+import { uploadRateLimit } from "../middleware/rateLimit.js";
 
 import { fileURLToPath } from "url";
 
@@ -55,7 +56,7 @@ const upload = multer({
 // All routes here are protected
 router.use(auth);
 
-router.post("/upload", upload.single("file"), asyncHandler(uploadSheet));
+router.post("/upload", uploadRateLimit, upload.single("file"), asyncHandler(uploadSheet));
 router.get("/sheets/active", asyncHandler(getActiveSheet));
 router.get("/my-sheets", asyncHandler(listMySheets));
 router.get("/sheets/all", asyncHandler(listAllSheets)); // For admin

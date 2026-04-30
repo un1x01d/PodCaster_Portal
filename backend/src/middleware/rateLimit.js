@@ -3,6 +3,10 @@ const aiBuckets = new Map();
 const invitationLookupBuckets = new Map();
 const invitationAcceptBuckets = new Map();
 const invitationIssueBuckets = new Map();
+const twoFactorBuckets = new Map();
+const oauthPublicBuckets = new Map();
+const oauthExchangeBuckets = new Map();
+const uploadBuckets = new Map();
 
 const MAX_ATTEMPTS = Number.parseInt(process.env.LOGIN_RATE_LIMIT_MAX || "10", 10);
 const WINDOW_MS = Number.parseInt(process.env.LOGIN_RATE_LIMIT_WINDOW_MS || `${15 * 60 * 1000}`, 10);
@@ -20,6 +24,18 @@ const INVITE_ACCEPT_MAX_BUCKETS = Number.parseInt(process.env.INVITE_ACCEPT_RATE
 const INVITE_ISSUE_MAX_ATTEMPTS = Number.parseInt(process.env.INVITE_ISSUE_RATE_LIMIT_MAX || "30", 10);
 const INVITE_ISSUE_WINDOW_MS = Number.parseInt(process.env.INVITE_ISSUE_RATE_LIMIT_WINDOW_MS || `${10 * 60 * 1000}`, 10);
 const INVITE_ISSUE_MAX_BUCKETS = Number.parseInt(process.env.INVITE_ISSUE_RATE_LIMIT_MAX_BUCKETS || "50000", 10);
+const TWO_FACTOR_MAX_ATTEMPTS = Number.parseInt(process.env.TWO_FACTOR_RATE_LIMIT_MAX || "20", 10);
+const TWO_FACTOR_WINDOW_MS = Number.parseInt(process.env.TWO_FACTOR_RATE_LIMIT_WINDOW_MS || `${10 * 60 * 1000}`, 10);
+const TWO_FACTOR_MAX_BUCKETS = Number.parseInt(process.env.TWO_FACTOR_RATE_LIMIT_MAX_BUCKETS || "50000", 10);
+const OAUTH_PUBLIC_MAX_ATTEMPTS = Number.parseInt(process.env.OAUTH_PUBLIC_RATE_LIMIT_MAX || "40", 10);
+const OAUTH_PUBLIC_WINDOW_MS = Number.parseInt(process.env.OAUTH_PUBLIC_RATE_LIMIT_WINDOW_MS || `${5 * 60 * 1000}`, 10);
+const OAUTH_PUBLIC_MAX_BUCKETS = Number.parseInt(process.env.OAUTH_PUBLIC_RATE_LIMIT_MAX_BUCKETS || "50000", 10);
+const OAUTH_EXCHANGE_MAX_ATTEMPTS = Number.parseInt(process.env.OAUTH_EXCHANGE_RATE_LIMIT_MAX || "20", 10);
+const OAUTH_EXCHANGE_WINDOW_MS = Number.parseInt(process.env.OAUTH_EXCHANGE_WINDOW_MS || `${5 * 60 * 1000}`, 10);
+const OAUTH_EXCHANGE_MAX_BUCKETS = Number.parseInt(process.env.OAUTH_EXCHANGE_RATE_LIMIT_MAX_BUCKETS || "50000", 10);
+const UPLOAD_MAX_ATTEMPTS = Number.parseInt(process.env.UPLOAD_RATE_LIMIT_MAX || "5", 10);
+const UPLOAD_WINDOW_MS = Number.parseInt(process.env.UPLOAD_RATE_LIMIT_WINDOW_MS || `${15 * 60 * 1000}`, 10);
+const UPLOAD_MAX_BUCKETS = Number.parseInt(process.env.UPLOAD_RATE_LIMIT_MAX_BUCKETS || "10000", 10);
 let lastPruneAt = 0;
 
 function pruneExpiredBuckets(now) {
@@ -39,6 +55,18 @@ function pruneExpiredBuckets(now) {
   }
   for (const [key, value] of invitationIssueBuckets.entries()) {
     if (now > value.expiresAt) invitationIssueBuckets.delete(key);
+  }
+  for (const [key, value] of twoFactorBuckets.entries()) {
+    if (now > value.expiresAt) twoFactorBuckets.delete(key);
+  }
+  for (const [key, value] of oauthPublicBuckets.entries()) {
+    if (now > value.expiresAt) oauthPublicBuckets.delete(key);
+  }
+  for (const [key, value] of oauthExchangeBuckets.entries()) {
+    if (now > value.expiresAt) oauthExchangeBuckets.delete(key);
+  }
+  for (const [key, value] of uploadBuckets.entries()) {
+    if (now > value.expiresAt) uploadBuckets.delete(key);
   }
 }
 
@@ -72,6 +100,31 @@ function invitationIssueKeyFromReq(req) {
   const userId = req.user?.id ? String(req.user.id) : "anon";
   const groupId = String(req.body?.groupId || req.params?.id || req.query?.groupId || "").trim() || "none";
   return `${ip}:${userId}:${groupId}`;
+}
+
+function twoFactorKeyFromReq(req) {
+  const ip = req.ip || req.connection?.remoteAddress || "unknown";
+  const challengeId = String(req.body?.challengeId || req.body?.code || "").slice(0, 24);
+  return `${ip}:${challengeId}`;
+}
+
+function oauthPublicKeyFromReq(req) {
+  const ip = req.ip || req.connection?.remoteAddress || "unknown";
+  const route = String(req.route?.path || req.path || "").trim();
+  const groupId = String(req.query?.groupId || req.body?.groupId || "").trim().slice(0, 16);
+  return `${ip}:${route}:${groupId || "none"}`;
+}
+
+function oauthExchangeKeyFromReq(req) {
+  const ip = req.ip || req.connection?.remoteAddress || "unknown";
+  const codePrefix = String(req.body?.code || "").trim().slice(0, 12);
+  return `${ip}:${codePrefix || "none"}`;
+}
+
+function uploadKeyFromReq(req) {
+  const ip = req.ip || req.connection?.remoteAddress || "unknown";
+  const userId = req.user?.id ? String(req.user.id) : "anon";
+  return `${ip}:${userId}`;
 }
 
 function runBucketRateLimit({ map, key, now, maxAttempts, windowMs, maxBuckets, res, errorCode }) {
@@ -197,11 +250,87 @@ export function invitationIssueRateLimit(req, res, next) {
   return next();
 }
 
+export function twoFactorRateLimit(req, res, next) {
+  const key = twoFactorKeyFromReq(req);
+  const now = Date.now();
+  pruneExpiredBuckets(now);
+  const blocked = runBucketRateLimit({
+    map: twoFactorBuckets,
+    key,
+    now,
+    maxAttempts: TWO_FACTOR_MAX_ATTEMPTS,
+    windowMs: TWO_FACTOR_WINDOW_MS,
+    maxBuckets: TWO_FACTOR_MAX_BUCKETS,
+    res,
+    errorCode: "too_many_two_factor_attempts",
+  });
+  if (blocked) return blocked;
+  return next();
+}
+
+export function oauthPublicRateLimit(req, res, next) {
+  const key = oauthPublicKeyFromReq(req);
+  const now = Date.now();
+  pruneExpiredBuckets(now);
+  const blocked = runBucketRateLimit({
+    map: oauthPublicBuckets,
+    key,
+    now,
+    maxAttempts: OAUTH_PUBLIC_MAX_ATTEMPTS,
+    windowMs: OAUTH_PUBLIC_WINDOW_MS,
+    maxBuckets: OAUTH_PUBLIC_MAX_BUCKETS,
+    res,
+    errorCode: "too_many_oauth_requests",
+  });
+  if (blocked) return blocked;
+  return next();
+}
+
+export function oauthExchangeRateLimit(req, res, next) {
+  const key = oauthExchangeKeyFromReq(req);
+  const now = Date.now();
+  pruneExpiredBuckets(now);
+  const blocked = runBucketRateLimit({
+    map: oauthExchangeBuckets,
+    key,
+    now,
+    maxAttempts: OAUTH_EXCHANGE_MAX_ATTEMPTS,
+    windowMs: OAUTH_EXCHANGE_WINDOW_MS,
+    maxBuckets: OAUTH_EXCHANGE_MAX_BUCKETS,
+    res,
+    errorCode: "too_many_oauth_exchanges",
+  });
+  if (blocked) return blocked;
+  return next();
+}
+
+export function uploadRateLimit(req, res, next) {
+  const key = uploadKeyFromReq(req);
+  const now = Date.now();
+  pruneExpiredBuckets(now);
+  const blocked = runBucketRateLimit({
+    map: uploadBuckets,
+    key,
+    now,
+    maxAttempts: UPLOAD_MAX_ATTEMPTS,
+    windowMs: UPLOAD_WINDOW_MS,
+    maxBuckets: UPLOAD_MAX_BUCKETS,
+    res,
+    errorCode: "too_many_upload_attempts",
+  });
+  if (blocked) return blocked;
+  return next();
+}
+
 export function __clearLoginRateLimitStateForTests() {
   loginBuckets.clear();
   aiBuckets.clear();
   invitationLookupBuckets.clear();
   invitationAcceptBuckets.clear();
   invitationIssueBuckets.clear();
+  twoFactorBuckets.clear();
+  oauthPublicBuckets.clear();
+  oauthExchangeBuckets.clear();
+  uploadBuckets.clear();
   lastPruneAt = 0;
 }

@@ -7,7 +7,8 @@
     "dev": "nodemon server.js",
     "start": "node server.js",
     "test": "node --test",
-    "sync:app-settings": "node scripts/syncAppSettings.js"
+    "sync:app-settings": "node scripts/syncAppSettings.js",
+    "migrate:tenants": "node scripts/migrateTenantDatabases.js"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",
@@ -16,7 +17,7 @@
     "express": "^4.21.3",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.1.1",
-    "nodemailer": "^6.10.1",
+    "nodemailer": "^8.0.7",
     "pg": "^8.11.5",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },

@@ -12,6 +12,7 @@ FRONTEND_SERVICE="${FRONTEND_SERVICE:-data-insights-frontend-staging}"
 DB_INSTANCE="${DB_INSTANCE:-data-insights-pg-staging}"
 DB_NAME="${DB_NAME:-portaldb}"
 DB_USER="${DB_USER:-portal}"
+TENANT_DB_PREFIX="${TENANT_DB_PREFIX:-tenant}"
 TAG="${TAG:-staging}"
 
 gcloud config set project "$PROJECT_ID" >/dev/null
@@ -32,7 +33,7 @@ gcloud run deploy "${BACKEND_SERVICE}" \
   --platform managed \
   --allow-unauthenticated \
   --add-cloudsql-instances "${CLOUDSQL_CONN}" \
-  --set-env-vars "NODE_ENV=production,PORT=8080,OPENAI_MODEL=gpt-4o-mini,OPENAI_BASE_URL=https://api.openai.com/v1,OPENAI_TIMEOUT_MS=60000,CHAT_AUDIO_MAX_CHARS=8000,POSTGRES_HOST=/cloudsql/${CLOUDSQL_CONN},POSTGRES_PORT=5432,POSTGRES_USER=${DB_USER},POSTGRES_DB=${DB_NAME}" \
+  --set-env-vars "NODE_ENV=production,PORT=8080,TENANT_DB_ISOLATION_ENABLED=true,TENANT_DB_PREFIX=${TENANT_DB_PREFIX},TENANT_DB_POOL_MAX=3,XLSX_WORKER_DEFAULT_MEMORY_MB=512,XLSX_WORKER_MIN_MEMORY_MB=64,XLSX_WORKER_MAX_MEMORY_MB=4096,OPENAI_MODEL=gpt-4o-mini,OPENAI_BASE_URL=https://api.openai.com/v1,OPENAI_TIMEOUT_MS=60000,CHAT_AUDIO_MAX_CHARS=8000,POSTGRES_HOST=/cloudsql/${CLOUDSQL_CONN},POSTGRES_PORT=5432,POSTGRES_USER=${DB_USER},POSTGRES_DB=${DB_NAME}" \
   --set-secrets "POSTGRES_PASSWORD=DB_PASSWORD:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,JWT_SECRET=JWT_SECRET:latest,JWT_ISSUER=JWT_ISSUER:latest,JWT_AUDIENCE=JWT_AUDIENCE:latest,SETTINGS_CRYPTO_KEY=SETTINGS_CRYPTO_KEY:latest"
 
 BACKEND_URL="$(gcloud run services describe "${BACKEND_SERVICE}" --region "${REGION}" --format='value(status.url)')"

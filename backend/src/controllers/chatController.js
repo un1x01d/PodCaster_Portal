@@ -1,7 +1,7 @@
 import { createHash } from "crypto";
 import { query } from "../config/db.js";
 import { isEnglishLocale, normalizeLocale, translateDashboardItems } from "../utils/dashboardLocalization.js";
-import { checkSheetAccess, hasFolderAccess, loadSheetPermissionSets } from "../utils/authorization.js";
+import { checkSheetAccess, hasReportSourceOwnerAccess, loadSheetPermissionSets } from "../utils/authorization.js";
 import { estimateOpenAiCostUsd, recordAiUsage, reserveAiQueryForSheet } from "../utils/aiQuota.js";
 export { checkSheetAccess } from "../utils/authorization.js";
 
@@ -302,7 +302,8 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
         params.push(f.column === "Year" || f.column === "Month" || f.column === "Quarter" ? "Date" : f.column, String(f.value));
         const numericFilterVal = toNum(f.value);
         const dateFilterVal = toSqlDateLiteral(f.value);
-        const useDateComparators = !!dateFilterVal && (
+        const isVirtualDateCol = f.column === "Year" || f.column === "Month" || f.column === "Quarter";
+        const useDateComparators = !isVirtualDateCol && !!dateFilterVal && (
           looksLikeDateText(f.value) ||
           /date|time|day|month|year|period|quarter|дата|період|рік|год/i.test(String(f.column || ""))
         );
@@ -954,6 +955,7 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
     "You are a professional financial data analyst AI.",
     "WORKSPACE AWARENESS: You have access to a workspace containing multiple spreadsheets.",
     "CROSS-FILE COMPARISON: If the user asks to compare the current file with another file in the workspace (provided in schema_profile.available_files):",
+    "REVISION AWARENESS: available_files may include file_label/import_version/uploaded_at. Use these fields to choose the right revision when users reference versions or upload dates.",
     " 1. Identify the 'sheet_id' of the comparison file.",
     " 2. Populate the 'cross_targets' array in the response JSON.",
     " 3. Example cross_targets: [{\"sheet_id\": \"id_of_file_a\", \"column\": \"Revenue\", \"operation\": \"sum\"}, {\"sheet_id\": \"id_of_file_b\", \"column\": \"Budget\", \"operation\": \"sum\"}]",
@@ -1578,7 +1580,7 @@ export async function getChatAudio(req, res) {
 }
 
 export async function chatQuery(req, res) {
-  const { sheetId, activeTab = null, message, activeFilters = {}, conversationHistory = [], locale: rawLocale } = req.body || {};
+  const { sheetId, activeTab = null, message, activeFilters = {}, splitContext = null, conversationHistory = [], locale: rawLocale } = req.body || {};
   const locale = normalizeLocale(rawLocale || "en");
   const hasAccess = await checkSheetAccess(sheetId, req.user);
   if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
@@ -1600,9 +1602,11 @@ export async function chatQuery(req, res) {
   
   // PERF-01: Build Workspace Schema for Cross-Sheet Intelligence
   const workspaceRes = await query(
-      `SELECT DISTINCT s.id, s.display_name, s.filename, s.headers
+      `SELECT DISTINCT s.id, s.display_name, s.filename, s.headers, s.uploaded_at,
+              rsi.file_label, rsi.import_version
        FROM sheets s
        LEFT JOIN report_sources rs ON rs.id = s.report_source_id
+       LEFT JOIN report_source_imports rsi ON rsi.sheet_id = s.id
        WHERE (
          $2 = 'admin'
          OR rs.created_by = $1
@@ -1611,10 +1615,22 @@ export async function chatQuery(req, res) {
        )`,
       [req.user.id, req.user.role]
   );
+  const parsedSplitContext = (splitContext && typeof splitContext === "object")
+    ? {
+        primary_sheet_id: splitContext.primarySheetId ? String(splitContext.primarySheetId) : null,
+        secondary_sheet_id: splitContext.secondarySheetId ? String(splitContext.secondarySheetId) : null,
+        secondary_tab: splitContext.secondaryTab ? String(splitContext.secondaryTab) : null,
+        primary_uploaded_at: splitContext.primaryUploadedAt ? String(splitContext.primaryUploadedAt) : null,
+        secondary_uploaded_at: splitContext.secondaryUploadedAt ? String(splitContext.secondaryUploadedAt) : null,
+      }
+    : null;
   const availableFiles = workspaceRes.map(f => ({
       id: f.id,
       name: f.display_name || f.filename,
-      headers: typeof f.headers === 'string' ? JSON.parse(f.headers) : (f.headers || [])
+      headers: typeof f.headers === 'string' ? JSON.parse(f.headers) : (f.headers || []),
+      file_label: f.file_label || null,
+      import_version: Number.isFinite(Number(f.import_version)) ? Number(f.import_version) : null,
+      uploaded_at: f.uploaded_at || null,
   }));
 
   const dateFormatHints = buildDateFormatHints(aiHeaders, sampleRows);
@@ -1631,7 +1647,8 @@ export async function chatQuery(req, res) {
       schemaProfile: { 
           available_tabs: tabNames,
           available_files: availableFiles,
-          active_filters: activeDashboardFilters
+          active_filters: activeDashboardFilters,
+          split_context: parsedSplitContext,
       }
     });
     ai = normalizeAiPlan(aiResult.plan);
@@ -1850,7 +1867,7 @@ async function loadAccessibleRows(sheetId, user, activeTab = null, rowLimit = nu
   if (!sheetRes.length) return { headers: [], tabs: [], rows: [], rowFiltersList: [], forbidden: true };
   const sheet = sheetRes[0];
 
-  const hasFullAccess = (user.role === "admin" || await hasFolderAccess(sheetId, user.id));
+  const hasFullAccess = (user.role === "admin" || await hasReportSourceOwnerAccess(sheetId, user.id));
 
   let validCols = null;
   let rowFiltersList = [];

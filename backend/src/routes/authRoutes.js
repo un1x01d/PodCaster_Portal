@@ -1,7 +1,11 @@
 import express from "express";
-import { login, getMe, changePassword, logout, getInvitationInfo, acceptInvitation } from "../controllers/authController.js";
+import {
+  login, getMe, changePassword, logout, getInvitationInfo, acceptInvitation,
+  verifyTwoFactorLogin, resendTwoFactorSms,
+  getTwoFactorStatus, startTotpSetup, enableTotp, startSmsSetup, confirmSmsSetup, disableTwoFactor
+} from "../controllers/authController.js";
 import { auth } from "../middleware/auth.js";
-import { loginRateLimit, invitationAcceptRateLimit, invitationLookupRateLimit } from "../middleware/rateLimit.js";
+import { loginRateLimit, invitationAcceptRateLimit, invitationLookupRateLimit, twoFactorRateLimit } from "../middleware/rateLimit.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 
 const router = express.Router();
@@ -10,6 +14,14 @@ router.post("/login", loginRateLimit, asyncHandler(login));
 router.post("/logout", asyncHandler(logout));
 router.get("/invitations/:token", invitationLookupRateLimit, asyncHandler(getInvitationInfo));
 router.post("/invitations/accept", invitationAcceptRateLimit, asyncHandler(acceptInvitation));
+router.post("/2fa/verify", twoFactorRateLimit, asyncHandler(verifyTwoFactorLogin));
+router.post("/2fa/sms/resend", twoFactorRateLimit, asyncHandler(resendTwoFactorSms));
+router.get("/2fa/status", auth, asyncHandler(getTwoFactorStatus));
+router.post("/2fa/totp/start", auth, asyncHandler(startTotpSetup));
+router.post("/2fa/totp/enable", auth, asyncHandler(enableTotp));
+router.post("/2fa/sms/start", auth, asyncHandler(startSmsSetup));
+router.post("/2fa/sms/confirm", auth, asyncHandler(confirmSmsSetup));
+router.post("/2fa/disable", auth, asyncHandler(disableTwoFactor));
 router.get("/me", auth, asyncHandler(getMe));
 router.post("/change-password", auth, asyncHandler(changePassword));
 

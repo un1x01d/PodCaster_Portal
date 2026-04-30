@@ -20,8 +20,9 @@ import googleRoutes from "./src/routes/googleRoutes.js";
 import dropboxRoutes from "./src/routes/dropboxRoutes.js";
 import oneDriveRoutes from "./src/routes/oneDriveRoutes.js";
 import { ensureCsrfCookie, csrfProtect } from "./src/middleware/csrf.js";
-import { recordHttpRequest, renderPrometheusMetrics } from "./src/utils/metrics.js";
+import { recordHttpRequest } from "./src/utils/metrics.js";
 import { cleanupOldInvitations } from "./src/utils/invitationLifecycle.js";
+import { startImportJobWorker, stopImportJobWorker } from "./src/controllers/sheetController.js";
 
 const app = express();
 // Force restart
@@ -92,10 +93,6 @@ if (!fs.existsSync(UPLOADS_DIR)) {
 
 // Health
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
-app.get("/metrics", (_req, res) => {
-  res.setHeader("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
-  res.send(renderPrometheusMetrics());
-});
 app.get("/readyz", async (_req, res) => {
   try {
     await dbQuery("SELECT 1", []);
@@ -171,6 +168,9 @@ try {
   process.exit(1);
 }
 
+// Starts the in-process DB import worker. Work durability is provided by Postgres job state.
+startImportJobWorker();
+
 const server = app.listen(PORT, () =>
   console.log(`✅ Backend running on :${PORT} • SheetJS:`, XLSX?.version || "unknown")
 );
@@ -204,6 +204,8 @@ async function shutdown(signal) {
 
   try {
     if (invitationCleanupTimer) clearInterval(invitationCleanupTimer);
+    // Stop claim loop before closing DB pool to avoid mid-shutdown lease/claim failures.
+    await stopImportJobWorker();
     await new Promise((resolve, reject) => {
       server.close((err) => (err ? reject(err) : resolve()));
     });

@@ -1,5 +1,6 @@
 import jwt from "jsonwebtoken";
 import { randomBytes } from "crypto";
+import { getTenantPool, isTenantDbIsolationEnabled, runWithDbPool } from "../config/db.js";
 
 const JWT_SECRET = String(process.env.JWT_SECRET || "").trim() || randomBytes(32).toString("hex");
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "8h";
@@ -52,6 +53,15 @@ function tokenFromReq(req) {
     return "";
 }
 
+function isControlPlaneRoute(req) {
+    const routeBase = String(req.baseUrl || "").trim();
+    const path = String(req.path || "").trim();
+    if (routeBase === "/auth") return true;
+    // Invitations are accepted before a tenant session exists, so they must live in the control DB.
+    if (path === "/users/invitations" || path.startsWith("/users/invitations/")) return true;
+    return false;
+}
+
 export function setAuthCookie(req, res, token) {
     const secure = req.secure || String(req.headers["x-forwarded-proto"] || "").toLowerCase() === "https";
     const maxAge = Number.parseInt(process.env.JWT_COOKIE_MAX_AGE_MS || `${8 * 60 * 60 * 1000}`, 10);
@@ -89,7 +99,18 @@ export function auth(req, res, next) {
             verifyOpts.audience = JWT_AUDIENCE;
         }
         req.user = jwt.verify(token, JWT_SECRET, verifyOpts);
-        next();
+        const tenantDbName = String(req.user.tenant_database || "").trim();
+        const shouldUseTenantDb = isTenantDbIsolationEnabled()
+            && req.user.role !== "admin"
+            && !isControlPlaneRoute(req)
+            && tenantDbName;
+        if (!shouldUseTenantDb) return next();
+        getTenantPool(tenantDbName)
+            .then((tenantPool) => runWithDbPool(tenantPool, () => next()))
+            .catch((err) => {
+                console.error("[tenant-db] failed to resolve tenant pool:", err?.message || err);
+                res.status(503).json({ error: "tenant_database_unavailable" });
+            });
     } catch {
         return res.status(401).json({ error: "Invalid token" });
     }
@@ -101,9 +122,9 @@ export function generateToken(user) {
         signOpts.issuer = JWT_ISSUER;
         signOpts.audience = JWT_AUDIENCE;
     }
-    return jwt.sign(
-        { id: user.id, email: user.email, role: user.role },
-        JWT_SECRET,
-        signOpts
-    );
+    const payload = { id: user.id, email: user.email, role: user.role };
+    if (user.customer_id) payload.customer_id = user.customer_id;
+    if (user.customer_group_id) payload.customer_group_id = user.customer_group_id;
+    if (user.tenant_database) payload.tenant_database = user.tenant_database;
+    return jwt.sign(payload, JWT_SECRET, signOpts);
 }

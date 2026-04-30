@@ -1,4 +1,4 @@
-import { query } from "../config/db.js";
+import { getTenantPool, isTenantDbIsolationEnabled, query, runWithDbPool, syncCustomerPrincipalToTenant } from "../config/db.js";
 import { generateToken, setAuthCookie } from "../middleware/auth.js";
 import { uploadSheet } from "./sheetController.js";
 import fs from "fs";
@@ -16,7 +16,6 @@ const GOOGLE_OAUTH_STATE_TTL_MS = 5 * 60 * 1000;
 const PROVIDER_TIMEOUT_MS = Number.parseInt(process.env.PROVIDER_FETCH_TIMEOUT_MS || "15000", 10);
 const PROVIDER_IMPORT_MAX_BYTES = Number.parseInt(process.env.PROVIDER_IMPORT_MAX_BYTES || `${100 * 1024 * 1024}`, 10);
 const GOOGLE_LOGIN_CODE_TTL_MS = 60 * 1000;
-const GOOGLE_LOGIN_CODES = new Map();
 
 function parsePositiveInt(value) {
   const parsed = Number.parseInt(value, 10);
@@ -42,6 +41,16 @@ function getGoogleStateSecret() {
 }
 
 function signGoogleState(payloadB64, secret) {
+  return createHmac("sha256", secret).update(payloadB64).digest("base64url");
+}
+
+function getGoogleLoginCodeSecret() {
+  const candidate = String(process.env.GOOGLE_LOGIN_CODE_SECRET || process.env.GOOGLE_OAUTH_STATE_SECRET || process.env.JWT_SECRET || "").trim();
+  if (!candidate) throw new Error("google_login_code_secret_missing");
+  return candidate;
+}
+
+function signGoogleLoginCode(payloadB64, secret) {
   return createHmac("sha256", secret).update(payloadB64).digest("base64url");
 }
 
@@ -95,17 +104,38 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = PROVIDER_TIMEOUT_
   }
 }
 
-function issueGoogleLoginCode(user) {
-  const code = randomBytes(24).toString("base64url");
+function issueGoogleLoginCode(user, now = Date.now()) {
   const token = generateToken(user);
-  GOOGLE_LOGIN_CODES.set(code, { token, exp: Date.now() + GOOGLE_LOGIN_CODE_TTL_MS });
-  if (GOOGLE_LOGIN_CODES.size > 1000) {
-    const now = Date.now();
-    for (const [k, v] of GOOGLE_LOGIN_CODES.entries()) {
-      if (!v || Number(v.exp || 0) <= now) GOOGLE_LOGIN_CODES.delete(k);
-    }
+  const payload = {
+    tok: token,
+    exp: now + GOOGLE_LOGIN_CODE_TTL_MS,
+    nonce: randomBytes(12).toString("base64url"),
+  };
+  const payloadB64 = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  const signature = signGoogleLoginCode(payloadB64, getGoogleLoginCodeSecret());
+  return `${payloadB64}.${signature}`;
+}
+
+function consumeGoogleLoginCode(code, now = Date.now()) {
+  const raw = String(code || "").trim();
+  if (!raw || !raw.includes(".")) return null;
+  const [payloadB64, signature] = raw.split(".");
+  if (!payloadB64 || !signature) return null;
+
+  const expected = signGoogleLoginCode(payloadB64, getGoogleLoginCodeSecret());
+  const sigBuf = Buffer.from(signature);
+  const expectedBuf = Buffer.from(expected);
+  if (sigBuf.length !== expectedBuf.length || !timingSafeEqual(sigBuf, expectedBuf)) return null;
+
+  try {
+    const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf8"));
+    const exp = Number(payload?.exp || 0);
+    const token = String(payload?.tok || "").trim();
+    if (!token || !Number.isFinite(exp) || exp <= now) return null;
+    return token;
+  } catch {
+    return null;
   }
-  return code;
 }
 
 function extFromMimeType(mimeType) {
@@ -177,9 +207,7 @@ async function getAppSettingValueWithScopedFallback(baseKey, groupId) {
   const scopedKey = appSettingKeyForGroup(baseKey, groupId);
   const scopedRows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [scopedKey]);
   if (scopedRows.length) return scopedRows[0]?.value;
-  if (!groupId) return null;
-  const globalRows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [baseKey]);
-  return globalRows[0]?.value || null;
+  return null;
 }
 
 async function isGoogleIntegrationEnabled(groupId = null) {
@@ -383,6 +411,26 @@ async function userBelongsToGroup(userId, groupId) {
   return rows.length > 0;
 }
 
+async function resolveTenantContextForGroup(userId, groupId) {
+  if (!isTenantDbIsolationEnabled() || !Number.isInteger(groupId) || groupId <= 0) return {};
+  const rows = await query(
+    `SELECT c.id AS customer_id, c.group_id AS customer_group_id, c.db_name AS tenant_database
+       FROM customers c
+       JOIN user_groups ug ON ug.group_id = c.group_id
+      WHERE c.group_id = $1
+        AND ug.user_id = $2
+        AND c.status = 'active'
+      LIMIT 1`,
+    [groupId, userId]
+  );
+  if (!rows.length) return {};
+  return {
+    customer_id: rows[0].customer_id,
+    customer_group_id: rows[0].customer_group_id,
+    tenant_database: rows[0].tenant_database,
+  };
+}
+
 async function getValidAccessTokenForUser(cfg, userId) {
   const rows = await query(
     "SELECT user_id, access_token, refresh_token, expires_at FROM user_google_tokens WHERE user_id = $1 LIMIT 1",
@@ -493,7 +541,17 @@ export async function googleCallback(req, res) {
       google_sub: googleUser?.sub || null,
     });
 
-    const loginCode = issueGoogleLoginCode(appUser);
+    const tenantContext = await resolveTenantContextForGroup(appUser.id, requiredGroupId);
+    if (tenantContext.tenant_database) {
+      await syncCustomerPrincipalToTenant({ groupId: tenantContext.customer_group_id, userId: appUser.id });
+      const tenantPool = await getTenantPool(tenantContext.tenant_database);
+      await runWithDbPool(tenantPool, () => upsertGoogleTokens(appUser.id, {
+        ...tokens,
+        google_sub: googleUser?.sub || null,
+      }));
+    }
+
+    const loginCode = issueGoogleLoginCode({ ...appUser, ...tenantContext });
     return res.redirect(`${cfg.frontendUrl}/?google_code=${encodeURIComponent(loginCode)}`);
   } catch (e) {
     console.error("google callback failed:", e?.message || e);
@@ -508,13 +566,12 @@ export async function googleCallback(req, res) {
 export async function exchangeGoogleCode(req, res) {
   const code = String(req.body?.code || "").trim();
   if (!code) return res.status(400).json({ error: "google_code_required" });
-  const entry = GOOGLE_LOGIN_CODES.get(code);
-  GOOGLE_LOGIN_CODES.delete(code);
-  if (!entry || Number(entry.exp || 0) <= Date.now()) {
+  const token = consumeGoogleLoginCode(code);
+  if (!token) {
     return res.status(400).json({ error: "google_code_invalid_or_expired" });
   }
-  setAuthCookie(req, res, entry.token);
-  return res.json({ token: entry.token });
+  setAuthCookie(req, res, token);
+  return res.json({ token });
 }
 
 export async function listGoogleDriveFiles(req, res) {

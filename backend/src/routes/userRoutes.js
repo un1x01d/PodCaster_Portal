@@ -12,9 +12,10 @@ import {
     testOneDriveOauthSetting,
     getSsoSetting, setSsoSetting,
     getSmtpSetting, setSmtpSetting,
+    getInviteEmailTemplateSetting, setInviteEmailTemplateSetting, previewInviteEmailTemplate,
     getCustomerInvitationPolicy, setCustomerInvitationPolicy,
     getUserGroups,
-    listGroups, createGroup, updateGroup, deleteGroup, getGroupMembers, updateGroupMembers, getGroupSheets,
+    listGroups, createGroup, provisionGroupDatabase, updateGroup, deleteGroup, getGroupMembers, updateGroupMembers, getGroupSheets,
     addUserToGroup, removeUserFromGroup, toggleGroupAdmin,
     setPermissions, getPermissions, setReportSourcePermissions, getReportSourcePermissions,
     setGroupPermissions, getGroupPermissions, setReportSourceGroupPermissions, getReportSourceGroupPermissions,
@@ -58,6 +59,9 @@ router.get("/admin/settings/sso", asyncHandler(getSsoSetting));
 router.patch("/admin/settings/sso", asyncHandler(setSsoSetting));
 router.get("/admin/settings/smtp", asyncHandler(getSmtpSetting));
 router.patch("/admin/settings/smtp", asyncHandler(setSmtpSetting));
+router.get("/admin/settings/invite-email-template", asyncHandler(getInviteEmailTemplateSetting));
+router.patch("/admin/settings/invite-email-template", asyncHandler(setInviteEmailTemplateSetting));
+router.post("/admin/settings/invite-email-template/preview", asyncHandler(previewInviteEmailTemplate));
 router.get("/admin/settings/customer-invitations", asyncHandler(getCustomerInvitationPolicy));
 router.patch("/admin/settings/customer-invitations", asyncHandler(setCustomerInvitationPolicy));
 
@@ -65,6 +69,7 @@ router.patch("/admin/settings/customer-invitations", asyncHandler(setCustomerInv
 router.post("/groups/:id/users/:userId/admin", asyncHandler(toggleGroupAdmin));
 router.get("/groups", asyncHandler(listGroups));
 router.post("/groups", asyncHandler(createGroup));
+router.post("/groups/:id/provision-database", asyncHandler(provisionGroupDatabase));
 router.patch("/groups/:id", asyncHandler(updateGroup));
 router.delete("/groups/:id", asyncHandler(deleteGroup));
 router.get("/groups/:id/members", asyncHandler(getGroupMembers));

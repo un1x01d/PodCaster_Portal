@@ -26,6 +26,7 @@ const DEFAULT_GROUP_ENTITLEMENTS = {
   maxReportSources: "",
   maxAiQueriesPerMonth: "",
   aiMonthlyBudgetUsd: "",
+  maxImportParseMemoryMb: "",
   features: {
     manageUsers: true,
     managePermissions: true,
@@ -78,10 +79,11 @@ function normalizeGroupEntitlements(value) {
     ...DEFAULT_GROUP_ENTITLEMENTS,
     ...raw,
     maxUsers: raw.maxUsers ?? "",
-    maxReportSources: raw.maxReportSources ?? "",
-    maxAiQueriesPerMonth: raw.maxAiQueriesPerMonth ?? "",
-    aiMonthlyBudgetUsd: raw.aiMonthlyBudgetUsd ?? "",
-    features: {
+      maxReportSources: raw.maxReportSources ?? "",
+      maxAiQueriesPerMonth: raw.maxAiQueriesPerMonth ?? "",
+      aiMonthlyBudgetUsd: raw.aiMonthlyBudgetUsd ?? "",
+      maxImportParseMemoryMb: raw.maxImportParseMemoryMb ?? "",
+      features: {
       ...DEFAULT_GROUP_ENTITLEMENTS.features,
       ...(raw.features || {}),
     },
@@ -167,6 +169,15 @@ export default function UserManagement({ token, user, sheetId }) {
     fromName: "",
   });
   const [smtpSaving, setSmtpSaving] = useState(false);
+  const [inviteEmailTemplate, setInviteEmailTemplate] = useState({
+    subject: "",
+    html: "",
+    text: "",
+    logoUrl: "",
+  });
+  const [inviteEmailSaving, setInviteEmailSaving] = useState(false);
+  const [inviteEmailPreviewLoading, setInviteEmailPreviewLoading] = useState(false);
+  const [inviteEmailPreview, setInviteEmailPreview] = useState({ subject: "", html: "", text: "" });
   const [pendingInvitations, setPendingInvitations] = useState([]);
   const [invitationsLoading, setInvitationsLoading] = useState(false);
   const [inviteActionBusyId, setInviteActionBusyId] = useState(null);
@@ -624,6 +635,78 @@ export default function UserManagement({ token, user, sheetId }) {
     }
   };
 
+  const fetchInviteEmailTemplate = async () => {
+    if (!isSuperAdmin) return;
+    try {
+      const res = await axios.get(`${API}/admin/settings/invite-email-template`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || {};
+      setInviteEmailTemplate({
+        subject: data.subject || "",
+        html: data.html || "",
+        text: data.text || "",
+        logoUrl: data.logoUrl || "",
+      });
+    } catch (e) {
+      console.error("fetchInviteEmailTemplate failed", e);
+    }
+  };
+
+  const saveInviteEmailTemplate = async () => {
+    if (!isSuperAdmin || inviteEmailSaving) return;
+    setInviteEmailSaving(true);
+    try {
+      const payload = {
+        subject: inviteEmailTemplate.subject || "",
+        html: inviteEmailTemplate.html || "",
+        text: inviteEmailTemplate.text || "",
+        logoUrl: inviteEmailTemplate.logoUrl || "",
+      };
+      const res = await axios.patch(`${API}/admin/settings/invite-email-template`, payload, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || payload;
+      setInviteEmailTemplate({
+        subject: data.subject || "",
+        html: data.html || "",
+        text: data.text || "",
+        logoUrl: data.logoUrl || "",
+      });
+      alert("Invite email template saved");
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to save invite email template");
+    } finally {
+      setInviteEmailSaving(false);
+    }
+  };
+
+  const previewInviteEmail = async () => {
+    if (!isSuperAdmin || inviteEmailPreviewLoading) return;
+    setInviteEmailPreviewLoading(true);
+    try {
+      const payload = {
+        subject: inviteEmailTemplate.subject || "",
+        html: inviteEmailTemplate.html || "",
+        text: inviteEmailTemplate.text || "",
+        logoUrl: inviteEmailTemplate.logoUrl || "",
+      };
+      const res = await axios.post(`${API}/admin/settings/invite-email-template/preview`, payload, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || {};
+      setInviteEmailPreview({
+        subject: data.subject || "",
+        html: data.html || "",
+        text: data.text || "",
+      });
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to preview invite email template");
+    } finally {
+      setInviteEmailPreviewLoading(false);
+    }
+  };
+
   const fetchInvitationPolicy = async () => {
     if (!isSuperAdmin) return;
     try {
@@ -858,6 +941,7 @@ export default function UserManagement({ token, user, sheetId }) {
       fetchDropboxOauthSetting();
       fetchOneDriveOauthSetting();
       fetchSmtpSetting();
+      fetchInviteEmailTemplate();
       fetchInvitationPolicy();
     }
   }, [token]);
@@ -868,6 +952,7 @@ export default function UserManagement({ token, user, sheetId }) {
     fetchDropboxOauthSetting();
     fetchOneDriveOauthSetting();
     fetchSmtpSetting();
+    fetchInviteEmailTemplate();
   }, [token, canManageIntegrations, selectedGroupId]);
 
 
@@ -1503,6 +1588,7 @@ export default function UserManagement({ token, user, sheetId }) {
       maxReportSources: ent.maxReportSources ?? "",
       maxAiQueriesPerMonth: ent.maxAiQueriesPerMonth ?? "",
       aiMonthlyBudgetUsd: ent.aiMonthlyBudgetUsd ?? "",
+      maxImportParseMemoryMb: ent.maxImportParseMemoryMb ?? "",
       features: { ...(ent.features || {}) },
     });
   }, [selectedGroup]);
@@ -1516,6 +1602,7 @@ export default function UserManagement({ token, user, sheetId }) {
         maxReportSources: "",
         maxAiQueriesPerMonth: "",
         aiMonthlyBudgetUsd: "",
+        maxImportParseMemoryMb: "",
         features: {},
       };
       return {
@@ -1541,6 +1628,7 @@ export default function UserManagement({ token, user, sheetId }) {
         maxReportSources: groupSettingsDraft.maxReportSources === "" ? null : Number(groupSettingsDraft.maxReportSources),
         maxAiQueriesPerMonth: groupSettingsDraft.maxAiQueriesPerMonth === "" ? null : Number(groupSettingsDraft.maxAiQueriesPerMonth),
         aiMonthlyBudgetUsd: groupSettingsDraft.aiMonthlyBudgetUsd === "" ? null : Number(groupSettingsDraft.aiMonthlyBudgetUsd),
+        maxImportParseMemoryMb: groupSettingsDraft.maxImportParseMemoryMb === "" ? null : Number(groupSettingsDraft.maxImportParseMemoryMb),
         features: { ...(groupSettingsDraft.features || {}) },
       });
       await axios.patch(`${API}/groups/${selectedGroupId}`, {
@@ -1700,9 +1788,6 @@ export default function UserManagement({ token, user, sheetId }) {
           </div>
         </div>
 
-        <div className="text-[11px] text-slate-500 mb-3">
-          User listing and membership are managed under Customer Management below.
-        </div>
         <div className="mt-5 rounded-md border border-slate-200 bg-slate-50 p-4">
           <div className="flex items-center justify-between mb-3">
             <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500">Customer Management</div>
@@ -1913,6 +1998,15 @@ export default function UserManagement({ token, user, sheetId }) {
                     value={groupSettingsDraft?.aiMonthlyBudgetUsd ?? ""}
                     placeholder="Unlimited"
                     onChange={(e) => updateGroupSettingsDraft({ aiMonthlyBudgetUsd: e.target.value })}
+                  />
+                  <label className="text-[10px] font-semibold text-slate-500">Import Parse Memory (MB)</label>
+                  <input
+                    type="number"
+                    min="64"
+                    className="input-premium py-1.5"
+                    value={groupSettingsDraft?.maxImportParseMemoryMb ?? ""}
+                    placeholder="Default"
+                    onChange={(e) => updateGroupSettingsDraft({ maxImportParseMemoryMb: e.target.value })}
                   />
                   <div className="col-span-2 rounded-md border border-sky-100 bg-sky-50 px-2 py-1.5 text-[10px] leading-snug text-sky-800">
                     OpenAI estimate with gpt-4.1-mini: about $0.40 / 1M input tokens and $1.60 / 1M output tokens. A typical compact spreadsheet question is usually well below one cent.
@@ -2267,6 +2361,60 @@ export default function UserManagement({ token, user, sheetId }) {
                   >
                     {invitePolicySaving ? "Saving..." : "Save Invitation Policy"}
                   </button>
+                </div>
+                <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Invite Email Template</div>
+                  <input
+                    className="input-premium"
+                    placeholder="Email Subject"
+                    value={inviteEmailTemplate.subject}
+                    onChange={(e) => setInviteEmailTemplate((prev) => ({ ...prev, subject: e.target.value }))}
+                  />
+                  <input
+                    className="input-premium"
+                    placeholder="Logo URL"
+                    value={inviteEmailTemplate.logoUrl}
+                    onChange={(e) => setInviteEmailTemplate((prev) => ({ ...prev, logoUrl: e.target.value }))}
+                  />
+                  <textarea
+                    className="input-premium min-h-[160px]"
+                    placeholder="HTML template"
+                    value={inviteEmailTemplate.html}
+                    onChange={(e) => setInviteEmailTemplate((prev) => ({ ...prev, html: e.target.value }))}
+                  />
+                  <textarea
+                    className="input-premium min-h-[120px]"
+                    placeholder="Text template"
+                    value={inviteEmailTemplate.text}
+                    onChange={(e) => setInviteEmailTemplate((prev) => ({ ...prev, text: e.target.value }))}
+                  />
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={saveInviteEmailTemplate}
+                      disabled={inviteEmailSaving}
+                      className={`btn-premium bg-slate-800 text-white w-full py-2 ${inviteEmailSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                    >
+                      {inviteEmailSaving ? "Saving..." : "Save Invite Template"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={previewInviteEmail}
+                      disabled={inviteEmailPreviewLoading}
+                      className={`btn-premium bg-indigo-600 text-white w-full py-2 ${inviteEmailPreviewLoading ? "opacity-60 cursor-not-allowed" : ""}`}
+                    >
+                      {inviteEmailPreviewLoading ? "Loading..." : "Preview Invite Email"}
+                    </button>
+                  </div>
+                  {inviteEmailPreview.html ? (
+                    <div className="rounded-md border border-slate-200 bg-slate-50 p-2 space-y-2">
+                      <div className="text-[10px] font-semibold text-slate-600">Preview Subject: {inviteEmailPreview.subject}</div>
+                      <div
+                        className="rounded-md border border-slate-200 bg-white p-2 max-h-[280px] overflow-auto"
+                        dangerouslySetInnerHTML={{ __html: inviteEmailPreview.html }}
+                      />
+                    </div>
+                  ) : null}
                 </div>
               </>
             )}

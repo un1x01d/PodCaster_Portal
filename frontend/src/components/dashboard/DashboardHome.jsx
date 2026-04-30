@@ -622,6 +622,7 @@ export default function DashboardHome({
     const q = text.toLowerCase();
 
     const requestedAgg =
+      /\b(percent|percentage|pct|rate|ratio|margin|share)\b|%/.test(q) ? "percent" :
       /\b(avg|average|mean)\b/.test(q) ? "avg" :
       /\b(count|how many|number of)\b/.test(q) ? "count" :
       "sum";
@@ -654,7 +655,7 @@ export default function DashboardHome({
       }
       return nonEmpty === 0 ? true : (numeric / nonEmpty) >= 0.65;
     })();
-    const agg = (requestedAgg !== "count" && !isMatchedColumnNumeric) ? "count" : requestedAgg;
+    const agg = (!["count"].includes(requestedAgg) && !isMatchedColumnNumeric) ? "count" : requestedAgg;
 
     setKpiDraftOverrides((prev) => ({
       ...prev,
@@ -663,6 +664,7 @@ export default function DashboardHome({
         aiQuery: text,
         column: column || (prev?.[id]?.column || kpiOverrides?.[id]?.column || ""),
         agg: agg || (prev?.[id]?.agg || kpiOverrides?.[id]?.agg || "sum"),
+        percentBaseValue: prev?.[id]?.percentBaseValue || kpiOverrides?.[id]?.percentBaseValue || "",
         categoryColumn: prev?.[id]?.categoryColumn || kpiOverrides?.[id]?.categoryColumn || "",
       },
     }));
@@ -1844,6 +1846,8 @@ export default function DashboardHome({
     const labelOverride = override?.labelCustom === true ? rawLabelOverride : "";
     const column = String(override.column || "").trim();
     const agg = String(override.agg || "").toLowerCase();
+    const percentBaseValue = parseNumber(override.percentBaseValue);
+    const hasPercentBase = Number.isFinite(percentBaseValue) && percentBaseValue > 0;
     const from = String(override.from || "").trim();
     const to = String(override.to || "").trim();
 
@@ -1958,6 +1962,10 @@ export default function DashboardHome({
         const raw = r?.[column];
         return raw === null || raw === undefined || String(raw).trim() === "" ? acc : acc + 1;
       }, 0);
+    } else if (agg === "percent") {
+      const nums = rows.map((r) => parseNumber(r?.[column])).filter((v) => v !== null);
+      const numerator = nums.reduce((acc, n) => acc + n, 0);
+      nextValue = hasPercentBase ? (numerator / percentBaseValue) * 100 : 0;
     } else {
       const nums = rows.map((r) => parseNumber(r?.[column])).filter((v) => v !== null);
       if (agg === "avg") {
@@ -1970,15 +1978,24 @@ export default function DashboardHome({
     return {
       ...card,
       label: labelOverride || card.label,
-      value: forcedValue !== null ? forcedValue : (Number.isFinite(nextValue) ? nextValue : 0),
-      sparkline: dateCol ? buildSeriesFromRows(rows, dateCol, (r) => {
-        if (agg === "count") {
-          const raw = r?.[column];
-          return raw === null || raw === undefined || String(raw).trim() === "" ? 0 : 1;
-        }
-        return parseNumber(r?.[column]);
-      }, sparklineGranularity) : card.sparkline,
-      sparklineType: agg === "count" ? "count" : "currency",
+      value: agg === "percent"
+        ? pct(forcedValue !== null ? forcedValue : (Number.isFinite(nextValue) ? nextValue : 0))
+        : (forcedValue !== null ? forcedValue : (Number.isFinite(nextValue) ? nextValue : 0)),
+      sparkline: dateCol
+        ? (agg === "percent"
+            ? buildSeriesFromRows(rows, dateCol, (r) => {
+                const value = parseNumber(r?.[column]);
+                return value === null || !hasPercentBase ? null : (value / percentBaseValue) * 100;
+              }, sparklineGranularity)
+            : buildSeriesFromRows(rows, dateCol, (r) => {
+                if (agg === "count") {
+                  const raw = r?.[column];
+                  return raw === null || raw === undefined || String(raw).trim() === "" ? 0 : 1;
+                }
+                return parseNumber(r?.[column]);
+              }, sparklineGranularity))
+        : card.sparkline,
+      sparklineType: agg === "count" ? "count" : (agg === "percent" ? "percent" : "currency"),
     };
   }, [kpiOverrides, effectiveRows, dateCol, headers, sparklineGranularity]);
 
@@ -2265,9 +2282,27 @@ export default function DashboardHome({
                       >
                         <option value="sum">Sum</option>
                         <option value="avg">Avg</option>
+                        <option value="percent">Percentage</option>
                         <option value="count">Count</option>
                       </select>
                     </div>
+                    {String(kpiDraftOverrides?.[card.id]?.agg || "sum") === "percent" && (
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={String(kpiDraftOverrides?.[card.id]?.percentBaseValue || "")}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          setKpiDraftOverrides((prev) => ({
+                            ...prev,
+                            [card.id]: { ...(prev?.[card.id] || {}), percentBaseValue: value },
+                          }));
+                        }}
+                        placeholder="Base value for %"
+                        className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-900"
+                      />
+                    )}
                     <div
                       className="mt-1 rounded-md border border-slate-200 bg-slate-50/80 p-2"
                       style={{ fontFamily: "'Aptos', 'Segoe UI Variable Text', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" }}

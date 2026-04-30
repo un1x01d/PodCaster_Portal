@@ -3,13 +3,15 @@ import { randomBytes } from "crypto";
 const CSRF_HEADER = String(process.env.CSRF_HEADER_NAME || "x-csrf-token").toLowerCase();
 const CSRF_COOKIE = String(process.env.CSRF_COOKIE_NAME || "csrf_token");
 const CSRF_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
-const CSRF_BYPASS_BEARER = String(process.env.CSRF_BYPASS_BEARER || "true").toLowerCase() === "true";
-const CSRF_STRICT_MODE = String(process.env.CSRF_STRICT_MODE || "false").toLowerCase() === "true";
+const CSRF_BYPASS_BEARER = String(process.env.CSRF_BYPASS_BEARER || "false").toLowerCase() === "true";
+const CSRF_STRICT_MODE = String(process.env.CSRF_STRICT_MODE || "true").toLowerCase() === "true";
 const CSRF_EXEMPT_PATHS = new Set([
   "/auth/login",
   "/auth/logout",
   "/auth/google/exchange",
   "/auth/invitations/accept",
+  "/auth/2fa/verify",
+  "/auth/2fa/sms/resend",
 ]);
 
 function normalizePathname(pathname) {

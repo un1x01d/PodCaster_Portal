@@ -117,6 +117,19 @@ const trunc = (str, n) => {
   return str.length > n ? str.substr(0, n - 1) + "..." : str;
 };
 
+const formatBytes = (bytes) => {
+  const value = Number(bytes || 0);
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let idx = 0;
+  let next = value;
+  while (next >= 1024 && idx < units.length - 1) {
+    next /= 1024;
+    idx += 1;
+  }
+  return `${next >= 10 || idx === 0 ? next.toFixed(0) : next.toFixed(1)} ${units[idx]}`;
+};
+
 let xlsxModulePromise = null;
 let pdfModulesPromise = null;
 
@@ -178,7 +191,7 @@ function SupportScreen() {
   const handleSubmit = (e) => {
     e.preventDefault();
     // Simulate API call
-    console.log("Support request submitted:", { reason, ...formData });
+    console.log("Support request simulated");
     setSubmitted(true);
   };
 
@@ -548,6 +561,10 @@ export default function App() {
   const [uploadDisplayName, setUploadDisplayName] = React.useState("");
   const [fileLabel, setFileLabel] = React.useState("");
   const [reportSourceName, setReportSourceName] = React.useState("");
+  const [uploadProgressOpen, setUploadProgressOpen] = useState(false);
+  const [uploadProgressLoaded, setUploadProgressLoaded] = useState(0);
+  const [uploadProgressTotal, setUploadProgressTotal] = useState(0);
+  const [uploadProgressPercent, setUploadProgressPercent] = useState(0);
 
   // My files (sheet selection)
   const [myFiles, setMyFiles] = useState([]);
@@ -564,6 +581,7 @@ export default function App() {
   const [viewLevel, setViewLevel] = useState("revision");
   const [showColumnSelector, setShowColumnSelector] = useState(false);
   const [visibleColumns, setVisibleColumns] = useState([]); // columns to save
+  const [saveViewConfigOverride, setSaveViewConfigOverride] = useState(null);
 
   // Chart / Pivot / Two-Condition Config
   const [pivotOn, setPivotOn] = useState(false);
@@ -1158,7 +1176,10 @@ export default function App() {
         if (raw.length < BATCH_SIZE) setHasMoreData(false);
     } else {
         setData(raw);
-        const heads = raw.length ? Object.keys(raw[0]) : [];
+        const isSameSheet = String(sid) === String(sheetId);
+        const heads = raw.length
+          ? Object.keys(raw[0])
+          : ((preserveFilters || isSameSheet) ? headers : []);
         setHeaders(heads);
         setHasMoreData(raw.length >= BATCH_SIZE);
     }
@@ -1374,6 +1395,7 @@ export default function App() {
   const handleUpload = async (uploadFile, displayName, reportSourceId = "", newReportSourceName = "", fileLabel = "") => {
     if (!uploadFile || !String(displayName || "").trim()) return;
     if (!reportSourceId && !String(newReportSourceName || "").trim()) return;
+    if (uploadProgressOpen) return;
     const formData = new FormData();
     formData.append("file", uploadFile);
     formData.append("display_name", String(displayName).trim());
@@ -1384,13 +1406,30 @@ export default function App() {
       formData.append("report_source_name", String(newReportSourceName).trim());
     }
 
+    const inferredTotal = Number(uploadFile?.size || 0);
+    setUploadProgressOpen(true);
+    setUploadProgressLoaded(0);
+    setUploadProgressTotal(inferredTotal > 0 ? inferredTotal : 0);
+    setUploadProgressPercent(0);
+
     try {
       const res = await axios.post(`${API}/upload`, formData, {
         headers: {
           Authorization: `Bearer ${token}`,
           "Content-Type": "multipart/form-data"
         },
+        onUploadProgress: (progressEvent) => {
+          const loaded = Math.max(0, Number(progressEvent?.loaded || 0));
+          const eventTotal = Math.max(0, Number(progressEvent?.total || 0));
+          const total = eventTotal > 0 ? eventTotal : (inferredTotal > 0 ? inferredTotal : loaded);
+          const boundedLoaded = total > 0 ? Math.min(loaded, total) : loaded;
+          const percent = total > 0 ? Math.round((boundedLoaded / total) * 100) : 0;
+          setUploadProgressLoaded(boundedLoaded);
+          setUploadProgressTotal(total);
+          setUploadProgressPercent(Math.max(0, Math.min(100, percent)));
+        },
       });
+      setUploadProgressPercent(100);
       if (res.data?.status === "queued") {
         alert("Upload queued for import processing.");
         refreshReportSources();
@@ -1428,6 +1467,11 @@ export default function App() {
     } catch (e) {
       console.error(e);
       alert("Upload failed");
+    } finally {
+      setUploadProgressOpen(false);
+      setUploadProgressLoaded(0);
+      setUploadProgressTotal(0);
+      setUploadProgressPercent(0);
     }
   };
 
@@ -2201,6 +2245,8 @@ export default function App() {
                       reportSources={reportSources}
                       reportSourceImports={reportSourceImports}
                       handleUpload={handleUpload}
+                      uploadInProgress={uploadProgressOpen}
+                      uploadPercent={uploadProgressPercent}
                       handleGoogleDriveImport={handleGoogleDriveImport}
                       handleGoogleConnect={handleGoogleConnect}
                       handleDropboxImport={handleDropboxImport}
@@ -2214,6 +2260,8 @@ export default function App() {
                       views={views} setViews={setViews}
                       setPendingViewName={setPendingViewName}
                       setShowColumnSelector={setShowColumnSelector}
+                      setVisibleColumns={setVisibleColumns}
+                      setSaveViewConfigOverride={setSaveViewConfigOverride}
                       sortedData={sortedData}
                       headers={headers}
                       displayHeaders={displayHeaders}
@@ -2277,6 +2325,13 @@ export default function App() {
                     <SpreadsheetChatbot
                       mode="floating"
                       sheetId={sheetId}
+                      splitContext={{
+                        primarySheetId: sheetId,
+                        secondarySheetId: secondarySheetId || null,
+                        secondaryTab: secondaryTab || null,
+                        primaryUploadedAt: (myFiles.find((f) => String(f.id) === String(sheetId)) || {}).uploaded_at || null,
+                        secondaryUploadedAt: (myFiles.find((f) => String(f.id) === String(secondarySheetId)) || {}).uploaded_at || null,
+                      }}
                       data={sortedData}
                       allData={data}
                       headers={headers}
@@ -2305,6 +2360,23 @@ export default function App() {
           {user && user.password_reset_required && (
             <ChangePasswordModal open={true} forceChange={true} onClose={() => { }} className="glass-modal" />
           )}
+          {uploadProgressOpen && (
+            <div className="fixed inset-0 z-[1000] bg-slate-900/55 backdrop-blur-sm flex items-center justify-center px-4">
+              <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl border border-slate-200 p-5">
+                <div className="text-sm font-black text-slate-900 tracking-tight">Uploading Spreadsheet</div>
+                <div className="mt-4 h-2.5 rounded-full bg-slate-200 overflow-hidden">
+                  <div
+                    className="h-full bg-indigo-600 transition-[width] duration-200 ease-out"
+                    style={{ width: `${Math.max(0, Math.min(100, uploadProgressPercent))}%` }}
+                  />
+                </div>
+                <div className="mt-2 flex items-center justify-between text-[11px] font-semibold text-slate-600">
+                  <span>{formatBytes(uploadProgressLoaded)} / {formatBytes(uploadProgressTotal)}</span>
+                  <span>{Math.max(0, Math.min(100, uploadProgressPercent))}%</span>
+                </div>
+              </div>
+            </div>
+          )}
         </main>
         <Footer />
       </div>
@@ -2325,29 +2397,32 @@ export default function App() {
                 >✕</button>
               </div>
               <p className="text-sm text-gray-600 mb-4">
-                Choose which columns should be visible to users when this view is loaded.
-                If no columns are selected, all columns will be visible.
+                {saveViewConfigOverride?.visibleColumns?.length > 0
+                  ? "Columns are already defined from your current selection."
+                  : "Choose which columns should be visible to users when this view is loaded. If no columns are selected, all columns will be visible."}
               </p>
 
-              <div className="grid grid-cols-2 gap-2 mb-6">
-                {headers.map((h) => (
-                  <label key={h} className="flex items-center gap-2 p-2 hover:bg-gray-50 rounded cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={visibleColumns.includes(h)}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setVisibleColumns([...visibleColumns, h]);
-                        } else {
-                          setVisibleColumns(visibleColumns.filter(col => col !== h));
-                        }
-                      }}
-                      className="w-4 h-4"
-                    />
-                    <span className="text-sm">{h}</span>
-                  </label>
-                ))}
-              </div>
+              {!saveViewConfigOverride?.visibleColumns?.length && (
+                <div className="grid grid-cols-2 gap-2 mb-6">
+                  {headers.map((h) => (
+                    <label key={h} className="flex items-center gap-2 p-2 hover:bg-gray-50 rounded cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={visibleColumns.includes(h)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setVisibleColumns([...visibleColumns, h]);
+                          } else {
+                            setVisibleColumns(visibleColumns.filter(col => col !== h));
+                          }
+                        }}
+                        className="w-4 h-4"
+                      />
+                      <span className="text-sm">{h}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
 
               <div className="space-y-4">
                 <div className="space-y-1">
@@ -2387,6 +2462,7 @@ export default function App() {
                     setPendingViewName("");
                     setViewLevel("revision");
                     setVisibleColumns([]);
+                    setSaveViewConfigOverride(null);
                   }}
                 >
                   Cancel
@@ -2395,14 +2471,16 @@ export default function App() {
                   className="btn-premium bg-indigo-600 hover:bg-indigo-700 text-white px-10 shadow-lg shadow-indigo-100"
                   onClick={async () => {
                     try {
+                      const effectiveColumnFilters = saveViewConfigOverride?.columnFilters || columnFilters;
+                      const effectiveVisibleColumns = saveViewConfigOverride?.visibleColumns || visibleColumns;
                       const serializableColumnFilters = {};
-                      for (const key in columnFilters) {
-                        serializableColumnFilters[key] = Array.from(columnFilters[key]);
+                      for (const key in effectiveColumnFilters) {
+                        serializableColumnFilters[key] = Array.from(effectiveColumnFilters[key]);
                       }
                       const config = {
                         columnFilters: serializableColumnFilters,
                         sortConfig,
-                        visibleColumns: visibleColumns.length > 0 ? visibleColumns : [],
+                        visibleColumns: effectiveVisibleColumns.length > 0 ? effectiveVisibleColumns : [],
                         pivotOn,
                         pivotRowKey,
                         pivotColKey,
@@ -2431,6 +2509,7 @@ export default function App() {
                       setPendingViewName("");
                       setViewLevel("revision");
                       setVisibleColumns([]);
+                      setSaveViewConfigOverride(null);
                       alert("View saved successfully!");
                     } catch (e) {
                       console.error("Save view failed:", e);

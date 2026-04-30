@@ -31,12 +31,40 @@ test("dropbox oauth state expires", async () => {
   assert.equal(verified, null);
 });
 
+test("google public oauth endpoints are app-layer rate-limited", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const routesPath = path.join(__dirname, "..", "src", "routes", "googleRoutes.js");
+  const source = fs.readFileSync(routesPath, "utf8");
+
+  assert.match(source, /oauthPublicRateLimit/);
+  assert.match(source, /oauthExchangeRateLimit/);
+  assert.match(source, /router\.get\("\/auth\/google\/url", oauthPublicRateLimit, asyncHandler\(getGoogleLoginUrl\)\)/);
+  assert.match(source, /router\.get\("\/auth\/google\/callback", oauthPublicRateLimit, asyncHandler\(googleCallback\)\)/);
+  assert.match(source, /router\.post\("\/auth\/google\/exchange", oauthExchangeRateLimit, asyncHandler\(exchangeGoogleCode\)\)/);
+});
+
 test("sheet upload role guard allows only explicit admin role", async () => {
   const mod = await import(`../src/controllers/sheetController.js?t=${Date.now()}`);
   assert.equal(mod.canUploadSheetsByRole("admin"), true);
   assert.equal(mod.canUploadSheetsByRole("group_admin"), false);
   assert.equal(mod.canUploadSheetsByRole("user"), false);
   assert.equal(mod.canUploadSheetsByRole(""), false);
+});
+
+test("2fa login verification uses transactional row locking and atomic consume", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const controllerPath = path.join(__dirname, "..", "src", "controllers", "authController.js");
+  const source = fs.readFileSync(controllerPath, "utf8");
+
+  assert.match(source, /export async function verifyTwoFactorLogin/);
+  assert.match(source, /await client\.query\("BEGIN"\)/);
+  assert.match(source, /FOR UPDATE OF c/);
+  assert.match(source, /UPDATE auth_2fa_challenges SET attempts = attempts \+ 1 WHERE id = \$1/);
+  assert.match(source, /UPDATE auth_2fa_challenges SET consumed_at = CURRENT_TIMESTAMP WHERE id = \$1/);
+  assert.match(source, /await client\.query\("COMMIT"\)/);
+  assert.match(source, /await client\.query\("ROLLBACK"\)\.catch\(\(\) => \{\}\);/);
 });
 
 test("saved view column allowlist strips hidden columns server-side", async () => {
@@ -261,6 +289,28 @@ test("import approval, job status, and audit routes are wired", async () => {
   assert.match(userRoutes, /router\.get\("\/audit-logs"/);
 });
 
+test("deleteSheet cleans related permissions, views, and import references transactionally", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const controllerPath = path.join(__dirname, "..", "src", "controllers", "sheetController.js");
+  const source = fs.readFileSync(controllerPath, "utf8");
+
+  assert.match(source, /export async function deleteSheet/);
+  assert.match(source, /await client\.query\("BEGIN"\)/);
+  assert.match(source, /SELECT id FROM sheets WHERE id = \$1 LIMIT 1 FOR UPDATE/);
+  assert.match(source, /SELECT id FROM report_source_imports WHERE sheet_id = \$1 FOR UPDATE/);
+  assert.match(source, /DELETE FROM permissions WHERE sheet_id = \$1/);
+  assert.match(source, /DELETE FROM group_permissions WHERE sheet_id = \$1/);
+  assert.match(source, /DELETE FROM view_user_permissions WHERE view_id = ANY/);
+  assert.match(source, /DELETE FROM view_group_permissions WHERE view_id = ANY/);
+  assert.match(source, /UPDATE report_sources SET current_sheet_id = NULL WHERE current_sheet_id = \$1/);
+  assert.match(source, /UPDATE import_jobs[\s\S]*WHERE import_id = ANY\(\$1::int\[\]\)/);
+  assert.match(source, /DELETE FROM report_source_imports WHERE id = ANY\(\$1::int\[\]\)/);
+  assert.match(source, /UPDATE import_jobs[\s\S]*WHERE sheet_id = \$1/);
+  assert.match(source, /DELETE FROM sheets WHERE id = \$1/);
+  assert.match(source, /await client\.query\("COMMIT"\)/);
+});
+
 test("database init creates import job, approval, and audit log schema", async () => {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
@@ -268,6 +318,9 @@ test("database init creates import job, approval, and audit log schema", async (
   const source = fs.readFileSync(dbPath, "utf8");
 
   assert.match(source, /CREATE TABLE IF NOT EXISTS import_jobs/);
+  assert.match(source, /CREATE TABLE IF NOT EXISTS import_job_payloads/);
+  assert.match(source, /ALTER TABLE import_jobs ADD COLUMN IF NOT EXISTS attempts/);
+  assert.match(source, /ALTER TABLE import_jobs ADD COLUMN IF NOT EXISTS lease_expires_at/);
   assert.match(source, /CREATE TABLE IF NOT EXISTS audit_logs/);
   assert.match(source, /ALTER TABLE report_source_imports ADD COLUMN IF NOT EXISTS status/);
   assert.match(source, /ALTER TABLE report_source_imports ADD COLUMN IF NOT EXISTS published_at/);
@@ -275,7 +328,7 @@ test("database init creates import job, approval, and audit log schema", async (
   assert.match(source, /ALTER TABLE report_source_imports ADD COLUMN IF NOT EXISTS job_id/);
 });
 
-test("uploads preserve auto-publish by default and support opt-in approval and async jobs", async () => {
+test("uploads support durable async db queue with sync fallback", async () => {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
   const controllerPath = path.join(__dirname, "..", "src", "controllers", "sheetController.js");
@@ -284,14 +337,16 @@ test("uploads preserve auto-publish by default and support opt-in approval and a
   const env = fs.readFileSync(envPath, "utf8");
 
   assert.match(source, /function uploadRequiresApproval\(req\)/);
+  assert.match(source, /function uploadUsesDbQueue\(req\)/);
+  assert.match(source, /async function enqueueDbImportJob/);
+  assert.match(source, /export function startImportJobWorker/);
+  assert.match(source, /return res\.status\(202\)\.json\(\{/);
+  assert.match(source, /status: "queued"/);
   assert.match(source, /IMPORT_REQUIRE_APPROVAL/);
-  assert.match(source, /function uploadRunsAsync\(req\)/);
-  assert.match(source, /IMPORT_ASYNC_UPLOADS/);
-  assert.match(source, /if \(!approvalRequired\) \{/);
-  assert.match(source, /UPDATE sheets SET active = FALSE WHERE active = TRUE/);
-  assert.match(source, /status: importStatus/);
+  assert.doesNotMatch(source, /setImmediate\(/);
   assert.match(env, /IMPORT_REQUIRE_APPROVAL=false/);
-  assert.match(env, /IMPORT_ASYNC_UPLOADS=false/);
+  assert.match(env, /IMPORT_DB_QUEUE_ENABLED=true/);
+  assert.match(env, /IMPORT_JOB_MAX_ATTEMPTS=3/);
   assert.match(env, /AUDIT_LOG_MAX_METADATA_BYTES=8192/);
 });
 
@@ -329,6 +384,18 @@ test("chat backend applies active dashboard filters to AI execution", async () =
   assert.match(source, /const sampleRows = applyFilters\(loadedSample\.rows \|\| \[\], activeDashboardFilters\);/);
   assert.match(source, /const executionFilters = \[\.\.\.activeDashboardFilters, \.\.\.filteredAiFilters\];/);
   assert.match(source, /case 'equals'/);
+});
+
+test("dashboard chat responses are read-only unless explicitly opted into ui actions", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
+  const hookPath = path.join(repoRoot, "frontend", "src", "hooks", "useChatbotLogic.js");
+  const source = fs.readFileSync(hookPath, "utf8");
+
+  assert.match(source, /const allowUiActions = meta\?\.applyActions === true;/);
+  assert.match(source, /if \(allowUiActions && onApplyFilter && actions\.reset_filters\)/);
+  assert.match(source, /if \(allowUiActions && onApplyFilter && filters\.length\)/);
+  assert.match(source, /if \(allowUiActions && onUpdateChart && actions\.chart && actions\.chart\.valueColumn\)/);
 });
 
 test("chat fallback path enforces a hard row cap before full in-memory analysis", async () => {
@@ -427,6 +494,30 @@ test("xlsx worker strips workbook formulas and sheet metadata before import rows
   assert.ok(Number(result.cleanup.metadataEntriesStripped) >= 1);
 });
 
+test("xlsx worker rejects files that exceed the configured parse memory limit", async () => {
+  const XLSX = await import("xlsx");
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const workerPath = path.join(__dirname, "..", "src", "utils", "xlsxWorker.js");
+
+  const ws = XLSX.utils.aoa_to_sheet([["Name"], ["Client A"]]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Sheet 1");
+  const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+
+  const msg = await new Promise((resolve, reject) => {
+    const worker = new Worker(workerPath, { workerData: { buffer, memoryLimitMb: 1 } });
+    worker.once("message", resolve);
+    worker.once("error", reject);
+    worker.once("exit", (code) => {
+      if (code !== 0) resolve({ success: false, error: "xlsx_worker_memory_limit_exceeded" });
+    });
+  });
+
+  assert.equal(msg.success, false);
+  assert.equal(msg.error, "xlsx_worker_memory_limit_exceeded");
+});
+
 test("limited customer admin entitlements are persisted on groups", async () => {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
@@ -496,6 +587,19 @@ test("customer-scoped SSO toggle is wired and enforced for Google auth", async (
   assert.match(googleControllerSource, /assertGroupFeatureEnabled\(requiredGroupId,\s*"sso"/);
   assert.doesNotMatch(uiSource, /\["sso",\s*"SSO"\]/);
   assert.match(appSource, /google_sso_disabled/);
+});
+
+test("customer-scoped OAuth settings do not fall back to global config", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
+  const userControllerPath = path.join(repoRoot, "backend", "src", "controllers", "userController.js");
+  const googleControllerPath = path.join(repoRoot, "backend", "src", "controllers", "googleController.js");
+
+  const userControllerSource = fs.readFileSync(userControllerPath, "utf8");
+  const googleControllerSource = fs.readFileSync(googleControllerPath, "utf8");
+
+  assert.doesNotMatch(userControllerSource, /const globalRows = await query\("SELECT value FROM app_settings WHERE key = \$1 LIMIT 1", \[baseKey\]\);/);
+  assert.doesNotMatch(googleControllerSource, /const globalRows = await query\("SELECT value FROM app_settings WHERE key = \$1 LIMIT 1", \[baseKey\]\);/);
 });
 
 test("customer users are invitation-only and invitation auth flow is wired", async () => {

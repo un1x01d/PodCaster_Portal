@@ -3,6 +3,7 @@ export const DEFAULT_GROUP_ENTITLEMENTS = {
   maxReportSources: null,
   maxAiQueriesPerMonth: null,
   aiMonthlyBudgetUsd: null,
+  maxImportParseMemoryMb: null,
   features: {
     manageUsers: true,
     managePermissions: true,
@@ -39,6 +40,9 @@ export function normalizeGroupEntitlements(value = {}) {
     aiMonthlyBudgetUsd: raw.aiMonthlyBudgetUsd === null || raw.aiMonthlyBudgetUsd === undefined || raw.aiMonthlyBudgetUsd === ""
       ? null
       : Math.max(0.01, Number.parseFloat(raw.aiMonthlyBudgetUsd) || 0.01),
+    maxImportParseMemoryMb: raw.maxImportParseMemoryMb === null || raw.maxImportParseMemoryMb === undefined || raw.maxImportParseMemoryMb === ""
+      ? null
+      : Math.max(64, Number.parseInt(raw.maxImportParseMemoryMb, 10) || 64),
     features: {
       ...DEFAULT_GROUP_ENTITLEMENTS.features,
       ...rawFeatures,

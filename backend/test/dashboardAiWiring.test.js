@@ -46,3 +46,17 @@ test("dashboard AI overrides are applied and persisted for reload", () => {
   assert.match(source, /const requestId = `\$\{Date\.now\(\)\}_\$\{Math\.random\(\)\.toString\(36\)\.slice\(2, 8\)\}`/);
   assert.match(source, /if \(latest && latest !== requestId\) return;/);
 });
+
+test("dashboard KPI editor supports optional percentage aggregation", () => {
+  const dashboardHomePath = path.join(repoRoot, "frontend", "src", "components", "dashboard", "DashboardHome.jsx");
+  const source = fs.readFileSync(dashboardHomePath, "utf8");
+
+  assert.match(source, /agg === "percent"/);
+  assert.match(source, /const percentBaseValue = parseNumber\(override\.percentBaseValue\)/);
+  assert.match(source, /const hasPercentBase = Number\.isFinite\(percentBaseValue\) && percentBaseValue > 0/);
+  assert.match(source, /nextValue = hasPercentBase \? \(numerator \/ percentBaseValue\) \* 100 : 0/);
+  assert.match(source, /percentBaseValue: value/);
+  assert.match(source, /placeholder="Base value for %"/);
+  assert.match(source, /<option value="percent">Percentage<\/option>/);
+  assert.match(source, /sparklineType: agg === "count" \? "count" : \(agg === "percent" \? "percent" : "currency"\)/);
+});
