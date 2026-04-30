@@ -149,7 +149,7 @@ export default function UserManagement({ token, user, sheetId }) {
   });
   const [oneDriveOauthSaving, setOneDriveOauthSaving] = useState(false);
   const [oneDriveOauthTesting, setOneDriveOauthTesting] = useState(false);
-  const [integrationOpen, setIntegrationOpen] = useState({ google: true, dropbox: false, onedrive: false, smtp: false });
+  const [integrationOpen, setIntegrationOpen] = useState({ google: true, dropbox: false, onedrive: false });
   const [integrationTestStatus, setIntegrationTestStatus] = useState({ google: null, dropbox: null, onedrive: null });
   const [smtpMeta, setSmtpMeta] = useState({
     hasPassword: false,
@@ -187,6 +187,8 @@ export default function UserManagement({ token, user, sheetId }) {
   const [invitePolicySaving, setInvitePolicySaving] = useState(false);
   const [insightTranslationCache, setInsightTranslationCache] = useState({ ttlMinutes: 60 });
   const [insightTranslationCacheSaving, setInsightTranslationCacheSaving] = useState(false);
+  const [metricsExposure, setMetricsExposure] = useState({ enabled: true });
+  const [metricsExposureSaving, setMetricsExposureSaving] = useState(false);
 
   // user-level permissions UI (select a sheet from user's groups)
   const [selectedUserId, setSelectedUserId] = useState(null);
@@ -201,6 +203,14 @@ export default function UserManagement({ token, user, sheetId }) {
   // groups
   const [groups, setGroups] = useState([]);
   const [newGroupName, setNewGroupName] = useState("");
+  const [newCustomerFirstName, setNewCustomerFirstName] = useState("");
+  const [newCustomerLastName, setNewCustomerLastName] = useState("");
+  const [newCustomerCompanyName, setNewCustomerCompanyName] = useState("");
+  const [newCustomerEmail, setNewCustomerEmail] = useState("");
+  const [newCustomerPhone, setNewCustomerPhone] = useState("");
+  const [customerFormOpen, setCustomerFormOpen] = useState(false);
+  const [customerFormMode, setCustomerFormMode] = useState("create");
+  const [editingCustomerId, setEditingCustomerId] = useState(null);
   const [selectedGroupId, setSelectedGroupId] = useState(null);
   const [groupMembers, setGroupMembers] = useState([]);
   const [groupAddUserId, setGroupAddUserId] = useState("");
@@ -230,6 +240,7 @@ export default function UserManagement({ token, user, sheetId }) {
   const [draftUserViewIds, setDraftUserViewIds] = useState([]);
   const [viewAssignmentOpen, setViewAssignmentOpen] = useState(false);
   const [viewAssignmentSaving, setViewAssignmentSaving] = useState(false);
+  const [viewPreviewOpen, setViewPreviewOpen] = useState(false);
   const [selectedUserGroupIds, setSelectedUserGroupIds] = useState(new Set());
   const [userGroupMap, setUserGroupMap] = useState({});
   const [editingUserId, setEditingUserId] = useState(null);
@@ -259,7 +270,14 @@ export default function UserManagement({ token, user, sheetId }) {
     return Array.from(m.values());
   }, [users]);
 
-  const isSuperAdmin = String(user?.role || "").toLowerCase() === "admin";
+  const roleLower = String(user?.role || "").toLowerCase();
+  const isSuperAdmin = (
+    roleLower === "admin"
+    || roleLower === "super_admin"
+    || roleLower === "superadmin"
+    || !!user?.is_admin
+    || !!user?.super_admin
+  );
   const isCustomerAdmin = !!(user?.is_group_admin || user?.group_admin || user?.is_admin);
   const canManageIntegrations = isSuperAdmin || isCustomerAdmin;
   const googleConfigured = googleOauthMeta.hasClientId && googleOauthMeta.hasClientSecret && googleOauthMeta.redirectUri;
@@ -780,6 +798,36 @@ export default function UserManagement({ token, user, sheetId }) {
     }
   };
 
+  const fetchMetricsExposureSetting = async () => {
+    if (!isSuperAdmin) return;
+    try {
+      const res = await axios.get(`${API}/admin/settings/metrics-exposure`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setMetricsExposure({
+        enabled: res?.data?.enabled !== false,
+      });
+    } catch (e) {
+      console.error("fetchMetricsExposureSetting failed", e);
+    }
+  };
+
+  const saveMetricsExposureSetting = async (enabledOverride = null) => {
+    if (!isSuperAdmin || metricsExposureSaving) return;
+    setMetricsExposureSaving(true);
+    try {
+      const payload = { enabled: enabledOverride == null ? metricsExposure.enabled !== false : !!enabledOverride };
+      const res = await axios.patch(`${API}/admin/settings/metrics-exposure`, payload, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setMetricsExposure({ enabled: res?.data?.enabled !== false });
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to save metrics exposure setting");
+    } finally {
+      setMetricsExposureSaving(false);
+    }
+  };
+
   const saveInsightTranslationCacheSetting = async () => {
     if (!isSuperAdmin || insightTranslationCacheSaving) return;
     setInsightTranslationCacheSaving(true);
@@ -1000,6 +1048,7 @@ export default function UserManagement({ token, user, sheetId }) {
       fetchInviteEmailTemplate();
       fetchInvitationPolicy();
       fetchInsightTranslationCacheSetting();
+      fetchMetricsExposureSetting();
     }
   }, [token]);
 
@@ -1011,6 +1060,7 @@ export default function UserManagement({ token, user, sheetId }) {
     fetchSmtpSetting();
     fetchInviteEmailTemplate();
     fetchInsightTranslationCacheSetting();
+    fetchMetricsExposureSetting();
   }, [token, canManageIntegrations, selectedGroupId]);
 
 
@@ -1371,15 +1421,99 @@ export default function UserManagement({ token, user, sheetId }) {
 
   // --- Actions: groups ---
   const createGroup = async () => {
-    if (!newGroupName.trim()) return;
+    const firstName = String(newCustomerFirstName || "").trim();
+    const lastName = String(newCustomerLastName || "").trim();
+    const companyName = String(newCustomerCompanyName || "").trim();
+    const customerEmail = String(newCustomerEmail || "").trim();
+    const customerPhone = String(newCustomerPhone || "").trim();
+    if (!firstName || !lastName || !companyName || !customerEmail) {
+      alert("Customer first name, last name, company name, and email are required.");
+      return;
+    }
     try {
-      await axios.post(`${API}/groups`, { name: newGroupName.trim() }, {
+      await axios.post(`${API}/groups`, {
+        name: companyName,
+        customerFirstName: firstName,
+        customerLastName: lastName,
+        customerCompanyName: companyName,
+        customerEmail,
+        customerPhone,
+      }, {
         headers: { Authorization: `Bearer ${token}` },
       });
       setNewGroupName("");
+      setNewCustomerFirstName("");
+      setNewCustomerLastName("");
+      setNewCustomerCompanyName("");
+      setNewCustomerEmail("");
+      setNewCustomerPhone("");
       fetchGroups();
     } catch (e) {
       alert(e.response?.data?.error || "Failed to create customer");
+    }
+  };
+
+  const openCreateCustomerForm = () => {
+    setCustomerFormMode("create");
+    setEditingCustomerId(null);
+    setNewCustomerFirstName("");
+    setNewCustomerLastName("");
+    setNewCustomerCompanyName("");
+    setNewCustomerEmail("");
+    setNewCustomerPhone("");
+    setCustomerFormOpen(true);
+  };
+
+  const openEditCustomerForm = (group) => {
+    if (!group?.id) return;
+    setCustomerFormMode("edit");
+    setEditingCustomerId(group.id);
+    setNewCustomerFirstName(group.customer_first_name || "Customer");
+    setNewCustomerLastName(group.customer_last_name || "Admin");
+    setNewCustomerCompanyName(group.customer_company_name || group.name || "Customer Company");
+    setNewCustomerEmail(group.customer_email || `customer${group.id}@example.com`);
+    setNewCustomerPhone(group.customer_phone || "");
+    setCustomerFormOpen(true);
+  };
+
+  const saveCustomerForm = async () => {
+    const firstName = String(newCustomerFirstName || "").trim();
+    const lastName = String(newCustomerLastName || "").trim();
+    const companyName = String(newCustomerCompanyName || "").trim();
+    const customerEmail = String(newCustomerEmail || "").trim();
+    const customerPhone = String(newCustomerPhone || "").trim();
+    if (!firstName || !lastName || !companyName || !customerEmail) {
+      alert("Customer first name, last name, company name, and email are required.");
+      return;
+    }
+    try {
+      const payload = {
+        name: companyName,
+        customerFirstName: firstName,
+        customerLastName: lastName,
+        customerCompanyName: companyName,
+        customerEmail,
+        customerPhone,
+      };
+      if (customerFormMode === "edit" && editingCustomerId) {
+        await axios.patch(`${API}/groups/${editingCustomerId}`, payload, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      } else {
+        await axios.post(`${API}/groups`, payload, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      }
+      setCustomerFormOpen(false);
+      setEditingCustomerId(null);
+      setNewCustomerFirstName("");
+      setNewCustomerLastName("");
+      setNewCustomerCompanyName("");
+      setNewCustomerEmail("");
+      setNewCustomerPhone("");
+      fetchGroups();
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to save customer");
     }
   };
 
@@ -1610,6 +1744,16 @@ export default function UserManagement({ token, user, sheetId }) {
   const selectedReportSource = useMemo(() => {
     return reportSourceOptions.find((source) => String(source.id) === String(selectedReportSourceId)) || null;
   }, [reportSourceOptions, selectedReportSourceId]);
+  const previewAssignedViews = useMemo(() => {
+    const idSet = new Set((draftUserViewIds || []).map((id) => String(id)));
+    return (Array.isArray(views) ? views : []).filter((v) => idSet.has(String(v.id)));
+  }, [views, draftUserViewIds]);
+  const isSplitScreenView = (view) => {
+    const cfg = (view && typeof view.config === "string")
+      ? (() => { try { return JSON.parse(view.config); } catch { return {}; } })()
+      : (view?.config || {});
+    return !!cfg?.splitContext?.secondarySheetId;
+  };
   const selectReportSourceForPermissions = (value) => {
     const source = reportSourceOptions.find((item) => String(item.id) === String(value));
     setSelectedReportSourceId(source ? String(source.id) : null);
@@ -1852,9 +1996,8 @@ export default function UserManagement({ token, user, sheetId }) {
             <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500">Customer Management</div>
             <span className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600">{groups.length} total</span>
           </div>
-          <div className="flex gap-2 mb-3">
-            <input className="input-premium flex-1" placeholder="New customer name" value={newGroupName} onChange={e => setNewGroupName(e.target.value)} />
-            <button className="btn-premium bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2" onClick={createGroup}>Create</button>
+          <div className="mb-3 flex justify-end">
+            <button className="btn-premium bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-1.5 text-[11px]" onClick={openCreateCustomerForm}>New Customer</button>
           </div>
           <div className="space-y-2 max-h-48 overflow-auto pr-1 custom-scrollbar">
             {groups.map(g => (
@@ -1865,7 +2008,12 @@ export default function UserManagement({ token, user, sheetId }) {
                     {formatBytes(g.used_storage_bytes)} / {formatMb(g.max_total_storage_mb || 10240)} total
                   </div>
                 </div>
-                {user?.role === "admin" && <button className={`text-xs px-2 py-1 rounded ${selectedGroupId === g.id ? "hover:bg-white/20" : "hover:bg-red-50 text-slate-500 hover:text-red-500"}`} onClick={(e) => { e.stopPropagation(); deleteGroup(g.id); }}>Delete</button>}
+                {user?.role === "admin" && (
+                  <div className="flex items-center gap-1">
+                    <button className={`text-xs px-2 py-1 rounded ${selectedGroupId === g.id ? "hover:bg-white/20" : "hover:bg-slate-100 text-slate-600 hover:text-slate-900"}`} onClick={(e) => { e.stopPropagation(); openEditCustomerForm(g); }}>Edit</button>
+                    <button className={`text-xs px-2 py-1 rounded ${selectedGroupId === g.id ? "hover:bg-white/20" : "hover:bg-red-50 text-slate-500 hover:text-red-500"}`} onClick={(e) => { e.stopPropagation(); deleteGroup(g.id); }}>Delete</button>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -1994,78 +2142,105 @@ export default function UserManagement({ token, user, sheetId }) {
                   <div className="text-[10px] text-slate-400 italic">No pending invitations.</div>
                 )}
               </div>
-              <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-600">View Assignment</div>
+              <div className="mt-3 rounded-md border border-slate-200 bg-white shadow-sm">
+                <div className="flex items-center justify-between px-3 py-2.5 border-b border-slate-200">
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-semibold text-slate-800">View Assignment</div>
+                    <div className="text-[10px] text-slate-500 truncate">
+                      {(Array.isArray(groups) && groups.find(g => g.id === selectedGroupId)?.name) || selectedGroupId || "-"}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <div className="text-[10px] font-semibold text-slate-500">{(Array.isArray(groups) && groups.find(g => g.id === selectedGroupId)?.name) || selectedGroupId || "-"}</div>
-                    <button
-                      type="button"
-                      className={`rounded-md border px-2 py-1 text-[10px] font-semibold ${selectedUserId ? "border-slate-300 text-slate-600 hover:bg-slate-100" : "border-slate-200 text-slate-400 cursor-not-allowed"}`}
-                      disabled={!selectedUserId}
-                      onClick={() => setViewAssignmentOpen((prev) => !prev)}
-                    >
-                      {viewAssignmentOpen ? "Collapse" : "Expand"}
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    className={`rounded-md border px-2.5 py-1 text-[10px] font-semibold ${selectedUserId ? "border-slate-300 text-slate-700 hover:bg-slate-50" : "border-slate-200 text-slate-400 cursor-not-allowed"}`}
+                    disabled={!selectedUserId}
+                    onClick={() => setViewAssignmentOpen((prev) => !prev)}
+                  >
+                    {viewAssignmentOpen ? "Collapse" : "Expand"}
+                  </button>
                 </div>
                 {viewAssignmentOpen ? (
-                <div className="grid grid-cols-1 gap-2">
-                  <div className="rounded-md border border-slate-200 bg-white p-2.5 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <div className="text-[10px] font-bold uppercase tracking-widest text-slate-600">User Assigned Views</div>
-                      <div className="text-[10px] text-slate-500">
-                        {selectedUserId ? (userById instanceof Map ? (userById.get(selectedUserId)?.email || selectedUserId) : selectedUserId) : "Select a user above"}
+                  <div className="p-3 space-y-3 bg-slate-50">
+                    <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-600">User Assigned Views</div>
+                        <div className="text-[10px] text-slate-500 truncate">
+                          {selectedUserId ? (userById instanceof Map ? (userById.get(selectedUserId)?.email || selectedUserId) : selectedUserId) : "Select a user above"}
+                        </div>
                       </div>
-                    </div>
-                    {selectedUserId ? (
-                      Array.isArray(views) && views.length ? (
-                        <>
-                          <select
-                            multiple
-                            className="input-premium h-28 py-1 text-[10px]"
-                            value={draftUserViewIds}
-                            onChange={(e) => {
-                              const ids = Array.from(e.target.selectedOptions).map((opt) => opt.value);
-                              setDraftUserViewIds(ids);
-                            }}
-                          >
-                            {views.map((v) => (
-                              <option key={`u-opt-${v.id}`} value={String(v.id)}>{v.name}</option>
-                            ))}
-                          </select>
-                          <div className="flex justify-end">
-                            <button
-                              type="button"
-                              className={`rounded-md border border-slate-300 bg-white px-3 py-1 text-[10px] font-semibold text-slate-700 hover:bg-slate-100 ${viewAssignmentSaving ? "opacity-60 cursor-not-allowed" : ""}`}
-                              disabled={viewAssignmentSaving}
-                              onClick={async () => {
-                                if (!selectedUserId) return;
-                                setViewAssignmentSaving(true);
-                                try {
-                                  await syncUserAssignedViews(draftUserViewIds);
-                                  alert("User assigned views saved");
-                                } catch {
-                                  alert("Failed to save user assigned views");
-                                } finally {
-                                  setViewAssignmentSaving(false);
-                                }
+                      {selectedUserId ? (
+                        Array.isArray(views) && views.length ? (
+                          <>
+                            <select
+                              multiple
+                              className="input-premium h-36 py-1.5 text-[11px] leading-5"
+                              value={draftUserViewIds}
+                              onChange={(e) => {
+                                const ids = Array.from(e.target.selectedOptions).map((opt) => opt.value);
+                                setDraftUserViewIds(ids);
                               }}
                             >
-                              {viewAssignmentSaving ? "Saving..." : "Save"}
-                            </button>
-                          </div>
-                        </>
-                      ) : <div className="text-[10px] text-slate-400 italic">No existing views found.</div>
-                    ) : (
-                      <div className="text-[10px] text-slate-400 italic">Pick a user in this customer to assign views.</div>
-                    )}
+                              {views.map((v) => (
+                                <option key={`u-opt-${v.id}`} value={String(v.id)}>
+                                  {v.name}{isSplitScreenView(v) ? " (split screen)" : ""}
+                                </option>
+                              ))}
+                            </select>
+                            <div className="flex items-center justify-end gap-2 pt-1">
+                              <button
+                                type="button"
+                                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
+                                onClick={() => setViewPreviewOpen((prev) => !prev)}
+                              >
+                                {viewPreviewOpen ? "Hide Preview" : "Preview"}
+                              </button>
+                              <button
+                                type="button"
+                                className={`rounded-md bg-slate-900 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-slate-800 ${viewAssignmentSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                                disabled={viewAssignmentSaving}
+                                onClick={async () => {
+                                  if (!selectedUserId) return;
+                                  setViewAssignmentSaving(true);
+                                  try {
+                                    await syncUserAssignedViews(draftUserViewIds);
+                                    alert("User assigned views saved");
+                                  } catch {
+                                    alert("Failed to save user assigned views");
+                                  } finally {
+                                    setViewAssignmentSaving(false);
+                                  }
+                                }}
+                              >
+                                {viewAssignmentSaving ? "Saving..." : "Save"}
+                              </button>
+                            </div>
+                            {viewPreviewOpen && (
+                              <div className="rounded-md border border-slate-200 bg-slate-50 p-2.5 space-y-1.5">
+                                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-600">Preview</div>
+                                {previewAssignedViews.length ? previewAssignedViews.map((v) => {
+                                  const cfg = (v && typeof v.config === "string") ? (() => { try { return JSON.parse(v.config); } catch { return {}; } })() : (v?.config || {});
+                                  const visibleColumns = Array.isArray(cfg?.visibleColumns) ? cfg.visibleColumns.length : 0;
+                                  const filterCount = cfg?.columnFilters && typeof cfg.columnFilters === "object" ? Object.keys(cfg.columnFilters).length : 0;
+                                  return (
+                                    <div key={`preview-${v.id}`} className="rounded-md border border-slate-200 bg-white px-2.5 py-2">
+                                      <div className="text-[11px] font-semibold text-slate-700 truncate">{v.name}</div>
+                                      <div className="text-[10px] text-slate-500">Columns: {visibleColumns} • Filters: {filterCount}</div>
+                                    </div>
+                                  );
+                                }) : (
+                                  <div className="text-[10px] text-slate-400 italic">No views selected for preview.</div>
+                                )}
+                              </div>
+                            )}
+                          </>
+                        ) : <div className="text-[10px] text-slate-400 italic">No existing views found.</div>
+                      ) : (
+                        <div className="text-[10px] text-slate-400 italic">Pick a user in this customer to assign views.</div>
+                      )}
+                    </div>
                   </div>
-                </div>
                 ) : (
-                  <div className="text-[10px] text-slate-400 italic">
+                  <div className="px-3 py-2.5 text-[10px] text-slate-400 italic bg-slate-50">
                     {selectedUserId ? "View assignment is collapsed." : "Select a user to manage view assignment."}
                   </div>
                 )}
@@ -2186,6 +2361,79 @@ export default function UserManagement({ token, user, sheetId }) {
             </div>
           )}
         </div>
+        {isSuperAdmin && (
+          <div className="mt-5 rounded-md border border-slate-200 bg-slate-50 p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500">System Settings</div>
+              <span className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600">Super Admin</span>
+            </div>
+            <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Metrics Exposure</div>
+                <button
+                  type="button"
+                  onClick={() => saveMetricsExposureSetting(!(metricsExposure.enabled !== false))}
+                  disabled={metricsExposureSaving}
+                  className={`btn-premium px-2 py-1 text-[10px] font-semibold ${metricsExposure.enabled !== false ? "bg-emerald-600 text-white hover:bg-emerald-700" : "bg-slate-200 text-slate-700 hover:bg-slate-300"} ${metricsExposureSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                >
+                  {metricsExposureSaving ? "Saving..." : (metricsExposure.enabled !== false ? "ON" : "OFF")}
+                </button>
+              </div>
+              <div className="text-[10px] text-slate-500">Expose dashboard metrics to users.</div>
+            </div>
+            <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">SMTP Configuration</div>
+                <span className={`text-[10px] font-semibold ${smtpMeta.host && smtpMeta.username && smtpMeta.hasPassword ? "text-emerald-600" : "text-slate-400"}`}>
+                  {smtpMeta.host && smtpMeta.username && smtpMeta.hasPassword ? "Configured" : "Not configured"}
+                </span>
+              </div>
+              <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="SMTP Host" value={smtpForm.host} onChange={(e) => setSmtpForm((prev) => ({ ...prev, host: e.target.value }))} />
+              <div className="grid grid-cols-2 gap-2">
+                <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="1" placeholder="Port" value={smtpForm.port} onChange={(e) => setSmtpForm((prev) => ({ ...prev, port: e.target.value }))} />
+                <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 px-2 py-1 rounded-md border border-slate-200">
+                  <input type="checkbox" checked={!!smtpForm.secure} onChange={(e) => setSmtpForm((prev) => ({ ...prev, secure: e.target.checked }))} />
+                  Use TLS
+                </label>
+              </div>
+              <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="SMTP Username" value={smtpForm.username} onChange={(e) => setSmtpForm((prev) => ({ ...prev, username: e.target.value }))} />
+              <input type="password" className="input-premium py-1.5 text-[11px] font-semibold" placeholder={smtpMeta.hasPassword ? "***" : "SMTP Password"} value={smtpForm.password} onChange={(e) => setSmtpForm((prev) => ({ ...prev, password: e.target.value }))} autoComplete="new-password" />
+              <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="From Email" value={smtpForm.fromEmail} onChange={(e) => setSmtpForm((prev) => ({ ...prev, fromEmail: e.target.value }))} />
+              <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="From Name" value={smtpForm.fromName} onChange={(e) => setSmtpForm((prev) => ({ ...prev, fromName: e.target.value }))} />
+              <button
+                type="button"
+                onClick={saveSmtpSetting}
+                disabled={smtpSaving}
+                className={`btn-premium bg-slate-800 text-white w-full py-1.5 text-[11px] ${smtpSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+              >
+                {smtpSaving ? "Saving..." : "Save SMTP Settings"}
+              </button>
+            </div>
+            <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Insight Translation Cache</div>
+              <input
+                className="input-premium py-1.5 text-[11px] font-semibold"
+                type="number"
+                min="1"
+                max="1440"
+                placeholder="TTL Minutes"
+                value={insightTranslationCache.ttlMinutes}
+                onChange={(e) => setInsightTranslationCache((prev) => ({ ...prev, ttlMinutes: e.target.value }))}
+              />
+              <div className="text-[10px] text-slate-500">
+                Cache translated insight-feed ticket text for this many minutes. Manual Refresh in Insight Feed bypasses cache.
+              </div>
+              <button
+                type="button"
+                onClick={saveInsightTranslationCacheSetting}
+                disabled={insightTranslationCacheSaving}
+                className={`btn-premium bg-slate-800 text-white w-full py-1.5 text-[11px] ${insightTranslationCacheSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+              >
+                {insightTranslationCacheSaving ? "Saving..." : "Save Insight Cache Settings"}
+              </button>
+            </div>
+          </div>
+        )}
         </>
         )}
       </section>
@@ -2304,18 +2552,12 @@ export default function UserManagement({ token, user, sheetId }) {
           </div>
         )}
 
-        <div className="flex gap-3 mb-8 bg-slate-50 p-4 rounded-md border border-slate-200">
-          <input
-            className="input-premium flex-1"
-            placeholder="New customer name"
-            value={newGroupName}
-            onChange={e => setNewGroupName(e.target.value)}
-          />
+        <div className="mb-8 flex justify-end">
           <button
-            className="btn-premium bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2.5 shadow-sm"
-            onClick={createGroup}
+            className="btn-premium bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-1.5 text-[11px] shadow-sm"
+            onClick={openCreateCustomerForm}
           >
-            Create
+            New Customer
           </button>
         </div>
 
@@ -2338,13 +2580,26 @@ export default function UserManagement({ token, user, sheetId }) {
                 </div>
               </div>
               {user?.role === "admin" && (
-                <button
-                  className={`p-2 rounded-lg transition-colors opacity-0 group-hover:opacity-100 ${
-                    selectedGroupId === g.id ? "hover:bg-white/20 text-white" : "hover:bg-red-50 text-slate-400 hover:text-red-500"
-                  }`}
-                  title="Delete customer"
-                  onClick={(e) => { e.stopPropagation(); deleteGroup(g.id); }}
-                >🗑️</button>
+                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100">
+                  <button
+                    className={`text-[10px] font-semibold px-2 py-1 rounded ${
+                      selectedGroupId === g.id ? "hover:bg-white/20 text-white" : "text-slate-600 hover:bg-slate-100"
+                    }`}
+                    title="Edit customer"
+                    onClick={(e) => { e.stopPropagation(); openEditCustomerForm(g); }}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    className={`p-2 rounded-lg transition-colors ${
+                      selectedGroupId === g.id ? "hover:bg-white/20 text-white" : "hover:bg-red-50 text-slate-400 hover:text-red-500"
+                    }`}
+                    title="Delete customer"
+                    onClick={(e) => { e.stopPropagation(); deleteGroup(g.id); }}
+                  >
+                    🗑️
+                  </button>
+                </div>
               )}
             </div>
           ))}
@@ -2561,63 +2816,6 @@ export default function UserManagement({ token, user, sheetId }) {
               </>
               )}
             </div>
-            {isSuperAdmin && (
-              <>
-                <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">SMTP Configuration</div>
-                      <span className={`text-[10px] font-semibold ${smtpMeta.host && smtpMeta.username && smtpMeta.hasPassword ? "text-emerald-600" : "text-slate-400"}`}>
-                        {smtpMeta.host && smtpMeta.username && smtpMeta.hasPassword ? "Configured" : "Not configured"}
-                      </span>
-                    </div>
-                    <button type="button" className="text-[10px] font-semibold text-slate-600 hover:text-slate-900" onClick={() => setIntegrationOpen((prev) => ({ ...prev, smtp: !prev.smtp }))}>
-                      {integrationOpen.smtp ? "Collapse" : "Expand"}
-                    </button>
-                  </div>
-                  {integrationOpen.smtp && (
-                    <>
-                      <input className="input-premium" placeholder="SMTP Host" value={smtpForm.host} onChange={(e) => setSmtpForm((prev) => ({ ...prev, host: e.target.value }))} />
-                      <div className="grid grid-cols-2 gap-2">
-                        <input className="input-premium" type="number" min="1" placeholder="Port" value={smtpForm.port} onChange={(e) => setSmtpForm((prev) => ({ ...prev, port: e.target.value }))} />
-                        <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-600 px-2">
-                          <input type="checkbox" checked={!!smtpForm.secure} onChange={(e) => setSmtpForm((prev) => ({ ...prev, secure: e.target.checked }))} />
-                          Use TLS
-                        </label>
-                      </div>
-                      <input className="input-premium" placeholder="SMTP Username" value={smtpForm.username} onChange={(e) => setSmtpForm((prev) => ({ ...prev, username: e.target.value }))} />
-                      <input type="password" className="input-premium" placeholder={smtpMeta.hasPassword ? "***" : "SMTP Password"} value={smtpForm.password} onChange={(e) => setSmtpForm((prev) => ({ ...prev, password: e.target.value }))} autoComplete="new-password" />
-                      <input className="input-premium" placeholder="From Email" value={smtpForm.fromEmail} onChange={(e) => setSmtpForm((prev) => ({ ...prev, fromEmail: e.target.value }))} />
-                      <input className="input-premium" placeholder="From Name" value={smtpForm.fromName} onChange={(e) => setSmtpForm((prev) => ({ ...prev, fromName: e.target.value }))} />
-                      <button type="button" onClick={saveSmtpSetting} disabled={smtpSaving} className={`btn-premium bg-slate-800 text-white w-full py-2 ${smtpSaving ? "opacity-60 cursor-not-allowed" : ""}`}>{smtpSaving ? "Saving..." : "Save SMTP Settings"}</button>
-                    </>
-                  )}
-                </div>
-                <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
-                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Insight Translation Cache</div>
-                  <input
-                    className="input-premium"
-                    type="number"
-                    min="1"
-                    max="1440"
-                    placeholder="TTL Minutes"
-                    value={insightTranslationCache.ttlMinutes}
-                    onChange={(e) => setInsightTranslationCache((prev) => ({ ...prev, ttlMinutes: e.target.value }))}
-                  />
-                  <div className="text-[10px] text-slate-500">
-                    Cache translated insight-feed ticket text for this many minutes. Manual Refresh in Insight Feed bypasses cache.
-                  </div>
-                  <button
-                    type="button"
-                    onClick={saveInsightTranslationCacheSetting}
-                    disabled={insightTranslationCacheSaving}
-                    className={`btn-premium bg-slate-800 text-white w-full py-2 ${insightTranslationCacheSaving ? "opacity-60 cursor-not-allowed" : ""}`}
-                  >
-                    {insightTranslationCacheSaving ? "Saving..." : "Save Insight Cache Settings"}
-                  </button>
-                </div>
-              </>
-            )}
           </div>
         )}
 
@@ -2626,6 +2824,26 @@ export default function UserManagement({ token, user, sheetId }) {
       </section>
 
       </div>
+      {customerFormOpen && (
+        <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-slate-950/60 px-4">
+          <div className="w-full max-w-xl rounded-lg border border-slate-200 bg-white p-4 shadow-2xl space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="text-[12px] font-semibold text-slate-900">{customerFormMode === "edit" ? "Edit Customer" : "New Customer"}</div>
+              <button type="button" className="text-[11px] font-semibold text-slate-500 hover:text-slate-900" onClick={() => setCustomerFormOpen(false)}>Close</button>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="Customer First Name" value={newCustomerFirstName} onChange={(e) => setNewCustomerFirstName(e.target.value)} />
+              <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="Customer Last Name" value={newCustomerLastName} onChange={(e) => setNewCustomerLastName(e.target.value)} />
+              <input className="input-premium py-1.5 text-[11px] font-semibold md:col-span-2" placeholder="Company Name" value={newCustomerCompanyName} onChange={(e) => setNewCustomerCompanyName(e.target.value)} />
+              <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="Email" value={newCustomerEmail} onChange={(e) => setNewCustomerEmail(e.target.value)} />
+              <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="Phone (optional)" value={newCustomerPhone} onChange={(e) => setNewCustomerPhone(e.target.value)} />
+            </div>
+            <div className="flex justify-end">
+              <button type="button" className="btn-premium bg-slate-800 text-white px-4 py-1.5 text-[11px]" onClick={saveCustomerForm}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
       {passwordResetModal.open && (
         <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-slate-950/60 px-4">
           <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-5 shadow-2xl">

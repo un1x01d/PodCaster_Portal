@@ -73,6 +73,7 @@ export function useChatbotLogic({
   headers,
   activeFilters,
   splitContext,
+  activeViewScope,
   onApplyFilter,
   onUpdateChart,
   activeTab,
@@ -224,6 +225,7 @@ export function useChatbotLogic({
         message: q,
         activeFilters: serializeActiveFilters(activeFilters),
         splitContext: splitContext && typeof splitContext === "object" ? splitContext : null,
+        activeViewScope: activeViewScope && typeof activeViewScope === "object" ? activeViewScope : null,
         conversationHistory: buildConversationHistory(messages),
         locale,
       });
@@ -269,7 +271,7 @@ export function useChatbotLogic({
     } finally {
       setIsSending(false);
     }
-  }, [sheetId, activeTab, isSending, activeFilters, splitContext, messages, onApplyFilter, onUpdateChart, locale, copy.appliedFilters, copy.chatRequestFailed, clearMessages]);
+  }, [sheetId, activeTab, isSending, activeFilters, splitContext, activeViewScope, messages, onApplyFilter, onUpdateChart, locale, copy.appliedFilters, copy.chatRequestFailed, clearMessages]);
 
   const handleSend = useCallback(async () => {
     const q = input.trim();
@@ -279,10 +281,10 @@ export function useChatbotLogic({
   }, [input, sendMessage]);
 
   // Keep state refs for the event listener to avoid re-binding
-  const stateRef = useRef({ sheetId, activeTab, activeFilters, splitContext, messages, locale });
+  const stateRef = useRef({ sheetId, activeTab, activeFilters, splitContext, activeViewScope, messages, locale });
   useEffect(() => {
-    stateRef.current = { sheetId, activeTab, activeFilters, splitContext, messages, locale };
-  }, [sheetId, activeTab, activeFilters, splitContext, messages, locale]);
+    stateRef.current = { sheetId, activeTab, activeFilters, splitContext, activeViewScope, messages, locale };
+  }, [sheetId, activeTab, activeFilters, splitContext, activeViewScope, messages, locale]);
 
   useEffect(() => {
     const onExternalSubmit = (event) => {
@@ -304,6 +306,7 @@ export function useChatbotLogic({
               message,
               activeFilters: serializeActiveFilters(current.activeFilters),
               splitContext: current.splitContext && typeof current.splitContext === "object" ? current.splitContext : null,
+              activeViewScope: current.activeViewScope && typeof current.activeViewScope === "object" ? current.activeViewScope : null,
               conversationHistory: buildConversationHistory(current.messages),
               locale: requestLocale,
             });

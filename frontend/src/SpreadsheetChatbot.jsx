@@ -19,6 +19,7 @@ export default function SpreadsheetChatbot({
     onUpdateChart,
     activeTab,
     splitContext = null,
+    activeViewScope = null,
     activeFilters = {},
     mode = "floating",
     locale = "en",
@@ -33,7 +34,7 @@ export default function SpreadsheetChatbot({
         handleSend, messagesEndRef, clearMessages,
     } = useChatbotLogic({
         sheetId, data: chatData, headers, activeFilters, allData, onApplyFilter,
-        onUpdateChart, onSwitchSheet, myFiles, activeFilename, activeTab, splitContext, locale, copy: ui,
+        onUpdateChart, onSwitchSheet, myFiles, activeFilename, activeTab, splitContext, activeViewScope, locale, copy: ui,
     });
 
     const [chatSize, setChatSize] = useState({ width: 320, height: 460 });

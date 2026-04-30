@@ -777,6 +777,26 @@ function applyFilters(rows, filters) {
     });
 }
 
+function normalizeScopeColumns(input = [], availableHeaders = []) {
+  if (!Array.isArray(input) || !input.length) return [];
+  const byLower = new Map((availableHeaders || []).map((h) => [String(h).trim().toLowerCase(), h]));
+  return input
+    .map((c) => byLower.get(String(c || "").trim().toLowerCase()) || null)
+    .filter(Boolean);
+}
+
+function projectRowsToHeaders(rows = [], headers = []) {
+  if (!Array.isArray(rows) || !rows.length || !Array.isArray(headers) || !headers.length) return rows || [];
+  const allowed = new Set(headers.map((h) => String(h)));
+  return rows.map((row) => {
+    const next = {};
+    Object.keys(row || {}).forEach((k) => {
+      if (allowed.has(String(k))) next[k] = row[k];
+    });
+    return next;
+  });
+}
+
 function cleanAITechnicalNoise(text = "") {
   let out = String(text || "");
   // Remove technical sheet references only if they match exactly (e.g., Sheet1, Sheet2.00)
@@ -1580,7 +1600,7 @@ export async function getChatAudio(req, res) {
 }
 
 export async function chatQuery(req, res) {
-  const { sheetId, activeTab = null, message, activeFilters = {}, splitContext = null, conversationHistory = [], locale: rawLocale } = req.body || {};
+  const { sheetId, activeTab = null, message, activeFilters = {}, splitContext = null, activeViewScope = null, conversationHistory = [], locale: rawLocale } = req.body || {};
   const locale = normalizeLocale(rawLocale || "en");
   const hasAccess = await checkSheetAccess(sheetId, req.user);
   if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
@@ -1595,9 +1615,12 @@ export async function chatQuery(req, res) {
   const loadedSample = await loadAccessibleRows(sheetId, req.user, null, 100);
   if (loadedSample?.forbidden) return res.status(403).json({ error: "Forbidden" });
 
-  const aiHeaders = loadedSample.headers || [];
+  const baseHeaders = loadedSample.headers || [];
+  const scopedVisibleColumns = normalizeScopeColumns(activeViewScope?.visibleColumns || [], baseHeaders);
+  const aiHeaders = scopedVisibleColumns.length ? scopedVisibleColumns : baseHeaders;
   const activeDashboardFilters = normalizeActiveDashboardFilters(aiHeaders, activeFilters);
-  const sampleRows = applyFilters(loadedSample.rows || [], activeDashboardFilters);
+  const scopedSampleRows = projectRowsToHeaders(loadedSample.rows || [], aiHeaders);
+  const sampleRows = applyFilters(scopedSampleRows, activeDashboardFilters);
   const tabNames = Array.isArray(loadedSample.tabs) ? loadedSample.tabs : [];
   
   // PERF-01: Build Workspace Schema for Cross-Sheet Intelligence
@@ -1638,7 +1661,7 @@ export async function chatQuery(req, res) {
         secondary_uploaded_at: splitContext.secondaryUploadedAt ? String(splitContext.secondaryUploadedAt) : null,
       }
     : null;
-  const availableFiles = workspaceRes.map(f => ({
+  const allAvailableFiles = workspaceRes.map(f => ({
       id: f.id,
       name: f.display_name || f.filename,
       headers: typeof f.headers === 'string' ? JSON.parse(f.headers) : (f.headers || []),
@@ -1646,6 +1669,12 @@ export async function chatQuery(req, res) {
       import_version: Number.isFinite(Number(f.import_version)) ? Number(f.import_version) : null,
       uploaded_at: f.uploaded_at || null,
   }));
+  const scopedSheetIds = new Set(
+    [sheetId, activeViewScope?.splitContext?.secondarySheetId, parsedSplitContext?.secondary_sheet_id]
+      .filter(Boolean)
+      .map((v) => String(v))
+  );
+  const availableFiles = allAvailableFiles.filter((f) => scopedSheetIds.has(String(f.id)));
 
   const dateFormatHints = buildDateFormatHints(aiHeaders, sampleRows);
 
@@ -1793,7 +1822,7 @@ export async function chatQuery(req, res) {
             groupBy: resolvedGroupBy,
             filters: executionFilters,
             rowFiltersList: loadedSample?.rowFiltersList || [],
-            allowedColumns: loadedSample?.headers || [],
+            allowedColumns: aiHeaders || [],
             limit: ai?.limit,
             locale,
             tabName: selectedTab
@@ -1813,8 +1842,11 @@ export async function chatQuery(req, res) {
         }
         // Note: For memory-based fallback, we might still need augmentation if requested
         const augmented = (resolvedGroupBy === "Year" || resolvedGroupBy === "Month" || resolvedGroupBy === "Quarter")
-            ? augmentRowsWithQuarter(fullLoad.rows, fullLoad.headers)
-            : { rows: fullLoad.rows, headers: fullLoad.headers };
+            ? augmentRowsWithQuarter(
+              projectRowsToHeaders(fullLoad.rows, aiHeaders),
+              aiHeaders
+            )
+            : { rows: projectRowsToHeaders(fullLoad.rows, aiHeaders), headers: aiHeaders };
 
         const matchedRows = applyFilters(augmented.rows, executionFilters);
         exec = await computeDeterministicAnswer(resolvedOperation, matchedRows, resolvedTarget, resolvedGroupBy, ai?.limit, locale, message);

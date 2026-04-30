@@ -446,6 +446,15 @@ export async function initDb(targetPool = pool, options = {}) {
   await db.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS max_file_size_mb INT DEFAULT 100;`);
   await db.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS max_total_storage_mb INT DEFAULT 10240;`);
   await db.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS entitlements JSONB NOT NULL DEFAULT '{}'::jsonb;`);
+  await db.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS customer_first_name TEXT;`);
+  await db.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS customer_last_name TEXT;`);
+  await db.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS customer_company_name TEXT;`);
+  await db.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS customer_email TEXT;`);
+  await db.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS customer_phone TEXT;`);
+  await db.query(`UPDATE groups SET customer_first_name = COALESCE(NULLIF(TRIM(customer_first_name), ''), 'Customer')`);
+  await db.query(`UPDATE groups SET customer_last_name = COALESCE(NULLIF(TRIM(customer_last_name), ''), 'Admin')`);
+  await db.query(`UPDATE groups SET customer_company_name = COALESCE(NULLIF(TRIM(customer_company_name), ''), NULLIF(TRIM(name), ''), 'Customer Company')`);
+  await db.query(`UPDATE groups SET customer_email = COALESCE(NULLIF(TRIM(customer_email), ''), CONCAT('customer', id::text, '@example.com'))`);
   if (includeControlSchema) {
     await initControlSchema(db);
   }

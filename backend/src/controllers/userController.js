@@ -26,6 +26,7 @@ const HEAVY_LIST_CACHE_MAX = Number.parseInt(process.env.HEAVY_LIST_CACHE_MAX ||
 const ENABLE_STORAGE_USAGE_METRICS = String(process.env.ENABLE_STORAGE_USAGE_METRICS || "").toLowerCase() === "true";
 const CUSTOMER_INVITE_BASE_URL = String(process.env.CUSTOMER_INVITE_BASE_URL || "").trim();
 const INSIGHT_TRANSLATION_CACHE_SETTINGS_KEY = "insight_translation_cache_settings";
+const METRICS_EXPOSURE_SETTINGS_KEY = "metrics_exposure_settings";
 const RAW_INSIGHT_TRANSLATION_CACHE_TTL_MS = Number.parseInt(
     process.env.INSIGHT_TRANSLATION_CACHE_TTL_MS || `${60 * 60 * 1000}`,
     10
@@ -1360,15 +1361,26 @@ function normalizeInsightTranslationCacheSettings(raw = {}) {
     };
 }
 
+function normalizeMetricsExposureSettings(raw = {}) {
+    return {
+        enabled: raw?.enabled !== false,
+    };
+}
+
+function isPlatformAdminUser(user) {
+    const role = String(user?.role || "").trim().toLowerCase();
+    return role === "admin" || role === "super_admin" || role === "superadmin" || !!user?.is_admin || !!user?.super_admin;
+}
+
 export async function getInsightTranslationCacheSetting(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
     const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [INSIGHT_TRANSLATION_CACHE_SETTINGS_KEY]);
     const current = normalizeInsightTranslationCacheSettings(rows?.[0]?.value || {});
     return res.json(current);
 }
 
 export async function setInsightTranslationCacheSetting(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
     const next = normalizeInsightTranslationCacheSettings(req.body || {});
     await query(
         `INSERT INTO app_settings (key, value, updated_at)
@@ -1385,6 +1397,39 @@ export async function setInsightTranslationCacheSetting(req, res) {
         metadata: next,
     });
     return res.json({ success: true, ...next });
+}
+
+export async function getMetricsExposureSetting(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [METRICS_EXPOSURE_SETTINGS_KEY]);
+    const current = normalizeMetricsExposureSettings(rows?.[0]?.value || {});
+    return res.json(current);
+}
+
+export async function setMetricsExposureSetting(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    const next = normalizeMetricsExposureSettings(req.body || {});
+    await query(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+         ON CONFLICT (key)
+         DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+        [METRICS_EXPOSURE_SETTINGS_KEY, JSON.stringify(next)]
+    );
+    await writeAuditLog({
+        req,
+        action: "metrics_exposure.settings_updated",
+        resourceType: "app_settings",
+        resourceId: METRICS_EXPOSURE_SETTINGS_KEY,
+        metadata: next,
+    });
+    return res.json({ success: true, ...next });
+}
+
+export async function getMyMetricsExposureSetting(req, res) {
+    const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [METRICS_EXPOSURE_SETTINGS_KEY]);
+    const current = normalizeMetricsExposureSettings(rows?.[0]?.value || {});
+    return res.json(current);
 }
 
 function resolveSsoFeatureValue(entitlements) {
@@ -1488,19 +1533,104 @@ export async function listGroups(req, res) {
 export async function createGroup(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     const { name, maxFileSizeMb, maxTotalStorageMb } = req.body;
+    const customerFirstName = String(req.body?.customerFirstName || "").trim();
+    const customerLastName = String(req.body?.customerLastName || "").trim();
+    const customerCompanyName = String(req.body?.customerCompanyName || "").trim();
+    const customerEmail = normalizeEmail(req.body?.customerEmail || "");
+    const customerPhone = String(req.body?.customerPhone || "").trim();
     const entitlements = parseEntitlementsInput(req.body?.entitlements);
+    if (!customerFirstName || !customerLastName || !customerCompanyName || !customerEmail) {
+        return res.status(400).json({ error: "customer_first_last_company_email_required" });
+    }
     try {
-        const r = await query(
-            "INSERT INTO groups (name, max_file_size_mb, max_total_storage_mb, entitlements) VALUES ($1, $2, $3, $4::jsonb) RETURNING *",
-            [name, maxFileSizeMb || 100, maxTotalStorageMb || 10240, JSON.stringify(entitlements || {})]
-        );
+        const client = await getClient();
+        let createdGroup = null;
+        let linkedUserId = null;
+        let linkedUserEmail = customerEmail;
+        try {
+            await client.query("BEGIN");
+            const groupResult = await client.query(
+                `INSERT INTO groups (
+                    name, max_file_size_mb, max_total_storage_mb, entitlements,
+                    customer_first_name, customer_last_name, customer_company_name, customer_email, customer_phone
+                 ) VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9) RETURNING *`,
+                [
+                    name,
+                    maxFileSizeMb || 100,
+                    maxTotalStorageMb || 10240,
+                    JSON.stringify(entitlements || {}),
+                    customerFirstName,
+                    customerLastName,
+                    customerCompanyName,
+                    customerEmail,
+                    customerPhone || null,
+                ]
+            );
+            createdGroup = groupResult.rows?.[0] || null;
+            if (!createdGroup?.id) throw new Error("group_create_failed");
+
+            const existingUserRes = await client.query(
+                "SELECT id, email, role FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1 FOR UPDATE",
+                [customerEmail]
+            );
+            const existingUser = existingUserRes.rows?.[0] || null;
+            if (existingUser && String(existingUser.role || "").toLowerCase() === "admin") {
+                await client.query("ROLLBACK");
+                return res.status(403).json({ error: "admin_email_not_allowed" });
+            }
+
+            if (existingUser) {
+                linkedUserId = Number(existingUser.id);
+                linkedUserEmail = String(existingUser.email || customerEmail);
+                await client.query(
+                    `UPDATE users
+                        SET first_name = COALESCE(NULLIF(TRIM(first_name), ''), $1),
+                            last_name = COALESCE(NULLIF(TRIM(last_name), ''), $2),
+                            company = COALESCE(NULLIF(TRIM(company), ''), $3)
+                      WHERE id = $4`,
+                    [customerFirstName, customerLastName, customerCompanyName, linkedUserId]
+                );
+            } else {
+                const tempPassword = generateComplexPassword(16);
+                const hashed = await hashPassword(tempPassword);
+                const insertedUserRes = await client.query(
+                    `INSERT INTO users (email, password, role, first_name, last_name, company, password_reset_required)
+                     VALUES ($1, $2, 'user', $3, $4, $5, TRUE)
+                     RETURNING id, email`,
+                    [customerEmail, hashed, customerFirstName, customerLastName, customerCompanyName]
+                );
+                linkedUserId = Number(insertedUserRes.rows?.[0]?.id || 0);
+                linkedUserEmail = String(insertedUserRes.rows?.[0]?.email || customerEmail);
+            }
+
+            if (!linkedUserId) throw new Error("customer_admin_user_create_failed");
+
+            await client.query(
+                `INSERT INTO user_groups (group_id, user_id, is_admin)
+                 VALUES ($1, $2, TRUE)
+                 ON CONFLICT (user_id, group_id)
+                 DO UPDATE SET is_admin = TRUE`,
+                [createdGroup.id, linkedUserId]
+            );
+
+            await client.query("COMMIT");
+        } catch (txErr) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw txErr;
+        } finally {
+            client.release();
+        }
+
         if (isTenantDbIsolationEnabled()) {
-            const customer = await provisionCustomerDatabase({ groupId: r[0].id, name: r[0].name });
-            r[0].customer_id = customer?.id || null;
-            r[0].customer_db_status = customer?.status || null;
+            const customer = await provisionCustomerDatabase({ groupId: createdGroup.id, name: createdGroup.name });
+            createdGroup.customer_id = customer?.id || null;
+            createdGroup.customer_db_status = customer?.status || null;
+            await syncCustomerPrincipalToTenant({ groupId: createdGroup.id, userId: linkedUserId }).catch((err) => {
+                console.error("[tenant-db] sync customer principal failed:", err?.message || err);
+            });
         }
         clearHeavyListCache();
-        res.json(r[0]);
+        res.json({ ...createdGroup, customer_admin_user_id: linkedUserId, customer_admin_email: linkedUserEmail });
     } catch (e) {
         if (String(e).includes("unique")) return res.status(400).json({ error: "Name exists" });
         throw e;
@@ -1529,17 +1659,54 @@ export async function updateGroup(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     const { id } = req.params;
     const { name, maxFileSizeMb, maxTotalStorageMb } = req.body;
+    const customerFirstName = req.body?.customerFirstName;
+    const customerLastName = req.body?.customerLastName;
+    const customerCompanyName = req.body?.customerCompanyName;
+    const customerEmail = req.body?.customerEmail;
+    const customerPhone = req.body?.customerPhone;
     const entitlements = parseEntitlementsInput(req.body?.entitlements);
+    const hasCustomerProfileField = (
+        customerFirstName !== undefined
+        || customerLastName !== undefined
+        || customerCompanyName !== undefined
+        || customerEmail !== undefined
+        || customerPhone !== undefined
+    );
+    if (hasCustomerProfileField) {
+        const first = String(customerFirstName || "").trim();
+        const last = String(customerLastName || "").trim();
+        const company = String(customerCompanyName || "").trim();
+        const email = normalizeEmail(customerEmail || "");
+        if (!first || !last || !company || !email) {
+            return res.status(400).json({ error: "customer_first_last_company_email_required" });
+        }
+    }
     try {
         const r = await query(
             `UPDATE groups
                 SET name = COALESCE($1, name),
                     max_file_size_mb = COALESCE($2, max_file_size_mb),
                     max_total_storage_mb = COALESCE($3, max_total_storage_mb),
-                    entitlements = COALESCE($4::jsonb, entitlements)
-              WHERE id = $5
+                    entitlements = COALESCE($4::jsonb, entitlements),
+                    customer_first_name = COALESCE($5, customer_first_name),
+                    customer_last_name = COALESCE($6, customer_last_name),
+                    customer_company_name = COALESCE($7, customer_company_name),
+                    customer_email = COALESCE($8, customer_email),
+                    customer_phone = COALESCE($9, customer_phone)
+              WHERE id = $10
               RETURNING *`,
-            [name, maxFileSizeMb, maxTotalStorageMb, entitlements === undefined ? null : JSON.stringify(entitlements), id]
+            [
+                name,
+                maxFileSizeMb,
+                maxTotalStorageMb,
+                entitlements === undefined ? null : JSON.stringify(entitlements),
+                customerFirstName === undefined ? null : String(customerFirstName || "").trim(),
+                customerLastName === undefined ? null : String(customerLastName || "").trim(),
+                customerCompanyName === undefined ? null : String(customerCompanyName || "").trim(),
+                customerEmail === undefined ? null : normalizeEmail(customerEmail || ""),
+                customerPhone === undefined ? null : (String(customerPhone || "").trim() || null),
+                id,
+            ]
         );
         if (!r.length) return res.status(404).json({ error: "not_found" });
         if (isTenantDbIsolationEnabled()) {

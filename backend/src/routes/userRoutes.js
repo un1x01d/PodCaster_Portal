@@ -15,6 +15,7 @@ import {
     getInviteEmailTemplateSetting, setInviteEmailTemplateSetting, previewInviteEmailTemplate,
     getCustomerInvitationPolicy, setCustomerInvitationPolicy,
     getInsightTranslationCacheSetting, setInsightTranslationCacheSetting,
+    getMetricsExposureSetting, setMetricsExposureSetting, getMyMetricsExposureSetting,
     getUserGroups,
     listGroups, createGroup, provisionGroupDatabase, updateGroup, deleteGroup, getGroupMembers, updateGroupMembers, getGroupSheets,
     addUserToGroup, removeUserFromGroup, toggleGroupAdmin,
@@ -65,6 +66,8 @@ router.get("/admin/settings/customer-invitations", asyncHandler(getCustomerInvit
 router.patch("/admin/settings/customer-invitations", asyncHandler(setCustomerInvitationPolicy));
 router.get("/admin/settings/insight-translation-cache", asyncHandler(getInsightTranslationCacheSetting));
 router.patch("/admin/settings/insight-translation-cache", asyncHandler(setInsightTranslationCacheSetting));
+router.get("/admin/settings/metrics-exposure", asyncHandler(getMetricsExposureSetting));
+router.patch("/admin/settings/metrics-exposure", asyncHandler(setMetricsExposureSetting));
 
 // Customers (legacy route names remain /groups for API compatibility)
 router.post("/groups/:id/users/:userId/admin", asyncHandler(toggleGroupAdmin));
@@ -82,6 +85,7 @@ router.get("/groups/:id/sheets", asyncHandler(getGroupSheets));
 
 router.get("/users/me/kpi-overrides", asyncHandler(getUserKpiOverrides));
 router.put("/users/me/kpi-overrides", asyncHandler(setUserKpiOverrides));
+router.get("/users/me/metrics-exposure", asyncHandler(getMyMetricsExposureSetting));
 router.get("/audit-logs", asyncHandler(listAuditLogs));
 
 export default router;

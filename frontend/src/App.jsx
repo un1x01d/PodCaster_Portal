@@ -517,6 +517,7 @@ function InviteAcceptScreen({
 export default function App() {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(() => readStoredAuthToken());
+  const [authChecking, setAuthChecking] = useState(() => !!readStoredAuthToken());
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [inviteToken, setInviteToken] = useState("");
@@ -528,6 +529,7 @@ export default function App() {
   const [googleEnabled, setGoogleEnabled] = useState(true);
   const [dropboxEnabled, setDropboxEnabled] = useState(true);
   const [oneDriveEnabled, setOneDriveEnabled] = useState(true);
+  const [metricsExposureEnabled, setMetricsExposureEnabled] = useState(true);
   const dashboardI18n = useDashboardI18n({ enabled: !!user });
 
   const [sheetId, setSheetId] = useState(() => localStorage.getItem("sheetId") || null);
@@ -581,6 +583,23 @@ export default function App() {
   const [viewLevel, setViewLevel] = useState("revision");
   const [showColumnSelector, setShowColumnSelector] = useState(false);
   const [visibleColumns, setVisibleColumns] = useState([]); // columns to save
+  const [secondaryVisibleColumns, setSecondaryVisibleColumns] = useState([]);
+  const activeViewConfig = useMemo(() => {
+    const view = (views || []).find((v) => String(v.id) === String(selectedViewId));
+    return view?.config && typeof view.config === "object" ? view.config : null;
+  }, [views, selectedViewId]);
+  const activeChatViewScope = useMemo(() => ({
+    viewId: selectedViewId || null,
+    visibleColumns: Array.isArray(activeViewConfig?.visibleColumns) ? activeViewConfig.visibleColumns : [],
+    splitContext: activeViewConfig?.splitContext && typeof activeViewConfig.splitContext === "object"
+      ? {
+          secondarySheetId: activeViewConfig.splitContext.secondarySheetId || null,
+          secondaryVisibleColumns: Array.isArray(activeViewConfig.splitContext.secondaryVisibleColumns)
+            ? activeViewConfig.splitContext.secondaryVisibleColumns
+            : [],
+        }
+      : null,
+  }), [selectedViewId, activeViewConfig]);
   const [saveViewConfigOverride, setSaveViewConfigOverride] = useState(null);
 
   // Chart / Pivot / Two-Condition Config
@@ -1239,18 +1258,43 @@ export default function App() {
       const url = `${API}/sheets/${sid}/data?${params.toString()}`;
       const res = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
       const raw = res.data;
+      const activeViewConfig = (() => {
+        const v = views.find((vv) => String(vv.id) === String(selectedViewId));
+        if (!v) return null;
+        return typeof v.config === "string" ? (() => { try { return JSON.parse(v.config); } catch { return null; } })() : v.config;
+      })();
 
       if (isPrimary) {
           if (!append) tabDataCacheRef.current[cacheKey] = Array.isArray(raw) ? raw : [];
           applyLoadedRows(sid, raw, preserveFilters, append);
       } else {
+          let effectiveSecondaryRows = Array.isArray(raw) ? raw : [];
+          const secondaryVisibleColumns = activeViewConfig?.splitContext?.secondaryVisibleColumns;
+          if (Array.isArray(secondaryVisibleColumns) && secondaryVisibleColumns.length > 0) {
+            effectiveSecondaryRows = effectiveSecondaryRows.map((row) => {
+              const next = {};
+              secondaryVisibleColumns.forEach((col) => {
+                if (Object.prototype.hasOwnProperty.call(row || {}, col)) next[col] = row[col];
+              });
+              return next;
+            });
+          }
+          const secondaryForcedFilters = activeViewConfig?.splitContext?.secondaryColumnFilters;
+          if (secondaryForcedFilters && typeof secondaryForcedFilters === "object" && Object.keys(secondaryForcedFilters).length > 0) {
+            effectiveSecondaryRows = effectiveSecondaryRows.filter((row) => (
+              Object.entries(secondaryForcedFilters).every(([col, allowed]) => {
+                if (!Array.isArray(allowed) || allowed.length === 0) return true;
+                return allowed.map((x) => String(x)).includes(String(row?.[col] ?? ""));
+              })
+            ));
+          }
           if (append) {
-              setSecondaryData(prev => [...prev, ...raw]);
-              if (raw.length < BATCH_SIZE) setSecondaryHasMoreData(false);
+              setSecondaryData(prev => [...prev, ...effectiveSecondaryRows]);
+              if (effectiveSecondaryRows.length < BATCH_SIZE) setSecondaryHasMoreData(false);
           } else {
-              setSecondaryData(raw);
-              setSecondaryHeaders(raw.length ? Object.keys(raw[0]) : []);
-              setSecondaryHasMoreData(raw.length >= BATCH_SIZE);
+              setSecondaryData(effectiveSecondaryRows);
+              setSecondaryHeaders(effectiveSecondaryRows.length ? Object.keys(effectiveSecondaryRows[0]) : []);
+              setSecondaryHasMoreData(effectiveSecondaryRows.length >= BATCH_SIZE);
           }
       }
     } catch (e) {
@@ -1293,7 +1337,7 @@ export default function App() {
     if (secondarySheetId && user) {
       loadData(secondarySheetId, true, secondaryTab, { context: "secondary", preferCache: false });
     }
-  }, [secondarySheetId, secondaryTab, secondarySortConfig]);
+  }, [secondarySheetId, secondaryTab, secondarySortConfig, selectedViewId]);
 
   const fetchTabs = async (sid, options = {}) => {
     const { preferredTab = null, preserveActive = false } = options;
@@ -1940,7 +1984,14 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    axios.get(`${API}/auth/me`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+    if (!token) {
+      setAuthChecking(false);
+      setUser(null);
+      setMetricsExposureEnabled(true);
+      return;
+    }
+    setAuthChecking(true);
+    axios.get(`${API}/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
       .then(r => {
         setUser(r.data);
         setToken((prev) => prev || readStoredAuthToken());
@@ -1954,14 +2005,25 @@ export default function App() {
           });
         }
       })
-      .catch(() => { setToken(""); setUser(null); setMyFiles([]); setReportSources([]); setReportSourceImports({}); });
+      .catch(() => { setToken(""); setUser(null); setMyFiles([]); setReportSources([]); setReportSourceImports({}); })
+      .finally(() => setAuthChecking(false));
 
-    axios.get(`${API}/my-sheets`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+    axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } })
       .then(r => setMyFiles(r.data || []))
       .catch(e => {
         if (user) console.error("Fetch files failed", e);
       });
-    if (token) refreshReportSources();
+    refreshReportSources();
+  }, [token]);
+
+  useEffect(() => {
+    if (!token) {
+      setMetricsExposureEnabled(true);
+      return;
+    }
+    axios.get(`${API}/users/me/metrics-exposure`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((res) => setMetricsExposureEnabled(res?.data?.enabled !== false))
+      .catch(() => setMetricsExposureEnabled(true));
   }, [token]);
 
   // Helpers
@@ -1979,6 +2041,25 @@ export default function App() {
     setCondCol2("");
     setValueCol("");
   };
+  const secondaryColumnCandidates = useMemo(() => {
+    const fromHeaders = Array.isArray(secondaryHeaders) ? secondaryHeaders : [];
+    const fromOverride = Array.isArray(saveViewConfigOverride?.splitContext?.secondaryAvailableColumns)
+      ? saveViewConfigOverride.splitContext.secondaryAvailableColumns
+      : [];
+    const base = fromHeaders.length ? fromHeaders : fromOverride;
+    return Array.from(new Set((base || []).map((c) => String(c || "").trim()).filter(Boolean)));
+  }, [secondaryHeaders, saveViewConfigOverride]);
+
+  useEffect(() => {
+    if (!showColumnSelector) return;
+    const presetPrimary = Array.isArray(saveViewConfigOverride?.visibleColumns) ? saveViewConfigOverride.visibleColumns : [];
+    const presetSecondary = Array.isArray(saveViewConfigOverride?.splitContext?.secondaryVisibleColumns)
+      ? saveViewConfigOverride.splitContext.secondaryVisibleColumns
+      : [];
+    if (presetPrimary.length > 0) setVisibleColumns(presetPrimary);
+    if (presetSecondary.length > 0) setSecondaryVisibleColumns(presetSecondary);
+    else if (secondaryColumnCandidates.length) setSecondaryVisibleColumns(secondaryColumnCandidates);
+  }, [showColumnSelector, saveViewConfigOverride, secondaryColumnCandidates]);
 
   // Effect to load view config
   useEffect(() => {
@@ -2027,6 +2108,13 @@ export default function App() {
       setYearsBack(c.yearsBack || "");
     } else {
       setTrendsOn(false);
+    }
+
+    const splitCfg = c.splitContext && typeof c.splitContext === "object" ? c.splitContext : null;
+    if (splitCfg) {
+      setSecondarySheetId(splitCfg.secondarySheetId || "");
+      setSecondaryTab(splitCfg.secondaryTab || null);
+      setSecondarySortConfig(splitCfg.secondarySortConfig || null);
     }
 
   }, [selectedViewId, views]);
@@ -2114,7 +2202,11 @@ export default function App() {
           <Routes>
             <Route path="/" element={
               <ErrorBoundary>
-                {!user ? (
+                {authChecking ? (
+                  <div className="min-h-screen w-full flex items-center justify-center bg-[#fafafa]">
+                    <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Loading workspace...</div>
+                  </div>
+                ) : !user ? (
                   inviteToken ? (
                     <InviteAcceptScreen
                       inviteInfo={inviteInfo}
@@ -2161,6 +2253,7 @@ export default function App() {
                     pivotOn={pivotOn}
                     twoOn={twoOn}
                     trendsOn={trendsOn}
+                    metricsExposureEnabled={metricsExposureEnabled}
                     locale={dashboardI18n.locale}
                     copy={dashboardI18n.copy}
                     insightSection={sheetId ? (
@@ -2184,6 +2277,7 @@ export default function App() {
                         headers={headers}
                         activeTab={activeTab}
                         activeFilters={columnFilters}
+                        activeViewScope={activeChatViewScope}
                         onApplyFilter={applyContainsFilter}
                         onUpdateChart={applyChartConfig}
                         locale={dashboardI18n.locale}
@@ -2198,7 +2292,11 @@ export default function App() {
             <Route path="/support" element={<SupportScreen />} />
             <Route path="/workspace" element={
               <ErrorBoundary>
-                {!user ? (
+                {authChecking ? (
+                  <div className="min-h-screen w-full flex items-center justify-center bg-[#fafafa]">
+                    <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Loading workspace...</div>
+                  </div>
+                ) : !user ? (
                   inviteToken ? (
                     <InviteAcceptScreen
                       inviteInfo={inviteInfo}
@@ -2313,6 +2411,7 @@ export default function App() {
                       isBatchLoading={isBatchLoading}
                       secondaryData={secondaryData}
                       secondaryHeaders={secondaryHeaders}
+                      secondarySortConfig={secondarySortConfig}
                       secondaryIsBatchLoading={secondaryIsBatchLoading}
                       onLoadMoreSecondary={onLoadMoreSecondary}
                       secondarySheetId={secondarySheetId}
@@ -2338,6 +2437,7 @@ export default function App() {
                       allData={data}
                       headers={headers}
                       activeFilters={columnFilters}
+                      activeViewScope={activeChatViewScope}
                       onApplyFilter={applyContainsFilter}
                       onUpdateChart={applyChartConfig}
                       locale="en"
@@ -2386,91 +2486,116 @@ export default function App() {
       {/* Column Visibility Selector Modal for Saving Views */}
       {
         showColumnSelector && (
-          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[100] animate-in fade-in duration-300">
-            <div className="glass rounded-[2.5rem] p-10 max-w-2xl w-full max-h-[85vh] flex flex-col shadow-2xl animate-in zoom-in-95 duration-300">
-              <div className="flex items-center justify-between mb-8 border-b border-slate-200/50 pb-6">
+          <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-[1px] flex items-center justify-center z-[100] animate-in fade-in duration-200 px-4">
+            <div className="rounded-xl border border-slate-200 bg-white max-w-xl w-full max-h-[82vh] flex flex-col shadow-2xl animate-in zoom-in-95 duration-200">
+              <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
                 <div>
-                  <h2 className="text-2xl font-extrabold text-slate-900">Configure View</h2>
-                  <p className="text-slate-500 text-sm mt-1">Select visible columns for <span className="text-indigo-600 font-bold">{pendingViewName}</span></p>
+                  <h2 className="text-base font-semibold text-slate-900 tracking-tight">Configure View</h2>
+                  <p className="text-slate-500 text-[11px] mt-0.5">Select visible columns and scope.</p>
                 </div>
                 <button 
                   onClick={() => setShowColumnSelector(false)}
-                  className="w-10 h-10 rounded-full hover:bg-slate-100 flex items-center justify-center text-slate-400 transition-colors"
+                  className="w-8 h-8 rounded-md hover:bg-slate-100 flex items-center justify-center text-slate-400 transition-colors"
                 >✕</button>
               </div>
-              <p className="text-sm text-gray-600 mb-4">
-                {saveViewConfigOverride?.visibleColumns?.length > 0
-                  ? "Columns are already defined from your current selection."
-                  : "Choose which columns should be visible to users when this view is loaded. If no columns are selected, all columns will be visible."}
-              </p>
+              <div className="p-4 space-y-3 overflow-auto">
+                <p className="text-[11px] text-slate-600">
+                  Choose visible columns for this view. If none are selected, all columns remain visible.
+                </p>
 
-              {!saveViewConfigOverride?.visibleColumns?.length && (
-                <div className="grid grid-cols-2 gap-2 mb-6">
-                  {headers.map((h) => (
-                    <label key={h} className="flex items-center gap-2 p-2 hover:bg-gray-50 rounded cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={visibleColumns.includes(h)}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setVisibleColumns([...visibleColumns, h]);
-                          } else {
-                            setVisibleColumns(visibleColumns.filter(col => col !== h));
-                          }
-                        }}
-                        className="w-4 h-4"
-                      />
-                      <span className="text-sm">{h}</span>
-                    </label>
-                  ))}
+                <div className="rounded-md border border-slate-200 bg-slate-50 p-2.5">
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-600 mb-2">Primary Visible Columns</div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 max-h-44 overflow-auto pr-1 custom-scrollbar">
+                    {headers.map((h) => (
+                      <label key={h} className="flex items-center gap-1.5 px-2 py-1 rounded-md border border-slate-200 bg-white hover:bg-slate-50 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={visibleColumns.includes(h)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setVisibleColumns([...visibleColumns, h]);
+                            } else {
+                              setVisibleColumns(visibleColumns.filter(col => col !== h));
+                            }
+                          }}
+                          className="w-3 h-3 rounded"
+                        />
+                        <span className="text-[10px] font-semibold text-slate-700 truncate">{h}</span>
+                      </label>
+                    ))}
+                  </div>
                 </div>
-              )}
+                {(secondarySheetId || saveViewConfigOverride?.splitContext?.secondarySheetId) && secondaryColumnCandidates.length > 0 && (
+                  <div className="rounded-md border border-slate-200 bg-slate-50 p-2.5">
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-600 mb-2">Secondary Visible Columns</div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 max-h-40 overflow-auto pr-1 custom-scrollbar">
+                      {secondaryColumnCandidates.map((h) => (
+                        <label key={`sec-${h}`} className="flex items-center gap-1.5 px-2 py-1 rounded-md border border-slate-200 bg-white hover:bg-slate-50 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={secondaryVisibleColumns.includes(h)}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSecondaryVisibleColumns([...secondaryVisibleColumns, h]);
+                              } else {
+                                setSecondaryVisibleColumns(secondaryVisibleColumns.filter(col => col !== h));
+                              }
+                            }}
+                            className="w-3 h-3 rounded"
+                          />
+                          <span className="text-[10px] font-semibold text-slate-700 truncate">{h}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
-              <div className="space-y-4">
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">View Name</label>
-                  <input
-                    type="text"
-                    value={pendingViewName}
-                    onChange={(e) => setPendingViewName(e.target.value)}
-                    placeholder="e.g. Monthly Dashboard"
-                    className="w-full rounded-lg border border-slate-200 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                    autoFocus
-                  />
-                </div>
+                <div className="space-y-2.5">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">View Name</label>
+                    <input
+                      type="text"
+                      value={pendingViewName}
+                      onChange={(e) => setPendingViewName(e.target.value)}
+                      placeholder="e.g. Monthly Dashboard"
+                      className="input-premium w-full py-1.5 text-[11px] font-semibold"
+                      autoFocus
+                    />
+                  </div>
 
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Scope</label>
-                  <select
-                    value={viewLevel}
-                    onChange={(e) => setViewLevel(e.target.value)}
-                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                  >
-                    {user?.role === "admin" && (
-                      <option value="global">Global (All Files)</option>
-                    )}
-                    <option value="source">This Report Source (All Files)</option>
-                    <option value="file">This File (All Revisions)</option>
-                    <option value="revision">This Revision Only</option>
-                  </select>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Scope</label>
+                    <select
+                      value={viewLevel}
+                      onChange={(e) => setViewLevel(e.target.value)}
+                      className="input-premium w-full py-1.5 text-[11px] font-semibold"
+                    >
+                      {user?.role === "admin" && (
+                        <option value="global">Global (All Files)</option>
+                      )}
+                      <option value="source">This Report Source (All Files)</option>
+                      <option value="file">This File (All Revisions)</option>
+                      <option value="revision">This Revision Only</option>
+                    </select>
+                  </div>
                 </div>
               </div>
-
-              <div className="flex gap-3 justify-end">
+              <div className="flex gap-2 justify-end px-4 py-2.5 border-t border-slate-200 bg-slate-50">
                 <button
-                  className="btn-premium bg-slate-100 hover:bg-slate-200 text-slate-600 px-6"
+                  className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-[10px] font-semibold text-slate-700 hover:bg-slate-100"
                   onClick={() => {
                     setShowColumnSelector(false);
                     setPendingViewName("");
                     setViewLevel("revision");
                     setVisibleColumns([]);
+                    setSecondaryVisibleColumns([]);
                     setSaveViewConfigOverride(null);
                   }}
                 >
                   Cancel
                 </button>
                 <button
-                  className="btn-premium bg-indigo-600 hover:bg-indigo-700 text-white px-10 shadow-lg shadow-indigo-100"
+                  className="rounded-md bg-slate-900 px-3 py-1 text-[10px] font-semibold text-white hover:bg-slate-800"
                   onClick={async () => {
                     try {
                       const effectiveColumnFilters = saveViewConfigOverride?.columnFilters || columnFilters;
@@ -2482,6 +2607,15 @@ export default function App() {
                       const config = {
                         columnFilters: serializableColumnFilters,
                         sortConfig,
+                        splitContext: {
+                          secondarySheetId: saveViewConfigOverride?.splitContext?.secondarySheetId ?? (secondarySheetId || null),
+                          secondaryTab: saveViewConfigOverride?.splitContext?.secondaryTab ?? (secondaryTab || null),
+                          secondarySortConfig: saveViewConfigOverride?.splitContext?.secondarySortConfig ?? (secondarySortConfig || null),
+                          secondaryVisibleColumns: secondaryVisibleColumns.length > 0
+                            ? secondaryVisibleColumns
+                            : (saveViewConfigOverride?.splitContext?.secondaryVisibleColumns || []),
+                          secondaryColumnFilters: saveViewConfigOverride?.splitContext?.secondaryColumnFilters || {},
+                        },
                         visibleColumns: effectiveVisibleColumns.length > 0 ? effectiveVisibleColumns : [],
                         pivotOn,
                         pivotRowKey,
@@ -2511,6 +2645,7 @@ export default function App() {
                       setPendingViewName("");
                       setViewLevel("revision");
                       setVisibleColumns([]);
+                      setSecondaryVisibleColumns([]);
                       setSaveViewConfigOverride(null);
                       alert("View saved successfully!");
                     } catch (e) {
