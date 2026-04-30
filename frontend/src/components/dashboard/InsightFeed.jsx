@@ -248,7 +248,7 @@ export default function InsightFeed({
     return errorCode || ui.failedToLoadInsights;
   }, [ui]);
 
-  const loadInsights = React.useCallback(async () => {
+  const loadInsights = React.useCallback(async ({ forceRefresh = false } = {}) => {
     if (!sheetId) {
       setCards([]);
       setSettings(null);
@@ -258,7 +258,7 @@ export default function InsightFeed({
     setLoading(true);
     setError("");
     try {
-      const res = await api.get(`/insights/${sheetId}`, { params: { context, locale } });
+      const res = await api.get(`/insights/${sheetId}`, { params: { context, locale, forceRefresh: forceRefresh ? "1" : undefined } });
       setCards(Array.isArray(res?.data?.cards) ? res.data.cards : []);
       setSettings(res?.data?.settings || null);
       setAvailable(res?.data?.available || { dateColumns: [], metricColumns: [] });
@@ -335,7 +335,7 @@ export default function InsightFeed({
           <button
             type="button"
             className="text-xs px-2 py-1 rounded border border-slate-300 text-slate-700 hover:bg-slate-50"
-            onClick={loadInsights}
+            onClick={() => loadInsights({ forceRefresh: true })}
           >
             {ui.refresh}
           </button>

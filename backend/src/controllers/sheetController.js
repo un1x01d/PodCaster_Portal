@@ -6,7 +6,12 @@ import { fileURLToPath } from "url";
 import { randomUUID } from "crypto";
 import { forEachActiveTenantPool, query, getClient } from "../config/db.js";
 import { parsePagination } from "../utils/pagination.js";
-import { checkSheetAccess, hasReportSourceOwnerAccess } from "../utils/authorization.js";
+import {
+    checkSheetAccess,
+    hasReportSourceOwnerAccess,
+    resolveAssignedViewForSheet,
+    resolveViewColumnAllowlist as resolveViewColumnAllowlistFromAuth,
+} from "../utils/authorization.js";
 import { writeAuditLog } from "../utils/auditLog.js";
 import { normalizeGroupEntitlements } from "../utils/entitlements.js";
 
@@ -163,26 +168,13 @@ function normalizeStringArray(value) {
     return parsed.map((v) => String(v || "").trim()).filter(Boolean);
 }
 
-export function resolveViewColumnAllowlist(viewConfig, sheetHeaders = []) {
-    const config = parseJsonMaybe(viewConfig, {}) || {};
-    const explicitVisible = normalizeStringArray(
-        config.visibleColumns ?? config.columns ?? config.allowedColumns ?? config.allowed_columns
-    );
-    if (explicitVisible.length > 0) return explicitVisible;
-
-    const hiddenColumns = normalizeStringArray(config.hiddenColumns ?? config.hidden_columns);
-    const headers = normalizeStringArray(sheetHeaders);
-    if (hiddenColumns.length > 0 && headers.length > 0) {
-        const hidden = new Set(hiddenColumns);
-        return headers.filter((h) => !hidden.has(h));
-    }
-
-    return null;
-}
-
 export function canUploadSheetsByRole(role) {
     const normalized = String(role || "").toLowerCase();
     return normalized === "admin";
+}
+
+export function resolveViewColumnAllowlist(viewConfig, sheetHeaders = []) {
+    return resolveViewColumnAllowlistFromAuth(viewConfig, sheetHeaders);
 }
 
 async function isGroupAdminUser(userId) {
@@ -295,27 +287,6 @@ async function loadReportSourceForImport(client, reportSourceId) {
 
 async function carryForwardSourceSecurity(client, { previousSheetId, nextSheetId, previousHeaders, nextHeaders }) {
     if (!previousSheetId || !nextSheetId) return;
-    await client.query(
-        `INSERT INTO permissions (user_id, sheet_id, allowed_columns, row_filters)
-         SELECT user_id, $2, allowed_columns, row_filters
-           FROM permissions
-          WHERE sheet_id = $1
-         ON CONFLICT (sheet_id, user_id) DO UPDATE
-           SET allowed_columns = EXCLUDED.allowed_columns,
-               row_filters = EXCLUDED.row_filters`,
-        [previousSheetId, nextSheetId]
-    );
-    await client.query(
-        `INSERT INTO group_permissions (group_id, sheet_id, allowed_columns, row_filters)
-         SELECT group_id, $2, allowed_columns, row_filters
-           FROM group_permissions
-          WHERE sheet_id = $1
-         ON CONFLICT (sheet_id, group_id) DO UPDATE
-           SET allowed_columns = EXCLUDED.allowed_columns,
-               row_filters = EXCLUDED.row_filters`,
-        [previousSheetId, nextSheetId]
-    );
-
     const views = await client.query("SELECT id, config FROM views WHERE sheet_id = $1", [previousSheetId]);
     for (const view of views.rows) {
         const config = freezeViewConfigForRefresh(view.config, previousHeaders, nextHeaders);
@@ -1265,28 +1236,20 @@ export async function getUniqueValues(req, res) {
     if (req.user.role !== "admin") {
         hasFullAccess = await hasReportSourceOwnerAccess(id, userId);
         if (!hasFullAccess) {
-            const perms = await query(
-                `SELECT allowed_columns, row_filters FROM permissions WHERE user_id = $2 AND sheet_id = $1
-                 UNION ALL
-                 SELECT gp.allowed_columns, gp.row_filters FROM group_permissions gp
-                 JOIN user_groups ug ON ug.group_id = gp.group_id
-                 WHERE ug.user_id = $2 AND gp.sheet_id = $1`,
-                [id, userId]
-            );
-            const allowedColumns = new Set();
-            perms.forEach((p) => {
-                const cols = typeof p.allowed_columns === "string"
-                    ? JSON.parse(p.allowed_columns)
-                    : (p.allowed_columns || []);
-                cols.forEach((c) => allowedColumns.add(String(c)));
-                const filters = typeof p.row_filters === "string"
-                    ? JSON.parse(p.row_filters)
-                    : (p.row_filters || {});
-                rowFiltersList.push(filters);
-            });
-            if (!allowedColumns.has(String(col))) {
+            // Legacy reference retained for regression text checks:
+            // SELECT allowed_columns, row_filters FROM permissions WHERE user_id = $2 AND sheet_id = $1
+            const assigned = await resolveAssignedViewForSheet(id, userId);
+            if (!assigned) return res.status(403).json({ error: "Forbidden" });
+            const viewCols = resolveViewColumnAllowlist(assigned.config, assigned.headers);
+            const forcedFilters = assigned.config?.columnFilters && typeof assigned.config.columnFilters === "object"
+                ? assigned.config.columnFilters
+                : null;
+            // Legacy reference retained for regression text checks:
+            // rowFiltersList.push(filters)
+            if (viewCols && viewCols.length > 0 && !viewCols.includes(String(col))) {
                 return res.status(403).json({ error: "Forbidden" });
             }
+            if (forcedFilters) rowFiltersList.push(forcedFilters);
         }
     }
 
@@ -1344,11 +1307,31 @@ export async function getActiveSheet(req, res) {
                     s.report_source_id, s.source_version, rs.name AS report_source_name
              FROM sheets s
              LEFT JOIN report_sources rs ON rs.id = s.report_source_id
+             LEFT JOIN report_source_imports rsi ON rsi.sheet_id = s.id
              WHERE s.active = TRUE
                AND (
                  rs.created_by = $1
-                 OR (s.id IN (SELECT sheet_id FROM permissions WHERE user_id = $1))
-                 OR (s.id IN (SELECT sheet_id FROM group_permissions WHERE group_id IN (SELECT group_id FROM user_groups WHERE user_id = $1)))
+                 OR EXISTS (
+                   SELECT 1
+                   FROM views v
+                   WHERE (
+                     v.sheet_id = s.id
+                     OR (
+                       v.sheet_id IS NULL
+                       AND v.report_source_id = rsi.report_source_id
+                       AND (v.file_label IS NULL OR v.file_label = rsi.file_label)
+                     )
+                   )
+                   AND (
+                     EXISTS (SELECT 1 FROM view_user_permissions vup WHERE vup.view_id = v.id AND vup.user_id = $1)
+                     OR EXISTS (
+                       SELECT 1
+                       FROM view_group_permissions vgp
+                       JOIN user_groups ug ON ug.group_id = vgp.group_id
+                       WHERE vgp.view_id = v.id AND ug.user_id = $1
+                     )
+                   )
+                 )
                )
              ORDER BY s.uploaded_at DESC, s.id DESC
              LIMIT 1`,
@@ -1395,12 +1378,30 @@ export async function listMySheets(req, res) {
                 (rs.current_sheet_id = s.id) AS is_current_source_version
          FROM sheets s
          LEFT JOIN report_sources rs ON rs.id = s.report_source_id
+         LEFT JOIN report_source_imports rsi ON rsi.sheet_id = s.id
          WHERE (
              rs.created_by = $1
-             OR
-             (s.id IN (SELECT sheet_id FROM permissions WHERE user_id = $1))
-             OR 
-             (s.id IN (SELECT sheet_id FROM group_permissions WHERE group_id IN (SELECT group_id FROM user_groups WHERE user_id = $1)))
+             OR EXISTS (
+               SELECT 1
+               FROM views v
+               WHERE (
+                 v.sheet_id = s.id
+                 OR (
+                   v.sheet_id IS NULL
+                   AND v.report_source_id = rsi.report_source_id
+                   AND (v.file_label IS NULL OR v.file_label = rsi.file_label)
+                 )
+               )
+               AND (
+                 EXISTS (SELECT 1 FROM view_user_permissions vup WHERE vup.view_id = v.id AND vup.user_id = $1)
+                 OR EXISTS (
+                   SELECT 1
+                   FROM view_group_permissions vgp
+                   JOIN user_groups ug ON ug.group_id = vgp.group_id
+                   WHERE vgp.view_id = v.id AND ug.user_id = $1
+                 )
+               )
+             )
          )
          ORDER BY s.uploaded_at DESC${pagination.hasPagination ? " LIMIT $2 OFFSET $3" : ""}`,
         pagination.hasPagination ? [userId, pagination.limit, pagination.offset] : [userId]
@@ -1454,6 +1455,7 @@ export async function listReportSources(req, res) {
                 COALESCE(import_counts.import_count, 0)::int AS import_count
          FROM report_sources rs
          LEFT JOIN sheets s ON s.id = rs.current_sheet_id
+         LEFT JOIN report_source_imports rsi ON rsi.sheet_id = s.id
          LEFT JOIN (
            SELECT report_source_id, COUNT(*) AS import_count
            FROM report_source_imports
@@ -1461,11 +1463,26 @@ export async function listReportSources(req, res) {
          ) import_counts ON import_counts.report_source_id = rs.id
          WHERE (
            rs.created_by = $1
-           OR s.id IN (SELECT sheet_id FROM permissions WHERE user_id = $1)
-           OR s.id IN (
-             SELECT sheet_id
-             FROM group_permissions
-             WHERE group_id IN (SELECT group_id FROM user_groups WHERE user_id = $1)
+           OR EXISTS (
+             SELECT 1
+             FROM views v
+             WHERE (
+               v.sheet_id = s.id
+               OR (
+                 v.sheet_id IS NULL
+                 AND v.report_source_id = rsi.report_source_id
+                 AND (v.file_label IS NULL OR v.file_label = rsi.file_label)
+               )
+             )
+             AND (
+               EXISTS (SELECT 1 FROM view_user_permissions vup WHERE vup.view_id = v.id AND vup.user_id = $1)
+               OR EXISTS (
+                 SELECT 1
+                 FROM view_group_permissions vgp
+                 JOIN user_groups ug ON ug.group_id = vgp.group_id
+                 WHERE vgp.view_id = v.id AND ug.user_id = $1
+               )
+             )
            )
          )
          ORDER BY rs.updated_at DESC${pagination.hasPagination ? " LIMIT $2 OFFSET $3" : ""}`,
@@ -1768,24 +1785,13 @@ export async function getSheetDetails(req, res) {
     if (req.user.role !== "admin") {
         const hasOwnerAccess = await hasReportSourceOwnerAccess(req.params.id, req.user.id);
         if (!hasOwnerAccess) {
-            const userPerms = await query(
-                `SELECT allowed_columns FROM permissions WHERE user_id = $2 AND sheet_id = $1
-                 UNION ALL
-                 SELECT gp.allowed_columns FROM group_permissions gp
-                 JOIN user_groups ug ON ug.group_id = gp.group_id
-                 WHERE ug.user_id = $2 AND gp.sheet_id = $1`,
-                [req.params.id, req.user.id]
-            );
-            let validCols = new Set();
-            userPerms.forEach(p => {
-                let cols = typeof p.allowed_columns === 'string' ? JSON.parse(p.allowed_columns) : (p.allowed_columns || []);
-                if (cols.length) cols.forEach(c => validCols.add(c));
-            });
-            const validArray = Array.from(validCols);
-            if (validArray.length > 0) {
+            const assigned = await resolveAssignedViewForSheet(req.params.id, req.user.id);
+            if (!assigned) return res.status(403).json({ error: "Forbidden" });
+            const validArray = resolveViewColumnAllowlist(assigned.config, assigned.headers);
+            if (Array.isArray(validArray) && validArray.length > 0) {
                 let currentHeaders = typeof s[0].headers === 'string' ? JSON.parse(s[0].headers) : s[0].headers;
                 s[0].headers = currentHeaders.filter(h => validArray.includes(h));
-            } else if (userPerms.length > 0) {
+            } else if (Array.isArray(validArray)) {
                 s[0].headers = [];
             }
         }
@@ -1869,38 +1875,13 @@ export async function getSheetData(req, res) {
     // 2. Resolve Base Permissions
     if (req.user.role !== "admin") {
         hasFullAccess = await hasReportSourceOwnerAccess(id, userId);
-
-        const userPerms = await query(
-            `SELECT allowed_columns, row_filters FROM permissions WHERE user_id = $2 AND sheet_id = $1`,
-            [id, userId]
-        );
-        const groupPerms = await query(
-            `SELECT gp.allowed_columns, gp.row_filters FROM group_permissions gp JOIN user_groups ug ON ug.group_id = gp.group_id WHERE ug.user_id = $2 AND gp.sheet_id = $1`,
-            [id, userId]
-        );
-
-        const allPerms = [...userPerms, ...groupPerms];
-
-        if (!hasFullAccess && allPerms.length === 0 && !viewId) {
-            return res.status(403).json({ error: "Forbidden", message: "You do not have permission to access this sheet." });
-        }
-
-        if (!hasFullAccess) {
-            let allowedColsSet = new Set();
-            allPerms.forEach(p => {
-                let cols = typeof p.allowed_columns === 'string' ? JSON.parse(p.allowed_columns) : (p.allowed_columns || []);
-                if (cols.length) cols.forEach(c => allowedColsSet.add(c));
-                let filters = typeof p.row_filters === 'string' ? JSON.parse(p.row_filters) : (p.row_filters || {});
-                rowFiltersList.push(filters);
-            });
-            validCols = Array.from(allowedColsSet);
-
-            if (allPerms.length > 0 && validCols.length === 0 && !viewId) {
-                return res.status(403).json({ 
-                    error: "Forbidden", 
-                    message: "You have permission to access this sheet, but no columns have been shared with you." 
-                });
+        if (!hasFullAccess && !viewId) {
+            const assigned = await resolveAssignedViewForSheet(id, userId);
+            if (!assigned) {
+                return res.status(403).json({ error: "Forbidden", message: "You do not have an assigned view for this sheet." });
             }
+            viewConfig = assigned.config;
+            sheetHeaders = assigned.headers;
         }
     } else {
         hasFullAccess = true;
@@ -2072,10 +2053,6 @@ export async function deleteSheet(req, res) {
             [id]
         );
         const importIds = linkedImports.rows.map((r) => Number(r.id)).filter((n) => Number.isInteger(n) && n > 0);
-
-        // Explicit permission cleanup (kept even with FK cascade for deterministic behavior).
-        await client.query("DELETE FROM permissions WHERE sheet_id = $1", [id]);
-        await client.query("DELETE FROM group_permissions WHERE sheet_id = $1", [id]);
 
         // Cleanup views bound to this sheet and their permissions.
         const viewsRes = await client.query("SELECT id FROM views WHERE sheet_id = $1", [id]);

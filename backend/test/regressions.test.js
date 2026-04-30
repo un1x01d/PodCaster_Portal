@@ -130,22 +130,25 @@ test("view listing requires access to the requested sheet before returning locke
   assert.match(source, /if \(!hasSheetAccess\) return res\.status\(403\)\.json\(\{ error: "Forbidden" \}\);/);
 });
 
-test("user management exposes report source permission endpoints backed by current sheet", async () => {
+test("view-based assignment model is wired and legacy permissions routes are removed", async () => {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
-  const controllerPath = path.join(__dirname, "..", "src", "controllers", "userController.js");
+  const authPath = path.join(__dirname, "..", "src", "utils", "authorization.js");
+  const sheetControllerPath = path.join(__dirname, "..", "src", "controllers", "sheetController.js");
   const routesPath = path.join(__dirname, "..", "src", "routes", "userRoutes.js");
-  const controllerSource = fs.readFileSync(controllerPath, "utf8");
+  const authSource = fs.readFileSync(authPath, "utf8");
+  const sheetSource = fs.readFileSync(sheetControllerPath, "utf8");
   const routeSource = fs.readFileSync(routesPath, "utf8");
 
-  assert.match(controllerSource, /function resolveReportSourceCurrentSheet\(reportSourceId\)/);
-  assert.match(controllerSource, /SELECT id, current_sheet_id FROM report_sources WHERE id = \$1/);
-  assert.match(controllerSource, /INSERT INTO permissions \(user_id, sheet_id, allowed_columns, row_filters\)/);
-  assert.match(controllerSource, /INSERT INTO group_permissions \(group_id, sheet_id, allowed_columns, row_filters\)/);
-  assert.match(routeSource, /router\.post\("\/report-source-permissions"/);
-  assert.match(routeSource, /router\.get\("\/report-source-permissions"/);
-  assert.match(routeSource, /router\.post\("\/report-source-group-permissions"/);
-  assert.match(routeSource, /router\.get\("\/report-source-group-permissions"/);
+  assert.match(authSource, /export async function resolveAssignedViewForSheet\(sheetId, userId, requestedViewId = null\)/);
+  assert.match(authSource, /FROM view_user_permissions/);
+  assert.match(authSource, /FROM view_group_permissions/);
+  assert.match(sheetSource, /You do not have an assigned view for this sheet\./);
+
+  assert.doesNotMatch(routeSource, /router\.post\("\/report-source-permissions"/);
+  assert.doesNotMatch(routeSource, /router\.get\("\/report-source-permissions"/);
+  assert.doesNotMatch(routeSource, /router\.post\("\/report-source-group-permissions"/);
+  assert.doesNotMatch(routeSource, /router\.get\("\/report-source-group-permissions"/);
 });
 
 test("chat sheet access check always allows admin", async () => {
@@ -268,7 +271,8 @@ test("unique values endpoint applies row filters before distinct sampling", asyn
   const controllerPath = path.join(__dirname, "..", "src", "controllers", "sheetController.js");
   const source = fs.readFileSync(controllerPath, "utf8");
 
-  assert.match(source, /SELECT allowed_columns, row_filters FROM permissions/);
+  assert.match(source, /resolveAssignedViewForSheet\(/);
+  assert.match(source, /resolveViewColumnAllowlist\(/);
   assert.match(source, /rowFiltersList\.push\(filters\)/);
   assert.match(source, /const filterClause = buildRowFilterWhereClause\(rowFiltersList, params\.length \+ 1\);/);
   assert.match(source, /Security: row filters must be applied before sampling\/distinct/);
@@ -289,7 +293,7 @@ test("import approval, job status, and audit routes are wired", async () => {
   assert.match(userRoutes, /router\.get\("\/audit-logs"/);
 });
 
-test("deleteSheet cleans related permissions, views, and import references transactionally", async () => {
+test("deleteSheet cleans related views and import references transactionally", async () => {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
   const controllerPath = path.join(__dirname, "..", "src", "controllers", "sheetController.js");
@@ -299,8 +303,6 @@ test("deleteSheet cleans related permissions, views, and import references trans
   assert.match(source, /await client\.query\("BEGIN"\)/);
   assert.match(source, /SELECT id FROM sheets WHERE id = \$1 LIMIT 1 FOR UPDATE/);
   assert.match(source, /SELECT id FROM report_source_imports WHERE sheet_id = \$1 FOR UPDATE/);
-  assert.match(source, /DELETE FROM permissions WHERE sheet_id = \$1/);
-  assert.match(source, /DELETE FROM group_permissions WHERE sheet_id = \$1/);
   assert.match(source, /DELETE FROM view_user_permissions WHERE view_id = ANY/);
   assert.match(source, /DELETE FROM view_group_permissions WHERE view_id = ANY/);
   assert.match(source, /UPDATE report_sources SET current_sheet_id = NULL WHERE current_sheet_id = \$1/);

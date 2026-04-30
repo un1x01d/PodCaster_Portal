@@ -14,11 +14,10 @@ import {
     getSmtpSetting, setSmtpSetting,
     getInviteEmailTemplateSetting, setInviteEmailTemplateSetting, previewInviteEmailTemplate,
     getCustomerInvitationPolicy, setCustomerInvitationPolicy,
+    getInsightTranslationCacheSetting, setInsightTranslationCacheSetting,
     getUserGroups,
     listGroups, createGroup, provisionGroupDatabase, updateGroup, deleteGroup, getGroupMembers, updateGroupMembers, getGroupSheets,
     addUserToGroup, removeUserFromGroup, toggleGroupAdmin,
-    setPermissions, getPermissions, setReportSourcePermissions, getReportSourcePermissions,
-    setGroupPermissions, getGroupPermissions, setReportSourceGroupPermissions, getReportSourceGroupPermissions,
     getUserKpiOverrides, setUserKpiOverrides,
     listAuditLogs
 } from "../controllers/userController.js";
@@ -64,6 +63,8 @@ router.patch("/admin/settings/invite-email-template", asyncHandler(setInviteEmai
 router.post("/admin/settings/invite-email-template/preview", asyncHandler(previewInviteEmailTemplate));
 router.get("/admin/settings/customer-invitations", asyncHandler(getCustomerInvitationPolicy));
 router.patch("/admin/settings/customer-invitations", asyncHandler(setCustomerInvitationPolicy));
+router.get("/admin/settings/insight-translation-cache", asyncHandler(getInsightTranslationCacheSetting));
+router.patch("/admin/settings/insight-translation-cache", asyncHandler(setInsightTranslationCacheSetting));
 
 // Customers (legacy route names remain /groups for API compatibility)
 router.post("/groups/:id/users/:userId/admin", asyncHandler(toggleGroupAdmin));
@@ -79,15 +80,6 @@ router.post("/groups/:id/users", asyncHandler(addUserToGroup));
 router.delete("/groups/:id/users/:userId", asyncHandler(removeUserFromGroup));
 router.get("/groups/:id/sheets", asyncHandler(getGroupSheets));
 
-// Permissions
-router.post("/permissions", asyncHandler(setPermissions)); // User perms
-router.get("/permissions", asyncHandler(getPermissions));
-router.post("/report-source-permissions", asyncHandler(setReportSourcePermissions));
-router.get("/report-source-permissions", asyncHandler(getReportSourcePermissions));
-router.post("/group-permissions", asyncHandler(setGroupPermissions));
-router.get("/group-permissions", asyncHandler(getGroupPermissions));
-router.post("/report-source-group-permissions", asyncHandler(setReportSourceGroupPermissions));
-router.get("/report-source-group-permissions", asyncHandler(getReportSourceGroupPermissions));
 router.get("/users/me/kpi-overrides", asyncHandler(getUserKpiOverrides));
 router.put("/users/me/kpi-overrides", asyncHandler(setUserKpiOverrides));
 router.get("/audit-logs", asyncHandler(listAuditLogs));

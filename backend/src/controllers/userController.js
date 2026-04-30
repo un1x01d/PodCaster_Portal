@@ -25,6 +25,14 @@ const HEAVY_LIST_CACHE_TTL_MS = Number.parseInt(process.env.HEAVY_LIST_CACHE_TTL
 const HEAVY_LIST_CACHE_MAX = Number.parseInt(process.env.HEAVY_LIST_CACHE_MAX || "200", 10);
 const ENABLE_STORAGE_USAGE_METRICS = String(process.env.ENABLE_STORAGE_USAGE_METRICS || "").toLowerCase() === "true";
 const CUSTOMER_INVITE_BASE_URL = String(process.env.CUSTOMER_INVITE_BASE_URL || "").trim();
+const INSIGHT_TRANSLATION_CACHE_SETTINGS_KEY = "insight_translation_cache_settings";
+const RAW_INSIGHT_TRANSLATION_CACHE_TTL_MS = Number.parseInt(
+    process.env.INSIGHT_TRANSLATION_CACHE_TTL_MS || `${60 * 60 * 1000}`,
+    10
+);
+const DEFAULT_INSIGHT_TRANSLATION_CACHE_TTL_MINUTES = Number.isFinite(RAW_INSIGHT_TRANSLATION_CACHE_TTL_MS)
+    ? Math.max(1, Math.round(RAW_INSIGHT_TRANSLATION_CACHE_TTL_MS / (60 * 1000)))
+    : 60;
 
 function normalizeRole(value, fallback = "user") {
     const normalized = String(value || fallback).trim().toLowerCase();
@@ -1344,6 +1352,41 @@ export async function setCustomerInvitationPolicy(req, res) {
     return res.json({ success: true, ...policy });
 }
 
+function normalizeInsightTranslationCacheSettings(raw = {}) {
+    const ttlMinutesRaw = Number.parseInt(String(raw?.ttlMinutes ?? ""), 10);
+    const ttlMinutes = Number.isFinite(ttlMinutesRaw) ? ttlMinutesRaw : DEFAULT_INSIGHT_TRANSLATION_CACHE_TTL_MINUTES;
+    return {
+        ttlMinutes: Math.max(1, Math.min(1440, ttlMinutes)),
+    };
+}
+
+export async function getInsightTranslationCacheSetting(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [INSIGHT_TRANSLATION_CACHE_SETTINGS_KEY]);
+    const current = normalizeInsightTranslationCacheSettings(rows?.[0]?.value || {});
+    return res.json(current);
+}
+
+export async function setInsightTranslationCacheSetting(req, res) {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const next = normalizeInsightTranslationCacheSettings(req.body || {});
+    await query(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+         ON CONFLICT (key)
+         DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+        [INSIGHT_TRANSLATION_CACHE_SETTINGS_KEY, JSON.stringify(next)]
+    );
+    await writeAuditLog({
+        req,
+        action: "insight_translation_cache.settings_updated",
+        resourceType: "app_settings",
+        resourceId: INSIGHT_TRANSLATION_CACHE_SETTINGS_KEY,
+        metadata: next,
+    });
+    return res.json({ success: true, ...next });
+}
+
 function resolveSsoFeatureValue(entitlements) {
     const normalized = normalizeGroupEntitlements(entitlements || {});
     return normalized.features?.sso !== false;
@@ -1526,7 +1569,6 @@ export async function deleteGroup(req, res) {
         }
         
         // Cleanup dependencies that are not cascade-linked.
-        await client.query("DELETE FROM group_permissions WHERE group_id = $1", [id]);
         await client.query("DELETE FROM view_group_permissions WHERE group_id = $1", [id]);
         
         const r = await client.query("DELETE FROM groups WHERE id = $1 RETURNING *", [id]);
@@ -1726,9 +1768,22 @@ export async function getGroupSheets(req, res) {
                 s.report_source_id, rs.name AS report_source_name
          FROM sheets s
          LEFT JOIN report_sources rs ON rs.id = s.report_source_id
-         LEFT JOIN group_permissions gp ON gp.sheet_id = s.id AND gp.group_id = $1
+         LEFT JOIN report_source_imports rsi ON rsi.sheet_id = s.id
          WHERE (
-            gp.group_id IS NOT NULL
+            EXISTS (
+                SELECT 1
+                FROM views v
+                JOIN view_group_permissions vgp ON vgp.view_id = v.id
+                WHERE vgp.group_id = $1
+                  AND (
+                    v.sheet_id = s.id
+                    OR (
+                      v.sheet_id IS NULL
+                      AND v.report_source_id = rsi.report_source_id
+                      AND (v.file_label IS NULL OR v.file_label = rsi.file_label)
+                    )
+                  )
+            )
             OR EXISTS (
                 SELECT 1
                 FROM user_groups ug
@@ -1740,150 +1795,6 @@ export async function getGroupSheets(req, res) {
         [gid]
     );
     res.json(rows);
-}
-
-// --- Permissions ---
-
-async function resolveReportSourceCurrentSheet(reportSourceId) {
-    const sourceId = Number.parseInt(reportSourceId, 10);
-    if (!Number.isInteger(sourceId) || sourceId <= 0) {
-        return { error: "invalid_report_source_id" };
-    }
-
-    const rows = await query(
-        "SELECT id, current_sheet_id FROM report_sources WHERE id = $1",
-        [sourceId]
-    );
-    if (!rows.length) return { error: "report_source_not_found", status: 404 };
-    if (!rows[0].current_sheet_id) return { error: "report_source_has_no_current_sheet", status: 400 };
-    return { reportSourceId: rows[0].id, sheetId: rows[0].current_sheet_id };
-}
-
-export async function setPermissions(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const { userId, sheetId, allowed, rowFilters } = req.body;
-
-    await query(
-        `INSERT INTO permissions (user_id, sheet_id, allowed_columns, row_filters)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (sheet_id, user_id)
-         DO UPDATE SET allowed_columns=$3, row_filters=$4`,
-        [userId, sheetId, JSON.stringify(allowed || []), JSON.stringify(rowFilters || [])]
-    );
-    await writeAuditLog({
-        req,
-        action: "permission.user_sheet_set",
-        resourceType: "sheet",
-        resourceId: sheetId,
-        metadata: { target_user_id: userId, allowed_columns: Array.isArray(allowed) ? allowed.length : 0 },
-    });
-    res.json({ success: true });
-}
-
-export async function getPermissions(req, res) {
-    // Admin only for editing
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const { userId, sheetId } = req.query;
-    const rows = await query("SELECT * FROM permissions WHERE user_id=$1 AND sheet_id=$2", [userId, sheetId]);
-    if (!rows.length) return res.json({});
-    res.json(rows[0]);
-}
-
-export async function setReportSourcePermissions(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const { userId, reportSourceId, allowed, rowFilters } = req.body;
-    const resolved = await resolveReportSourceCurrentSheet(reportSourceId);
-    if (resolved.error) return res.status(resolved.status || 400).json({ error: resolved.error });
-
-    await query(
-        `INSERT INTO permissions (user_id, sheet_id, allowed_columns, row_filters)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (sheet_id, user_id)
-         DO UPDATE SET allowed_columns=$3, row_filters=$4`,
-        [userId, resolved.sheetId, JSON.stringify(allowed || []), JSON.stringify(rowFilters || [])]
-    );
-    await writeAuditLog({
-        req,
-        action: "permission.user_report_source_set",
-        resourceType: "report_source",
-        resourceId: resolved.reportSourceId,
-        metadata: { target_user_id: userId, sheet_id: resolved.sheetId, allowed_columns: Array.isArray(allowed) ? allowed.length : 0 },
-    });
-    res.json({ success: true, report_source_id: resolved.reportSourceId, sheet_id: resolved.sheetId });
-}
-
-export async function getReportSourcePermissions(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const { userId, reportSourceId } = req.query;
-    const resolved = await resolveReportSourceCurrentSheet(reportSourceId);
-    if (resolved.error) return res.status(resolved.status || 400).json({ error: resolved.error });
-
-    const rows = await query("SELECT * FROM permissions WHERE user_id=$1 AND sheet_id=$2", [userId, resolved.sheetId]);
-    if (!rows.length) return res.json({ report_source_id: resolved.reportSourceId, sheet_id: resolved.sheetId });
-    res.json({ ...rows[0], report_source_id: resolved.reportSourceId, sheet_id: resolved.sheetId });
-}
-
-export async function setGroupPermissions(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const { groupId, sheetId, allowed, rowFilters } = req.body;
-
-    await query(
-        `INSERT INTO group_permissions (group_id, sheet_id, allowed_columns, row_filters)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (sheet_id, group_id)
-         DO UPDATE SET allowed_columns=$3, row_filters=$4`,
-        [groupId, sheetId, JSON.stringify(allowed || []), JSON.stringify(rowFilters || [])]
-    );
-    await writeAuditLog({
-        req,
-        action: "permission.group_sheet_set",
-        resourceType: "sheet",
-        resourceId: sheetId,
-        metadata: { target_group_id: groupId, allowed_columns: Array.isArray(allowed) ? allowed.length : 0 },
-    });
-    res.json({ success: true });
-}
-
-export async function getGroupPermissions(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const { groupId, sheetId } = req.query;
-    const rows = await query("SELECT * FROM group_permissions WHERE group_id=$1 AND sheet_id=$2", [groupId, sheetId]);
-    if (!rows.length) return res.json({});
-    res.json(rows[0]);
-}
-
-export async function setReportSourceGroupPermissions(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const { groupId, reportSourceId, allowed, rowFilters } = req.body;
-    const resolved = await resolveReportSourceCurrentSheet(reportSourceId);
-    if (resolved.error) return res.status(resolved.status || 400).json({ error: resolved.error });
-
-    await query(
-        `INSERT INTO group_permissions (group_id, sheet_id, allowed_columns, row_filters)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (sheet_id, group_id)
-         DO UPDATE SET allowed_columns=$3, row_filters=$4`,
-        [groupId, resolved.sheetId, JSON.stringify(allowed || []), JSON.stringify(rowFilters || [])]
-    );
-    await writeAuditLog({
-        req,
-        action: "permission.group_report_source_set",
-        resourceType: "report_source",
-        resourceId: resolved.reportSourceId,
-        metadata: { target_group_id: groupId, sheet_id: resolved.sheetId, allowed_columns: Array.isArray(allowed) ? allowed.length : 0 },
-    });
-    res.json({ success: true, report_source_id: resolved.reportSourceId, sheet_id: resolved.sheetId });
-}
-
-export async function getReportSourceGroupPermissions(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    const { groupId, reportSourceId } = req.query;
-    const resolved = await resolveReportSourceCurrentSheet(reportSourceId);
-    if (resolved.error) return res.status(resolved.status || 400).json({ error: resolved.error });
-
-    const rows = await query("SELECT * FROM group_permissions WHERE group_id=$1 AND sheet_id=$2", [groupId, resolved.sheetId]);
-    if (!rows.length) return res.json({ report_source_id: resolved.reportSourceId, sheet_id: resolved.sheetId });
-    res.json({ ...rows[0], report_source_id: resolved.reportSourceId, sheet_id: resolved.sheetId });
 }
 
 export async function getUserKpiOverrides(req, res) {

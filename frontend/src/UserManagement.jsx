@@ -149,6 +149,8 @@ export default function UserManagement({ token, user, sheetId }) {
   });
   const [oneDriveOauthSaving, setOneDriveOauthSaving] = useState(false);
   const [oneDriveOauthTesting, setOneDriveOauthTesting] = useState(false);
+  const [integrationOpen, setIntegrationOpen] = useState({ google: true, dropbox: false, onedrive: false, smtp: false });
+  const [integrationTestStatus, setIntegrationTestStatus] = useState({ google: null, dropbox: null, onedrive: null });
   const [smtpMeta, setSmtpMeta] = useState({
     hasPassword: false,
     passwordMasked: "",
@@ -183,6 +185,8 @@ export default function UserManagement({ token, user, sheetId }) {
   const [inviteActionBusyId, setInviteActionBusyId] = useState(null);
   const [invitePolicy, setInvitePolicy] = useState({ ttlHours: 72, retentionDays: 30 });
   const [invitePolicySaving, setInvitePolicySaving] = useState(false);
+  const [insightTranslationCache, setInsightTranslationCache] = useState({ ttlMinutes: 60 });
+  const [insightTranslationCacheSaving, setInsightTranslationCacheSaving] = useState(false);
 
   // user-level permissions UI (select a sheet from user's groups)
   const [selectedUserId, setSelectedUserId] = useState(null);
@@ -256,6 +260,9 @@ export default function UserManagement({ token, user, sheetId }) {
   const isSuperAdmin = String(user?.role || "").toLowerCase() === "admin";
   const isCustomerAdmin = !!(user?.is_group_admin || user?.group_admin || user?.is_admin);
   const canManageIntegrations = isSuperAdmin || isCustomerAdmin;
+  const googleConfigured = googleOauthMeta.hasClientId && googleOauthMeta.hasClientSecret && googleOauthMeta.redirectUri;
+  const dropboxConfigured = dropboxOauthMeta.hasClientId && dropboxOauthMeta.hasClientSecret && dropboxOauthMeta.redirectUri;
+  const oneDriveConfigured = oneDriveOauthMeta.hasClientId && oneDriveOauthMeta.hasClientSecret && oneDriveOauthMeta.redirectUri;
 
   const integrationScopeParams = useMemo(() => {
     const gid = Number(selectedGroupId);
@@ -321,6 +328,7 @@ export default function UserManagement({ token, user, sheetId }) {
         redirectUri: data.redirectUri || "",
         frontendUrl: data.frontendUrl || "",
       }));
+      setIntegrationTestStatus((prev) => ({ ...prev, google: null }));
     } catch (e) {
       console.error("fetchGoogleOauthSetting failed", e);
     }
@@ -337,10 +345,12 @@ export default function UserManagement({ token, user, sheetId }) {
       const res = await axios.post(`${API}/admin/settings/google-oauth/test`, { ...integrationScopeParams }, {
         headers: { Authorization: `Bearer ${token}` },
       });
+      setIntegrationTestStatus((prev) => ({ ...prev, google: "success" }));
       alert(res?.data?.message === "oauth_credentials_valid_code_rejected"
         ? "Google OAuth credentials validated."
         : "Google OAuth probe completed.");
     } catch (e) {
+      setIntegrationTestStatus((prev) => ({ ...prev, google: "error" }));
       alert(e.response?.data?.error || "Google OAuth test failed");
     } finally {
       setGoogleOauthTesting(false);
@@ -379,6 +389,7 @@ export default function UserManagement({ token, user, sheetId }) {
         clientId: "",
         clientSecret: "",
       }));
+      setIntegrationTestStatus((prev) => ({ ...prev, google: null }));
       alert("Google OAuth settings updated");
     } catch (e) {
       alert(e.response?.data?.error || "Failed to update Google OAuth settings");
@@ -411,6 +422,7 @@ export default function UserManagement({ token, user, sheetId }) {
         redirectUri: data.redirectUri || "",
         frontendUrl: data.frontendUrl || "",
       }));
+      setIntegrationTestStatus((prev) => ({ ...prev, dropbox: null }));
     } catch (e) {
       console.error("fetchDropboxOauthSetting failed", e);
     }
@@ -427,10 +439,12 @@ export default function UserManagement({ token, user, sheetId }) {
       const res = await axios.post(`${API}/admin/settings/dropbox-oauth/test`, { ...integrationScopeParams }, {
         headers: { Authorization: `Bearer ${token}` },
       });
+      setIntegrationTestStatus((prev) => ({ ...prev, dropbox: "success" }));
       alert(res?.data?.message === "oauth_credentials_valid_code_rejected"
         ? "Dropbox OAuth credentials validated."
         : "Dropbox OAuth probe completed.");
     } catch (e) {
+      setIntegrationTestStatus((prev) => ({ ...prev, dropbox: "error" }));
       alert(e.response?.data?.error || "Dropbox OAuth test failed");
     } finally {
       setDropboxOauthTesting(false);
@@ -469,6 +483,7 @@ export default function UserManagement({ token, user, sheetId }) {
         clientId: "",
         clientSecret: "",
       }));
+      setIntegrationTestStatus((prev) => ({ ...prev, dropbox: null }));
       alert("Dropbox OAuth settings updated");
     } catch (e) {
       alert(e.response?.data?.error || "Failed to update Dropbox OAuth settings");
@@ -501,6 +516,7 @@ export default function UserManagement({ token, user, sheetId }) {
         redirectUri: data.redirectUri || "",
         frontendUrl: data.frontendUrl || "",
       }));
+      setIntegrationTestStatus((prev) => ({ ...prev, onedrive: null }));
     } catch (e) {
       console.error("fetchOneDriveOauthSetting failed", e);
     }
@@ -517,10 +533,12 @@ export default function UserManagement({ token, user, sheetId }) {
       const res = await axios.post(`${API}/admin/settings/onedrive-oauth/test`, { ...integrationScopeParams }, {
         headers: { Authorization: `Bearer ${token}` },
       });
+      setIntegrationTestStatus((prev) => ({ ...prev, onedrive: "success" }));
       alert(res?.data?.message === "oauth_credentials_valid_code_rejected"
         ? "OneDrive OAuth credentials validated."
         : "OneDrive OAuth probe completed.");
     } catch (e) {
+      setIntegrationTestStatus((prev) => ({ ...prev, onedrive: "error" }));
       alert(e.response?.data?.error || "OneDrive OAuth test failed");
     } finally {
       setOneDriveOauthTesting(false);
@@ -559,6 +577,7 @@ export default function UserManagement({ token, user, sheetId }) {
         clientId: "",
         clientSecret: "",
       }));
+      setIntegrationTestStatus((prev) => ({ ...prev, onedrive: null }));
       alert("OneDrive OAuth settings updated");
     } catch (e) {
       alert(e.response?.data?.error || "Failed to update OneDrive OAuth settings");
@@ -742,6 +761,41 @@ export default function UserManagement({ token, user, sheetId }) {
       alert(e.response?.data?.error || "Failed to save invitation policy");
     } finally {
       setInvitePolicySaving(false);
+    }
+  };
+
+  const fetchInsightTranslationCacheSetting = async () => {
+    if (!isSuperAdmin) return;
+    try {
+      const res = await axios.get(`${API}/admin/settings/insight-translation-cache`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setInsightTranslationCache({
+        ttlMinutes: Number(res?.data?.ttlMinutes || 60),
+      });
+    } catch (e) {
+      console.error("fetchInsightTranslationCacheSetting failed", e);
+    }
+  };
+
+  const saveInsightTranslationCacheSetting = async () => {
+    if (!isSuperAdmin || insightTranslationCacheSaving) return;
+    setInsightTranslationCacheSaving(true);
+    try {
+      const payload = {
+        ttlMinutes: Number.parseInt(String(insightTranslationCache.ttlMinutes || "").trim(), 10) || 60,
+      };
+      const res = await axios.patch(`${API}/admin/settings/insight-translation-cache`, payload, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setInsightTranslationCache({
+        ttlMinutes: Number(res?.data?.ttlMinutes || payload.ttlMinutes),
+      });
+      alert("Insight translation cache settings saved");
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to save insight translation cache settings");
+    } finally {
+      setInsightTranslationCacheSaving(false);
     }
   };
 
@@ -943,6 +997,7 @@ export default function UserManagement({ token, user, sheetId }) {
       fetchSmtpSetting();
       fetchInviteEmailTemplate();
       fetchInvitationPolicy();
+      fetchInsightTranslationCacheSetting();
     }
   }, [token]);
 
@@ -953,6 +1008,7 @@ export default function UserManagement({ token, user, sheetId }) {
     fetchOneDriveOauthSetting();
     fetchSmtpSetting();
     fetchInviteEmailTemplate();
+    fetchInsightTranslationCacheSetting();
   }, [token, canManageIntegrations, selectedGroupId]);
 
 
@@ -978,7 +1034,7 @@ export default function UserManagement({ token, user, sheetId }) {
 
   const toggleUserViewPerm = async (viewId) => {
     if (!selectedUserId) return;
-    const hasPerm = userViews.has(viewId);
+    const hasPerm = userViews.has(viewId) || userViews.has(String(viewId)) || userViews.has(Number(viewId));
     try {
       if (hasPerm) {
         await axios.delete(`${API}/views/user-permissions/${viewId}/${selectedUserId}`, {
@@ -1005,7 +1061,7 @@ export default function UserManagement({ token, user, sheetId }) {
 
   const toggleGroupViewPerm = async (viewId) => {
     if (!selectedGroupId) return;
-    const hasPerm = groupViews.has(viewId);
+    const hasPerm = groupViews.has(viewId) || groupViews.has(String(viewId)) || groupViews.has(Number(viewId));
     try {
       if (hasPerm) {
         await axios.delete(`${API}/views/group-permissions/${viewId}/${selectedGroupId}`, {
@@ -1055,7 +1111,6 @@ export default function UserManagement({ token, user, sheetId }) {
   useEffect(() => {
     if (selectedUserSheetId && selectedUserId) {
       fetchUserSheetHeaders(selectedUserSheetId);
-      loadUserPermissions(selectedUserId, selectedUserSheetId, selectedReportSourceId);
     } else {
       setUserSheetHeaders([]);
       setUserAllowedCols(new Set());
@@ -1087,7 +1142,6 @@ export default function UserManagement({ token, user, sheetId }) {
       return;
     }
     fetchGroupSheetHeaders(selectedUserSheetId);
-    loadGroupPermissions(selectedGroupId, selectedUserSheetId, selectedReportSourceId);
   }, [selectedUserSheetId, selectedGroupId, selectedReportSourceId]);
 
   const toggleUserAllowed = (h) => {
@@ -1551,6 +1605,14 @@ export default function UserManagement({ token, user, sheetId }) {
   const selectedReportSource = useMemo(() => {
     return reportSourceOptions.find((source) => String(source.id) === String(selectedReportSourceId)) || null;
   }, [reportSourceOptions, selectedReportSourceId]);
+  const assignableViews = useMemo(() => {
+    return (Array.isArray(views) ? views : []).filter((v) => {
+      const isSheetMatch = selectedUserSheetId && String(v.sheet_id) === String(selectedUserSheetId);
+      const isReportSourceMatch = selectedReportSourceId && String(v.report_source_id) === String(selectedReportSourceId);
+      const isGlobal = v?.is_global === true;
+      return isSheetMatch || isReportSourceMatch || isGlobal;
+    });
+  }, [views, selectedUserSheetId, selectedReportSourceId]);
   const selectReportSourceForPermissions = (value) => {
     const source = reportSourceOptions.find((item) => String(item.id) === String(value));
     setSelectedReportSourceId(source ? String(source.id) : null);
@@ -1935,6 +1997,75 @@ export default function UserManagement({ token, user, sheetId }) {
                   <div className="text-[10px] text-slate-400 italic">No pending invitations.</div>
                 )}
               </div>
+              <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-600">View Assignment</div>
+                    <div className="text-[10px] text-slate-500 mt-0.5">Assign view access by user or customer fallback.</div>
+                  </div>
+                  <div className="text-[10px] font-semibold text-slate-500">
+                    {selectedUserId ? `User: ${userById instanceof Map ? (userById.get(selectedUserId)?.email || selectedUserId) : selectedUserId}` : `Customer: ${(Array.isArray(groups) && groups.find(g => g.id === selectedGroupId)?.name) || selectedGroupId || "-"}`}
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 gap-2">
+                  <div className="rounded-md border border-slate-200 bg-white px-2 py-1.5">
+                    <div className="text-[9px] font-semibold uppercase tracking-wide text-slate-500 mb-1">Report Source</div>
+                    <select
+                      className="input-premium h-7 py-1 text-[10px]"
+                      value={selectedReportSourceId || ""}
+                      onChange={(e) => selectReportSourceForPermissions(e.target.value)}
+                    >
+                      <option value="">Select report source for assignment…</option>
+                      {reportSourceOptions.map((source) => (
+                        <option key={source.id} value={source.id}>
+                          {source.name || `Report source ${source.id}`}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                {selectedUserSheetId ? (
+                  <div className="space-y-3">
+                    {selectedUserId && (
+                      <div className="rounded-md border border-slate-200 bg-white p-2.5 space-y-2">
+                        <div className="text-[10px] font-bold uppercase tracking-widest text-slate-600">User Assigned Views</div>
+                        <div className="space-y-1.5 max-h-44 overflow-auto pr-1 custom-scrollbar">
+                          {Array.isArray(assignableViews) && assignableViews.map(v => (
+                            <label key={v.id} className={`flex items-center justify-between p-2 rounded-md border cursor-pointer ${(userViews instanceof Set && (userViews.has(v.id) || userViews.has(String(v.id)) || userViews.has(Number(v.id)))) ? "bg-slate-100 border-slate-300" : "bg-white border-slate-200"}`}>
+                              <div className="flex items-center gap-2 min-w-0">
+                                <input type="checkbox" checked={userViews instanceof Set && (userViews.has(v.id) || userViews.has(String(v.id)) || userViews.has(Number(v.id)))} onChange={() => toggleUserViewPerm(v.id)} className="w-3.5 h-3.5 rounded text-slate-700" />
+                                <span className="text-[10px] font-semibold text-slate-700 truncate">{v.name}</span>
+                              </div>
+                              <span className="text-[9px] text-slate-400 italic shrink-0 pl-2">by {v.created_by}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {selectedGroupId && (
+                      <div className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 space-y-2">
+                        <div className="text-[10px] text-amber-700">
+                          Customer global views are used as fallback when a user has no direct view assignment.
+                        </div>
+                        <div className="rounded-md border border-slate-200 bg-white p-2 space-y-1.5 max-h-32 overflow-auto pr-1 custom-scrollbar">
+                          {Array.isArray(assignableViews) && assignableViews.map(v => (
+                            <label key={v.id} className={`flex items-center justify-between p-1.5 rounded-md border cursor-pointer ${(groupViews instanceof Set && (groupViews.has(v.id) || groupViews.has(String(v.id)) || groupViews.has(Number(v.id)))) ? "bg-slate-100 border-slate-300" : "bg-white border-slate-200"}`}>
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <input type="checkbox" checked={groupViews instanceof Set && (groupViews.has(v.id) || groupViews.has(String(v.id)) || groupViews.has(Number(v.id)))} onChange={() => toggleGroupViewPerm(v.id)} className="w-3 h-3 rounded text-slate-700" />
+                                <span className="text-[10px] font-semibold text-slate-700 truncate">{v.name}</span>
+                              </div>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="rounded-md border border-dashed border-slate-300 bg-white px-3 py-2 text-[11px] text-slate-500">
+                    Select a report source to load the current sheet and assign views.
+                  </div>
+                )}
+              </div>
               {editingUserId && (
                 <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3 space-y-2">
                   <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500">Edit Selected User</div>
@@ -2053,7 +2184,6 @@ export default function UserManagement({ token, user, sheetId }) {
         </div>
         </>
         )}
-
       </section>
 
       {/* 2. CUSTOMERS PANEL */}
@@ -2215,6 +2345,98 @@ export default function UserManagement({ token, user, sheetId }) {
             </div>
           ))}
         </div>
+        {isSuperAdmin && (
+          <div className="mt-2 space-y-3">
+            <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Customer Invitation Policy</div>
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  className="input-premium"
+                  type="number"
+                  min="1"
+                  max="720"
+                  placeholder="TTL Hours"
+                  value={invitePolicy.ttlHours}
+                  onChange={(e) => setInvitePolicy((prev) => ({ ...prev, ttlHours: e.target.value }))}
+                />
+                <input
+                  className="input-premium"
+                  type="number"
+                  min="1"
+                  max="365"
+                  placeholder="Retention Days"
+                  value={invitePolicy.retentionDays}
+                  onChange={(e) => setInvitePolicy((prev) => ({ ...prev, retentionDays: e.target.value }))}
+                />
+              </div>
+              <div className="text-[10px] text-slate-500">
+                TTL controls invitation expiry. Retention controls cleanup of old accepted/revoked/expired records.
+              </div>
+              <button
+                type="button"
+                onClick={saveInvitationPolicy}
+                disabled={invitePolicySaving}
+                className={`btn-premium bg-slate-800 text-white w-full py-2 ${invitePolicySaving ? "opacity-60 cursor-not-allowed" : ""}`}
+              >
+                {invitePolicySaving ? "Saving..." : "Save Invitation Policy"}
+              </button>
+            </div>
+            <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Invite Email Template</div>
+              <input
+                className="input-premium"
+                placeholder="Email Subject"
+                value={inviteEmailTemplate.subject}
+                onChange={(e) => setInviteEmailTemplate((prev) => ({ ...prev, subject: e.target.value }))}
+              />
+              <input
+                className="input-premium"
+                placeholder="Logo URL"
+                value={inviteEmailTemplate.logoUrl}
+                onChange={(e) => setInviteEmailTemplate((prev) => ({ ...prev, logoUrl: e.target.value }))}
+              />
+              <textarea
+                className="input-premium min-h-[160px]"
+                placeholder="HTML template"
+                value={inviteEmailTemplate.html}
+                onChange={(e) => setInviteEmailTemplate((prev) => ({ ...prev, html: e.target.value }))}
+              />
+              <textarea
+                className="input-premium min-h-[120px]"
+                placeholder="Text template"
+                value={inviteEmailTemplate.text}
+                onChange={(e) => setInviteEmailTemplate((prev) => ({ ...prev, text: e.target.value }))}
+              />
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={saveInviteEmailTemplate}
+                  disabled={inviteEmailSaving}
+                  className={`btn-premium bg-slate-800 text-white w-full py-2 ${inviteEmailSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                >
+                  {inviteEmailSaving ? "Saving..." : "Save Invite Template"}
+                </button>
+                <button
+                  type="button"
+                  onClick={previewInviteEmail}
+                  disabled={inviteEmailPreviewLoading}
+                  className={`btn-premium bg-indigo-600 text-white w-full py-2 ${inviteEmailPreviewLoading ? "opacity-60 cursor-not-allowed" : ""}`}
+                >
+                  {inviteEmailPreviewLoading ? "Loading..." : "Preview Invite Email"}
+                </button>
+              </div>
+              {inviteEmailPreview.html ? (
+                <div className="rounded-md border border-slate-200 bg-slate-50 p-2 space-y-2">
+                  <div className="text-[10px] font-semibold text-slate-600">Preview Subject: {inviteEmailPreview.subject}</div>
+                  <div
+                    className="rounded-md border border-slate-200 bg-white p-2 max-h-[280px] overflow-auto"
+                    dangerouslySetInnerHTML={{ __html: inviteEmailPreview.html }}
+                  />
+                </div>
+              ) : null}
+            </div>
+          </div>
+        )}
 
       </div>
 
@@ -2239,13 +2461,21 @@ export default function UserManagement({ token, user, sheetId }) {
                 Select a customer to configure scoped integration credentials.
               </div>
             )}
-            <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+            <div className={`rounded-md border bg-white p-3 space-y-2 ${googleConfigured && integrationTestStatus.google === "success" ? "border-emerald-400" : "border-slate-200"}`}>
               <div className="flex items-center justify-between">
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Google OAuth Configuration</div>
-                <span className={`text-[10px] font-semibold ${googleOauthMeta.hasClientId && googleOauthMeta.hasClientSecret && googleOauthMeta.redirectUri ? "text-emerald-600" : "text-slate-400"}`}>
-                  {googleOauthMeta.hasClientId && googleOauthMeta.hasClientSecret && googleOauthMeta.redirectUri ? "Configured" : "Not configured"}
-                </span>
+                <div className="flex items-center gap-2">
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Google OAuth Configuration</div>
+                  <span className={`text-[10px] font-semibold ${googleConfigured ? "text-emerald-600" : "text-slate-400"}`}>
+                    {googleConfigured ? "Configured" : "Not configured"}
+                  </span>
+                  {integrationTestStatus.google === "success" && <span className="text-[10px] font-semibold text-emerald-600">Tested</span>}
+                </div>
+                <button type="button" className="text-[10px] font-semibold text-slate-600 hover:text-slate-900" onClick={() => setIntegrationOpen((prev) => ({ ...prev, google: !prev.google }))}>
+                  {integrationOpen.google ? "Collapse" : "Expand"}
+                </button>
               </div>
+              {integrationOpen.google && (
+              <>
               <input type="password" className="input-premium" placeholder={googleOauthMeta.hasClientId ? "***" : "Google Client ID"} value={googleOauthForm.clientId} onChange={(e) => setGoogleOauthForm((prev) => ({ ...prev, clientId: e.target.value }))} autoComplete="new-password" />
               <input type="password" className="input-premium" placeholder={googleOauthMeta.hasClientSecret ? "***" : "Google Client Secret"} value={googleOauthForm.clientSecret} onChange={(e) => setGoogleOauthForm((prev) => ({ ...prev, clientSecret: e.target.value }))} autoComplete="new-password" />
               <input className="input-premium" placeholder="Redirect URI" value={googleOauthForm.redirectUri} onChange={(e) => setGoogleOauthForm((prev) => ({ ...prev, redirectUri: e.target.value }))} />
@@ -2260,14 +2490,24 @@ export default function UserManagement({ token, user, sheetId }) {
                 <div className="text-slate-500">Required Scopes: `drive.readonly`, `openid`, `email`, `profile`</div>
                 <a className="block text-blue-700 hover:underline" href="https://developers.google.com/identity/protocols/oauth2/web-server" target="_blank" rel="noreferrer">Google OAuth2 Web Server guide</a>
               </div>
+              </>
+              )}
             </div>
-            <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+            <div className={`rounded-md border bg-white p-3 space-y-2 ${dropboxConfigured && integrationTestStatus.dropbox === "success" ? "border-emerald-400" : "border-slate-200"}`}>
               <div className="flex items-center justify-between">
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Dropbox OAuth Configuration</div>
-                <span className={`text-[10px] font-semibold ${dropboxOauthMeta.hasClientId && dropboxOauthMeta.hasClientSecret && dropboxOauthMeta.redirectUri ? "text-emerald-600" : "text-slate-400"}`}>
-                  {dropboxOauthMeta.hasClientId && dropboxOauthMeta.hasClientSecret && dropboxOauthMeta.redirectUri ? "Configured" : "Not configured"}
-                </span>
+                <div className="flex items-center gap-2">
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Dropbox OAuth Configuration</div>
+                  <span className={`text-[10px] font-semibold ${dropboxConfigured ? "text-emerald-600" : "text-slate-400"}`}>
+                    {dropboxConfigured ? "Configured" : "Not configured"}
+                  </span>
+                  {integrationTestStatus.dropbox === "success" && <span className="text-[10px] font-semibold text-emerald-600">Tested</span>}
+                </div>
+                <button type="button" className="text-[10px] font-semibold text-slate-600 hover:text-slate-900" onClick={() => setIntegrationOpen((prev) => ({ ...prev, dropbox: !prev.dropbox }))}>
+                  {integrationOpen.dropbox ? "Collapse" : "Expand"}
+                </button>
               </div>
+              {integrationOpen.dropbox && (
+              <>
               <input type="password" className="input-premium" placeholder={dropboxOauthMeta.hasClientId ? "***" : "Dropbox App Key (Client ID)"} value={dropboxOauthForm.clientId} onChange={(e) => setDropboxOauthForm((prev) => ({ ...prev, clientId: e.target.value }))} autoComplete="new-password" />
               <input type="password" className="input-premium" placeholder={dropboxOauthMeta.hasClientSecret ? "***" : "Dropbox App Secret (Client Secret)"} value={dropboxOauthForm.clientSecret} onChange={(e) => setDropboxOauthForm((prev) => ({ ...prev, clientSecret: e.target.value }))} autoComplete="new-password" />
               <input className="input-premium" placeholder="Redirect URI" value={dropboxOauthForm.redirectUri} onChange={(e) => setDropboxOauthForm((prev) => ({ ...prev, redirectUri: e.target.value }))} />
@@ -2282,14 +2522,24 @@ export default function UserManagement({ token, user, sheetId }) {
                 <div className="text-slate-500">Required Permissions: `files.metadata.read`, `files.content.read`</div>
                 <a className="block text-blue-700 hover:underline" href="https://www.dropbox.com/developers/documentation/http/documentation#oauth2-authorize" target="_blank" rel="noreferrer">Dropbox OAuth2 guide</a>
               </div>
+              </>
+              )}
             </div>
-            <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+            <div className={`rounded-md border bg-white p-3 space-y-2 ${oneDriveConfigured && integrationTestStatus.onedrive === "success" ? "border-emerald-400" : "border-slate-200"}`}>
               <div className="flex items-center justify-between">
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">OneDrive OAuth Configuration</div>
-                <span className={`text-[10px] font-semibold ${oneDriveOauthMeta.hasClientId && oneDriveOauthMeta.hasClientSecret && oneDriveOauthMeta.redirectUri ? "text-emerald-600" : "text-slate-400"}`}>
-                  {oneDriveOauthMeta.hasClientId && oneDriveOauthMeta.hasClientSecret && oneDriveOauthMeta.redirectUri ? "Configured" : "Not configured"}
-                </span>
+                <div className="flex items-center gap-2">
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">OneDrive OAuth Configuration</div>
+                  <span className={`text-[10px] font-semibold ${oneDriveConfigured ? "text-emerald-600" : "text-slate-400"}`}>
+                    {oneDriveConfigured ? "Configured" : "Not configured"}
+                  </span>
+                  {integrationTestStatus.onedrive === "success" && <span className="text-[10px] font-semibold text-emerald-600">Tested</span>}
+                </div>
+                <button type="button" className="text-[10px] font-semibold text-slate-600 hover:text-slate-900" onClick={() => setIntegrationOpen((prev) => ({ ...prev, onedrive: !prev.onedrive }))}>
+                  {integrationOpen.onedrive ? "Collapse" : "Expand"}
+                </button>
               </div>
+              {integrationOpen.onedrive && (
+              <>
               <input type="password" className="input-premium" placeholder={oneDriveOauthMeta.hasClientId ? "***" : "Microsoft Application (Client) ID"} value={oneDriveOauthForm.clientId} onChange={(e) => setOneDriveOauthForm((prev) => ({ ...prev, clientId: e.target.value }))} autoComplete="new-password" />
               <input type="password" className="input-premium" placeholder={oneDriveOauthMeta.hasClientSecret ? "***" : "Microsoft Client Secret"} value={oneDriveOauthForm.clientSecret} onChange={(e) => setOneDriveOauthForm((prev) => ({ ...prev, clientSecret: e.target.value }))} autoComplete="new-password" />
               <input className="input-premium" placeholder="Redirect URI" value={oneDriveOauthForm.redirectUri} onChange={(e) => setOneDriveOauthForm((prev) => ({ ...prev, redirectUri: e.target.value }))} />
@@ -2304,117 +2554,63 @@ export default function UserManagement({ token, user, sheetId }) {
                 <a className="block text-blue-700 hover:underline" href="https://learn.microsoft.com/en-us/graph/permissions-reference#filesread" target="_blank" rel="noreferrer">Required Microsoft Graph scopes: `Files.Read`, `User.Read`, `offline_access`</a>
                 <a className="block text-blue-700 hover:underline" href="https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow" target="_blank" rel="noreferrer">Authorization code flow guide</a>
               </div>
+              </>
+              )}
             </div>
             {isSuperAdmin && (
               <>
                 <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
                   <div className="flex items-center justify-between">
-                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">SMTP Configuration</div>
-                    <span className={`text-[10px] font-semibold ${smtpMeta.host && smtpMeta.username && smtpMeta.hasPassword ? "text-emerald-600" : "text-slate-400"}`}>
-                      {smtpMeta.host && smtpMeta.username && smtpMeta.hasPassword ? "Configured" : "Not configured"}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">SMTP Configuration</div>
+                      <span className={`text-[10px] font-semibold ${smtpMeta.host && smtpMeta.username && smtpMeta.hasPassword ? "text-emerald-600" : "text-slate-400"}`}>
+                        {smtpMeta.host && smtpMeta.username && smtpMeta.hasPassword ? "Configured" : "Not configured"}
+                      </span>
+                    </div>
+                    <button type="button" className="text-[10px] font-semibold text-slate-600 hover:text-slate-900" onClick={() => setIntegrationOpen((prev) => ({ ...prev, smtp: !prev.smtp }))}>
+                      {integrationOpen.smtp ? "Collapse" : "Expand"}
+                    </button>
                   </div>
-                  <input className="input-premium" placeholder="SMTP Host" value={smtpForm.host} onChange={(e) => setSmtpForm((prev) => ({ ...prev, host: e.target.value }))} />
-                  <div className="grid grid-cols-2 gap-2">
-                    <input className="input-premium" type="number" min="1" placeholder="Port" value={smtpForm.port} onChange={(e) => setSmtpForm((prev) => ({ ...prev, port: e.target.value }))} />
-                    <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-600 px-2">
-                      <input type="checkbox" checked={!!smtpForm.secure} onChange={(e) => setSmtpForm((prev) => ({ ...prev, secure: e.target.checked }))} />
-                      Use TLS
-                    </label>
-                  </div>
-                  <input className="input-premium" placeholder="SMTP Username" value={smtpForm.username} onChange={(e) => setSmtpForm((prev) => ({ ...prev, username: e.target.value }))} />
-                  <input type="password" className="input-premium" placeholder={smtpMeta.hasPassword ? "***" : "SMTP Password"} value={smtpForm.password} onChange={(e) => setSmtpForm((prev) => ({ ...prev, password: e.target.value }))} autoComplete="new-password" />
-                  <input className="input-premium" placeholder="From Email" value={smtpForm.fromEmail} onChange={(e) => setSmtpForm((prev) => ({ ...prev, fromEmail: e.target.value }))} />
-                  <input className="input-premium" placeholder="From Name" value={smtpForm.fromName} onChange={(e) => setSmtpForm((prev) => ({ ...prev, fromName: e.target.value }))} />
-                  <button type="button" onClick={saveSmtpSetting} disabled={smtpSaving} className={`btn-premium bg-slate-800 text-white w-full py-2 ${smtpSaving ? "opacity-60 cursor-not-allowed" : ""}`}>{smtpSaving ? "Saving..." : "Save SMTP Settings"}</button>
+                  {integrationOpen.smtp && (
+                    <>
+                      <input className="input-premium" placeholder="SMTP Host" value={smtpForm.host} onChange={(e) => setSmtpForm((prev) => ({ ...prev, host: e.target.value }))} />
+                      <div className="grid grid-cols-2 gap-2">
+                        <input className="input-premium" type="number" min="1" placeholder="Port" value={smtpForm.port} onChange={(e) => setSmtpForm((prev) => ({ ...prev, port: e.target.value }))} />
+                        <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-600 px-2">
+                          <input type="checkbox" checked={!!smtpForm.secure} onChange={(e) => setSmtpForm((prev) => ({ ...prev, secure: e.target.checked }))} />
+                          Use TLS
+                        </label>
+                      </div>
+                      <input className="input-premium" placeholder="SMTP Username" value={smtpForm.username} onChange={(e) => setSmtpForm((prev) => ({ ...prev, username: e.target.value }))} />
+                      <input type="password" className="input-premium" placeholder={smtpMeta.hasPassword ? "***" : "SMTP Password"} value={smtpForm.password} onChange={(e) => setSmtpForm((prev) => ({ ...prev, password: e.target.value }))} autoComplete="new-password" />
+                      <input className="input-premium" placeholder="From Email" value={smtpForm.fromEmail} onChange={(e) => setSmtpForm((prev) => ({ ...prev, fromEmail: e.target.value }))} />
+                      <input className="input-premium" placeholder="From Name" value={smtpForm.fromName} onChange={(e) => setSmtpForm((prev) => ({ ...prev, fromName: e.target.value }))} />
+                      <button type="button" onClick={saveSmtpSetting} disabled={smtpSaving} className={`btn-premium bg-slate-800 text-white w-full py-2 ${smtpSaving ? "opacity-60 cursor-not-allowed" : ""}`}>{smtpSaving ? "Saving..." : "Save SMTP Settings"}</button>
+                    </>
+                  )}
                 </div>
                 <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
-                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Customer Invitation Policy</div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <input
-                      className="input-premium"
-                      type="number"
-                      min="1"
-                      max="720"
-                      placeholder="TTL Hours"
-                      value={invitePolicy.ttlHours}
-                      onChange={(e) => setInvitePolicy((prev) => ({ ...prev, ttlHours: e.target.value }))}
-                    />
-                    <input
-                      className="input-premium"
-                      type="number"
-                      min="1"
-                      max="365"
-                      placeholder="Retention Days"
-                      value={invitePolicy.retentionDays}
-                      onChange={(e) => setInvitePolicy((prev) => ({ ...prev, retentionDays: e.target.value }))}
-                    />
-                  </div>
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Insight Translation Cache</div>
+                  <input
+                    className="input-premium"
+                    type="number"
+                    min="1"
+                    max="1440"
+                    placeholder="TTL Minutes"
+                    value={insightTranslationCache.ttlMinutes}
+                    onChange={(e) => setInsightTranslationCache((prev) => ({ ...prev, ttlMinutes: e.target.value }))}
+                  />
                   <div className="text-[10px] text-slate-500">
-                    TTL controls invitation expiry. Retention controls cleanup of old accepted/revoked/expired records.
+                    Cache translated insight-feed ticket text for this many minutes. Manual Refresh in Insight Feed bypasses cache.
                   </div>
                   <button
                     type="button"
-                    onClick={saveInvitationPolicy}
-                    disabled={invitePolicySaving}
-                    className={`btn-premium bg-slate-800 text-white w-full py-2 ${invitePolicySaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                    onClick={saveInsightTranslationCacheSetting}
+                    disabled={insightTranslationCacheSaving}
+                    className={`btn-premium bg-slate-800 text-white w-full py-2 ${insightTranslationCacheSaving ? "opacity-60 cursor-not-allowed" : ""}`}
                   >
-                    {invitePolicySaving ? "Saving..." : "Save Invitation Policy"}
+                    {insightTranslationCacheSaving ? "Saving..." : "Save Insight Cache Settings"}
                   </button>
-                </div>
-                <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
-                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Invite Email Template</div>
-                  <input
-                    className="input-premium"
-                    placeholder="Email Subject"
-                    value={inviteEmailTemplate.subject}
-                    onChange={(e) => setInviteEmailTemplate((prev) => ({ ...prev, subject: e.target.value }))}
-                  />
-                  <input
-                    className="input-premium"
-                    placeholder="Logo URL"
-                    value={inviteEmailTemplate.logoUrl}
-                    onChange={(e) => setInviteEmailTemplate((prev) => ({ ...prev, logoUrl: e.target.value }))}
-                  />
-                  <textarea
-                    className="input-premium min-h-[160px]"
-                    placeholder="HTML template"
-                    value={inviteEmailTemplate.html}
-                    onChange={(e) => setInviteEmailTemplate((prev) => ({ ...prev, html: e.target.value }))}
-                  />
-                  <textarea
-                    className="input-premium min-h-[120px]"
-                    placeholder="Text template"
-                    value={inviteEmailTemplate.text}
-                    onChange={(e) => setInviteEmailTemplate((prev) => ({ ...prev, text: e.target.value }))}
-                  />
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={saveInviteEmailTemplate}
-                      disabled={inviteEmailSaving}
-                      className={`btn-premium bg-slate-800 text-white w-full py-2 ${inviteEmailSaving ? "opacity-60 cursor-not-allowed" : ""}`}
-                    >
-                      {inviteEmailSaving ? "Saving..." : "Save Invite Template"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={previewInviteEmail}
-                      disabled={inviteEmailPreviewLoading}
-                      className={`btn-premium bg-indigo-600 text-white w-full py-2 ${inviteEmailPreviewLoading ? "opacity-60 cursor-not-allowed" : ""}`}
-                    >
-                      {inviteEmailPreviewLoading ? "Loading..." : "Preview Invite Email"}
-                    </button>
-                  </div>
-                  {inviteEmailPreview.html ? (
-                    <div className="rounded-md border border-slate-200 bg-slate-50 p-2 space-y-2">
-                      <div className="text-[10px] font-semibold text-slate-600">Preview Subject: {inviteEmailPreview.subject}</div>
-                      <div
-                        className="rounded-md border border-slate-200 bg-white p-2 max-h-[280px] overflow-auto"
-                        dangerouslySetInnerHTML={{ __html: inviteEmailPreview.html }}
-                      />
-                    </div>
-                  ) : null}
                 </div>
               </>
             )}
@@ -2423,361 +2619,6 @@ export default function UserManagement({ token, user, sheetId }) {
 
         </>
         )}
-      {/* 4. OVERRIDES & PERMISSIONS PANEL */}
-      {(selectedUserId || selectedGroupId) && (
-      <div className="mt-3">
-        <details className="rounded-md border border-slate-300 bg-white" open={!collapsedSections.permissions}>
-          <summary className="flex items-center justify-between cursor-pointer px-3 py-2 text-sm font-semibold text-slate-800">
-            <span>Permissions</span>
-            <span className="text-[10px] font-semibold text-slate-500">
-              {selectedUserId ? `User: ${userById instanceof Map ? (userById.get(selectedUserId)?.email || selectedUserId) : selectedUserId}` : `Customer: ${(Array.isArray(groups) && groups.find(g => g.id === selectedGroupId)?.name) || selectedGroupId}`}
-            </span>
-          </summary>
-          <div className="px-3 pb-3">
-
-          <div className="flex-1 flex flex-col min-h-0">
-            {/* Report Source Selector */}
-            <div className="mb-4">
-              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Report Source</label>
-              <select
-                className="input-premium py-2 w-full mt-2"
-                value={selectedReportSourceId || ""}
-                onChange={(e) => selectReportSourceForPermissions(e.target.value)}
-              >
-                <option value="">Select a report source…</option>
-                {reportSourceOptions.map((source) => (
-                  <option key={source.id} value={source.id}>
-                    {source.name || `Report source ${source.id}`}
-                  </option>
-                ))}
-              </select>
-              <div className="text-[10px] text-slate-400 mt-1">
-                Access applies to the current import for this report source and is carried forward on refresh.
-                {selectedReportSource?.current_sheet_id ? ` Current sheet: ${selectedReportSource.current_sheet_id}` : ""}
-              </div>
-            </div>
-
-            {selectedUserSheetId ? (
-              <div className="flex-1 flex flex-col gap-6 min-h-0 overflow-auto pr-2 custom-scrollbar">
-                {selectedUserId && (
-                  <>
-                    <div className="text-[10px] font-bold uppercase tracking-widest text-indigo-500">User Override</div>
-                {/* Column Permissions */}
-                <div>
-                  <div className="flex items-center justify-between mb-3 border-b border-slate-200/30 pb-2">
-                    <h4 className="font-bold text-sm text-slate-700">Restricted Columns</h4>
-                    <button
-                      className="text-[10px] font-bold text-indigo-500 hover:underline"
-                      onClick={() => setUserAllowedCols(new Set())}
-                    >Allow All</button>
-                  </div>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    {userSheetHeaders.map((h, i) => (
-                      <label key={i} className={`flex items-center gap-2 px-2 py-1.5 rounded-md border transition-all cursor-pointer ${
-                        userAllowedCols.has(h) ? "bg-indigo-50 border-indigo-200 text-indigo-700 font-bold" : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50"
-                      }`}>
-                        <input
-                          type="checkbox"
-                          checked={userAllowedCols.has(h)}
-                          onChange={() => toggleUserAllowed(h)}
-                          className="w-3 h-3 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300"
-                        />
-                        <span className="text-[10px] truncate">{h}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Templates toolbar */}
-                <div className="bg-slate-50 p-4 rounded-md border border-slate-200 space-y-3">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500 block">Template Management</label>
-                  <div className="flex gap-2">
-                    <input
-                      className="input-premium py-1.5 flex-1 bg-white"
-                      placeholder="Template name"
-                      value={newTplNameUser}
-                      onChange={(e) => setNewTplNameUser(e.target.value)}
-                    />
-                    <button
-                      className="btn-premium bg-slate-800 text-white px-3 py-1.5 shadow-sm"
-                      onClick={handleSaveTemplateFromUser}
-                    >Save</button>
-                  </div>
-                  <div className="flex gap-2">
-                    <select
-                      className="input-premium py-1.5 flex-1 bg-white"
-                      value={selectedTplUser}
-                      onChange={(e) => handleApplyTemplateToUser(e.target.value)}
-                    >
-                      <option value="">Apply template…</option>
-                      {visibleUserTemplates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                    </select>
-                    {selectedTplUser && (
-                      <button
-                        className="p-2 rounded-lg bg-red-50 text-red-500 hover:bg-red-100 transition-colors"
-                        onClick={() => handleDeleteTemplate(selectedTplUser)}
-                      >🗑️</button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Row Filters */}
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h4 className="font-bold text-sm text-slate-700">Dynamic Row Filters</h4>
-                    <button
-                      className="bg-indigo-600 text-white rounded-lg px-3 py-1 text-[10px] font-bold shadow-sm"
-                      onClick={() => setUserRowFilters([...userRowFilters, { key: "", value: "" }])}
-                    >+ Add Rule</button>
-                  </div>
-                  <div className="space-y-2">
-                    {userRowFilters.map((filter, idx) => (
-                      <div key={idx} className="flex items-center gap-2">
-                        <select
-                          className="input-premium py-1.5 flex-1"
-                          value={filter.key}
-                          onChange={e => {
-                            const next = [...userRowFilters];
-                            next[idx].key = e.target.value;
-                            setUserRowFilters(next);
-                          }}
-                        >
-                          <option value="">Column…</option>
-                          {userSheetHeaders.map(h => <option key={h} value={h}>{h}</option>)}
-                        </select>
-                        <input
-                          className="input-premium py-1.5 flex-1"
-                          placeholder="Value…"
-                          value={filter.value}
-                          onChange={e => {
-                            const next = [...userRowFilters];
-                            next[idx].value = e.target.value;
-                            setUserRowFilters(next);
-                          }}
-                        />
-                        <button
-                          className="p-2 text-red-400 hover:text-red-600 font-bold"
-                          onClick={() => setUserRowFilters(userRowFilters.filter((_, i) => i !== idx))}
-                        >✕</button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Locked Views for User */}
-                <div className="space-y-3 pt-4 border-t border-slate-200">
-                  <h4 className="font-bold text-sm text-slate-700">Locked Views (Data Restrictions)</h4>
-                  <p className="text-[10px] text-slate-500 italic mb-2">Assigning a Locked View will strictly limit this user to the specific columns and row filters defined in that view.</p>
-                  <div className="space-y-1.5">
-                    {Array.isArray(views) && views.filter(v => String(v.sheet_id) === String(selectedUserSheetId)).map(v => (
-                      <label key={v.id} className={`flex items-center justify-between p-2 rounded-md border cursor-pointer ${(userViews instanceof Set && userViews.has(v.id)) ? "bg-emerald-50 border-emerald-200" : "bg-white border-slate-200"}`}>
-                        <div className="flex items-center gap-2">
-                          <input type="checkbox" checked={userViews instanceof Set && userViews.has(v.id)} onChange={() => toggleUserViewPerm(v.id)} className="w-3.5 h-3.5 rounded text-emerald-600" />
-                          <span className="text-[11px] font-semibold text-slate-700">{v.name}</span>
-                        </div>
-                        <span className="text-[9px] text-slate-400 italic">by {v.created_by}</span>
-                      </label>
-                    ))}
-                    {Array.isArray(views) && !views.filter(v => String(v.sheet_id) === String(selectedUserSheetId)).length && (
-                      <div className="text-[10px] text-slate-400 italic">No views created for this sheet yet.</div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="pt-8 border-t border-slate-200/30">
-                  <h4 className="font-bold text-sm text-slate-700 mb-4">Default View Selection</h4>
-
-                  <div className="flex gap-2">
-                    <select
-                      className="input-premium py-2 flex-1"
-                      value={userDefaultViewId}
-                      onChange={(e) => setUserDefaultViewId(e.target.value)}
-                    >
-                      <option value="">(None)</option>
-                      {Array.isArray(views) && views.filter(v => userViews instanceof Set && userViews.has(v.id)).map((v) => (
-                        <option key={v.id} value={v.id}>{v.name}</option>
-                      ))}
-                    </select>
-                    <button
-                      className="btn-premium bg-slate-800 text-white px-4 py-2 text-xs"
-                      onClick={async () => {
-                        await axios.put(
-                          `${API}/users/${selectedUserId}/default-view`,
-                          { viewId: userDefaultViewId || null },
-                          { headers: { Authorization: `Bearer ${token}` } }
-                        );
-                        alert("Default view saved");
-                      }}
-                    >
-                      Set Default
-                    </button>
-                  </div>
-                </div>
-
-                <button
-                  className="btn-premium bg-indigo-600 hover:bg-indigo-700 text-white w-full py-4 shadow-sm mt-4 mb-4 shrink-0"
-                  onClick={saveUserPermissions}
-                >
-                  Confirm & Apply Permissions
-                </button>
-                  </>
-                )}
-
-                {selectedGroupId && (
-                <div className="pt-6 border-t border-slate-200/40 space-y-4">
-                  <div className="text-[10px] font-bold uppercase tracking-widest text-emerald-600">Customer Override (Same Report Source)</div>
-
-                    <>
-                      <div className="flex items-center justify-between">
-                        <h4 className="font-bold text-sm text-slate-700">Customer Column Permissions</h4>
-                        <button
-                          className="text-[10px] font-bold text-emerald-600 hover:underline"
-                          onClick={() => setGroupAllowedCols(new Set())}
-                        >
-                          Allow All
-                        </button>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-1.5">
-                        {groupSheetHeaders.map((h) => (
-                          <label key={h} className={`flex items-center gap-2 px-2 py-1.5 rounded-md border transition-all cursor-pointer ${
-                            groupAllowedCols.has(h) ? "bg-emerald-50 border-emerald-200 text-emerald-700 font-bold" : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50"
-                          }`}>
-                            <input
-                              type="checkbox"
-                              checked={groupAllowedCols.has(h)}
-                              onChange={() => toggleGroupAllowed(h)}
-                              className="w-3 h-3 rounded text-emerald-600 focus:ring-emerald-500 border-slate-300"
-                            />
-                            <span className="text-[10px] truncate">{h}</span>
-                          </label>
-                        ))}
-                      </div>
-
-                      <div className="bg-slate-50 p-4 rounded-md border border-slate-200 space-y-3">
-                        <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500 block">Template Management</label>
-                        <div className="flex gap-2">
-                          <input
-                            className="input-premium py-1.5 flex-1 bg-white"
-                            placeholder="Template name"
-                            value={newTplNameGroup}
-                            onChange={(e) => setNewTplNameGroup(e.target.value)}
-                          />
-                          <button
-                            className="btn-premium bg-slate-800 text-white px-3 py-1.5 shadow-sm"
-                            onClick={handleSaveTemplateFromGroup}
-                          >
-                            Save
-                          </button>
-                        </div>
-                        <div className="flex gap-2">
-                          <select
-                            className="input-premium py-1.5 flex-1 bg-white"
-                            value={selectedTplGroup}
-                            onChange={(e) => handleApplyTemplateToGroup(e.target.value)}
-                          >
-                            <option value="">Apply template…</option>
-                            {visibleGroupTemplates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                          </select>
-                          {selectedTplGroup && (
-                            <button
-                              className="p-2 rounded-lg bg-red-50 text-red-500 hover:bg-red-100 transition-colors"
-                              onClick={() => handleDeleteTemplate(selectedTplGroup)}
-                            >
-                              🗑️
-                            </button>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between">
-                          <h4 className="font-bold text-sm text-slate-700">Customer Row Filters</h4>
-                          <button
-                            className="bg-emerald-600 text-white rounded-lg px-3 py-1 text-[10px] font-bold"
-                            onClick={() => setGroupRowFilters([...groupRowFilters, { key: "", value: "" }])}
-                          >
-                            + Add Rule
-                          </button>
-                        </div>
-                        <div className="space-y-2">
-                          {groupRowFilters.map((filter, idx) => (
-                            <div key={idx} className="flex items-center gap-2">
-                              <select
-                                className="input-premium py-1.5 flex-1"
-                                value={filter.key}
-                                onChange={(e) => {
-                                  const next = [...groupRowFilters];
-                                  next[idx].key = e.target.value;
-                                  setGroupRowFilters(next);
-                                }}
-                              >
-                                <option value="">Column…</option>
-                                {groupSheetHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
-                              </select>
-                              <input
-                                className="input-premium py-1.5 flex-1"
-                                placeholder="Value…"
-                                value={filter.value}
-                                onChange={(e) => {
-                                  const next = [...groupRowFilters];
-                                  next[idx].value = e.target.value;
-                                  setGroupRowFilters(next);
-                                }}
-                              />
-                              <button
-                                className="p-2 text-red-400 hover:text-red-600 font-bold"
-                                onClick={() => setGroupRowFilters(groupRowFilters.filter((_, i) => i !== idx))}
-                              >
-                                ✕
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* Locked Views for Customer */}
-                      <div className="space-y-3 pt-4 border-t border-slate-200">
-                        <h4 className="font-bold text-sm text-slate-700">Locked Views (Data Restrictions)</h4>
-                        <p className="text-[10px] text-slate-500 italic mb-2">Assigning a Locked View will strictly limit all users of this customer to the specific columns and row filters defined in that view.</p>
-                        <div className="space-y-1.5">
-                          {Array.isArray(views) && views.filter(v => String(v.sheet_id) === String(selectedUserSheetId)).map(v => (
-                            <label key={v.id} className={`flex items-center justify-between p-2 rounded-md border cursor-pointer ${(groupViews instanceof Set && groupViews.has(v.id)) ? "bg-emerald-50 border-emerald-200" : "bg-white border-slate-200"}`}>
-                              <div className="flex items-center gap-2">
-                                <input type="checkbox" checked={groupViews instanceof Set && groupViews.has(v.id)} onChange={() => toggleGroupViewPerm(v.id)} className="w-3.5 h-3.5 rounded text-emerald-600" />
-                                <span className="text-[11px] font-semibold text-slate-700">{v.name}</span>
-                              </div>
-                              <span className="text-[9px] text-slate-400 italic">by {v.created_by}</span>
-                            </label>
-                          ))}
-                          {Array.isArray(views) && !views.filter(v => String(v.sheet_id) === String(selectedUserSheetId)).length && (
-                            <div className="text-[10px] text-slate-400 italic">No views created for this sheet yet.</div>
-                          )}
-                        </div>
-                      </div>
-
-                      <button
-                        className="btn-premium bg-emerald-600 hover:bg-emerald-700 text-white w-full py-3 mt-4"
-                        onClick={saveGroupPermissions}
-                      >Save Customer Permissions</button>
-
-                    </>
-                </div>
-                )}
-              </div>
-            ) : (
-              <div className="flex-1 flex items-center justify-center bg-white/30 rounded-lg border border-dashed border-slate-300">
-                <div className="text-center p-8">
-                  <div className="text-4xl mb-4 opacity-20">🎯</div>
-                  <div className="text-slate-400 font-medium max-w-[260px] mx-auto">Select a report source to configure user/customer override permissions.</div>
-                </div>
-              </div>
-            )}
-          </div>
-          </div>
-        </details>
-      </div>
-      )}
       </section>
 
       </div>

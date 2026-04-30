@@ -923,79 +923,9 @@ export async function initDb(targetPool = pool, options = {}) {
      ON CONFLICT (key) DO NOTHING;`,
     [JSON.stringify(oneDriveOauthSeed)]
   );
-  // USER permissions
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS permissions (
-      id SERIAL PRIMARY KEY,
-      sheet_id TEXT NOT NULL,
-      user_id INT NOT NULL,
-      allowed_columns JSONB NOT NULL DEFAULT '[]'::jsonb,
-      row_filters JSONB NOT NULL DEFAULT '{}'::jsonb,
-      UNIQUE (sheet_id, user_id)
-    );
-  `);
-  await db.query(`CREATE INDEX IF NOT EXISTS idx_permissions_sheet_id ON permissions(sheet_id);`);
-  await db.query(`CREATE INDEX IF NOT EXISTS idx_permissions_user_id ON permissions(user_id);`);
-  await db.query(`
-    DO $$
-    BEGIN
-      IF NOT EXISTS (
-        SELECT 1
-        FROM information_schema.table_constraints
-        WHERE table_name='permissions' AND constraint_name='permissions_sheet_fk'
-      ) THEN
-        ALTER TABLE permissions
-          ADD CONSTRAINT permissions_sheet_fk
-          FOREIGN KEY (sheet_id) REFERENCES sheets(id) ON DELETE CASCADE NOT VALID;
-      END IF;
-      IF NOT EXISTS (
-        SELECT 1
-        FROM information_schema.table_constraints
-        WHERE table_name='permissions' AND constraint_name='permissions_user_fk'
-      ) THEN
-        ALTER TABLE permissions
-          ADD CONSTRAINT permissions_user_fk
-          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE NOT VALID;
-      END IF;
-    END $$;
-  `);
-
-  // GROUP permissions
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS group_permissions (
-      id SERIAL PRIMARY KEY,
-      sheet_id TEXT NOT NULL,
-      group_id INT NOT NULL,
-      allowed_columns JSONB NOT NULL DEFAULT '[]'::jsonb,
-      row_filters JSONB NOT NULL DEFAULT '{}'::jsonb,
-      UNIQUE (sheet_id, group_id)
-    );
-  `);
-  await db.query(`CREATE INDEX IF NOT EXISTS idx_group_permissions_sheet_id ON group_permissions(sheet_id);`);
-  await db.query(`CREATE INDEX IF NOT EXISTS idx_group_permissions_group_id ON group_permissions(group_id);`);
-  await db.query(`
-    DO $$
-    BEGIN
-      IF NOT EXISTS (
-        SELECT 1
-        FROM information_schema.table_constraints
-        WHERE table_name='group_permissions' AND constraint_name='group_permissions_sheet_fk'
-      ) THEN
-        ALTER TABLE group_permissions
-          ADD CONSTRAINT group_permissions_sheet_fk
-          FOREIGN KEY (sheet_id) REFERENCES sheets(id) ON DELETE CASCADE NOT VALID;
-      END IF;
-      IF NOT EXISTS (
-        SELECT 1
-        FROM information_schema.table_constraints
-        WHERE table_name='group_permissions' AND constraint_name='group_permissions_group_fk'
-      ) THEN
-        ALTER TABLE group_permissions
-          ADD CONSTRAINT group_permissions_group_fk
-          FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE NOT VALID;
-      END IF;
-    END $$;
-  `);
+  // Legacy permissions tables were replaced by view-based assignment model.
+  await db.query(`DROP TABLE IF EXISTS permissions;`);
+  await db.query(`DROP TABLE IF EXISTS group_permissions;`);
 
   // VIEWS (locked)
   await db.query(`

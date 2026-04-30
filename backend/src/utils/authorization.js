@@ -1,5 +1,88 @@
 import { query } from "../config/db.js";
 
+function parseJsonMaybe(value, fallback) {
+  if (typeof value !== "string") return value ?? fallback;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeStringArray(value) {
+  const parsed = parseJsonMaybe(value, value);
+  if (!Array.isArray(parsed)) return [];
+  return parsed.map((v) => String(v || "").trim()).filter(Boolean);
+}
+
+export function resolveViewColumnAllowlist(viewConfig, sheetHeaders = []) {
+  const config = parseJsonMaybe(viewConfig, {}) || {};
+  const explicitVisible = normalizeStringArray(
+    config.visibleColumns ?? config.columns ?? config.allowedColumns ?? config.allowed_columns
+  );
+  if (explicitVisible.length > 0) return explicitVisible;
+
+  const hiddenColumns = normalizeStringArray(config.hiddenColumns ?? config.hidden_columns);
+  const headers = normalizeStringArray(sheetHeaders);
+  if (hiddenColumns.length > 0 && headers.length > 0) {
+    const hidden = new Set(hiddenColumns);
+    return headers.filter((h) => !hidden.has(h));
+  }
+  return null;
+}
+
+export async function resolveAssignedViewForSheet(sheetId, userId, requestedViewId = null) {
+  const sql = `
+    SELECT
+      v.id,
+      v.config,
+      s.headers,
+      CASE
+        WHEN EXISTS (SELECT 1 FROM view_user_permissions vup WHERE vup.view_id = v.id AND vup.user_id = $2) THEN 0
+        WHEN EXISTS (
+          SELECT 1
+          FROM view_group_permissions vgp
+          JOIN user_groups ug ON ug.group_id = vgp.group_id
+          WHERE vgp.view_id = v.id AND ug.user_id = $2
+        ) THEN 1
+        ELSE 9
+      END AS precedence
+    FROM views v
+    JOIN sheets s ON s.id = $1
+    LEFT JOIN report_source_imports rsi ON rsi.sheet_id = s.id
+    WHERE
+      (
+        v.sheet_id = s.id
+        OR (
+          v.sheet_id IS NULL
+          AND v.report_source_id = rsi.report_source_id
+          AND (v.file_label IS NULL OR v.file_label = rsi.file_label)
+        )
+      )
+      AND (
+        EXISTS (SELECT 1 FROM view_user_permissions vup WHERE vup.view_id = v.id AND vup.user_id = $2)
+        OR EXISTS (
+          SELECT 1
+          FROM view_group_permissions vgp
+          JOIN user_groups ug ON ug.group_id = vgp.group_id
+          WHERE vgp.view_id = v.id AND ug.user_id = $2
+        )
+      )
+      ${requestedViewId ? "AND v.id = $3" : ""}
+    ORDER BY precedence ASC, v.created_at DESC
+    LIMIT 1
+  `;
+  const params = requestedViewId ? [sheetId, userId, requestedViewId] : [sheetId, userId];
+  const rows = await query(sql, params);
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    config: parseJsonMaybe(row.config, {}) || {},
+    headers: parseJsonMaybe(row.headers, []) || [],
+  };
+}
+
 export async function checkSheetAccess(sheetId, user) {
   if (user.role === "admin") return true;
   const rows = await query(
@@ -9,11 +92,27 @@ export async function checkSheetAccess(sheetId, user) {
       WHERE s.id = $1
         AND (
           rs.created_by = $2
-          OR s.id IN (SELECT sheet_id FROM permissions WHERE user_id = $2)
-          OR s.id IN (
-            SELECT sheet_id
-              FROM group_permissions
-             WHERE group_id IN (SELECT group_id FROM user_groups WHERE user_id = $2)
+          OR EXISTS (
+            SELECT 1
+            FROM views v
+            LEFT JOIN report_source_imports rsi ON rsi.sheet_id = s.id
+            WHERE (
+                v.sheet_id = s.id
+                OR (
+                  v.sheet_id IS NULL
+                  AND v.report_source_id = rsi.report_source_id
+                  AND (v.file_label IS NULL OR v.file_label = rsi.file_label)
+                )
+              )
+              AND (
+                EXISTS (SELECT 1 FROM view_user_permissions vup WHERE vup.view_id = v.id AND vup.user_id = $2)
+                OR EXISTS (
+                  SELECT 1
+                  FROM view_group_permissions vgp
+                  JOIN user_groups ug ON ug.group_id = vgp.group_id
+                  WHERE vgp.view_id = v.id AND ug.user_id = $2
+                )
+              )
           )
         )
       LIMIT 1`,
@@ -36,25 +135,21 @@ export async function hasReportSourceOwnerAccess(sheetId, userId) {
 }
 
 export async function loadSheetPermissionSets(sheetId, userId) {
-  const userPerms = await query(
-    `SELECT allowed_columns, row_filters FROM permissions WHERE user_id = $2 AND sheet_id = $1`,
-    [sheetId, userId]
-  );
-  const groupPerms = await query(
-    `SELECT gp.allowed_columns, gp.row_filters
-     FROM group_permissions gp
-     JOIN user_groups ug ON ug.group_id = gp.group_id
-     WHERE ug.user_id = $2 AND gp.sheet_id = $1`,
-    [sheetId, userId]
-  );
-  const allPerms = [...userPerms, ...groupPerms];
-  const validCols = new Set();
-  const rowFiltersList = [];
-  allPerms.forEach((p) => {
-    const cols = typeof p.allowed_columns === "string" ? JSON.parse(p.allowed_columns) : (p.allowed_columns || []);
-    cols.forEach((c) => validCols.add(c));
-    const filters = typeof p.row_filters === "string" ? JSON.parse(p.row_filters) : (p.row_filters || {});
-    rowFiltersList.push(filters);
-  });
-  return { allPerms, validCols: Array.from(validCols), rowFiltersList };
+  const assigned = await resolveAssignedViewForSheet(sheetId, userId);
+  if (!assigned) return { allPerms: [], validCols: [], rowFiltersList: [] };
+  const validCols = resolveViewColumnAllowlist(assigned.config, assigned.headers) || [];
+  const forcedFilters = assigned.config?.columnFilters && typeof assigned.config.columnFilters === "object"
+    ? assigned.config.columnFilters
+    : {};
+  const allPerms = [{
+    allowed_columns: validCols,
+    row_filters: forcedFilters,
+    _source: "view_assignment",
+    _view_id: assigned.id,
+  }];
+  return {
+    allPerms,
+    validCols: Array.from(new Set(validCols.map((c) => String(c)))),
+    rowFiltersList: Object.keys(forcedFilters).length ? [forcedFilters] : [],
+  };
 }

@@ -31,9 +31,18 @@ async function resolveCustomerGroupForSheet(sheetId, user) {
         AND (
           EXISTS (
             SELECT 1
-              FROM group_permissions gp
-             WHERE gp.sheet_id = $1
-               AND gp.group_id = ug.group_id
+              FROM views v
+              LEFT JOIN report_source_imports rsi ON rsi.sheet_id = $1
+              JOIN view_group_permissions vgp ON vgp.view_id = v.id
+             WHERE vgp.group_id = ug.group_id
+               AND (
+                 v.sheet_id = $1
+                 OR (
+                   v.sheet_id IS NULL
+                   AND v.report_source_id = rsi.report_source_id
+                   AND (v.file_label IS NULL OR v.file_label = rsi.file_label)
+                 )
+               )
           )
           OR EXISTS (
             SELECT 1

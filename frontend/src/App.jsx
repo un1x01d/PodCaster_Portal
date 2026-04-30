@@ -2320,6 +2320,8 @@ export default function App() {
                       secondaryTab={secondaryTab}
                       setSecondaryTab={setSecondaryTab}
                       workspaceChartStateRef={workspaceChartStateRef}
+                      locale={dashboardI18n.locale}
+                      copy={dashboardI18n.copy}
                     />
                     {sheetId && (
                     <SpreadsheetChatbot

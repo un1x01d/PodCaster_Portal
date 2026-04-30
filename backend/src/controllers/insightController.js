@@ -12,6 +12,21 @@ const INSIGHT_AI_MAX_PROMPT_CHARS = Number.parseInt(process.env.INSIGHT_AI_MAX_P
 const INSIGHT_CACHE = new Map();
 const INSIGHT_CACHE_TTL_MS = Number.parseInt(process.env.INSIGHT_CACHE_TTL_MS || `${10 * 60 * 1000}`, 10);
 const INSIGHT_CACHE_MAX_ENTRIES = Number.parseInt(process.env.INSIGHT_CACHE_MAX_ENTRIES || "200", 10);
+const INSIGHT_TRANSLATION_CACHE = new Map();
+const INSIGHT_TRANSLATION_CACHE_MAX_ENTRIES = Number.parseInt(process.env.INSIGHT_TRANSLATION_CACHE_MAX_ENTRIES || "1000", 10);
+const INSIGHT_TRANSLATION_CACHE_SETTINGS_KEY = "insight_translation_cache_settings";
+const DEFAULT_INSIGHT_TRANSLATION_CACHE_TTL_MS = Number.parseInt(
+  process.env.INSIGHT_TRANSLATION_CACHE_TTL_MS || `${60 * 60 * 1000}`,
+  10
+);
+const INSIGHT_TRANSLATION_SETTINGS_LOCAL_TTL_MS = Number.parseInt(
+  process.env.INSIGHT_TRANSLATION_SETTINGS_LOCAL_TTL_MS || `${60 * 1000}`,
+  10
+);
+let INSIGHT_TRANSLATION_SETTINGS_LOCAL_CACHE = {
+  loadedAt: 0,
+  value: { ttlMs: DEFAULT_INSIGHT_TRANSLATION_CACHE_TTL_MS },
+};
 
 function getInsightCacheEntry(cacheKey) {
   const found = INSIGHT_CACHE.get(cacheKey);
@@ -30,6 +45,92 @@ function setInsightCacheEntry(cacheKey, payload) {
     if (!oldest) break;
     INSIGHT_CACHE.delete(oldest);
   }
+}
+
+function parseBooleanLike(value) {
+  const raw = String(value ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "y";
+}
+
+function clampInsightTranslationCacheTtlMs(valueMs) {
+  const parsed = Number.parseInt(String(valueMs || ""), 10);
+  if (!Number.isFinite(parsed)) return DEFAULT_INSIGHT_TRANSLATION_CACHE_TTL_MS;
+  return Math.max(60 * 1000, Math.min(24 * 60 * 60 * 1000, parsed));
+}
+
+async function loadInsightTranslationCacheSettings() {
+  const now = Date.now();
+  if (now - Number(INSIGHT_TRANSLATION_SETTINGS_LOCAL_CACHE.loadedAt || 0) <= INSIGHT_TRANSLATION_SETTINGS_LOCAL_TTL_MS) {
+    return INSIGHT_TRANSLATION_SETTINGS_LOCAL_CACHE.value;
+  }
+  try {
+    const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [INSIGHT_TRANSLATION_CACHE_SETTINGS_KEY]);
+    const raw = rows?.[0]?.value;
+    const ttlMinutes = Number.parseInt(String(raw?.ttlMinutes ?? ""), 10);
+    const ttlMs = clampInsightTranslationCacheTtlMs(Number.isFinite(ttlMinutes) ? ttlMinutes * 60 * 1000 : DEFAULT_INSIGHT_TRANSLATION_CACHE_TTL_MS);
+    INSIGHT_TRANSLATION_SETTINGS_LOCAL_CACHE = {
+      loadedAt: now,
+      value: { ttlMs },
+    };
+  } catch (_) {
+    INSIGHT_TRANSLATION_SETTINGS_LOCAL_CACHE = {
+      loadedAt: now,
+      value: { ttlMs: DEFAULT_INSIGHT_TRANSLATION_CACHE_TTL_MS },
+    };
+  }
+  return INSIGHT_TRANSLATION_SETTINGS_LOCAL_CACHE.value;
+}
+
+function makeInsightTranslationCacheKey({ cacheKey, locale, context = "dashboard" }) {
+  return `${cacheKey}::${normalizeLocale(locale)}::${String(context || "dashboard")}`;
+}
+
+function getInsightTranslationCacheEntry(cacheKey) {
+  const found = INSIGHT_TRANSLATION_CACHE.get(cacheKey);
+  if (!found) return null;
+  if (Date.now() > Number(found.expiresAt || 0)) {
+    INSIGHT_TRANSLATION_CACHE.delete(cacheKey);
+    return null;
+  }
+  return found.cards;
+}
+
+function setInsightTranslationCacheEntry(cacheKey, cards, ttlMs) {
+  INSIGHT_TRANSLATION_CACHE.set(cacheKey, {
+    cards,
+    expiresAt: Date.now() + clampInsightTranslationCacheTtlMs(ttlMs),
+  });
+  while (INSIGHT_TRANSLATION_CACHE.size > INSIGHT_TRANSLATION_CACHE_MAX_ENTRIES) {
+    const oldest = INSIGHT_TRANSLATION_CACHE.keys().next().value;
+    if (!oldest) break;
+    INSIGHT_TRANSLATION_CACHE.delete(oldest);
+  }
+}
+
+function clearInsightTranslationCacheByPrefix(prefix) {
+  for (const key of INSIGHT_TRANSLATION_CACHE.keys()) {
+    if (String(key).startsWith(prefix)) {
+      INSIGHT_TRANSLATION_CACHE.delete(key);
+    }
+  }
+}
+
+async function localizeInsightCards({ locale, cards, context, cacheKey, forceRefresh = false }) {
+  if (isEnglishLocale(locale)) return cards;
+  const normalizedLocale = normalizeLocale(locale);
+  const translationCacheKey = makeInsightTranslationCacheKey({ cacheKey, locale: normalizedLocale, context });
+  if (!forceRefresh) {
+    const cached = getInsightTranslationCacheEntry(translationCacheKey);
+    if (cached) return cached;
+  }
+  const translatedCards = await translateDashboardCards({
+    locale: normalizedLocale,
+    cards: cards || [],
+    context: "insight-cards",
+  });
+  const settings = await loadInsightTranslationCacheSettings();
+  setInsightTranslationCacheEntry(translationCacheKey, translatedCards, settings.ttlMs);
+  return translatedCards;
 }
 
 function parseNum(v) {
@@ -1020,6 +1121,7 @@ export async function getInsights(req, res) {
   const { sheetId } = req.params;
   const context = req.query.context === "workspace" ? "workspace" : "dashboard";
   const locale = normalizeLocale(req.query.locale || req.query.lang || "en");
+  const forceRefresh = parseBooleanLike(req.query.forceRefresh) || parseBooleanLike(req.query.refresh);
   if (!sheetId) return res.status(400).json({ error: "sheet_id_required" });
   const hasAccess = await checkSheetAccess(sheetId, req.user);
   if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
@@ -1036,19 +1138,21 @@ export async function getInsights(req, res) {
     headers: loaded.headers || [],
     rows: loaded.rows || [],
   });
-  const cached = getInsightCacheEntry(cacheKey);
+  if (forceRefresh) {
+    clearInsightTranslationCacheByPrefix(`${cacheKey}::`);
+  }
+  const cached = forceRefresh ? null : getInsightCacheEntry(cacheKey);
   if (cached) {
-    if (isEnglishLocale(locale)) {
-      return res.json(cached);
-    }
-    const translatedCards = await translateDashboardCards({
+    const localizedCards = await localizeInsightCards({
       locale,
       cards: cached.cards || [],
-      context: "insight-cards",
+      context,
+      cacheKey,
+      forceRefresh: false,
     });
     return res.json({
       ...cached,
-      cards: translatedCards,
+      cards: localizedCards,
     });
   }
 
@@ -1069,13 +1173,12 @@ export async function getInsights(req, res) {
     },
   };
   setInsightCacheEntry(cacheKey, payload);
-  if (isEnglishLocale(locale)) {
-    return res.json(payload);
-  }
-  const translatedCards = await translateDashboardCards({
+  const translatedCards = await localizeInsightCards({
     locale,
     cards: payload.cards || [],
-    context: "insight-cards",
+    context,
+    cacheKey,
+    forceRefresh,
   });
   return res.json({
     ...payload,

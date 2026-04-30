@@ -1610,8 +1610,28 @@ export async function chatQuery(req, res) {
        WHERE (
          $2 = 'admin'
          OR rs.created_by = $1
-         OR (s.id IN (SELECT sheet_id FROM permissions WHERE user_id = $1))
-         OR (s.id IN (SELECT sheet_id FROM group_permissions WHERE group_id IN (SELECT group_id FROM user_groups WHERE user_id = $1)))
+         OR EXISTS (
+           SELECT 1
+           FROM views v
+           LEFT JOIN report_source_imports vrsi ON vrsi.sheet_id = s.id
+           WHERE (
+             v.sheet_id = s.id
+             OR (
+               v.sheet_id IS NULL
+               AND v.report_source_id = vrsi.report_source_id
+               AND (v.file_label IS NULL OR v.file_label = vrsi.file_label)
+             )
+           )
+           AND (
+             EXISTS (SELECT 1 FROM view_user_permissions vup WHERE vup.view_id = v.id AND vup.user_id = $1)
+             OR EXISTS (
+               SELECT 1
+               FROM view_group_permissions vgp
+               JOIN user_groups ug ON ug.group_id = vgp.group_id
+               WHERE vgp.view_id = v.id AND ug.user_id = $1
+             )
+           )
+         )
        )`,
       [req.user.id, req.user.role]
   );

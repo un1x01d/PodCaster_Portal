@@ -13,6 +13,7 @@ import TrendsOverlay from "./TrendsOverlay";
 import TwoConditionOverlay from "./TwoConditionOverlay";
 import EbitdaMenu from "./EbitdaMenu";
 import InsightFeed from "./InsightFeed";
+import { DASHBOARD_COPY_EN } from "../../hooks/useDashboardI18n";
 
 import { renderMaybeDate, formatSmart } from "../../utils/formatting";
 
@@ -131,7 +132,9 @@ export default function DashboardBody(props) {
         setSecondarySheetId,
         secondaryTab,
         setSecondaryTab,
-        workspaceChartStateRef
+        workspaceChartStateRef,
+        locale = "en",
+        copy = DASHBOARD_COPY_EN,
     } = props;
 
     const headerRef = useRef(null);
@@ -2638,6 +2641,8 @@ export default function DashboardBody(props) {
                         onApplyFilter={onInsightApplyFilter}
                         onOpenChart={openWorkspaceInsightChart}
                         onSaveView={onInsightSaveView}
+                        locale={locale}
+                        copy={copy}
                     />
                 </aside>
             )}
