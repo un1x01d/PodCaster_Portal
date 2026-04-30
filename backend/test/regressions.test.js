@@ -142,7 +142,7 @@ test("view-based assignment model is wired and legacy permissions routes are rem
 
   assert.match(authSource, /export async function resolveAssignedViewForSheet\(sheetId, userId, requestedViewId = null\)/);
   assert.match(authSource, /FROM view_user_permissions/);
-  assert.match(authSource, /FROM view_group_permissions/);
+  assert.doesNotMatch(authSource, /FROM view_group_permissions/);
   assert.match(sheetSource, /You do not have an assigned view for this sheet\./);
 
   assert.doesNotMatch(routeSource, /router\.post\("\/report-source-permissions"/);
@@ -304,7 +304,7 @@ test("deleteSheet cleans related views and import references transactionally", a
   assert.match(source, /SELECT id FROM sheets WHERE id = \$1 LIMIT 1 FOR UPDATE/);
   assert.match(source, /SELECT id FROM report_source_imports WHERE sheet_id = \$1 FOR UPDATE/);
   assert.match(source, /DELETE FROM view_user_permissions WHERE view_id = ANY/);
-  assert.match(source, /DELETE FROM view_group_permissions WHERE view_id = ANY/);
+  assert.doesNotMatch(source, /DELETE FROM view_group_permissions WHERE view_id = ANY/);
   assert.match(source, /UPDATE report_sources SET current_sheet_id = NULL WHERE current_sheet_id = \$1/);
   assert.match(source, /UPDATE import_jobs[\s\S]*WHERE import_id = ANY\(\$1::int\[\]\)/);
   assert.match(source, /DELETE FROM report_source_imports WHERE id = ANY\(\$1::int\[\]\)/);

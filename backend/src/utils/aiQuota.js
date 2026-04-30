@@ -33,8 +33,8 @@ async function resolveCustomerGroupForSheet(sheetId, user) {
             SELECT 1
               FROM views v
               LEFT JOIN report_source_imports rsi ON rsi.sheet_id = $1
-              JOIN view_group_permissions vgp ON vgp.view_id = v.id
-             WHERE vgp.group_id = ug.group_id
+              JOIN view_user_permissions vup ON vup.view_id = v.id
+             WHERE vup.user_id = $2
                AND (
                  v.sheet_id = $1
                  OR (

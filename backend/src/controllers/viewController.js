@@ -237,12 +237,6 @@ export async function getViewsForSheet(req, res) {
              EXISTS (
                SELECT 1 FROM view_user_permissions vup WHERE vup.view_id = v.id AND vup.user_id = $4
              )
-             OR
-             EXISTS (
-               SELECT 1 FROM view_group_permissions vgp 
-               JOIN user_groups ug ON ug.group_id = vgp.group_id
-               WHERE vgp.view_id = v.id AND ug.user_id = $4
-             )
            )
          ORDER BY v.is_global DESC, v.report_source_id ASC NULLS LAST, v.file_label ASC NULLS LAST, v.name ASC`,
         [sourceId, fileLabel, sheetId, req.user.id]
@@ -325,79 +319,6 @@ export async function getUserViewPerms(req, res) {
              WHERE vup.user_id = $1
                AND v.created_by = $2`,
             [normalizedUserId, req.user.id]
-        );
-    }
-    res.json(rows);
-}
-
-export async function createViewGroupPerm(req, res) {
-    const { viewId, groupId } = req.body || {};
-    const normalizedViewId = Number.parseInt(viewId, 10);
-    const normalizedGroupId = Number.parseInt(groupId, 10);
-    if (!Number.isInteger(normalizedViewId) || !Number.isInteger(normalizedGroupId)) {
-        return res.status(400).json({ error: "invalid_request" });
-    }
-
-    if (req.user.role !== "admin") {
-        const isCustomerAdmin = await isGroupAdminUser(req.user.id);
-        if (!isCustomerAdmin) return res.status(403).json({ error: "Forbidden" });
-        const managedGroupIds = await getManagedGroupIds(req.user.id);
-        if (!managedGroupIds.includes(normalizedGroupId)) return res.status(403).json({ error: "Forbidden" });
-        try {
-            await assertCustomerAdminOwnsView(normalizedViewId, req.user.id);
-        } catch (err) {
-            return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
-        }
-    }
-
-    await query(`INSERT INTO view_group_permissions (view_id, group_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [normalizedViewId, normalizedGroupId]);
-    res.json({ success: true });
-}
-
-export async function deleteViewGroupPerm(req, res) {
-    const { viewId, groupId } = req.params;
-    const normalizedViewId = Number.parseInt(viewId, 10);
-    const normalizedGroupId = Number.parseInt(groupId, 10);
-    if (!Number.isInteger(normalizedViewId) || !Number.isInteger(normalizedGroupId)) {
-        return res.status(400).json({ error: "invalid_request" });
-    }
-
-    if (req.user.role !== "admin") {
-        const isCustomerAdmin = await isGroupAdminUser(req.user.id);
-        if (!isCustomerAdmin) return res.status(403).json({ error: "Forbidden" });
-        try {
-            await assertCustomerAdminOwnsView(normalizedViewId, req.user.id);
-        } catch (err) {
-            return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
-        }
-    }
-
-    await query(`DELETE FROM view_group_permissions WHERE view_id=$1 AND group_id=$2`, [normalizedViewId, normalizedGroupId]);
-    res.json({ success: true });
-}
-
-export async function getGroupViewPerms(req, res) {
-    const { groupId } = req.params;
-    const normalizedGroupId = Number.parseInt(groupId, 10);
-    if (!Number.isInteger(normalizedGroupId)) {
-        return res.status(400).json({ error: "invalid_request" });
-    }
-
-    let rows;
-    if (req.user.role === "admin") {
-        rows = await query(`SELECT view_id as id FROM view_group_permissions WHERE group_id=$1`, [normalizedGroupId]);
-    } else {
-        const isCustomerAdmin = await isGroupAdminUser(req.user.id);
-        if (!isCustomerAdmin) return res.status(403).json({ error: "Forbidden" });
-        const managedGroupIds = await getManagedGroupIds(req.user.id);
-        if (!managedGroupIds.includes(normalizedGroupId)) return res.status(403).json({ error: "Forbidden" });
-        rows = await query(
-            `SELECT vgp.view_id as id
-             FROM view_group_permissions vgp
-             JOIN views v ON v.id = vgp.view_id
-             WHERE vgp.group_id = $1
-               AND v.created_by = $2`,
-            [normalizedGroupId, req.user.id]
         );
     }
     res.json(rows);

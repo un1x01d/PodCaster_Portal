@@ -1624,12 +1624,6 @@ export async function chatQuery(req, res) {
            )
            AND (
              EXISTS (SELECT 1 FROM view_user_permissions vup WHERE vup.view_id = v.id AND vup.user_id = $1)
-             OR EXISTS (
-               SELECT 1
-               FROM view_group_permissions vgp
-               JOIN user_groups ug ON ug.group_id = vgp.group_id
-               WHERE vgp.view_id = v.id AND ug.user_id = $1
-             )
            )
          )
        )`,

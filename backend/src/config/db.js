@@ -1008,39 +1008,7 @@ export async function initDb(targetPool = pool, options = {}) {
       END IF;
     END $$;
   `);
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS view_group_permissions (
-      id SERIAL PRIMARY KEY,
-      view_id INT NOT NULL,
-      group_id INT NOT NULL,
-      UNIQUE (view_id, group_id)
-    );
-  `);
-  await db.query(`CREATE INDEX IF NOT EXISTS idx_view_group_permissions_view_id ON view_group_permissions(view_id);`);
-  await db.query(`CREATE INDEX IF NOT EXISTS idx_view_group_permissions_group_id ON view_group_permissions(group_id);`);
-  await db.query(`
-    DO $$
-    BEGIN
-      IF NOT EXISTS (
-        SELECT 1
-        FROM information_schema.table_constraints
-        WHERE table_name='view_group_permissions' AND constraint_name='view_group_permissions_view_fk'
-      ) THEN
-        ALTER TABLE view_group_permissions
-          ADD CONSTRAINT view_group_permissions_view_fk
-          FOREIGN KEY (view_id) REFERENCES views(id) ON DELETE CASCADE NOT VALID;
-      END IF;
-      IF NOT EXISTS (
-        SELECT 1
-        FROM information_schema.table_constraints
-        WHERE table_name='view_group_permissions' AND constraint_name='view_group_permissions_group_fk'
-      ) THEN
-        ALTER TABLE view_group_permissions
-          ADD CONSTRAINT view_group_permissions_group_fk
-          FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE NOT VALID;
-      END IF;
-    END $$;
-  `);
+  await db.query(`DROP TABLE IF EXISTS view_group_permissions;`);
 
   // Insight settings (per sheet)
   await db.query(`

@@ -1568,9 +1568,6 @@ export async function deleteGroup(req, res) {
             return res.status(400).json({ error: "group_not_empty", message: "Cannot delete customer with users. Remove all users first." });
         }
         
-        // Cleanup dependencies that are not cascade-linked.
-        await client.query("DELETE FROM view_group_permissions WHERE group_id = $1", [id]);
-        
         const r = await client.query("DELETE FROM groups WHERE id = $1 RETURNING *", [id]);
         if (!r.rows.length) {
             await client.query("ROLLBACK");
@@ -1768,23 +1765,8 @@ export async function getGroupSheets(req, res) {
                 s.report_source_id, rs.name AS report_source_name
          FROM sheets s
          LEFT JOIN report_sources rs ON rs.id = s.report_source_id
-         LEFT JOIN report_source_imports rsi ON rsi.sheet_id = s.id
          WHERE (
             EXISTS (
-                SELECT 1
-                FROM views v
-                JOIN view_group_permissions vgp ON vgp.view_id = v.id
-                WHERE vgp.group_id = $1
-                  AND (
-                    v.sheet_id = s.id
-                    OR (
-                      v.sheet_id IS NULL
-                      AND v.report_source_id = rsi.report_source_id
-                      AND (v.file_label IS NULL OR v.file_label = rsi.file_label)
-                    )
-                  )
-            )
-            OR EXISTS (
                 SELECT 1
                 FROM user_groups ug
                 WHERE ug.group_id = $1

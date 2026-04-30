@@ -1324,12 +1324,6 @@ export async function getActiveSheet(req, res) {
                    )
                    AND (
                      EXISTS (SELECT 1 FROM view_user_permissions vup WHERE vup.view_id = v.id AND vup.user_id = $1)
-                     OR EXISTS (
-                       SELECT 1
-                       FROM view_group_permissions vgp
-                       JOIN user_groups ug ON ug.group_id = vgp.group_id
-                       WHERE vgp.view_id = v.id AND ug.user_id = $1
-                     )
                    )
                  )
                )
@@ -1394,12 +1388,6 @@ export async function listMySheets(req, res) {
                )
                AND (
                  EXISTS (SELECT 1 FROM view_user_permissions vup WHERE vup.view_id = v.id AND vup.user_id = $1)
-                 OR EXISTS (
-                   SELECT 1
-                   FROM view_group_permissions vgp
-                   JOIN user_groups ug ON ug.group_id = vgp.group_id
-                   WHERE vgp.view_id = v.id AND ug.user_id = $1
-                 )
                )
              )
          )
@@ -1476,12 +1464,6 @@ export async function listReportSources(req, res) {
              )
              AND (
                EXISTS (SELECT 1 FROM view_user_permissions vup WHERE vup.view_id = v.id AND vup.user_id = $1)
-               OR EXISTS (
-                 SELECT 1
-                 FROM view_group_permissions vgp
-                 JOIN user_groups ug ON ug.group_id = vgp.group_id
-                 WHERE vgp.view_id = v.id AND ug.user_id = $1
-               )
              )
            )
          )
@@ -1854,17 +1836,12 @@ export async function getSheetData(req, res) {
                    AND (v.file_label IS NULL OR v.file_label = rsi.file_label)
                  )
                )
-               AND (
-                 $3 = 'admin'
-                 OR EXISTS (SELECT 1 FROM view_user_permissions WHERE view_id = v.id AND user_id = $4)
-                 OR EXISTS (
-                   SELECT 1 FROM view_group_permissions vgp 
-                   JOIN user_groups ug ON ug.group_id = vgp.group_id
-                   WHERE vgp.view_id = v.id AND ug.user_id = $4
-                 )
-               )`,
-            [viewId, id, req.user.role, userId]
-        );
+                   AND (
+                     $3 = 'admin'
+                     OR EXISTS (SELECT 1 FROM view_user_permissions WHERE view_id = v.id AND user_id = $4)
+                   )`,
+                [viewId, id, req.user.role, userId]
+            );
         if (!view) {
             return res.status(403).json({ error: "Forbidden", message: "You do not have permission to access this view." });
         }
@@ -2056,12 +2033,11 @@ export async function deleteSheet(req, res) {
 
         // Cleanup views bound to this sheet and their permissions.
         const viewsRes = await client.query("SELECT id FROM views WHERE sheet_id = $1", [id]);
-        const viewIds = viewsRes.rows.map(v => v.id);
-        if (viewIds.length > 0) {
-            await client.query("DELETE FROM view_user_permissions WHERE view_id = ANY($1::int[])", [viewIds]);
-            await client.query("DELETE FROM view_group_permissions WHERE view_id = ANY($1::int[])", [viewIds]);
-            await client.query("DELETE FROM views WHERE id = ANY($1::int[])", [viewIds]);
-        }
+            const viewIds = viewsRes.rows.map(v => v.id);
+            if (viewIds.length > 0) {
+                await client.query("DELETE FROM view_user_permissions WHERE view_id = ANY($1::int[])", [viewIds]);
+                await client.query("DELETE FROM views WHERE id = ANY($1::int[])", [viewIds]);
+            }
 
         // Ensure report source pointers are cleared before removing sheet/import rows.
         await client.query("UPDATE report_sources SET current_sheet_id = NULL WHERE current_sheet_id = $1", [id]);

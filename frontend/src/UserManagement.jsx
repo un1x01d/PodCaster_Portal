@@ -227,7 +227,9 @@ export default function UserManagement({ token, user, sheetId }) {
   // Views
   const [views, setViews] = useState([]);
   const [userViews, setUserViews] = useState(new Set());
-  const [groupViews, setGroupViews] = useState(new Set());
+  const [draftUserViewIds, setDraftUserViewIds] = useState([]);
+  const [viewAssignmentOpen, setViewAssignmentOpen] = useState(false);
+  const [viewAssignmentSaving, setViewAssignmentSaving] = useState(false);
   const [selectedUserGroupIds, setSelectedUserGroupIds] = useState(new Set());
   const [userGroupMap, setUserGroupMap] = useState({});
   const [editingUserId, setEditingUserId] = useState(null);
@@ -1051,30 +1053,29 @@ export default function UserManagement({ token, user, sheetId }) {
     }
   };
 
-  const fetchGroupViews = async (groupId) => {
-    if (!groupId) return;
-    const res = await axios.get(`${API}/views/group-permissions/${groupId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    setGroupViews(new Set((res.data || []).map((v) => v.id)));
-  };
-
-  const toggleGroupViewPerm = async (viewId) => {
-    if (!selectedGroupId) return;
-    const hasPerm = groupViews.has(viewId) || groupViews.has(String(viewId)) || groupViews.has(Number(viewId));
+  const syncUserAssignedViews = async (selectedIds) => {
+    if (!selectedUserId) return;
+    const desired = new Set((selectedIds || []).map((id) => String(id)));
+    const current = new Set(Array.from(userViews || []).map((id) => String(id)));
     try {
-      if (hasPerm) {
-        await axios.delete(`${API}/views/group-permissions/${viewId}/${selectedGroupId}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-      } else {
-        await axios.post(`${API}/views/group-permissions`, { viewId, groupId: selectedGroupId }, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
+      for (const id of desired) {
+        if (!current.has(id)) {
+          await axios.post(`${API}/views/user-permissions`, { viewId: Number(id), userId: selectedUserId }, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+        }
       }
-      fetchGroupViews(selectedGroupId);
+      for (const id of current) {
+        if (!desired.has(id)) {
+          await axios.delete(`${API}/views/user-permissions/${id}/${selectedUserId}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+        }
+      }
+      fetchUserViews(selectedUserId);
     } catch (e) {
-      console.error("toggleGroupViewPerm failed", e);
+      console.error("syncUserAssignedViews failed", e);
+      throw e;
     }
   };
 
@@ -1093,6 +1094,7 @@ export default function UserManagement({ token, user, sheetId }) {
       fetchUserSheets(selectedUserId);
       fetchUserViews(selectedUserId);
       fetchSelectedUserGroups(selectedUserId);
+      setViewAssignmentOpen(true);
       setSelectedUserSheetId(null);
       setSelectedReportSourceId(null);
       setUserSheetHeaders([]);
@@ -1101,8 +1103,12 @@ export default function UserManagement({ token, user, sheetId }) {
       setSelectedTplUser("");
     } else {
       setSelectedUserGroupIds(new Set());
+      setViewAssignmentOpen(false);
     }
   }, [selectedUserId]);
+  useEffect(() => {
+    setDraftUserViewIds(Array.from(userViews || []).map((id) => String(id)));
+  }, [userViews, selectedUserId]);
   useEffect(() => {
     fetchUserGroupMap();
   }, [users, groups]);
@@ -1123,7 +1129,6 @@ export default function UserManagement({ token, user, sheetId }) {
     if (selectedGroupId) {
       fetchGroupMembers(selectedGroupId);
       fetchPendingInvitations(selectedGroupId);
-      fetchGroupViews(selectedGroupId);
       setGroupAllowedCols(new Set());
       setGroupRowFilters([{ key: "", value: "" }]);
       setGroupSheetHeaders([]);
@@ -1605,14 +1610,6 @@ export default function UserManagement({ token, user, sheetId }) {
   const selectedReportSource = useMemo(() => {
     return reportSourceOptions.find((source) => String(source.id) === String(selectedReportSourceId)) || null;
   }, [reportSourceOptions, selectedReportSourceId]);
-  const assignableViews = useMemo(() => {
-    return (Array.isArray(views) ? views : []).filter((v) => {
-      const isSheetMatch = selectedUserSheetId && String(v.sheet_id) === String(selectedUserSheetId);
-      const isReportSourceMatch = selectedReportSourceId && String(v.report_source_id) === String(selectedReportSourceId);
-      const isGlobal = v?.is_global === true;
-      return isSheetMatch || isReportSourceMatch || isGlobal;
-    });
-  }, [views, selectedUserSheetId, selectedReportSourceId]);
   const selectReportSourceForPermissions = (value) => {
     const source = reportSourceOptions.find((item) => String(item.id) === String(value));
     setSelectedReportSourceId(source ? String(source.id) : null);
@@ -2001,68 +1998,75 @@ export default function UserManagement({ token, user, sheetId }) {
                 <div className="flex items-center justify-between">
                   <div>
                     <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-600">View Assignment</div>
-                    <div className="text-[10px] text-slate-500 mt-0.5">Assign view access by user or customer fallback.</div>
                   </div>
-                  <div className="text-[10px] font-semibold text-slate-500">
-                    {selectedUserId ? `User: ${userById instanceof Map ? (userById.get(selectedUserId)?.email || selectedUserId) : selectedUserId}` : `Customer: ${(Array.isArray(groups) && groups.find(g => g.id === selectedGroupId)?.name) || selectedGroupId || "-"}`}
-                  </div>
-                </div>
-                <div className="grid grid-cols-1 gap-2">
-                  <div className="rounded-md border border-slate-200 bg-white px-2 py-1.5">
-                    <div className="text-[9px] font-semibold uppercase tracking-wide text-slate-500 mb-1">Report Source</div>
-                    <select
-                      className="input-premium h-7 py-1 text-[10px]"
-                      value={selectedReportSourceId || ""}
-                      onChange={(e) => selectReportSourceForPermissions(e.target.value)}
+                  <div className="flex items-center gap-2">
+                    <div className="text-[10px] font-semibold text-slate-500">{(Array.isArray(groups) && groups.find(g => g.id === selectedGroupId)?.name) || selectedGroupId || "-"}</div>
+                    <button
+                      type="button"
+                      className={`rounded-md border px-2 py-1 text-[10px] font-semibold ${selectedUserId ? "border-slate-300 text-slate-600 hover:bg-slate-100" : "border-slate-200 text-slate-400 cursor-not-allowed"}`}
+                      disabled={!selectedUserId}
+                      onClick={() => setViewAssignmentOpen((prev) => !prev)}
                     >
-                      <option value="">Select report source for assignment…</option>
-                      {reportSourceOptions.map((source) => (
-                        <option key={source.id} value={source.id}>
-                          {source.name || `Report source ${source.id}`}
-                        </option>
-                      ))}
-                    </select>
+                      {viewAssignmentOpen ? "Collapse" : "Expand"}
+                    </button>
                   </div>
                 </div>
-                {selectedUserSheetId ? (
-                  <div className="space-y-3">
-                    {selectedUserId && (
-                      <div className="rounded-md border border-slate-200 bg-white p-2.5 space-y-2">
-                        <div className="text-[10px] font-bold uppercase tracking-widest text-slate-600">User Assigned Views</div>
-                        <div className="space-y-1.5 max-h-44 overflow-auto pr-1 custom-scrollbar">
-                          {Array.isArray(assignableViews) && assignableViews.map(v => (
-                            <label key={v.id} className={`flex items-center justify-between p-2 rounded-md border cursor-pointer ${(userViews instanceof Set && (userViews.has(v.id) || userViews.has(String(v.id)) || userViews.has(Number(v.id)))) ? "bg-slate-100 border-slate-300" : "bg-white border-slate-200"}`}>
-                              <div className="flex items-center gap-2 min-w-0">
-                                <input type="checkbox" checked={userViews instanceof Set && (userViews.has(v.id) || userViews.has(String(v.id)) || userViews.has(Number(v.id)))} onChange={() => toggleUserViewPerm(v.id)} className="w-3.5 h-3.5 rounded text-slate-700" />
-                                <span className="text-[10px] font-semibold text-slate-700 truncate">{v.name}</span>
-                              </div>
-                              <span className="text-[9px] text-slate-400 italic shrink-0 pl-2">by {v.created_by}</span>
-                            </label>
-                          ))}
-                        </div>
+                {viewAssignmentOpen ? (
+                <div className="grid grid-cols-1 gap-2">
+                  <div className="rounded-md border border-slate-200 bg-white p-2.5 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="text-[10px] font-bold uppercase tracking-widest text-slate-600">User Assigned Views</div>
+                      <div className="text-[10px] text-slate-500">
+                        {selectedUserId ? (userById instanceof Map ? (userById.get(selectedUserId)?.email || selectedUserId) : selectedUserId) : "Select a user above"}
                       </div>
-                    )}
-                    {selectedGroupId && (
-                      <div className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 space-y-2">
-                        <div className="text-[10px] text-amber-700">
-                          Customer global views are used as fallback when a user has no direct view assignment.
-                        </div>
-                        <div className="rounded-md border border-slate-200 bg-white p-2 space-y-1.5 max-h-32 overflow-auto pr-1 custom-scrollbar">
-                          {Array.isArray(assignableViews) && assignableViews.map(v => (
-                            <label key={v.id} className={`flex items-center justify-between p-1.5 rounded-md border cursor-pointer ${(groupViews instanceof Set && (groupViews.has(v.id) || groupViews.has(String(v.id)) || groupViews.has(Number(v.id)))) ? "bg-slate-100 border-slate-300" : "bg-white border-slate-200"}`}>
-                              <div className="flex items-center gap-1.5 min-w-0">
-                                <input type="checkbox" checked={groupViews instanceof Set && (groupViews.has(v.id) || groupViews.has(String(v.id)) || groupViews.has(Number(v.id)))} onChange={() => toggleGroupViewPerm(v.id)} className="w-3 h-3 rounded text-slate-700" />
-                                <span className="text-[10px] font-semibold text-slate-700 truncate">{v.name}</span>
-                              </div>
-                            </label>
-                          ))}
-                        </div>
-                      </div>
+                    </div>
+                    {selectedUserId ? (
+                      Array.isArray(views) && views.length ? (
+                        <>
+                          <select
+                            multiple
+                            className="input-premium h-28 py-1 text-[10px]"
+                            value={draftUserViewIds}
+                            onChange={(e) => {
+                              const ids = Array.from(e.target.selectedOptions).map((opt) => opt.value);
+                              setDraftUserViewIds(ids);
+                            }}
+                          >
+                            {views.map((v) => (
+                              <option key={`u-opt-${v.id}`} value={String(v.id)}>{v.name}</option>
+                            ))}
+                          </select>
+                          <div className="flex justify-end">
+                            <button
+                              type="button"
+                              className={`rounded-md border border-slate-300 bg-white px-3 py-1 text-[10px] font-semibold text-slate-700 hover:bg-slate-100 ${viewAssignmentSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                              disabled={viewAssignmentSaving}
+                              onClick={async () => {
+                                if (!selectedUserId) return;
+                                setViewAssignmentSaving(true);
+                                try {
+                                  await syncUserAssignedViews(draftUserViewIds);
+                                  alert("User assigned views saved");
+                                } catch {
+                                  alert("Failed to save user assigned views");
+                                } finally {
+                                  setViewAssignmentSaving(false);
+                                }
+                              }}
+                            >
+                              {viewAssignmentSaving ? "Saving..." : "Save"}
+                            </button>
+                          </div>
+                        </>
+                      ) : <div className="text-[10px] text-slate-400 italic">No existing views found.</div>
+                    ) : (
+                      <div className="text-[10px] text-slate-400 italic">Pick a user in this customer to assign views.</div>
                     )}
                   </div>
+                </div>
                 ) : (
-                  <div className="rounded-md border border-dashed border-slate-300 bg-white px-3 py-2 text-[11px] text-slate-500">
-                    Select a report source to load the current sheet and assign views.
+                  <div className="text-[10px] text-slate-400 italic">
+                    {selectedUserId ? "View assignment is collapsed." : "Select a user to manage view assignment."}
                   </div>
                 )}
               </div>

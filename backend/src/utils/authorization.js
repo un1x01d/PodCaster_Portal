@@ -36,17 +36,7 @@ export async function resolveAssignedViewForSheet(sheetId, userId, requestedView
     SELECT
       v.id,
       v.config,
-      s.headers,
-      CASE
-        WHEN EXISTS (SELECT 1 FROM view_user_permissions vup WHERE vup.view_id = v.id AND vup.user_id = $2) THEN 0
-        WHEN EXISTS (
-          SELECT 1
-          FROM view_group_permissions vgp
-          JOIN user_groups ug ON ug.group_id = vgp.group_id
-          WHERE vgp.view_id = v.id AND ug.user_id = $2
-        ) THEN 1
-        ELSE 9
-      END AS precedence
+      s.headers
     FROM views v
     JOIN sheets s ON s.id = $1
     LEFT JOIN report_source_imports rsi ON rsi.sheet_id = s.id
@@ -61,15 +51,9 @@ export async function resolveAssignedViewForSheet(sheetId, userId, requestedView
       )
       AND (
         EXISTS (SELECT 1 FROM view_user_permissions vup WHERE vup.view_id = v.id AND vup.user_id = $2)
-        OR EXISTS (
-          SELECT 1
-          FROM view_group_permissions vgp
-          JOIN user_groups ug ON ug.group_id = vgp.group_id
-          WHERE vgp.view_id = v.id AND ug.user_id = $2
-        )
       )
       ${requestedViewId ? "AND v.id = $3" : ""}
-    ORDER BY precedence ASC, v.created_at DESC
+    ORDER BY v.created_at DESC
     LIMIT 1
   `;
   const params = requestedViewId ? [sheetId, userId, requestedViewId] : [sheetId, userId];
@@ -106,12 +90,6 @@ export async function checkSheetAccess(sheetId, user) {
               )
               AND (
                 EXISTS (SELECT 1 FROM view_user_permissions vup WHERE vup.view_id = v.id AND vup.user_id = $2)
-                OR EXISTS (
-                  SELECT 1
-                  FROM view_group_permissions vgp
-                  JOIN user_groups ug ON ug.group_id = vgp.group_id
-                  WHERE vgp.view_id = v.id AND ug.user_id = $2
-                )
               )
           )
         )
