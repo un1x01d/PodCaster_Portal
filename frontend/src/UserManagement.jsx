@@ -41,6 +41,7 @@ const DEFAULT_GROUP_ENTITLEMENTS = {
     googleDrive: true,
     dropbox: true,
     oneDrive: true,
+    quickbooks: true,
   },
 };
 
@@ -53,10 +54,34 @@ const RESET_PASSWORD_REQUIRED_SETS = [
   "!@#$%^&*()-_=+[]{};:,.?",
 ];
 
+const QUICKBOOKS_DATA_TYPE_OPTIONS = [
+  "Accounts",
+  "Bills",
+  "Customers",
+  "Invoices",
+  "Items",
+  "JournalEntries",
+  "Payments",
+  "Vendors",
+];
+
+const INTEGRATION_LOGOS = {
+  google: "https://www.google.com/s2/favicons?domain=google.com&sz=64",
+  dropbox: "https://www.google.com/s2/favicons?domain=dropbox.com&sz=64",
+  onedrive: "https://www.google.com/s2/favicons?domain=onedrive.live.com&sz=64",
+  quickbooks: "https://www.google.com/s2/favicons?domain=quickbooks.intuit.com&sz=64",
+  sftp: "https://api.iconify.design/solar:folder-with-files-bold.svg?color=%230ea5e9",
+  gcs: "https://www.google.com/s2/favicons?domain=cloud.google.com&sz=64",
+  s3: "https://www.google.com/s2/favicons?domain=s3.amazonaws.com&sz=64",
+  azure: "https://www.google.com/s2/favicons?domain=azure.microsoft.com&sz=64",
+  email: "https://api.iconify.design/solar:letter-bold.svg?color=%230ea5e9",
+};
+
 const STORAGE_PROVIDER_DEFS = [
   {
     key: "sftp",
     title: "SCP / SFTP",
+    logoUrl: INTEGRATION_LOGOS.sftp,
     apiBase: "sftp-storage",
     summary: (state) => (
       state.form.enabled
@@ -115,6 +140,7 @@ const STORAGE_PROVIDER_DEFS = [
   {
     key: "gcs",
     title: "Google Cloud Storage",
+    logoUrl: INTEGRATION_LOGOS.gcs,
     apiBase: "gcs-storage",
     summary: (state) => (
       state.form.enabled
@@ -146,6 +172,7 @@ const STORAGE_PROVIDER_DEFS = [
   {
     key: "s3",
     title: "Amazon S3",
+    logoUrl: INTEGRATION_LOGOS.s3,
     apiBase: "s3-storage",
     summary: (state) => (
       state.form.enabled
@@ -177,6 +204,7 @@ const STORAGE_PROVIDER_DEFS = [
   {
     key: "azure",
     title: "Azure Blob Storage",
+    logoUrl: INTEGRATION_LOGOS.azure,
     apiBase: "azure-blob-storage",
     summary: (state) => (
       state.form.enabled
@@ -335,8 +363,30 @@ export default function UserManagement({ token, user, sheetId }) {
   });
   const [oneDriveOauthSaving, setOneDriveOauthSaving] = useState(false);
   const [oneDriveOauthTesting, setOneDriveOauthTesting] = useState(false);
-  const [integrationOpen, setIntegrationOpen] = useState({ google: false, dropbox: false, onedrive: false, emailIngest: false });
-  const [integrationTestStatus, setIntegrationTestStatus] = useState({ google: null, dropbox: null, onedrive: null });
+  const [quickbooksOauthMeta, setQuickbooksOauthMeta] = useState({
+    hasClientId: false,
+    hasClientSecret: false,
+    clientIdMasked: "",
+    clientSecretMasked: "",
+    redirectUri: "",
+    frontendUrl: "",
+    environment: "production",
+    companyId: "",
+    selectedDataTypes: [],
+  });
+  const [quickbooksOauthForm, setQuickbooksOauthForm] = useState({
+    clientId: "",
+    clientSecret: "",
+    redirectUri: "",
+    frontendUrl: "",
+    environment: "production",
+    companyId: "",
+    selectedDataTypes: [],
+  });
+  const [quickbooksOauthSaving, setQuickbooksOauthSaving] = useState(false);
+  const [quickbooksOauthTesting, setQuickbooksOauthTesting] = useState(false);
+  const [integrationOpen, setIntegrationOpen] = useState({ google: false, dropbox: false, onedrive: false, quickbooks: false, emailIngest: false });
+  const [integrationTestStatus, setIntegrationTestStatus] = useState({ google: null, dropbox: null, onedrive: null, quickbooks: null });
   const [smtpMeta, setSmtpMeta] = useState({
     hasPassword: false,
     passwordMasked: "",
@@ -485,6 +535,10 @@ export default function UserManagement({ token, user, sheetId }) {
   const googleConfigured = googleOauthMeta.hasClientId && googleOauthMeta.hasClientSecret && googleOauthMeta.redirectUri;
   const dropboxConfigured = dropboxOauthMeta.hasClientId && dropboxOauthMeta.hasClientSecret && dropboxOauthMeta.redirectUri;
   const oneDriveConfigured = oneDriveOauthMeta.hasClientId && oneDriveOauthMeta.hasClientSecret && oneDriveOauthMeta.redirectUri;
+  const quickbooksConfigured = quickbooksOauthMeta.hasClientId
+    && quickbooksOauthMeta.hasClientSecret
+    && quickbooksOauthMeta.redirectUri
+    && quickbooksOauthMeta.companyId;
 
   const integrationScopeParams = useMemo(() => {
     const gid = Number(selectedGroupId);
@@ -949,6 +1003,117 @@ export default function UserManagement({ token, user, sheetId }) {
       alert(e.response?.data?.error || "Failed to update OneDrive OAuth settings");
     } finally {
       setOneDriveOauthSaving(false);
+    }
+  };
+
+  const fetchQuickbooksOauthSetting = async () => {
+    if (!canManageIntegrations) return;
+    if (!isSuperAdmin && !selectedGroupId) return;
+    try {
+      const res = await axios.get(`${API}/admin/settings/quickbooks-oauth`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: integrationScopeParams,
+      });
+      const data = res?.data || {};
+      const selectedDataTypes = Array.isArray(data.selectedDataTypes) ? data.selectedDataTypes : [];
+      setQuickbooksOauthMeta({
+        hasClientId: !!data.hasClientId,
+        hasClientSecret: !!data.hasClientSecret,
+        clientIdMasked: data.clientIdMasked || "",
+        clientSecretMasked: data.clientSecretMasked || "",
+        redirectUri: data.redirectUri || "",
+        frontendUrl: data.frontendUrl || "",
+        environment: data.environment === "sandbox" ? "sandbox" : "production",
+        companyId: data.companyId || "",
+        selectedDataTypes,
+      });
+      setQuickbooksOauthForm((prev) => ({
+        ...prev,
+        clientId: "",
+        clientSecret: "",
+        redirectUri: data.redirectUri || "",
+        frontendUrl: data.frontendUrl || "",
+        environment: data.environment === "sandbox" ? "sandbox" : "production",
+        companyId: data.companyId || "",
+        selectedDataTypes,
+      }));
+      setIntegrationTestStatus((prev) => ({ ...prev, quickbooks: null }));
+    } catch (e) {
+      console.error("fetchQuickbooksOauthSetting failed", e);
+    }
+  };
+
+  const testQuickbooksOauthSetting = async () => {
+    if (!canManageIntegrations || quickbooksOauthTesting) return;
+    if (!isSuperAdmin && !selectedGroupId) {
+      alert("Select a customer first.");
+      return;
+    }
+    setQuickbooksOauthTesting(true);
+    try {
+      const res = await axios.post(`${API}/admin/settings/quickbooks-oauth/test`, { ...integrationScopeParams }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setIntegrationTestStatus((prev) => ({ ...prev, quickbooks: "success" }));
+      alert(res?.data?.message === "oauth_credentials_valid_code_rejected"
+        ? "QuickBooks OAuth credentials validated."
+        : "QuickBooks OAuth probe completed.");
+    } catch (e) {
+      setIntegrationTestStatus((prev) => ({ ...prev, quickbooks: "error" }));
+      alert(e.response?.data?.error || "QuickBooks OAuth test failed");
+    } finally {
+      setQuickbooksOauthTesting(false);
+    }
+  };
+
+  const saveQuickbooksOauthSetting = async () => {
+    if (!canManageIntegrations || quickbooksOauthSaving) return;
+    if (!isSuperAdmin && !selectedGroupId) {
+      alert("Select a customer first.");
+      return;
+    }
+    setQuickbooksOauthSaving(true);
+    try {
+      const payload = {
+        clientId: quickbooksOauthForm.clientId || "***",
+        clientSecret: quickbooksOauthForm.clientSecret || "***",
+        redirectUri: quickbooksOauthForm.redirectUri || "",
+        frontendUrl: quickbooksOauthForm.frontendUrl || "",
+        environment: quickbooksOauthForm.environment === "sandbox" ? "sandbox" : "production",
+        companyId: quickbooksOauthForm.companyId || "",
+        selectedDataTypes: Array.isArray(quickbooksOauthForm.selectedDataTypes) ? quickbooksOauthForm.selectedDataTypes : [],
+        ...integrationScopeParams,
+      };
+      const res = await axios.patch(`${API}/admin/settings/quickbooks-oauth`, payload, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || {};
+      const selectedDataTypes = Array.isArray(data.selectedDataTypes) ? data.selectedDataTypes : [];
+      setQuickbooksOauthMeta({
+        hasClientId: !!data.hasClientId,
+        hasClientSecret: !!data.hasClientSecret,
+        clientIdMasked: data.clientIdMasked || "",
+        clientSecretMasked: data.clientSecretMasked || "",
+        redirectUri: data.redirectUri || "",
+        frontendUrl: data.frontendUrl || "",
+        environment: data.environment === "sandbox" ? "sandbox" : "production",
+        companyId: data.companyId || "",
+        selectedDataTypes,
+      });
+      setQuickbooksOauthForm((prev) => ({
+        ...prev,
+        clientId: "",
+        clientSecret: "",
+        environment: data.environment === "sandbox" ? "sandbox" : "production",
+        companyId: data.companyId || "",
+        selectedDataTypes,
+      }));
+      setIntegrationTestStatus((prev) => ({ ...prev, quickbooks: null }));
+      alert("QuickBooks OAuth settings updated");
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to update QuickBooks OAuth settings");
+    } finally {
+      setQuickbooksOauthSaving(false);
     }
   };
 
@@ -1495,6 +1660,7 @@ export default function UserManagement({ token, user, sheetId }) {
       fetchGoogleOauthSetting();
       fetchDropboxOauthSetting();
       fetchOneDriveOauthSetting();
+      fetchQuickbooksOauthSetting();
       STORAGE_PROVIDER_DEFS.forEach((provider) => { void fetchStorageSetting(provider); });
       fetchEmailIngestSetting();
       fetchSmtpSetting();
@@ -1511,6 +1677,7 @@ export default function UserManagement({ token, user, sheetId }) {
     fetchGoogleOauthSetting();
     fetchDropboxOauthSetting();
     fetchOneDriveOauthSetting();
+    fetchQuickbooksOauthSetting();
     STORAGE_PROVIDER_DEFS.forEach((provider) => { void fetchStorageSetting(provider); });
     fetchEmailIngestSetting();
     fetchSmtpSetting();
@@ -2759,6 +2926,7 @@ export default function UserManagement({ token, user, sheetId }) {
                         ["googleDrive", "Google Drive"],
                         ["dropbox", "Dropbox"],
                         ["oneDrive", "OneDrive"],
+                        ["quickbooks", "QuickBooks"],
                       ].map(([key, label]) => (
                         <label key={key} className="flex items-center gap-1.5 text-[10px] font-semibold text-slate-600">
                           <input
@@ -2802,7 +2970,7 @@ export default function UserManagement({ token, user, sheetId }) {
                   {metricsExposureSaving ? "Saving..." : (metricsExposure.enabled !== false ? "ON" : "OFF")}
                 </button>
               </div>
-              <div className="text-[10px] text-slate-500">Expose dashboard metrics to users.</div>
+              <div className="text-[10px] text-slate-500">Expose client view metrics to users.</div>
             </div>
             <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
               <div className="flex items-center justify-between gap-2">
@@ -3172,6 +3340,7 @@ export default function UserManagement({ token, user, sheetId }) {
             <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
+                  <img src={INTEGRATION_LOGOS.email} alt="Email icon" className="h-4 w-4 rounded-sm object-contain bg-white" loading="lazy" />
                   <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Email Ingest</div>
                   <span className={`text-[10px] font-semibold ${emailIngestConfig.enabled !== false ? "text-emerald-600" : "text-slate-400"}`}>
                     {emailIngestConfig.enabled !== false ? "Enabled" : "Disabled"}
@@ -3309,6 +3478,7 @@ export default function UserManagement({ token, user, sheetId }) {
             <div className={`rounded-md border bg-white p-3 space-y-2 ${googleConfigured && integrationTestStatus.google === "success" ? "border-emerald-400" : "border-slate-200"}`}>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
+                  <img src={INTEGRATION_LOGOS.google} alt="Google logo" className="h-4 w-4 rounded-sm object-contain bg-white" loading="lazy" />
                   <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Google OAuth Configuration</div>
                   <span className={`text-[10px] font-semibold ${googleConfigured ? "text-emerald-600" : "text-slate-400"}`}>
                     {googleConfigured ? "Configured" : "Not configured"}
@@ -3341,6 +3511,7 @@ export default function UserManagement({ token, user, sheetId }) {
             <div className={`rounded-md border bg-white p-3 space-y-2 ${dropboxConfigured && integrationTestStatus.dropbox === "success" ? "border-emerald-400" : "border-slate-200"}`}>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
+                  <img src={INTEGRATION_LOGOS.dropbox} alt="Dropbox logo" className="h-4 w-4 rounded-sm object-contain bg-white" loading="lazy" />
                   <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Dropbox OAuth Configuration</div>
                   <span className={`text-[10px] font-semibold ${dropboxConfigured ? "text-emerald-600" : "text-slate-400"}`}>
                     {dropboxConfigured ? "Configured" : "Not configured"}
@@ -3373,6 +3544,7 @@ export default function UserManagement({ token, user, sheetId }) {
             <div className={`rounded-md border bg-white p-3 space-y-2 ${oneDriveConfigured && integrationTestStatus.onedrive === "success" ? "border-emerald-400" : "border-slate-200"}`}>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
+                  <img src={INTEGRATION_LOGOS.onedrive} alt="OneDrive logo" className="h-4 w-4 rounded-sm object-contain bg-white" loading="lazy" />
                   <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">OneDrive OAuth Configuration</div>
                   <span className={`text-[10px] font-semibold ${oneDriveConfigured ? "text-emerald-600" : "text-slate-400"}`}>
                     {oneDriveConfigured ? "Configured" : "Not configured"}
@@ -3402,6 +3574,69 @@ export default function UserManagement({ token, user, sheetId }) {
               </>
               )}
             </div>
+            <div className={`rounded-md border bg-white p-3 space-y-2 ${quickbooksConfigured && integrationTestStatus.quickbooks === "success" ? "border-emerald-400" : "border-slate-200"}`}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <img src={INTEGRATION_LOGOS.quickbooks} alt="QuickBooks logo" className="h-4 w-4 rounded-sm object-contain bg-white" loading="lazy" />
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">QuickBooks OAuth Configuration</div>
+                  <span className={`text-[10px] font-semibold ${quickbooksConfigured ? "text-emerald-600" : "text-slate-400"}`}>
+                    {quickbooksConfigured ? "Configured" : "Not configured"}
+                  </span>
+                  {integrationTestStatus.quickbooks === "success" && <span className="text-[10px] font-semibold text-emerald-600">Tested</span>}
+                </div>
+                <button type="button" className="text-[10px] font-semibold text-slate-600 hover:text-slate-900" onClick={() => setIntegrationOpen((prev) => ({ ...prev, quickbooks: !prev.quickbooks }))}>
+                  {integrationOpen.quickbooks ? "Collapse" : "Expand"}
+                </button>
+              </div>
+              {integrationOpen.quickbooks && (
+              <>
+              <input type="password" className="input-premium" placeholder={quickbooksOauthMeta.hasClientId ? "***" : "QuickBooks Client ID"} value={quickbooksOauthForm.clientId} onChange={(e) => setQuickbooksOauthForm((prev) => ({ ...prev, clientId: e.target.value }))} autoComplete="new-password" />
+              <input type="password" className="input-premium" placeholder={quickbooksOauthMeta.hasClientSecret ? "***" : "QuickBooks Client Secret"} value={quickbooksOauthForm.clientSecret} onChange={(e) => setQuickbooksOauthForm((prev) => ({ ...prev, clientSecret: e.target.value }))} autoComplete="new-password" />
+              <input className="input-premium" placeholder="Redirect URI" value={quickbooksOauthForm.redirectUri} onChange={(e) => setQuickbooksOauthForm((prev) => ({ ...prev, redirectUri: e.target.value }))} />
+              <input className="input-premium" placeholder="Frontend URL" value={quickbooksOauthForm.frontendUrl} onChange={(e) => setQuickbooksOauthForm((prev) => ({ ...prev, frontendUrl: e.target.value }))} />
+              <select className="input-premium" value={quickbooksOauthForm.environment} onChange={(e) => setQuickbooksOauthForm((prev) => ({ ...prev, environment: e.target.value === "sandbox" ? "sandbox" : "production" }))}>
+                <option value="production">Production</option>
+                <option value="sandbox">Sandbox</option>
+              </select>
+              <input className="input-premium" placeholder="Company ID (Realm ID)" value={quickbooksOauthForm.companyId} onChange={(e) => setQuickbooksOauthForm((prev) => ({ ...prev, companyId: e.target.value }))} />
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600 space-y-2">
+                <div className="font-semibold text-slate-700">Read-only import data types</div>
+                <div className="grid grid-cols-2 gap-1">
+                  {QUICKBOOKS_DATA_TYPE_OPTIONS.map((dataType) => {
+                    const selected = quickbooksOauthForm.selectedDataTypes.includes(dataType);
+                    return (
+                      <label key={dataType} className="flex items-center gap-1.5 text-[10px] font-semibold text-slate-600">
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          onChange={(e) => setQuickbooksOauthForm((prev) => {
+                            const current = Array.isArray(prev.selectedDataTypes) ? prev.selectedDataTypes : [];
+                            const next = e.target.checked
+                              ? Array.from(new Set([...current, dataType]))
+                              : current.filter((entry) => entry !== dataType);
+                            return { ...prev, selectedDataTypes: next };
+                          })}
+                        />
+                        {dataType}
+                      </label>
+                    );
+                  })}
+                </div>
+                <div className="text-slate-500">Choose what this workspace can import from QuickBooks. All imports are read-only.</div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button type="button" onClick={saveQuickbooksOauthSetting} disabled={quickbooksOauthSaving} className={`btn-premium bg-slate-800 text-white w-full py-2 ${quickbooksOauthSaving ? "opacity-60 cursor-not-allowed" : ""}`}>{quickbooksOauthSaving ? "Saving..." : "Save QuickBooks OAuth"}</button>
+                <button type="button" onClick={testQuickbooksOauthSetting} disabled={quickbooksOauthTesting} className={`btn-premium bg-indigo-600 text-white w-full py-2 ${quickbooksOauthTesting ? "opacity-60 cursor-not-allowed" : ""}`}>{quickbooksOauthTesting ? "Testing..." : "Test QuickBooks OAuth"}</button>
+              </div>
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600 space-y-1">
+                <div className="font-semibold text-slate-700">Setup help</div>
+                <a className="block text-blue-700 hover:underline" href="https://developer.intuit.com/app/developer/qbo/docs/develop/authentication-and-authorization/oauth-2.0" target="_blank" rel="noreferrer">QuickBooks OAuth 2.0 guide</a>
+                <a className="block text-blue-700 hover:underline" href="https://developer.intuit.com/app/developer/qbo/docs/learn-about-concepts/scopes" target="_blank" rel="noreferrer">QuickBooks scopes reference</a>
+                <a className="block text-blue-700 hover:underline" href="https://developer.intuit.com/app/developer/qbo/docs/develop/sdks-and-samples-collections/php/authorization#get-your-realm-id" target="_blank" rel="noreferrer">Find your Company ID (Realm ID)</a>
+              </div>
+              </>
+              )}
+            </div>
             {STORAGE_PROVIDER_DEFS.map((provider) => {
               const state = storageSettings[provider.key] || createStorageProviderState(provider);
               const configured = !!state.form.enabled && provider.fields
@@ -3416,6 +3651,8 @@ export default function UserManagement({ token, user, sheetId }) {
                 <StorageOptionCard
                   key={provider.key}
                   title={provider.title}
+                  logoUrl={provider.logoUrl}
+                  logoAlt={`${provider.title} logo`}
                   summary={provider.summary(state)}
                   configured={configured}
                   tested={state.testStatus === "success"}

@@ -2584,7 +2584,7 @@ export default function App() {
                       type="text"
                       value={pendingViewName}
                       onChange={(e) => setPendingViewName(e.target.value)}
-                      placeholder="e.g. Monthly Dashboard"
+                      placeholder="e.g. Monthly Client View"
                       className="input-premium w-full py-1.5 text-[11px] font-semibold"
                       autoFocus
                     />

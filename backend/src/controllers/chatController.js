@@ -691,7 +691,7 @@ function buildChatWhereClause({ tabName = null, filters = [], rowFiltersList = [
   return { where, params };
 }
 
-async function computeLargeDatasetAggregateFallback({
+export async function computeLargeDatasetAggregateFallback({
   sheetId,
   user,
   operation = null,
@@ -707,11 +707,13 @@ async function computeLargeDatasetAggregateFallback({
   locale = "en",
 }) {
   const directFilters = Array.isArray(activeFilters) ? activeFilters : [];
-  const { where, params } = buildChatWhereClause({
+  const hasAdHocFilters = directFilters.length > 0 || (Array.isArray(rowFiltersList) && rowFiltersList.length > 0);
+  const { where, params: whereParams } = buildChatWhereClause({
     tabName,
     filters: directFilters,
     rowFiltersList,
   });
+  const scopedParams = [sheetId, ...whereParams];
   const inferredOperation = inferAggregateOperationFromMessage(message, { operation: operation || ai?.operation });
   const bucket = inferAggregateBucketFromMessage(message, { operation: operation || ai?.operation });
   const directOp = ["count", "sum", "avg", "max", "min", "top_n"].includes(inferredOperation) ? inferredOperation : null;
@@ -742,7 +744,7 @@ async function computeLargeDatasetAggregateFallback({
 
   if (directOp) {
     if (directOp === "count") {
-      const rows = await query(`SELECT COUNT(*) as c FROM sheet_rows ${where}`, params);
+      const rows = await query(`SELECT COUNT(*) as c FROM sheet_rows ${where}`, scopedParams);
       return { answer: `Count: ${rows[0]?.c || 0} rows`, previewRows: [], chart: null };
     }
 
@@ -781,8 +783,8 @@ async function computeLargeDatasetAggregateFallback({
 
   if (!bucket || !dateColumn || !metricColumn) return null;
 
-  const dateParamIdx = params.length + 2;
-  const metricParamIdx = params.length + 3;
+  const dateParamIdx = scopedParams.length + 1;
+  const metricParamIdx = scopedParams.length + 2;
   const safeBucket = bucket === "quarter" ? "quarter" : (bucket === "month" ? "month" : "year");
   const bucketExpr = periodMode === "year"
     ? `NULLIF(regexp_replace(row_data->>$${dateParamIdx}, '[^0-9]', '', 'g'), '')`
@@ -796,16 +798,47 @@ async function computeLargeDatasetAggregateFallback({
             ? `TO_CHAR(CAST(row_data->>$${dateParamIdx} AS DATE), 'YYYY-MM')`
             : `EXTRACT(YEAR FROM (CAST(row_data->>$${dateParamIdx} AS DATE)))::text`;
 
-  params.push(dateColumn, metricColumn);
-  const rows = await query(
-    `SELECT ${bucketExpr} AS period,
-            SUM(CAST(NULLIF(regexp_replace(row_data->>$${metricParamIdx}, '[^0-9.-]', '', 'g'), '') AS NUMERIC)) AS value
-       FROM sheet_rows
-       ${where}
-      GROUP BY period
-      ORDER BY period ASC`,
-    params
-  );
+  const queryParams = [...scopedParams, dateColumn, metricColumn];
+  let rows = [];
+  if (safeBucket === "year" && !hasAdHocFilters) {
+    rows = await query(
+      `SELECT period_year AS period, value
+         FROM sheet_metric_yearly_cache
+        WHERE sheet_id = $1
+          AND tab_name = $2
+          AND date_column = $3
+          AND metric_column = $4
+        ORDER BY period_year ASC`,
+      [sheetId, String(tabName || ""), dateColumn, metricColumn]
+    );
+  }
+  if (!rows.length) {
+    rows = await query(
+      `SELECT ${bucketExpr} AS period,
+              SUM(CAST(NULLIF(regexp_replace(row_data->>$${metricParamIdx}, '[^0-9.-]', '', 'g'), '') AS NUMERIC)) AS value
+         FROM sheet_rows
+         ${where}
+        GROUP BY period
+        ORDER BY period ASC`,
+      queryParams
+    );
+    if (safeBucket === "year" && !hasAdHocFilters && rows.length) {
+      const upsertSql = `
+        INSERT INTO sheet_metric_yearly_cache
+          (sheet_id, tab_name, date_column, metric_column, period_year, value, source_rows, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, 0, CURRENT_TIMESTAMP)
+        ON CONFLICT (sheet_id, tab_name, date_column, metric_column, period_year)
+        DO UPDATE SET value = EXCLUDED.value,
+                      updated_at = CURRENT_TIMESTAMP
+      `;
+      for (const row of rows) {
+        const period = String(row?.period ?? "").trim();
+        const value = Number(row?.value ?? 0);
+        if (!period || !Number.isFinite(value)) continue;
+        await query(upsertSql, [sheetId, String(tabName || ""), dateColumn, metricColumn, period, value]);
+      }
+    }
+  }
 
   if (!rows.length) return null;
   const normalizedRows = rows.map((r) => ({
@@ -1759,6 +1792,14 @@ function expandLargeIntForEnglishSpeech(rawDigits = "") {
 function naturalizeNumbersForTTS(text = "", locale = "en") {
   let out = String(text || "");
   const lang = (locale || "en").split("-")[0].toLowerCase();
+  const normalizePercentToken = (raw) => {
+    const textNum = String(raw || "").trim().replace(",", ".");
+    if (!textNum) return "0";
+    if (textNum.startsWith(".")) return `0${textNum}`;
+    if (textNum.startsWith("-.")) return textNum.replace("-.", "-0.");
+    if (textNum.startsWith("+.")) return textNum.replace("+.", "+0.");
+    return textNum;
+  };
   const roundCurrencyToWhole = (priceRaw, centsRaw) => {
     const units = parseInt(String(priceRaw || "").replace(/,/g, ""), 10) || 0;
     const cents = parseInt(String(centsRaw || "").padEnd(2, "0").slice(0, 2), 10) || 0;
@@ -1772,13 +1813,15 @@ function naturalizeNumbersForTTS(text = "", locale = "en") {
   out = out.replace(/\bUSD\b/gi, lang === "ru" ? "долларов" : (lang === "uk" ? "доларів" : "dollars"));
 
   if (lang === "uk") {
+    // Keep percentage decimals explicit for speech (including sub-1% values).
+    out = out.replace(/([+-]?(?:\d+(?:[.,]\d+)?|[.,]\d+))%/g, (m, numRaw) => `${normalizePercentToken(numRaw)} відсотка`);
     // Normalize currency without cents for cleaner speech output.
     out = out.replace(/\$([\d,]+)\.(\d{1,2})\b/g, (m, price, centsRaw) => {
       const rounded = roundCurrencyToWhole(price, centsRaw);
       return `${rounded} доларів`;
     });
-    // Drop decimal tails in spoken output (e.g. 1,927,022.22 -> 1,927,022)
-    out = out.replace(/(\d[\d,\s]*)[.,]\d{1,2}\b/g, "$1");
+    // Drop decimal tails in spoken output for non-percent numbers.
+    out = out.replace(/(\d[\d,\s]*)[.,]\d{1,2}\b(?!\s*відсот)/g, "$1");
     out = out.replace(/\bvs\b/gi, "проти");
     out = out.replace(/\bNet Income\b/gi, "Прибуток");
     out = out.replace(/\bNet Revenue\b/gi, "Чистий виторг");
@@ -1786,13 +1829,15 @@ function naturalizeNumbersForTTS(text = "", locale = "en") {
     out = out.replace(/\btab\b/gi, "вкладка");
     out = out.replace(/\$([\d,.\s]+)\b/g, "$1 доларів");
   } else if (lang === "ru") {
+    // Keep percentage decimals explicit for speech (including sub-1% values).
+    out = out.replace(/([+-]?(?:\d+(?:[.,]\d+)?|[.,]\d+))%/g, (m, numRaw) => `${normalizePercentToken(numRaw)} процента`);
     // Normalize currency without cents for cleaner speech output.
     out = out.replace(/\$([\d,]+)\.(\d{1,2})\b/g, (m, price, centsRaw) => {
       const rounded = roundCurrencyToWhole(price, centsRaw);
       return `${rounded} долларов`;
     });
-    // Drop decimal tails in spoken output (e.g. 1,927,022.22 -> 1,927,022)
-    out = out.replace(/(\d[\d,\s]*)[.,]\d{1,2}\b/g, "$1");
+    // Drop decimal tails in spoken output for non-percent numbers.
+    out = out.replace(/(\d[\d,\s]*)[.,]\d{1,2}\b(?!\s*процент)/g, "$1");
     out = out.replace(/\bvs\b/gi, "против");
     out = out.replace(/\bNet Income\b/gi, "Чистая прибыль");
     out = out.replace(/\bNet Revenue\b/gi, "Чистая выручка");
@@ -1825,7 +1870,7 @@ function naturalizeNumbersForTTS(text = "", locale = "en") {
         return `${parseInt(thou, 10)} thousand ${parseInt(rest, 10)}`;
     });
     
-    out = out.replace(/(\d+(?:\.\d+)?)%/g, "$1 percent");
+    out = out.replace(/([+-]?(?:\d+(?:[.,]\d+)?|[.,]\d+))%/g, (m, numRaw) => `${normalizePercentToken(numRaw)} percent`);
     out = out.replace(/\(\+/g, "(plus ");
     out = out.replace(/\(\-/g, "(minus ");
   }
@@ -1943,13 +1988,29 @@ function expandFinancialTextPhonetically(text = "", lang = "ru") {
         return slavicNumberToWords(n, lang, "m") + " " + getSlavicPlural(n, rules.cents);
     });
 
-    // 3. Handle Percentages
+    // 3. Handle Percentages (including decimal percentages like 0.19)
+    out = out.replace(/([+-]?\d+[.,]\d+)\s?(відсотка|процента)/g, (m, raw, unit) => {
+        const normalized = String(raw || "").replace(",", ".");
+        const [intPartRaw, fracPartRaw = ""] = normalized.split(".");
+        const intPart = Number.parseInt(intPartRaw || "0", 10) || 0;
+        const fracPart = (fracPartRaw || "").replace(/[^\d]/g, "").slice(0, 4);
+        if (!fracPart) {
+            const whole = slavicNumberToWords(intPart, lang, "m");
+            return `${whole} ${unit}`;
+        }
+        const fracAsInt = Number.parseInt(fracPart, 10) || 0;
+        const fracWords = slavicNumberToWords(fracAsInt, lang, "m");
+        const wholeWords = slavicNumberToWords(intPart, lang, "m");
+        return `${wholeWords} ${lang === "ru" ? "целых" : "цілих"} ${fracWords} ${lang === "ru" ? "сотых" : "сотих"} ${unit}`;
+    });
+
+    // 4. Handle integer Percentages
     out = out.replace(/(\d+)\s?(відсотків|процентов)/g, (m, num) => {
         const n = parseInt(num, 10);
         return slavicNumberToWords(n, lang, "m") + " " + getSlavicPlural(n, rules.percents);
     });
 
-    // 4. Handle all other standalone numbers (except years)
+    // 5. Handle all other standalone numbers (except years)
     out = out.replace(/\b(\d{1,3}|\d{5,})\b/g, (m, num) => {
         const n = parseInt(num, 10);
         return slavicNumberToWords(n, lang, "m");

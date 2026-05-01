@@ -10,6 +10,9 @@ import {
     getOneDriveIntegrationSetting, setOneDriveIntegrationSetting,
     getOneDriveOauthSetting, setOneDriveOauthSetting,
     testOneDriveOauthSetting,
+    getQuickbooksIntegrationSetting, setQuickbooksIntegrationSetting,
+    getQuickbooksOauthSetting, setQuickbooksOauthSetting,
+    testQuickbooksOauthSetting,
     getSsoSetting, setSsoSetting,
     getSmtpSetting, setSmtpSetting,
     getInviteEmailTemplateSetting, setInviteEmailTemplateSetting, previewInviteEmailTemplate,
@@ -64,6 +67,11 @@ router.patch("/admin/settings/onedrive-integration", asyncHandler(setOneDriveInt
 router.get("/admin/settings/onedrive-oauth", asyncHandler(getOneDriveOauthSetting));
 router.patch("/admin/settings/onedrive-oauth", asyncHandler(setOneDriveOauthSetting));
 router.post("/admin/settings/onedrive-oauth/test", asyncHandler(testOneDriveOauthSetting));
+router.get("/admin/settings/quickbooks-integration", asyncHandler(getQuickbooksIntegrationSetting));
+router.patch("/admin/settings/quickbooks-integration", asyncHandler(setQuickbooksIntegrationSetting));
+router.get("/admin/settings/quickbooks-oauth", asyncHandler(getQuickbooksOauthSetting));
+router.patch("/admin/settings/quickbooks-oauth", asyncHandler(setQuickbooksOauthSetting));
+router.post("/admin/settings/quickbooks-oauth/test", asyncHandler(testQuickbooksOauthSetting));
 router.get("/admin/settings/sso", asyncHandler(getSsoSetting));
 router.patch("/admin/settings/sso", asyncHandler(setSsoSetting));
 router.get("/admin/settings/smtp", asyncHandler(getSmtpSetting));

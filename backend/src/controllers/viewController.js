@@ -1,5 +1,6 @@
 import { query } from "../config/db.js";
 import { checkSheetAccess } from "../utils/authorization.js";
+import { parsePagination } from "../utils/pagination.js";
 
 async function isGroupAdminUser(userId) {
     const rows = await query(
@@ -160,12 +161,21 @@ export async function duplicateView(req, res) {
 
 export async function listViews(req, res) {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const pagination = parsePagination(req.query, { maxLimit: 1000 });
+    if (pagination.error) return res.status(400).json({ error: pagination.error });
+    const totalRows = await query("SELECT COUNT(*)::int AS c FROM views", []);
+    const total = Number(totalRows[0]?.c || 0);
     const rows = await query(
         `SELECT v.id, v.name, v.sheet_id, u.email as created_by
          FROM views v
          JOIN users u ON u.id = v.created_by
-         ORDER BY v.name ASC`
+         ORDER BY v.name ASC
+         LIMIT $1 OFFSET $2`,
+        [pagination.limit, pagination.offset]
     );
+    res.set("X-Total-Count", String(total));
+    res.set("X-Limit", String(pagination.limit));
+    res.set("X-Offset", String(pagination.offset));
     res.json(rows);
 }
 

@@ -3,7 +3,7 @@ import path from "path";
 import fs from "fs";
 import { Worker } from "worker_threads";
 import { fileURLToPath } from "url";
-import { randomUUID } from "crypto";
+import { randomUUID, timingSafeEqual } from "crypto";
 import { forEachActiveTenantPool, query, getClient } from "../config/db.js";
 import { parsePagination } from "../utils/pagination.js";
 import {
@@ -97,6 +97,22 @@ function sanitizeReportSourceName(value) {
 
 function normalizeEmailAddress(value) {
     return String(value || "").trim().toLowerCase();
+}
+
+function hasValidEmailIngestSharedSecret(req) {
+    const expected = String(process.env.EMAIL_INGEST_SHARED_SECRET || "").trim();
+    if (!expected) return process.env.NODE_ENV !== "production";
+    const provided = String(
+        req.headers["x-email-ingest-secret"]
+        || req.headers["x-ingest-secret"]
+        || req.body?.ingest_secret
+        || ""
+    ).trim();
+    if (!provided) return false;
+    const a = Buffer.from(provided);
+    const b = Buffer.from(expected);
+    if (a.length !== b.length) return false;
+    return timingSafeEqual(a, b);
 }
 
 function normalizeEmailLocalPart(value) {
@@ -1786,6 +1802,9 @@ export async function ingestEmailAttachment(req, res) {
     let importJobId = req.importJobId || randomUUID();
     let importJobCreated = false;
     try {
+        if (!hasValidEmailIngestSharedSecret(req)) {
+            return res.status(403).json({ error: "email_ingest_unauthorized" });
+        }
         const file = req.file
             || req.files?.file?.[0]
             || req.files?.attachment?.[0]

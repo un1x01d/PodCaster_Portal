@@ -1,6 +1,7 @@
 import express from "express";
 import multer from "multer";
 import path from "path";
+import { timingSafeEqual } from "crypto";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { uploadRateLimit } from "../middleware/rateLimit.js";
 import { ingestEmailAttachment } from "../controllers/sheetController.js";
@@ -32,9 +33,33 @@ const upload = multer({
     },
 });
 
+function verifyIngestSecret(req, res, next) {
+    const expected = String(process.env.EMAIL_INGEST_SHARED_SECRET || "").trim();
+    if (!expected) {
+        if (process.env.NODE_ENV === "production") {
+            return res.status(403).json({ error: "email_ingest_unauthorized" });
+        }
+        return next();
+    }
+    const provided = String(
+        req.headers["x-email-ingest-secret"]
+        || req.headers["x-ingest-secret"]
+        || req.query?.ingest_secret
+        || ""
+    ).trim();
+    if (!provided) return res.status(403).json({ error: "email_ingest_unauthorized" });
+    const a = Buffer.from(provided);
+    const b = Buffer.from(expected);
+    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+        return res.status(403).json({ error: "email_ingest_unauthorized" });
+    }
+    return next();
+}
+
 router.post(
     "/email-ingest/inbound",
     uploadRateLimit,
+    verifyIngestSecret,
     upload.fields([
         { name: "file", maxCount: 1 },
         { name: "attachment", maxCount: 1 },

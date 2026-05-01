@@ -235,6 +235,8 @@ export async function listUsers(req, res) {
     if (pagination.error) return res.status(400).json({ error: pagination.error });
     try {
         if (isGlobalAdmin) {
+            const totalRows = await query("SELECT COUNT(*)::int AS c FROM users", []);
+            const total = Number(totalRows[0]?.c || 0);
             const params = [];
             let sql = `SELECT id, email, role, default_view_id, first_name, last_name, company,
                               CASE WHEN password IS NULL THEN 'google' ELSE 'manual' END AS auth_provider
@@ -248,6 +250,9 @@ export async function listUsers(req, res) {
                 sql,
                 params
             );
+            res.set("X-Total-Count", String(total));
+            res.set("X-Limit", String(pagination.limit));
+            res.set("X-Offset", String(pagination.offset));
             return res.json(users);
     } else {
         const adminGroups = await getAdminGroups(req.user.id);
@@ -257,6 +262,14 @@ export async function listUsers(req, res) {
         } catch (err) {
             return res.status(err.statusCode || 403).json({ error: err.message });
         }
+        const totalRows = await query(
+            `SELECT COUNT(DISTINCT u.id)::int AS c
+             FROM users u
+             JOIN user_groups ug ON u.id = ug.user_id
+             WHERE ug.group_id = ANY($1::int[])`,
+            [adminGroups]
+        );
+        const total = Number(totalRows[0]?.c || 0);
 
         // Return users who share ANY handled group with the admin
         const params = [adminGroups];
@@ -272,6 +285,9 @@ export async function listUsers(req, res) {
                 params.push(pagination.limit, pagination.offset);
             }
             const users = await query(sql, params);
+            res.set("X-Total-Count", String(total));
+            res.set("X-Limit", String(pagination.limit));
+            res.set("X-Offset", String(pagination.offset));
             return res.json(users);
         }
     } catch (e) {
@@ -816,12 +832,28 @@ function maskIfPresent(value) {
 }
 
 function decryptOauthConfig(raw) {
-    const cfg = raw && typeof raw === "object" ? raw : {};
-    return {
-        clientId: decryptSettingValue(String(cfg.clientId || "")),
+  const cfg = raw && typeof raw === "object" ? raw : {};
+  return {
+    clientId: decryptSettingValue(String(cfg.clientId || "")),
         clientSecret: decryptSettingValue(String(cfg.clientSecret || "")),
         redirectUri: String(cfg.redirectUri || ""),
         frontendUrl: String(cfg.frontendUrl || ""),
+  };
+}
+
+function decryptQuickbooksOauthConfig(raw) {
+    const cfg = raw && typeof raw === "object" ? raw : {};
+    const base = decryptOauthConfig(cfg);
+    const environment = String(cfg.environment || "production").trim().toLowerCase() === "sandbox" ? "sandbox" : "production";
+    const companyId = String(cfg.companyId || "").trim();
+    const selectedDataTypes = Array.isArray(cfg.selectedDataTypes)
+        ? cfg.selectedDataTypes.map((v) => String(v || "").trim()).filter(Boolean)
+        : [];
+    return {
+        ...base,
+        environment,
+        companyId,
+        selectedDataTypes,
     };
 }
 
@@ -839,6 +871,22 @@ function normalizeOauthConfigForSave(current, body) {
         clientSecret: encryptSettingValue(nextClientSecret),
         redirectUri: incomingRedirectRaw !== undefined ? incomingRedirectRaw : String(current.redirectUri || ""),
         frontendUrl: incomingFrontendRaw !== undefined ? incomingFrontendRaw : String(current.frontendUrl || ""),
+    };
+}
+
+function normalizeQuickbooksOauthConfigForSave(current, body) {
+    const base = normalizeOauthConfigForSave(current, body);
+    const incomingEnvironment = String(body?.environment || current.environment || "production").trim().toLowerCase();
+    const environment = incomingEnvironment === "sandbox" ? "sandbox" : "production";
+    const companyId = typeof body?.companyId === "string" ? body.companyId.trim() : String(current.companyId || "");
+    const selectedDataTypes = Array.isArray(body?.selectedDataTypes)
+        ? body.selectedDataTypes.map((v) => String(v || "").trim()).filter(Boolean).slice(0, 25)
+        : (Array.isArray(current.selectedDataTypes) ? current.selectedDataTypes : []);
+    return {
+        ...base,
+        environment,
+        companyId,
+        selectedDataTypes,
     };
 }
 
@@ -938,6 +986,15 @@ async function runOauthCredentialsProbe(provider, cfg) {
             grant_type: "authorization_code",
             redirect_uri: redirectUri,
             scope: "offline_access User.Read Files.Read",
+        });
+    } else if (provider === "quickbooks") {
+        tokenUrl = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer";
+        body = new URLSearchParams({
+            client_id: clientId,
+            client_secret: clientSecret,
+            code: "codex_probe_invalid_code",
+            grant_type: "authorization_code",
+            redirect_uri: redirectUri,
         });
     } else {
         return { ok: false, error: "unknown_provider" };
@@ -1125,6 +1182,35 @@ export async function getOneDriveIntegrationSetting(req, res) {
     }
 }
 
+export async function getQuickbooksIntegrationSetting(req, res) {
+    try {
+        const scope = await resolveScopedGroupForIntegrationSettings(req);
+        const value = await getAppSettingValueWithScopedFallback("quickbooks_integration", scope.groupId);
+        const enabled = value ? !!value?.enabled : true;
+        res.json({ enabled, groupId: scope.groupId || null });
+    } catch (err) {
+        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
+}
+
+export async function setQuickbooksIntegrationSetting(req, res) {
+    try {
+        const scope = await resolveScopedGroupForIntegrationSettings(req);
+        const enabled = !!req.body?.enabled;
+        const key = appSettingKeyForGroup("quickbooks_integration", scope.groupId);
+        await query(
+            `INSERT INTO app_settings (key, value, updated_at)
+             VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+             ON CONFLICT (key)
+             DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+            [key, JSON.stringify({ enabled })]
+        );
+        res.json({ success: true, enabled, groupId: scope.groupId || null });
+    } catch (err) {
+        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
+}
+
 export async function setOneDriveIntegrationSetting(req, res) {
     try {
         const scope = await resolveScopedGroupForIntegrationSettings(req);
@@ -1198,6 +1284,70 @@ export async function setOneDriveOauthSetting(req, res) {
     }
 }
 
+export async function getQuickbooksOauthSetting(req, res) {
+    try {
+        const scope = await resolveScopedGroupForIntegrationSettings(req);
+        const value = await getAppSettingValueWithScopedFallback("quickbooks_oauth", scope.groupId);
+        const cfg = decryptQuickbooksOauthConfig(value || {});
+        const clientId = String(cfg.clientId || "");
+        const clientSecret = String(cfg.clientSecret || "");
+        const redirectUri = String(cfg.redirectUri || "");
+        const frontendUrl = String(cfg.frontendUrl || "");
+        const environment = String(cfg.environment || "production");
+        const companyId = String(cfg.companyId || "");
+        const selectedDataTypes = Array.isArray(cfg.selectedDataTypes) ? cfg.selectedDataTypes : [];
+
+        res.json({
+            hasClientId: !!clientId,
+            hasClientSecret: !!clientSecret,
+            clientIdMasked: maskIfPresent(clientId),
+            clientSecretMasked: maskIfPresent(clientSecret),
+            redirectUri,
+            frontendUrl,
+            environment,
+            companyId,
+            selectedDataTypes,
+            groupId: scope.groupId || null,
+        });
+    } catch (err) {
+        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
+}
+
+export async function setQuickbooksOauthSetting(req, res) {
+    try {
+        const scope = await resolveScopedGroupForIntegrationSettings(req);
+        const key = appSettingKeyForGroup("quickbooks_oauth", scope.groupId);
+        const currentRaw = await getAppSettingValueWithScopedFallback("quickbooks_oauth", scope.groupId);
+        const current = decryptQuickbooksOauthConfig(currentRaw || {});
+        const next = normalizeQuickbooksOauthConfigForSave(current, req.body);
+
+        await query(
+            `INSERT INTO app_settings (key, value, updated_at)
+             VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+             ON CONFLICT (key)
+             DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+            [key, JSON.stringify(next)]
+        );
+
+        res.json({
+            success: true,
+            hasClientId: !!decryptSettingValue(next.clientId),
+            hasClientSecret: !!decryptSettingValue(next.clientSecret),
+            clientIdMasked: maskIfPresent(decryptSettingValue(next.clientId)),
+            clientSecretMasked: maskIfPresent(decryptSettingValue(next.clientSecret)),
+            redirectUri: next.redirectUri,
+            frontendUrl: next.frontendUrl,
+            environment: next.environment || "production",
+            companyId: next.companyId || "",
+            selectedDataTypes: Array.isArray(next.selectedDataTypes) ? next.selectedDataTypes : [],
+            groupId: scope.groupId || null,
+        });
+    } catch (err) {
+        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
+}
+
 async function loadScopedDecryptedOauthConfig(req, baseKey) {
     const scope = await resolveScopedGroupForIntegrationSettings(req);
     const value = await getAppSettingValueWithScopedFallback(baseKey, scope.groupId);
@@ -1231,6 +1381,17 @@ export async function testOneDriveOauthSetting(req, res) {
     try {
         const { scope, cfg } = await loadScopedDecryptedOauthConfig(req, "onedrive_oauth");
         const result = await runOauthCredentialsProbe("onedrive", cfg);
+        if (!result.ok) return res.status(400).json({ ...result, groupId: scope.groupId || null });
+        return res.json({ ...result, groupId: scope.groupId || null });
+    } catch (err) {
+        return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
+}
+
+export async function testQuickbooksOauthSetting(req, res) {
+    try {
+        const { scope, cfg } = await loadScopedDecryptedOauthConfig(req, "quickbooks_oauth");
+        const result = await runOauthCredentialsProbe("quickbooks", cfg);
         if (!result.ok) return res.status(400).json({ ...result, groupId: scope.groupId || null });
         return res.json({ ...result, groupId: scope.groupId || null });
     } catch (err) {
@@ -1631,6 +1792,8 @@ export async function listGroups(req, res) {
         const cacheKey = `listGroups:admin:${ENABLE_STORAGE_USAGE_METRICS ? "usage" : "lite"}${pageTag}`;
         const cached = getHeavyListCache(cacheKey);
         if (cached) return res.json(cached);
+        const totalRows = await query("SELECT COUNT(*)::int AS c FROM groups", []);
+        const total = Number(totalRows[0]?.c || 0);
         let sql = `SELECT g.*, c.id AS customer_id, c.db_name AS customer_db_name, c.status AS customer_db_status,
                           0::bigint AS used_storage_bytes
                    FROM groups g
@@ -1643,6 +1806,9 @@ export async function listGroups(req, res) {
         }
         const groups = await query(sql, params);
         setHeavyListCache(cacheKey, groups);
+        res.set("X-Total-Count", String(total));
+        res.set("X-Limit", String(pagination.limit));
+        res.set("X-Offset", String(pagination.offset));
         return res.json(groups);
     }
 
@@ -1652,6 +1818,11 @@ export async function listGroups(req, res) {
     const cached = getHeavyListCache(cacheKey);
     if (cached) return res.json(cached);
 
+    const totalRows = await query(
+        `SELECT COUNT(*)::int AS c FROM groups g WHERE g.id = ANY($1::int[])`,
+        [adminGroups]
+    );
+    const total = Number(totalRows[0]?.c || 0);
     const params = [adminGroups];
     let sql = `SELECT g.*, 0::bigint AS used_storage_bytes
                FROM groups g
@@ -1663,6 +1834,9 @@ export async function listGroups(req, res) {
     }
     const groups = await query(sql, params);
     setHeavyListCache(cacheKey, groups);
+    res.set("X-Total-Count", String(total));
+    res.set("X-Limit", String(pagination.limit));
+    res.set("X-Offset", String(pagination.offset));
     return res.json(groups);
 }
 

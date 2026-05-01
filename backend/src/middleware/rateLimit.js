@@ -1,3 +1,5 @@
+import { query } from "../config/db.js";
+
 const loginBuckets = new Map();
 const aiBuckets = new Map();
 const invitationLookupBuckets = new Map();
@@ -37,6 +39,9 @@ const UPLOAD_MAX_ATTEMPTS = Number.parseInt(process.env.UPLOAD_RATE_LIMIT_MAX ||
 const UPLOAD_WINDOW_MS = Number.parseInt(process.env.UPLOAD_RATE_LIMIT_WINDOW_MS || `${15 * 60 * 1000}`, 10);
 const UPLOAD_MAX_BUCKETS = Number.parseInt(process.env.UPLOAD_RATE_LIMIT_MAX_BUCKETS || "10000", 10);
 let lastPruneAt = 0;
+const DISTRIBUTED_RATE_LIMIT = String(
+  process.env.RATE_LIMIT_DISTRIBUTED ?? (process.env.NODE_ENV === "production" ? "1" : "0")
+).trim() !== "0";
 
 function pruneExpiredBuckets(now) {
   if (now - lastPruneAt < PRUNE_INTERVAL_MS) return;
@@ -146,61 +151,90 @@ function runBucketRateLimit({ map, key, now, maxAttempts, windowMs, maxBuckets, 
   return null;
 }
 
+async function runDistributedRateLimit({ scope, key, now, maxAttempts, windowMs, res, errorCode }) {
+  const windowStartMs = Math.floor(now / windowMs) * windowMs;
+  const expiresAtMs = windowStartMs + windowMs;
+  const expiresIso = new Date(expiresAtMs).toISOString();
+  const rows = await query(
+    `INSERT INTO rate_limit_counters (scope, bucket_key, window_start_ms, count, expires_at, updated_at)
+     VALUES ($1, $2, $3, 1, $4::timestamptz, CURRENT_TIMESTAMP)
+     ON CONFLICT (scope, bucket_key, window_start_ms)
+     DO UPDATE SET count = rate_limit_counters.count + 1,
+                   updated_at = CURRENT_TIMESTAMP
+     RETURNING count`,
+    [scope, key, windowStartMs, expiresIso]
+  );
+  const count = Number(rows?.[0]?.count || 0);
+  if (count > maxAttempts) {
+    const retryAfterSec = Math.max(1, Math.ceil((expiresAtMs - now) / 1000));
+    res.set("Retry-After", String(retryAfterSec));
+    return res.status(429).json({ error: errorCode });
+  }
+  return null;
+}
+
+function runLocalRateLimit({ map, key, now, maxAttempts, windowMs, maxBuckets, res, errorCode }) {
+  pruneExpiredBuckets(now);
+  return runBucketRateLimit({ map, key, now, maxAttempts, windowMs, maxBuckets, res, errorCode });
+}
+
+function runRateLimitMiddleware(req, res, next, options) {
+  const { scope, map, key, now, maxAttempts, windowMs, maxBuckets, errorCode } = options;
+  if (!DISTRIBUTED_RATE_LIMIT) {
+    const blocked = runLocalRateLimit({ map, key, now, maxAttempts, windowMs, maxBuckets, res, errorCode });
+    if (blocked) return blocked;
+    return next();
+  }
+  runDistributedRateLimit({ scope, key, now, maxAttempts, windowMs, res, errorCode })
+    .then((blocked) => {
+      if (blocked) return;
+      next();
+    })
+    .catch(() => {
+      const blocked = runLocalRateLimit({ map, key, now, maxAttempts, windowMs, maxBuckets, res, errorCode });
+      if (blocked) return;
+      next();
+    });
+  return undefined;
+}
+
 export function loginRateLimit(req, res, next) {
   const key = keyFromReq(req);
   const now = Date.now();
-  pruneExpiredBuckets(now);
-  const existing = loginBuckets.get(key);
-
-  if (!existing || now > existing.expiresAt) {
-    if (!existing && loginBuckets.size >= MAX_BUCKETS) {
-      return res.status(429).json({ error: "rate_limiter_over_capacity" });
-    }
-    loginBuckets.set(key, { count: 1, expiresAt: now + WINDOW_MS });
-    return next();
-  }
-
-  if (existing.count >= MAX_ATTEMPTS) {
-    const retryAfterSec = Math.max(1, Math.ceil((existing.expiresAt - now) / 1000));
-    res.set("Retry-After", String(retryAfterSec));
-    return res.status(429).json({ error: "too_many_attempts" });
-  }
-
-  existing.count += 1;
-  loginBuckets.set(key, existing);
-  return next();
+  return runRateLimitMiddleware(req, res, next, {
+    scope: "login",
+    map: loginBuckets,
+    key,
+    now,
+    maxAttempts: MAX_ATTEMPTS,
+    windowMs: WINDOW_MS,
+    maxBuckets: MAX_BUCKETS,
+    res,
+    errorCode: "too_many_attempts",
+  });
 }
 
 export function aiRateLimit(req, res, next) {
   const key = aiKeyFromReq(req);
   const now = Date.now();
-  pruneExpiredBuckets(now);
-  const existing = aiBuckets.get(key);
-
-  if (!existing || now > existing.expiresAt) {
-    if (!existing && aiBuckets.size >= AI_MAX_BUCKETS) {
-      return res.status(429).json({ error: "rate_limiter_over_capacity" });
-    }
-    aiBuckets.set(key, { count: 1, expiresAt: now + AI_WINDOW_MS });
-    return next();
-  }
-
-  if (existing.count >= AI_MAX_ATTEMPTS) {
-    const retryAfterSec = Math.max(1, Math.ceil((existing.expiresAt - now) / 1000));
-    res.set("Retry-After", String(retryAfterSec));
-    return res.status(429).json({ error: "too_many_ai_requests" });
-  }
-
-  existing.count += 1;
-  aiBuckets.set(key, existing);
-  return next();
+  return runRateLimitMiddleware(req, res, next, {
+    scope: "ai",
+    map: aiBuckets,
+    key,
+    now,
+    maxAttempts: AI_MAX_ATTEMPTS,
+    windowMs: AI_WINDOW_MS,
+    maxBuckets: AI_MAX_BUCKETS,
+    res,
+    errorCode: "too_many_ai_requests",
+  });
 }
 
 export function invitationLookupRateLimit(req, res, next) {
   const key = invitationLookupKeyFromReq(req);
   const now = Date.now();
-  pruneExpiredBuckets(now);
-  const blocked = runBucketRateLimit({
+  return runRateLimitMiddleware(req, res, next, {
+    scope: "invite_lookup",
     map: invitationLookupBuckets,
     key,
     now,
@@ -210,15 +244,13 @@ export function invitationLookupRateLimit(req, res, next) {
     res,
     errorCode: "too_many_invitation_lookups",
   });
-  if (blocked) return blocked;
-  return next();
 }
 
 export function invitationAcceptRateLimit(req, res, next) {
   const key = invitationAcceptKeyFromReq(req);
   const now = Date.now();
-  pruneExpiredBuckets(now);
-  const blocked = runBucketRateLimit({
+  return runRateLimitMiddleware(req, res, next, {
+    scope: "invite_accept",
     map: invitationAcceptBuckets,
     key,
     now,
@@ -228,15 +260,13 @@ export function invitationAcceptRateLimit(req, res, next) {
     res,
     errorCode: "too_many_invitation_accepts",
   });
-  if (blocked) return blocked;
-  return next();
 }
 
 export function invitationIssueRateLimit(req, res, next) {
   const key = invitationIssueKeyFromReq(req);
   const now = Date.now();
-  pruneExpiredBuckets(now);
-  const blocked = runBucketRateLimit({
+  return runRateLimitMiddleware(req, res, next, {
+    scope: "invite_issue",
     map: invitationIssueBuckets,
     key,
     now,
@@ -246,15 +276,13 @@ export function invitationIssueRateLimit(req, res, next) {
     res,
     errorCode: "too_many_invitation_actions",
   });
-  if (blocked) return blocked;
-  return next();
 }
 
 export function twoFactorRateLimit(req, res, next) {
   const key = twoFactorKeyFromReq(req);
   const now = Date.now();
-  pruneExpiredBuckets(now);
-  const blocked = runBucketRateLimit({
+  return runRateLimitMiddleware(req, res, next, {
+    scope: "two_factor",
     map: twoFactorBuckets,
     key,
     now,
@@ -264,15 +292,13 @@ export function twoFactorRateLimit(req, res, next) {
     res,
     errorCode: "too_many_two_factor_attempts",
   });
-  if (blocked) return blocked;
-  return next();
 }
 
 export function oauthPublicRateLimit(req, res, next) {
   const key = oauthPublicKeyFromReq(req);
   const now = Date.now();
-  pruneExpiredBuckets(now);
-  const blocked = runBucketRateLimit({
+  return runRateLimitMiddleware(req, res, next, {
+    scope: "oauth_public",
     map: oauthPublicBuckets,
     key,
     now,
@@ -282,15 +308,13 @@ export function oauthPublicRateLimit(req, res, next) {
     res,
     errorCode: "too_many_oauth_requests",
   });
-  if (blocked) return blocked;
-  return next();
 }
 
 export function oauthExchangeRateLimit(req, res, next) {
   const key = oauthExchangeKeyFromReq(req);
   const now = Date.now();
-  pruneExpiredBuckets(now);
-  const blocked = runBucketRateLimit({
+  return runRateLimitMiddleware(req, res, next, {
+    scope: "oauth_exchange",
     map: oauthExchangeBuckets,
     key,
     now,
@@ -300,15 +324,13 @@ export function oauthExchangeRateLimit(req, res, next) {
     res,
     errorCode: "too_many_oauth_exchanges",
   });
-  if (blocked) return blocked;
-  return next();
 }
 
 export function uploadRateLimit(req, res, next) {
   const key = uploadKeyFromReq(req);
   const now = Date.now();
-  pruneExpiredBuckets(now);
-  const blocked = runBucketRateLimit({
+  return runRateLimitMiddleware(req, res, next, {
+    scope: "upload",
     map: uploadBuckets,
     key,
     now,
@@ -318,8 +340,6 @@ export function uploadRateLimit(req, res, next) {
     res,
     errorCode: "too_many_upload_attempts",
   });
-  if (blocked) return blocked;
-  return next();
 }
 
 export function __clearLoginRateLimitStateForTests() {

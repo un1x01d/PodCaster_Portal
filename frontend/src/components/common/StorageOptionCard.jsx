@@ -2,6 +2,8 @@ import React from "react";
 
 export default function StorageOptionCard({
   title,
+  logoUrl = "",
+  logoAlt = "",
   summary,
   configured,
   tested,
@@ -29,6 +31,14 @@ export default function StorageOptionCard({
     <div className={`rounded-md border bg-white p-3 space-y-2 ${borderClass}`}>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
+          {logoUrl ? (
+            <img
+              src={logoUrl}
+              alt={logoAlt || `${title} logo`}
+              className="h-4 w-4 rounded-sm object-contain bg-white"
+              loading="lazy"
+            />
+          ) : null}
           <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{title}</div>
           <span className={`text-[10px] font-semibold ${statusClass}`}>{statusText}</span>
           {tested && <span className="text-[10px] font-semibold text-emerald-600">{testText}</span>}

@@ -550,6 +550,35 @@ export async function initDb(targetPool = pool, options = {}) {
     );
   `);
   await db.query(`CREATE INDEX IF NOT EXISTS idx_ai_usage_monthly_period ON ai_usage_monthly(period_month);`);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS rate_limit_counters (
+      scope TEXT NOT NULL,
+      bucket_key TEXT NOT NULL,
+      window_start_ms BIGINT NOT NULL,
+      count INT NOT NULL DEFAULT 0,
+      expires_at TIMESTAMP NOT NULL,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (scope, bucket_key, window_start_ms)
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_rate_limit_counters_expires_at ON rate_limit_counters(expires_at);`);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS sheet_metric_yearly_cache (
+      sheet_id TEXT NOT NULL,
+      tab_name TEXT NOT NULL,
+      date_column TEXT NOT NULL,
+      metric_column TEXT NOT NULL,
+      period_year TEXT NOT NULL,
+      value NUMERIC NOT NULL DEFAULT 0,
+      source_rows INT NOT NULL DEFAULT 0,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (sheet_id, tab_name, date_column, metric_column, period_year)
+    );
+  `);
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_sheet_metric_yearly_cache_lookup
+      ON sheet_metric_yearly_cache(sheet_id, tab_name, date_column, metric_column, period_year);
+  `);
 
   // USER_GROUPS (membership)
   await db.query(`

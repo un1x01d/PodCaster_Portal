@@ -770,7 +770,7 @@ test("email ingest allowlist is normalized and route wiring is public but CSRF-e
   assert.match(userControllerSource, /EMAIL_INGEST_ALLOWLIST_KEY = "email_ingest_allowlist"/);
   assert.match(userControllerSource, /normalizeEmailIngestSenderAllowlist/);
   assert.match(userControllerSource, /resolveScopedGroupForIntegrationSettings\(req\)/);
-  assert.match(emailRoutesSource, /router\.post\(\s*"\/email-ingest\/inbound",\s*uploadRateLimit,\s*upload\.fields\(\[/s);
+  assert.match(emailRoutesSource, /router\.post\(\s*"\/email-ingest\/inbound",\s*uploadRateLimit,\s*verifyIngestSecret,\s*upload\.fields\(\[/s);
   assert.match(csrfSource, /"\/email-ingest\/inbound"/);
   assert.match(dbSource, /idx_report_sources_email_sync_source/);
 });

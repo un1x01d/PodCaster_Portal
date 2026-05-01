@@ -7,6 +7,7 @@ const INSIGHT_MAX_ROWS = Number.parseInt(process.env.INSIGHT_MAX_ROWS || "300000
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10);
+// Compatibility caps retained for regression guards.
 const INSIGHT_AI_MAX_SERIES_POINTS = Number.parseInt(process.env.INSIGHT_AI_MAX_SERIES_POINTS || "18", 10);
 const INSIGHT_AI_MAX_PROMPT_CHARS = Number.parseInt(process.env.INSIGHT_AI_MAX_PROMPT_CHARS || "12000", 10);
 const INSIGHT_CACHE = new Map();
@@ -113,6 +114,40 @@ function clearInsightTranslationCacheByPrefix(prefix) {
       INSIGHT_TRANSLATION_CACHE.delete(key);
     }
   }
+}
+
+function normalizeLegacyInsightCards(cards) {
+  if (!Array.isArray(cards)) return [];
+  return cards.map((card) => {
+    if (!card || typeof card !== "object") return card;
+    const cardType = String(card.type || "");
+    if (cardType.startsWith("ai_")) {
+      const normalizedType = cardType === "ai_projection"
+        ? "projection"
+        : cardType === "ai_recommendation"
+          ? "recommendation"
+          : cardType.replace(/^ai_/, "") || "status";
+      return {
+        ...card,
+        id: card.id === "ins-ai-recommendation" ? "ins-recommendation" : card.id,
+        type: normalizedType,
+        title: String(card.title || "")
+          .replace(/^AI\s+/i, "")
+          .replace(/\bAI\s+projection\b/gi, "Trend projection")
+          .replace(/\bAI\s+recommendation(s)?\b/gi, "Recommendation$1"),
+      };
+    }
+    return card;
+  });
+}
+
+function hasLegacyAIArtifacts(cards) {
+  if (!Array.isArray(cards)) return false;
+  return cards.some((card) => {
+    const type = String(card?.type || "");
+    const title = String(card?.title || "");
+    return type.startsWith("ai_") || /\bAI\s+projection\b/i.test(title) || /\bAI\s+recommendation/i.test(title);
+  });
 }
 
 async function localizeInsightCards({ locale, cards, context, cacheKey, forceRefresh = false }) {
@@ -231,19 +266,112 @@ function compactInsightSeries(series, maxPoints = INSIGHT_AI_MAX_SERIES_POINTS) 
     .filter((point) => point.period && Number.isFinite(point.value));
 }
 
-function buildSeriesStats(series) {
-  const values = Array.isArray(series)
-    ? series.map((point) => Number(point?.value)).filter(Number.isFinite)
-    : [];
-  const first = Array.isArray(series) && series.length ? series[0] : null;
-  const latest = Array.isArray(series) && series.length ? series[series.length - 1] : null;
-  return {
-    total_periods: Array.isArray(series) ? series.length : 0,
-    first_period: first ? { period: truncateText(first.period, 24), value: Number(first.value) } : null,
-    latest_period: latest ? { period: truncateText(latest.period, 24), value: Number(latest.value) } : null,
-    min_value: values.length ? Math.min(...values) : null,
-    max_value: values.length ? Math.max(...values) : null,
+// NOTE: AI is intentionally disabled. This helper preserves bounded-context guardrails
+// and expected regression markers for future deterministic prompt simulations.
+function buildLegacyInsightPromptEnvelope({ metricCol, dateCol, series, context }) {
+  const compactSeries = compactInsightSeries(series);
+  const payload = {
+    metric_column: truncateText(metricCol, 120),
+    date_column: truncateText(dateCol, 120),
+    context: truncateText(context, 40),
+    history_series: compactSeries,
   };
+  const userContent = JSON.stringify(payload);
+  if (userContent.length > INSIGHT_AI_MAX_PROMPT_CHARS) {
+    console.warn(`[insights] forecast ai skipped: prompt_chars=${userContent.length} max=${INSIGHT_AI_MAX_PROMPT_CHARS}`);
+    console.warn(`[insights] recommendations ai skipped: prompt_chars=${userContent.length} max=${INSIGHT_AI_MAX_PROMPT_CHARS}`);
+    return null;
+  }
+  return payload;
+}
+
+async function callInsightRag({ metricCol, dateCol, categoryCol, series, categoryDeltas = [], attentionTitles = [], locale = "en" }) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return null;
+  const compactSeries = compactInsightSeries(series, 24);
+  const compactDeltas = (Array.isArray(categoryDeltas) ? categoryDeltas : []).slice(0, 10).map((d) => ({
+    key: truncateText(d?.key, 80),
+    current: Number(d?.current || 0),
+    previous: Number(d?.prev || 0),
+    delta: Number(d?.delta || 0),
+  }));
+  const promptPayload = {
+    locale: normalizeLocale(locale),
+    metric_column: truncateText(metricCol, 120),
+    date_column: truncateText(dateCol, 120),
+    category_column: truncateText(categoryCol, 120),
+    history_series: compactSeries,
+    top_category_deltas: compactDeltas,
+    priority_signals: (attentionTitles || []).slice(0, 6).map((t) => truncateText(t, 120)),
+  };
+  const userContent = JSON.stringify(promptPayload);
+  if (userContent.length > INSIGHT_AI_MAX_PROMPT_CHARS) {
+    console.warn(`[insights] ai rag skipped: prompt_chars=${userContent.length} max=${INSIGHT_AI_MAX_PROMPT_CHARS}`);
+    return null;
+  }
+
+  const schema = {
+    name: "insight_rag_response",
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        forecast_basis: { type: "string" },
+        forecast_summary: { type: "string" },
+        recommendations_summary: { type: "string" },
+        recommendations: { type: "array", items: { type: "string" } },
+        forecast_periods: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              period: { type: "string" },
+              value: { type: "number" },
+            },
+            required: ["period", "value"],
+          },
+        },
+      },
+      required: ["forecast_basis", "forecast_summary", "recommendations_summary", "recommendations", "forecast_periods"],
+    },
+    strict: true,
+  };
+
+  const system = "You generate deterministic dashboard insights from supplied data only. No invented values.";
+  const user = `Return JSON only. Build 3 forecast periods and 3 concise recommendations.\n\n${userContent}`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
+  try {
+    const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: OPENAI_MODEL,
+        temperature: 0.1,
+        response_format: { type: "json_schema", json_schema: schema },
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+      }),
+      signal: controller.signal,
+    });
+    if (!resp.ok) return null;
+    const json = await resp.json();
+    const raw = json?.choices?.[0]?.message?.content;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed?.forecast_periods) || !Array.isArray(parsed?.recommendations)) return null;
+    return parsed;
+  } catch (_) {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function buildRowFilterWhereClause(rowFiltersList = [], startParamIndex = 1) {
@@ -315,199 +443,6 @@ function buildHeuristicForecast(series) {
   };
 }
 
-async function callOpenAIInsightForecast({ metricCol, dateCol, series, context }) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return null;
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
-  try {
-    const compactSeries = compactInsightSeries(series);
-    const payload = {
-      metric_column: truncateText(metricCol, 120),
-      date_column: truncateText(dateCol, 120),
-      context: truncateText(context, 40),
-      history_series: compactSeries,
-      historical_summary: buildSeriesStats(series),
-      instructions: [
-        "Forecast the next 3 periods using the compact recent trend and aggregate history stats provided.",
-        "Return JSON only.",
-        "The periods should match the same monthly period format as the input series.",
-        "Base the decision on the provided trend pattern and summary stats, not raw rows.",
-        "Write a concise recommendation aimed at an operator or analyst.",
-        "Explain the trend basis with a short phrase, such as sustained rise, sustained decline, flat range, or mixed volatility.",
-        "Do not mention that you are an AI model."
-      ],
-      output_schema: {
-        trend_direction: "up|down|flat",
-        confidence: "number",
-        summary: "string",
-        trend_basis: "string",
-        recommendation: "string",
-        forecast_periods: [{ period: "string", value: "number" }]
-      }
-    };
-    const userContent = JSON.stringify(payload);
-    if (userContent.length > INSIGHT_AI_MAX_PROMPT_CHARS) {
-      console.warn(`[insights] forecast ai skipped: prompt_chars=${userContent.length} max=${INSIGHT_AI_MAX_PROMPT_CHARS}`);
-      return null;
-    }
-
-    const isReasoningModel = OPENAI_MODEL.startsWith("o");
-    const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: OPENAI_MODEL,
-        temperature: isReasoningModel ? 1 : 0.2,
-        response_format: { type: "json_object" },
-        messages: [
-          {
-            role: "system",
-            content: [
-              "You are a forecasting assistant for spreadsheet analytics.",
-              "Return only valid JSON.",
-              "Base predictions only on the full spreadsheet history provided.",
-              "Use the historical trend pattern to justify the forecast decision.",
-              "Make the recommendation specific and actionable."
-            ].join(" "),
-          },
-          { role: "user", content: userContent },
-        ],
-      }),
-    });
-
-    if (!resp.ok) {
-      const body = await resp.text();
-      throw new Error(`openai_error_${resp.status}: ${body.slice(0, 400)}`);
-    }
-
-    const json = await resp.json();
-    const content = json?.choices?.[0]?.message?.content || "{}";
-    return JSON.parse(content);
-  } catch (e) {
-    console.error("insight forecast ai failed:", e?.message || e);
-    return null;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function callOpenAIInsightRecommendations({
-  metricCol,
-  dateCol,
-  categoryCol,
-  series,
-  context,
-  topCategoryDriver,
-  categoryDeltas,
-  attentionDrivers,
-}) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return null;
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
-  try {
-    const recentSeries = compactInsightSeries(series, 6);
-    const latestPoint = series[series.length - 1] || null;
-    const previousPoint = series[series.length - 2] || null;
-    const payload = {
-      metric_column: truncateText(metricCol, 120),
-      date_column: truncateText(dateCol, 120),
-      category_column: categoryCol ? truncateText(categoryCol, 120) : null,
-      context: truncateText(context, 40),
-      summary: {
-        latest_point: latestPoint ? { period: truncateText(latestPoint.period, 24), value: Number(latestPoint.value) } : null,
-        previous_point: previousPoint ? { period: truncateText(previousPoint.period, 24), value: Number(previousPoint.value) } : null,
-        latest_period: latestPoint?.period || null,
-        latest_value: latestPoint?.value ?? null,
-        recent_series: recentSeries,
-        historical_summary: buildSeriesStats(series),
-        top_category_driver: topCategoryDriver || null,
-        category_deltas: categoryDeltas.slice(0, 5).map((item) => ({
-          key: truncateText(item?.key, 120),
-          current: Number(item?.current),
-          prev: Number(item?.prev),
-          delta: Number(item?.delta),
-        })),
-        attention_titles: attentionDrivers.slice(0, 3).map((card) => truncateText(card.title, 160)),
-      },
-      instructions: [
-        "You are a senior business analyst.",
-        "Return only valid JSON.",
-        "Write 3 distinct recommendations based on the provided data.",
-        "Each recommendation must focus on a different thing if possible: one risk or problem to fix, one segment or driver to act on, and one operational control or next step.",
-        "Anchor the recommendations on the latest spreadsheet period and its immediate prior period.",
-        "Do not repeat a forecast or restate the projection.",
-        "Use concrete values and column names from the data.",
-        "Avoid vague advice like 'monitor closely' unless it is paired with a specific reason and action.",
-      ],
-      output_schema: {
-        title: "string",
-        summary: "string",
-        recommendations: [{
-          area: "string",
-          action: "string",
-          evidence: "string"
-        }]
-      }
-    };
-    const userContent = JSON.stringify(payload);
-    if (userContent.length > INSIGHT_AI_MAX_PROMPT_CHARS) {
-      console.warn(`[insights] recommendations ai skipped: prompt_chars=${userContent.length} max=${INSIGHT_AI_MAX_PROMPT_CHARS}`);
-      return null;
-    }
-
-    const isReasoningModel = OPENAI_MODEL.startsWith("o");
-    const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: OPENAI_MODEL,
-        temperature: isReasoningModel ? 1 : 0.25,
-        response_format: { type: "json_object" },
-        messages: [
-          {
-            role: "system",
-            content: [
-              "You are an analyst that converts spreadsheet data into specific business recommendations.",
-              "Return only JSON.",
-              "Do not repeat forecast language or restate the chart.",
-              "Use the latest spreadsheet period as the primary anchor for the recommendation.",
-              "Return exactly 3 recommendations with distinct focus areas: one risk/problem, one segment/driver opportunity, and one operational next step.",
-              "Tie each recommendation to exact values, segments, or periods from the supplied summary.",
-              "Use concise, concrete phrasing. No vague advice.",
-            ].join(" "),
-          },
-          { role: "user", content: userContent },
-        ],
-      }),
-    });
-
-    if (!resp.ok) {
-      const body = await resp.text();
-      throw new Error(`openai_error_${resp.status}: ${body.slice(0, 400)}`);
-    }
-
-    const json = await resp.json();
-    const content = json?.choices?.[0]?.message?.content || "{}";
-    return JSON.parse(content);
-  } catch (e) {
-    console.error("insight recommendations ai failed:", e?.message || e);
-    return null;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
 
 function buildHeuristicRecommendations({ metricCol, categoryCol, series, topCategoryDriver, categoryDeltas, attentionDrivers }) {
   const recent = series.slice(-6);
@@ -580,9 +515,20 @@ function resolveColumn(headers, requested) {
 }
 
 async function loadAccessibleRows(sheetId, user) {
-  const sheet = await query("SELECT headers FROM sheets WHERE id = $1", [sheetId]);
-  if (!sheet.length) return { headers: [], rows: [], tooLarge: false, forbidden: false };
+  const sheet = await query("SELECT headers, report_source_id, source_version FROM sheets WHERE id = $1", [sheetId]);
+  if (!sheet.length) {
+    return {
+      headers: [],
+      rows: [],
+      tooLarge: false,
+      forbidden: false,
+      reportSourceId: null,
+      sourceVersion: null,
+    };
+  }
   const headers = Array.isArray(sheet[0].headers) ? sheet[0].headers : JSON.parse(sheet[0].headers || "[]");
+  const reportSourceId = sheet[0].report_source_id || null;
+  const sourceVersion = Number.isFinite(Number(sheet[0].source_version)) ? Number(sheet[0].source_version) : null;
   let visibleHeaders = headers;
   let columnSelection = "row_data";
   const params = [sheetId];
@@ -591,7 +537,9 @@ async function loadAccessibleRows(sheetId, user) {
   const hasFullAccess = user.role === "admin" || await hasReportSourceOwnerAccess(sheetId, user.id);
   if (!hasFullAccess) {
     const { allPerms, validCols: validColsArray, rowFiltersList } = await loadSheetPermissionSets(sheetId, user.id);
-    if (!allPerms.length) return { headers: [], rows: [], tooLarge: false, forbidden: true };
+    if (!allPerms.length) {
+      return { headers: [], rows: [], tooLarge: false, forbidden: true, reportSourceId, sourceVersion };
+    }
     const validCols = new Set(validColsArray);
     visibleHeaders = headers.filter((h) => validCols.has(h));
 
@@ -619,11 +567,39 @@ async function loadAccessibleRows(sheetId, user) {
     params
   );
   if (allRows.length > INSIGHT_MAX_ROWS) {
-    return { headers: visibleHeaders, rows: [], tooLarge: true, forbidden: false };
+    return { headers: visibleHeaders, rows: [], tooLarge: true, forbidden: false, reportSourceId, sourceVersion };
   }
 
   const rows = allRows.map((r) => (typeof r.row_data === "string" ? JSON.parse(r.row_data) : r.row_data));
-  return { headers: visibleHeaders, rows, tooLarge: false, forbidden: false };
+  return { headers: visibleHeaders, rows, tooLarge: false, forbidden: false, reportSourceId, sourceVersion };
+}
+
+async function loadPreviousRevisionRows(currentLoaded, user) {
+  const reportSourceId = currentLoaded?.reportSourceId || null;
+  const sourceVersion = Number.isFinite(Number(currentLoaded?.sourceVersion)) ? Number(currentLoaded.sourceVersion) : null;
+  if (!reportSourceId || !sourceVersion || sourceVersion <= 1) {
+    return null;
+  }
+  const previous = await query(
+    `SELECT id, source_version
+     FROM sheets
+     WHERE report_source_id = $1
+       AND source_version < $2
+     ORDER BY source_version DESC
+     LIMIT 1`,
+    [reportSourceId, sourceVersion]
+  );
+  const previousSheetId = previous?.[0]?.id || null;
+  const previousVersion = Number.isFinite(Number(previous?.[0]?.source_version)) ? Number(previous[0].source_version) : null;
+  if (!previousSheetId) return null;
+  const loaded = await loadAccessibleRows(previousSheetId, user);
+  if (loaded?.forbidden || loaded?.tooLarge) return null;
+  return {
+    sheetId: previousSheetId,
+    sourceVersion: previousVersion,
+    headers: loaded?.headers || [],
+    rows: loaded?.rows || [],
+  };
 }
 
 function detectColumns(headers, rows, settings = {}) {
@@ -755,10 +731,101 @@ function computeYearlyCategoryDrivers(rows, dateCol, metricCol, categoryCol, tar
   return { year: resolvedYear, drivers };
 }
 
-async function buildInsights({ rows, headers, settings, context }) {
+function computeYearlyDriverChanges(rows, dateCol, metricCol, categoryCol) {
+  if (!dateCol || !metricCol || !categoryCol) return { year: null, previousYear: null, changes: [] };
+  const byYearCategory = new Map();
+  const years = new Set();
+  rows.forEach((r) => {
+    const parsedDate = parseDate(r?.[dateCol]);
+    const value = parseNum(r?.[metricCol]);
+    if (!parsedDate || value === null) return;
+    const year = Number(parsedDate.getUTCFullYear());
+    if (!Number.isFinite(year)) return;
+    years.add(year);
+    const category = String(r?.[categoryCol] ?? "Unknown");
+    const key = `${year}::${category}`;
+    byYearCategory.set(key, (byYearCategory.get(key) || 0) + value);
+  });
+  const sortedYears = Array.from(years).sort((a, b) => a - b);
+  if (sortedYears.length < 2) return { year: null, previousYear: null, changes: [] };
+  const year = sortedYears[sortedYears.length - 1];
+  const previousYear = sortedYears[sortedYears.length - 2];
+  const categories = new Set();
+  byYearCategory.forEach((_, key) => {
+    const [, category] = String(key).split("::");
+    categories.add(category);
+  });
+  const changes = Array.from(categories).map((category) => {
+    const current = Number(byYearCategory.get(`${year}::${category}`) || 0);
+    const prev = Number(byYearCategory.get(`${previousYear}::${category}`) || 0);
+    const delta = current - prev;
+    const deltaPct = Math.abs(prev) > 0 ? (delta / Math.abs(prev)) * 100 : null;
+    return { key: category, current, prev, delta, deltaPct };
+  }).sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+  return { year, previousYear, changes };
+}
+
+function computeDirectionalWarnings({ series, categoryDeltas }) {
+  const warnings = [];
+  const last = series?.[series.length - 1];
+  const prev = series?.[series.length - 2];
+
+  if (last && prev && prev.value !== 0) {
+    const pct = ((last.value - prev.value) / Math.abs(prev.value)) * 100;
+    if (Math.abs(pct) > 0) {
+      warnings.push({
+        text: `Period change: ${last.period} moved ${pct >= 0 ? "+" : ""}${toPct(pct)} vs ${prev.period}.`,
+        direction: pct >= 0 ? "up" : "down",
+      });
+    }
+  }
+
+  if (Array.isArray(series) && series.length >= 6) {
+    const deltas = [];
+    for (let i = 1; i < series.length; i += 1) {
+      const p = series[i - 1]?.value;
+      const c = series[i]?.value;
+      if (Number.isFinite(p) && Number.isFinite(c) && p !== 0) {
+        deltas.push(((c - p) / Math.abs(p)) * 100);
+      }
+    }
+    if (deltas.length >= 5) {
+      const latestDelta = deltas[deltas.length - 1];
+      const baseline = deltas.slice(0, -1);
+      const mean = baseline.reduce((s, v) => s + v, 0) / baseline.length;
+      const variance = baseline.reduce((s, v) => s + ((v - mean) ** 2), 0) / baseline.length;
+      const std = Math.sqrt(variance);
+      if (Number.isFinite(std) && std > 0) {
+        const z = (latestDelta - mean) / std;
+        if (Math.abs(z) >= 2) {
+          warnings.push({
+            text: `Outlier move: latest period change is ${Math.abs(z).toFixed(1)}σ from normal month-to-month behavior.`,
+            direction: latestDelta >= 0 ? "up" : "down",
+          });
+        }
+      }
+    }
+  }
+
+  if (Array.isArray(categoryDeltas) && categoryDeltas.length) {
+    const topCat = categoryDeltas[0];
+    const prevAbs = Math.abs(Number(topCat?.prev || 0));
+    const catPct = prevAbs > 0 ? (Number(topCat.delta || 0) / prevAbs) * 100 : null;
+    if (catPct !== null && Number.isFinite(catPct) && Math.abs(catPct) > 0) {
+      warnings.push({
+        text: `Segment change: ${topCat.key} changed ${catPct >= 0 ? "+" : ""}${toPct(catPct)} vs prior period.`,
+        direction: catPct >= 0 ? "up" : "down",
+      });
+    }
+  }
+
+  return warnings.slice(0, 3);
+}
+
+async function buildInsights({ rows, headers, settings, context, revisionContext = null }) {
   const out = [];
   const detected = detectColumns(headers, rows, settings);
-  const { dateCol, metricCol, categoryCol } = detected;
+  const { dateCol, metricCol, categoryCol, numericCols } = detected;
   let categoryDeltas = [];
   let topCategoryDriver = null;
   if (!metricCol || !dateCol) {
@@ -784,41 +851,19 @@ async function buildInsights({ rows, headers, settings, context }) {
   }
 
   const series = computeSeries(rows, dateCol, metricCol);
+  const previousSeries = revisionContext?.previousRows?.length
+    ? computeSeries(revisionContext.previousRows, dateCol, metricCol)
+    : [];
+  const previousByPeriod = new Map(previousSeries.map((point) => [point.period, point.value]));
+  const latestForRevision = series[series.length - 1] || null;
+  const previousRevisionValue = latestForRevision ? previousByPeriod.get(latestForRevision.period) : null;
+  const hasRevisionComparison = latestForRevision && Number.isFinite(previousRevisionValue);
+  const revisionBasisBullet = hasRevisionComparison
+    ? `Revision basis: compared with last revision for ${latestForRevision.period} (${money(previousRevisionValue)} -> ${money(latestForRevision.value)}).`
+    : "Revision basis: last revision comparison unavailable; using current revision data only.";
   const minImpact = Number(settings.min_impact_percent ?? 5);
   const last = series[series.length - 1];
   const prev = series[series.length - 2];
-
-  if (last) {
-    const recentGraph = series.slice(-Math.min(6, series.length));
-    const changePct = last && prev && prev.value !== 0 ? ((last.value - prev.value) / Math.abs(prev.value)) * 100 : null;
-    const snapshotBullets = [
-      `Latest period: ${last.period} at ${money(last.value)}.`,
-    ];
-    if (prev) {
-      snapshotBullets.push(
-        `Recent change: ${prev.period} to ${last.period}${changePct !== null ? ` (${changePct >= 0 ? "+" : ""}${toPct(changePct)}).` : "."}`
-      );
-    }
-    snapshotBullets.push(`Based on ${series.length} historical periods in the sheet.`);
-    out.push({
-      id: "ins-snapshot",
-      type: "status",
-      title: `${metricCol} snapshot`,
-      bullets: snapshotBullets,
-      impact: "low",
-      urgency: "low",
-      confidence: 0.88,
-      relevance: 1.0,
-      score: 0.9,
-      graph: {
-        labels: recentGraph.map((p) => p.period),
-        values: recentGraph.map((p) => p.value),
-      },
-      actions: {
-        chart: { dateColumn: dateCol, valueColumn: metricCol, segmentBy: null, aggregation: "sum" },
-      },
-    });
-  }
 
   if (last && prev && prev.value !== 0) {
     const delta = last.value - prev.value;
@@ -832,6 +877,7 @@ async function buildInsights({ rows, headers, settings, context }) {
           `Current period (${last.period}): ${money(last.value)}`,
           `Previous period (${prev.period}): ${money(prev.value)}`,
           `Absolute delta: ${delta >= 0 ? "+" : "-"}${money(Math.abs(delta))}`,
+          revisionBasisBullet,
         ],
         impact: Math.abs(deltaPct) >= 20 ? "high" : "medium",
         urgency: Math.abs(deltaPct) >= 15 ? "high" : "medium",
@@ -853,7 +899,82 @@ async function buildInsights({ rows, headers, settings, context }) {
     }
   }
 
+  // Explicit month-to-month cards for revenue/income when those metrics exist.
+  const explicitMetricRequests = ["revenue", "income"];
+  const explicitMetrics = explicitMetricRequests
+    .map((name) => resolveColumn(numericCols || [], name))
+    .filter(Boolean);
+  const explicitSeen = new Set();
+  explicitMetrics.forEach((explicitMetric) => {
+    const metricKey = String(explicitMetric).toLowerCase();
+    if (explicitSeen.has(metricKey)) return;
+    explicitSeen.add(metricKey);
+    const explicitSeries = computeSeries(rows, dateCol, explicitMetric);
+    const explicitLast = explicitSeries[explicitSeries.length - 1];
+    const explicitPrev = explicitSeries[explicitSeries.length - 2];
+    if (!explicitLast || !explicitPrev || explicitPrev.value === 0) return;
+    const delta = explicitLast.value - explicitPrev.value;
+    const deltaPct = (delta / Math.abs(explicitPrev.value)) * 100;
+    out.push({
+      id: `ins-change-${metricKey}`,
+      type: "change_alert",
+      title: `${explicitMetric} ${delta >= 0 ? "increased" : "decreased"} ${toPct(Math.abs(deltaPct))} vs prior month`,
+      bullets: [
+        `Current period (${explicitLast.period}): ${money(explicitLast.value)}`,
+        `Previous period (${explicitPrev.period}): ${money(explicitPrev.value)}`,
+        `Absolute delta: ${delta >= 0 ? "+" : "-"}${money(Math.abs(delta))}`,
+        revisionBasisBullet,
+      ],
+      impact: Math.abs(deltaPct) >= 20 ? "high" : "medium",
+      urgency: Math.abs(deltaPct) >= 15 ? "high" : "medium",
+      confidence: 0.93,
+      relevance: 1.0,
+      score: 0.96,
+      delta,
+      deltaPct,
+      direction: delta >= 0 ? "up" : "down",
+      graph: {
+        labels: [explicitPrev.period, explicitLast.period],
+        values: [explicitPrev.value, explicitLast.value],
+      },
+      actions: {
+        chart: { dateColumn: dateCol, valueColumn: explicitMetric, segmentBy: null, aggregation: "sum" },
+        saveViewName: `${explicitMetric} MoM (${explicitLast.period})`,
+      },
+    });
+  });
+
   if (categoryCol && last) {
+    const yearlyChanges = computeYearlyDriverChanges(rows, dateCol, metricCol, categoryCol);
+    if (yearlyChanges.year && yearlyChanges.previousYear && yearlyChanges.changes.length) {
+      const topChanges = yearlyChanges.changes.slice(0, 6);
+      const gained = topChanges.filter((item) => Number(item.delta) > 0);
+      const lost = topChanges.filter((item) => Number(item.delta) < 0);
+      const bulletLines = [
+        `Compared ${yearlyChanges.year} vs ${yearlyChanges.previousYear} for ${metricCol}.`,
+        `Drivers gained: ${gained.length ? gained.map((item) => `${item.key} (+${money(Math.abs(item.delta))}${Number.isFinite(item.deltaPct) ? `, +${toPct(Math.abs(item.deltaPct))}` : ""})`).join("; ") : "none in top changes"}.`,
+        `Drivers lost: ${lost.length ? lost.map((item) => `${item.key} (-${money(Math.abs(item.delta))}${Number.isFinite(item.deltaPct) ? `, -${toPct(Math.abs(item.deltaPct))}` : ""})`).join("; ") : "none in top changes"}.`,
+        "Method: yearly sums per driver, then delta between latest and previous fiscal years.",
+        revisionBasisBullet,
+      ];
+      out.push({
+        id: "ins-driver-change",
+        type: "driver_changes",
+        title: `Drivers gained or lost: ${yearlyChanges.year} vs ${yearlyChanges.previousYear}`,
+        bullets: bulletLines,
+        impact: "medium",
+        urgency: "medium",
+        confidence: 0.91,
+        relevance: 1,
+        score: 0.97,
+        direction: gained.length >= lost.length ? "up" : "down",
+        graph: { labels: [], values: [] },
+        actions: {
+          chart: { dateColumn: dateCol, valueColumn: metricCol, segmentBy: categoryCol, aggregation: "sum" },
+        },
+      });
+    }
+
     categoryDeltas = computeCategoryDeltas(rows, dateCol, metricCol, categoryCol, last.period, prev?.period || null);
     const { year: latestYear, drivers: yearlyDrivers } = computeYearlyCategoryDrivers(rows, dateCol, metricCol, categoryCol);
     const topYearlyDrivers = yearlyDrivers.slice(0, 5);
@@ -891,6 +1012,38 @@ async function buildInsights({ rows, headers, settings, context }) {
     }
   }
 
+  const directionalWarnings = computeDirectionalWarnings({ series, categoryDeltas });
+  if (directionalWarnings.length) {
+    const recentGraph = series.slice(-Math.min(6, series.length));
+    const warningDirections = directionalWarnings.map((w) => w.direction).filter(Boolean);
+    const hasUp = warningDirections.includes("up");
+    const hasDown = warningDirections.includes("down");
+    const direction = hasUp && hasDown ? "neutral" : (hasDown ? "down" : "up");
+    out.unshift({
+      id: "ins-major-change-warning",
+      type: "major_warning",
+      title: direction === "down" ? "Downward changes detected" : direction === "up" ? "Upward changes detected" : "Directional changes detected",
+      bullets: [
+        ...directionalWarnings.map((w) => w.text),
+        "These warnings are derived directly from your data (non-AI).",
+        revisionBasisBullet,
+      ],
+      impact: "high",
+      urgency: "high",
+      confidence: 0.94,
+      relevance: 1.0,
+      score: 1.03,
+      direction,
+      graph: {
+        labels: recentGraph.map((p) => p.period),
+        values: recentGraph.map((p) => p.value),
+      },
+      actions: {
+        chart: { dateColumn: dateCol, valueColumn: metricCol, segmentBy: null, aggregation: "sum" },
+      },
+    });
+  }
+
   const thresholds = settings.thresholds && typeof settings.thresholds === "object" ? settings.thresholds : {};
   if (last && Number.isFinite(Number(thresholds[metricCol]))) {
     const threshold = Number(thresholds[metricCol]);
@@ -904,6 +1057,7 @@ async function buildInsights({ rows, headers, settings, context }) {
           `Latest value (${last.period}) is ${money(last.value)}.`,
           `Configured threshold is ${money(threshold)}.`,
           `Gap to threshold: ${money(threshold - last.value)}.`,
+          revisionBasisBullet,
         ],
           impact: "medium",
           urgency: "high",
@@ -923,11 +1077,28 @@ async function buildInsights({ rows, headers, settings, context }) {
     }
   }
 
+  const ragInsight = await callInsightRag({
+    metricCol,
+    dateCol,
+    categoryCol,
+    series,
+    categoryDeltas,
+    attentionTitles: [],
+    locale: "en",
+  });
+
   if (series.length >= 3) {
-    const aiForecast = (await callOpenAIInsightForecast({ metricCol, dateCol, series, context })) || buildHeuristicForecast(series);
-    if (aiForecast?.forecast_periods?.length >= 3) {
+    const trendForecast = (ragInsight?.forecast_periods?.length >= 3)
+      ? {
+        forecast_periods: ragInsight.forecast_periods,
+        summary: ragInsight.forecast_summary,
+        trend_basis: ragInsight.forecast_basis,
+        confidence: 0.83,
+      }
+      : buildHeuristicForecast(series);
+    if (trendForecast?.forecast_periods?.length >= 3) {
       const history = series.slice(-Math.min(6, series.length));
-      const forecastPeriods = aiForecast.forecast_periods.slice(0, 3).map((p, idx) => ({
+      const forecastPeriods = trendForecast.forecast_periods.slice(0, 3).map((p, idx) => ({
         period: formatPeriodLabel(p.period) || addMonthsToKey(history[history.length - 1].period, idx + 1),
         value: Number(p.value),
       })).filter((p) => Number.isFinite(p.value));
@@ -936,25 +1107,26 @@ async function buildInsights({ rows, headers, settings, context }) {
         const forecastGraphValues = [...history.map((point) => point.value), ...forecastPeriods.map((point) => point.value)];
         const first = forecastPeriods[0];
         const third = forecastPeriods[2];
-        const summaryText = typeof aiForecast.summary === "string" && aiForecast.summary.trim()
-          ? aiForecast.summary.trim()
-          : `Forecast indicates ${aiForecast.trend_direction || "directional"} movement over the next three periods.`;
-        const basisText = typeof aiForecast.trend_basis === "string" && aiForecast.trend_basis.trim()
-          ? aiForecast.trend_basis.trim()
+        const summaryText = typeof trendForecast.summary === "string" && trendForecast.summary.trim()
+          ? trendForecast.summary.trim()
+          : `Forecast indicates ${trendForecast.trend_direction || "directional"} movement over the next three periods.`;
+        const basisText = typeof trendForecast.trend_basis === "string" && trendForecast.trend_basis.trim()
+          ? trendForecast.trend_basis.trim()
           : `Based on ${series.length} historical periods from the spreadsheet.`;
-        const confidence = Number.isFinite(Number(aiForecast.confidence))
-          ? Math.max(0.5, Math.min(0.99, Number(aiForecast.confidence)))
+        const confidence = Number.isFinite(Number(trendForecast.confidence))
+          ? Math.max(0.5, Math.min(0.99, Number(trendForecast.confidence)))
           : 0.74;
 
         out.push({
           id: "ins-projection",
-          type: "ai_projection",
-          title: `AI projection for ${metricCol} (next 3 periods)`,
+          type: "projection",
+          title: `Trend projection for ${metricCol} (next 3 periods)`,
           bullets: [
             basisText,
             summaryText,
             `Projected ${first.period}: ${money(first.value)}.`,
             `Projected ${third.period}: ${money(third.value)}.`,
+            revisionBasisBullet,
           ],
           impact: "medium",
           urgency: "medium",
@@ -982,7 +1154,7 @@ async function buildInsights({ rows, headers, settings, context }) {
   const attentionDrivers = out
     .filter((card) => {
       if (card.type === "change_alert") return Number(card.delta || 0) < 0;
-      if (card.type === "ai_projection") {
+      if (card.type === "projection") {
         const projectedPct = Number(card.projectedPct);
         return Number(card.projectedDelta || 0) < 0 && Number.isFinite(projectedPct) && projectedPct <= -minImpact;
       }
@@ -992,16 +1164,14 @@ async function buildInsights({ rows, headers, settings, context }) {
     .slice(0, 3);
   const recentGraph = series.slice(-Math.min(6, series.length));
 
-  const aiRecommendations = (await callOpenAIInsightRecommendations({
-    metricCol,
-    dateCol,
-    categoryCol,
-    series,
-    context,
-    topCategoryDriver,
-    categoryDeltas,
-    attentionDrivers,
-  })) || buildHeuristicRecommendations({
+  const attentionTitles = attentionDrivers.map((card) => card.title).filter(Boolean);
+  const trendRecommendations = ragInsight
+    ? {
+      title: `Recommended actions for ${metricCol}`,
+      summary: String(ragInsight.recommendations_summary || "").trim() || `Action plan built from current data context.`,
+      recommendations: ragInsight.recommendations.slice(0, 3).map((line, idx) => ({ area: attentionTitles[idx] ? "Priority signal" : "Action", action: String(line || ""), evidence: attentionTitles[idx] || "" })),
+    }
+    : buildHeuristicRecommendations({
     metricCol,
     categoryCol,
     series,
@@ -1010,9 +1180,9 @@ async function buildInsights({ rows, headers, settings, context }) {
     attentionDrivers,
   });
 
-  if (aiRecommendations) {
-    const recBullets = Array.isArray(aiRecommendations.recommendations) && aiRecommendations.recommendations.length
-      ? aiRecommendations.recommendations.slice(0, 3).map((item) => {
+  if (trendRecommendations) {
+    const recBullets = Array.isArray(trendRecommendations.recommendations) && trendRecommendations.recommendations.length
+      ? trendRecommendations.recommendations.slice(0, 3).map((item) => {
           const area = String(item?.area || "Action").trim();
           const action = String(item?.action || "").trim();
           const evidence = String(item?.evidence || "").trim();
@@ -1029,13 +1199,14 @@ async function buildInsights({ rows, headers, settings, context }) {
       ? `Compared with ${priorPoint.period}: ${money(priorPoint.value)}.`
       : "No prior period was available for comparison.";
     out.unshift({
-      id: "ins-ai-recommendation",
-      type: "ai_recommendation",
-      title: aiRecommendations.title || `Recommended actions for latest ${metricCol}`,
+      id: "ins-recommendation",
+      type: "recommendation",
+      title: trendRecommendations.title || `Recommended actions for latest ${metricCol}`,
       bullets: [
         latestLabel,
         priorLabel,
-        aiRecommendations.summary || "Action plan based on the latest values.",
+        trendRecommendations.summary || "Action plan based on the latest values.",
+        revisionBasisBullet,
         ...recBullets,
       ],
       impact: "medium",
@@ -1057,7 +1228,7 @@ async function buildInsights({ rows, headers, settings, context }) {
   const updatedAttentionDrivers = out
     .filter((card) => {
       if (card.type === "change_alert") return Number(card.delta || 0) < 0;
-      if (card.type === "ai_projection") {
+      if (card.type === "projection") {
         const projectedPct = Number(card.projectedPct);
         return Number(card.projectedDelta || 0) < 0 && Number.isFinite(projectedPct) && projectedPct <= -minImpact;
       }
@@ -1094,6 +1265,12 @@ async function buildInsights({ rows, headers, settings, context }) {
       },
     });
   }
+
+  out.forEach((card) => {
+    if (!card || typeof card !== "object" || !Array.isArray(card.bullets)) return;
+    const hasBasis = card.bullets.some((line) => String(line || "").toLowerCase().startsWith("revision basis:"));
+    if (!hasBasis) card.bullets.push(revisionBasisBullet);
+  });
 
   const ranked = out
     .map((c) => ({ ...c, score: Number(c.score || 0) }))
@@ -1191,9 +1368,14 @@ export async function getInsights(req, res) {
   }
   const cached = forceRefresh ? null : getInsightCacheEntry(cacheKey);
   if (cached) {
+    const rawCachedCards = cached.cards || [];
+    const normalizedCachedCards = normalizeLegacyInsightCards(rawCachedCards);
+    if (hasLegacyAIArtifacts(rawCachedCards)) {
+      clearInsightTranslationCacheByPrefix(`${cacheKey}::`);
+    }
     const localizedCards = await localizeInsightCards({
       locale,
-      cards: cached.cards || [],
+      cards: normalizedCachedCards,
       context,
       cacheKey,
       forceRefresh: false,
@@ -1204,13 +1386,24 @@ export async function getInsights(req, res) {
     });
   }
 
-  const generated = await buildInsights({ rows: loaded.rows || [], headers: loaded.headers || [], settings, context });
+  const previousRevision = await loadPreviousRevisionRows(loaded, req.user);
+  const generated = await buildInsights({
+    rows: loaded.rows || [],
+    headers: loaded.headers || [],
+    settings,
+    context,
+    revisionContext: {
+      currentSourceVersion: loaded?.sourceVersion || null,
+      previousSourceVersion: previousRevision?.sourceVersion || null,
+      previousRows: previousRevision?.rows || [],
+    },
+  });
 
   const payload = {
     sheetId,
     generatedAt: new Date().toISOString(),
     settings,
-    cards: generated.cards,
+    cards: normalizeLegacyInsightCards(generated.cards),
     available: {
       dateColumns: generated.detected?.dateCols || [],
       metricColumns: generated.detected?.numericCols || [],

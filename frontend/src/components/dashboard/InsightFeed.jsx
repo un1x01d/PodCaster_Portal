@@ -2,7 +2,7 @@ import React from "react";
 import api from "../../api";
 import { DASHBOARD_COPY_EN, formatTemplate } from "../../hooks/useDashboardI18n";
 
-function Sparkline({ graph, cardType, locale, copy }) {
+function Sparkline({ graph, cardType, locale, copy, direction = null }) {
   const [hoveredIndex, setHoveredIndex] = React.useState(null);
   const [tooltipPos, setTooltipPos] = React.useState(null);
   const containerRef = React.useRef(null);
@@ -93,16 +93,19 @@ function Sparkline({ graph, cardType, locale, copy }) {
     driver_breakdown: { line: "#059669", forecast: "#10b981" },
     anomaly: { line: "#d97706", forecast: "#f59e0b" },
     threshold_breach: { line: "#dc2626", forecast: "#ef4444" },
-    ai_robust_average: { line: "#7c3aed", forecast: "#8b5cf6" },
-    ai_projection: { line: "#0f766e", forecast: "#14b8a6" },
-    ai_sensitivity_window: { line: "#475569", forecast: "#64748b" },
+    projection: { line: "#0f766e", forecast: "#14b8a6" },
     recommendation: { line: "#c2410c", forecast: "#f97316" },
-    ai_recommendation: { line: "#0f766e", forecast: "#14b8a6" },
     attention: { line: "#b91c1c", forecast: "#ef4444" },
     status: { line: "#1d4ed8", forecast: "#2563eb" },
     default: { line: "#1d4ed8", forecast: "#2563eb" },
   };
-  const colors = palette[cardType] || palette.default;
+  const colors = (cardType === "major_warning" || cardType === "change_alert" || cardType === "attention")
+    ? (direction === "down"
+      ? { line: "#dc2626", forecast: "#ef4444" }
+      : direction === "up"
+        ? { line: "#059669", forecast: "#10b981" }
+        : { line: "#d97706", forecast: "#f59e0b" })
+    : (palette[cardType] || palette.default);
   const yTicks = [
     { value: max, y: yFor(max) },
     { value: mid, y: yFor(mid) },
@@ -255,6 +258,77 @@ export default function InsightFeed({
   const [showSettings, setShowSettings] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const autoChartKeyRef = React.useRef("");
+  const renderDriverChangesBullet = React.useCallback((text, key) => {
+    const line = String(text || "");
+    const isDriverLine = line.startsWith("Drivers gained: ") || line.startsWith("Drivers lost: ");
+    if (!isDriverLine) return <li key={key}>{line}</li>;
+    const [prefix, restRaw] = line.split(": ");
+    const rest = String(restRaw || "");
+    if (!rest || rest.toLowerCase().includes("none in top changes")) {
+      return <li key={key}>{line}</li>;
+    }
+    const parts = rest.split("; ").filter(Boolean);
+    return (
+      <li key={key}>
+        {prefix}:{" "}
+        {parts.map((part, idx) => {
+          const markerIdx = part.indexOf(" (");
+          if (markerIdx <= 0) return <React.Fragment key={`${key}-p-${idx}`}>{idx > 0 ? "; " : ""}{part}</React.Fragment>;
+          const driver = part.slice(0, markerIdx);
+          const details = part.slice(markerIdx);
+          return (
+            <React.Fragment key={`${key}-p-${idx}`}>
+              {idx > 0 ? "; " : ""}
+              <strong>{driver}</strong>
+              {details}
+            </React.Fragment>
+          );
+        })}
+        .
+      </li>
+    );
+  }, []);
+  const renderEmphasizedBullet = React.useCallback((text, key) => {
+    const line = String(text || "");
+    if (!line.includes(" (")) return <li key={key}>{line}</li>;
+
+    const [prefix, restRaw] = line.includes(": ") ? line.split(": ") : ["", line];
+    const rest = String(restRaw || "");
+    const parts = rest.split("; ").filter(Boolean);
+    if (!parts.length) return <li key={key}>{line}</li>;
+
+    return (
+      <li key={key}>
+        {prefix ? `${prefix}: ` : ""}
+        {parts.map((part, idx) => {
+          const markerIdx = part.indexOf(" (");
+          if (markerIdx <= 0) return <React.Fragment key={`${key}-g-${idx}`}>{idx > 0 ? "; " : ""}{part}</React.Fragment>;
+          const entity = part.slice(0, markerIdx);
+          const details = part.slice(markerIdx);
+          return (
+            <React.Fragment key={`${key}-g-${idx}`}>
+              {idx > 0 ? "; " : ""}
+              <strong>{entity}</strong>
+              {details}
+            </React.Fragment>
+          );
+        })}
+      </li>
+    );
+  }, []);
+  const resolveCardDirectionTone = React.useCallback((card) => {
+    const deltaPct = Number(card?.deltaPct);
+    if (Number.isFinite(deltaPct) && deltaPct !== 0) return deltaPct > 0 ? "up" : "down";
+    const delta = Number(card?.delta);
+    if (Number.isFinite(delta) && delta !== 0) return delta > 0 ? "up" : "down";
+    const projectedPct = Number(card?.projectedPct);
+    if (Number.isFinite(projectedPct) && projectedPct !== 0) return projectedPct > 0 ? "up" : "down";
+    const projectedDelta = Number(card?.projectedDelta);
+    if (Number.isFinite(projectedDelta) && projectedDelta !== 0) return projectedDelta > 0 ? "up" : "down";
+    if (card?.direction === "down") return "down";
+    if (card?.direction === "up") return "up";
+    return "neutral";
+  }, []);
 
   const getInsightErrorMessage = React.useCallback((requestError) => {
     const errorCode = requestError?.response?.data?.error;
@@ -293,8 +367,45 @@ export default function InsightFeed({
 
   const displayCards = React.useMemo(() => {
     if (!Array.isArray(cards) || cards.length === 0) return [];
-    return cards.filter((card) => !String(card?.type || "").startsWith("ai_"));
-  }, [cards]);
+    const seen = new Set();
+    const uniqueCards = cards.filter((card) => {
+      const signature = JSON.stringify({
+        type: String(card?.type || ""),
+        title: String(card?.title || ""),
+        bullets: Array.isArray(card?.bullets) ? card.bullets.map((b) => String(b || "")) : [],
+        graph: {
+          labels: Array.isArray(card?.graph?.labels) ? card.graph.labels : [],
+          values: Array.isArray(card?.graph?.values) ? card.graph.values : [],
+          forecastStartIndex: Number.isInteger(card?.graph?.forecastStartIndex) ? card.graph.forecastStartIndex : null,
+        },
+        delta: Number.isFinite(Number(card?.delta)) ? Number(card.delta) : null,
+        deltaPct: Number.isFinite(Number(card?.deltaPct)) ? Number(card.deltaPct) : null,
+        projectedDelta: Number.isFinite(Number(card?.projectedDelta)) ? Number(card.projectedDelta) : null,
+        projectedPct: Number.isFinite(Number(card?.projectedPct)) ? Number(card.projectedPct) : null,
+        direction: String(card?.direction || ""),
+      });
+      if (seen.has(signature)) return false;
+      seen.add(signature);
+      return true;
+    });
+
+    const decorated = uniqueCards.map((card, index) => ({
+      card,
+      index,
+      tone: resolveCardDirectionTone(card),
+    }));
+    const hasDown = decorated.some((entry) => entry.tone === "down");
+    const priority = hasDown
+      ? { down: 0, up: 1, neutral: 2 }
+      : { up: 0, neutral: 1, down: 2 };
+    decorated.sort((a, b) => {
+      const pa = priority[a.tone] ?? 3;
+      const pb = priority[b.tone] ?? 3;
+      if (pa !== pb) return pa - pb;
+      return a.index - b.index;
+    });
+    return decorated.map((entry) => entry.card);
+  }, [cards, resolveCardDirectionTone]);
 
   React.useEffect(() => {
     if (!sheetId || !Array.isArray(displayCards) || displayCards.length === 0) return;
@@ -363,18 +474,6 @@ export default function InsightFeed({
       {showSettings && user?.role === "admin" && settings && (
         <div className="px-4 py-3 border-b border-slate-200 bg-slate-50/60">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <label className="text-xs text-slate-700 font-semibold">
-              {ui.sensitivity} ({Number(settings.sensitivity || 1).toFixed(1)})
-              <input
-                type="range"
-                min="0.5"
-                max="2.5"
-                step="0.1"
-                value={settings.sensitivity ?? 1}
-                onChange={(e) => updateSetting("sensitivity", Number(e.target.value))}
-                className="w-full mt-1"
-              />
-            </label>
             <label className="text-xs text-slate-700 font-semibold">
               {ui.minImpactPercent}
               <input
@@ -450,57 +549,60 @@ export default function InsightFeed({
         {!loading && !error && displayCards.length > 0 && (
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-[repeat(auto-fit,minmax(280px,1fr))]">
             {displayCards.map((card) => {
-              const isAIRecommendation = card.type === "ai_recommendation";
+              const isMajorWarning = card.type === "major_warning";
+              const isDirectional = ["major_warning", "change_alert", "attention"].includes(card.type);
+              const hideChart = card.type === "driver_changes";
+              const computedDirectionalTone = resolveCardDirectionTone(card);
+              const directionalTone = isDirectional ? computedDirectionalTone : null;
               return (
                 <article
                   key={card.id}
-                  className={`flex h-[360px] w-full flex-col overflow-hidden rounded-md border p-3 whitespace-normal ${
-                    card.type === "ai_recommendation"
-                      ? "border-teal-300 bg-teal-50/80 shadow-sm ring-1 ring-teal-100"
+                  className={`flex ${hideChart ? "min-h-[220px]" : "h-[360px]"} w-full flex-col overflow-hidden rounded-md border p-3 whitespace-normal ${
+                    isDirectional
+                      ? (directionalTone === "down"
+                        ? "border-rose-300 bg-rose-50/70 shadow-sm ring-1 ring-rose-100"
+                        : directionalTone === "up"
+                          ? "border-emerald-300 bg-emerald-50/70 shadow-sm ring-1 ring-emerald-100"
+                          : "border-amber-300 bg-amber-50/70 shadow-sm ring-1 ring-amber-100")
                       : card.type === "recommendation"
                         ? "border-orange-300 bg-orange-50/60"
-                        : card.type === "attention"
-                          ? "border-rose-300 bg-rose-50/70"
-                          : "border-slate-200 bg-white"
+                        : "border-slate-200 bg-white"
                   }`}
                 >
                   <div className="flex flex-none flex-wrap items-center justify-between gap-2">
                     <h4 className="text-sm font-semibold text-slate-900">{card.title}</h4>
-                    {(card.type === "recommendation" || card.type === "ai_recommendation" || card.type === "attention") && (
+                    {(card.type === "recommendation" || card.type === "attention" || isMajorWarning || card.type === "change_alert") && (
                       <span
                         className={`rounded-full border bg-white px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
-                          card.type === "attention"
-                            ? "border-rose-300 text-rose-700"
-                            : card.type === "ai_recommendation"
-                              ? "border-teal-300 text-teal-700"
-                              : "border-orange-300 text-orange-700"
+                          isDirectional
+                            ? (directionalTone === "down"
+                              ? "border-rose-300 text-rose-700"
+                              : directionalTone === "up"
+                                ? "border-emerald-300 text-emerald-700"
+                                : "border-amber-300 text-amber-700")
+                            : "border-orange-300 text-orange-700"
                         }`}
                       >
-                        {card.type === "attention" ? ui.needsAttention : card.type === "ai_recommendation" ? ui.aiRecommendations : ui.recommendation}
+                        {isDirectional
+                          ? (directionalTone === "down" ? "Warning Down" : directionalTone === "up" ? "Warning Up" : "Warning")
+                          : card.type === "attention" ? ui.needsAttention : ui.recommendation}
                       </span>
                     )}
                   </div>
                   <ul className="mt-2 min-h-0 flex-1 overflow-y-auto list-disc pl-5 text-xs text-slate-700 space-y-1 custom-scrollbar">
                     {(card.bullets || []).map((b, idx) => {
-                      if (!isAIRecommendation) {
-                        return <li key={`${card.id}-b-${idx}`}>{String(b || "")}</li>;
+                      const bulletKey = `${card.id}-b-${idx}`;
+                      if (card.type === "driver_changes") {
+                        return renderDriverChangesBullet(b, bulletKey);
                       }
-                      const text = String(b || "");
-                      const colonIndex = text.indexOf(":");
-                      if (colonIndex > 0 && colonIndex < 24) {
-                        return (
-                          <li key={`${card.id}-b-${idx}`}>
-                            <span className="font-semibold text-teal-900">{text.slice(0, colonIndex + 1)}</span>
-                            <span>{text.slice(colonIndex + 1)}</span>
-                          </li>
-                        );
-                      }
-                      return <li key={`${card.id}-b-${idx}`}>{text}</li>;
+                      return renderEmphasizedBullet(b, bulletKey);
                     })}
                   </ul>
-                  <div className="mt-3 shrink-0 border-t border-slate-200 pt-2">
-                    <Sparkline graph={card.graph} cardType={card.type} locale={locale} copy={ui} />
-                  </div>
+                  {!hideChart && (
+                    <div className="mt-3 shrink-0 border-t border-slate-200 pt-2">
+                      <Sparkline graph={card.graph} cardType={card.type} direction={card.direction} locale={locale} copy={ui} />
+                    </div>
+                  )}
                 </article>
               );
             })}

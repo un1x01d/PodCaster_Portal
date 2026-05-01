@@ -1833,7 +1833,7 @@ export default function DashboardBody(props) {
                 <div className="glass rounded-[3rem] p-12 w-[32rem] text-center shadow-2xl animate-in zoom-in-95 duration-500">
                     <div className="bg-indigo-600 text-white w-16 h-16 rounded-2xl flex items-center justify-center text-3xl shadow-xl shadow-indigo-200 mx-auto mb-6">📊</div>
                     <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight mb-4">Welcome to Analytics</h2>
-                    <p className="text-slate-500 mb-8 font-medium leading-relaxed">Please select a spreadsheet from the navigation menu above to begin your data analysis journey.</p>
+                    <p className="text-slate-500 mb-8 font-medium leading-relaxed">Please select a spreadsheet from the navigation menu above to begin reviewing visual summaries of governed data.</p>
                     <div className="flex justify-center gap-2">
                         <span className="w-2 h-2 rounded-full bg-indigo-200 animate-bounce delay-0"></span>
                         <span className="w-2 h-2 rounded-full bg-indigo-400 animate-bounce delay-150"></span>
@@ -1884,7 +1884,7 @@ export default function DashboardBody(props) {
                                             navigate("/");
                                         }}
                                     >
-                                        Dashboard Home
+                                        Client Views Home
                                     </button>
                                     <button
                                         type="button"

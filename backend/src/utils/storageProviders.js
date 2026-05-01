@@ -26,6 +26,23 @@ function trimString(value, fallback = "") {
   return String(raw || "").trim();
 }
 
+function sanitizeSftpSourceRef(sourceRef) {
+  const text = trimString(sourceRef);
+  if (!text) throw new Error("sftp_source_ref_required");
+  if (text.length > 1024) throw new Error("sftp_source_ref_invalid");
+  if (/[\u0000-\u001f\u007f]/.test(text)) throw new Error("sftp_source_ref_invalid");
+  if (/^\-/.test(text)) throw new Error("sftp_source_ref_invalid");
+  if (/\.\./.test(text)) throw new Error("sftp_source_ref_invalid");
+  if (/[`$;&|<>]/.test(text)) throw new Error("sftp_source_ref_invalid");
+  if (/[\r\n\t]/.test(text)) throw new Error("sftp_source_ref_invalid");
+  return text;
+}
+
+function quoteScpRemotePath(pathText) {
+  const raw = String(pathText || "");
+  return `'${raw.replaceAll("'", `'\\''`)}'`;
+}
+
 function toBoolean(value, fallback = false) {
   if (value === undefined) return !!fallback;
   return !!value;
@@ -305,7 +322,7 @@ async function listSftpEntries(cfg, currentPath) {
 }
 
 async function fetchSftpMetadata(cfg, sourceRef) {
-  const filePath = trimString(sourceRef);
+  const filePath = sanitizeSftpSourceRef(sourceRef);
   const result = await runSshCommand(cfg, [
     "stat",
     "-c",
@@ -330,11 +347,12 @@ async function fetchSftpMetadata(cfg, sourceRef) {
 async function downloadSftpFile(cfg, sourceRef) {
   const ctx = buildSshAuthContext(cfg);
   if (!ctx) throw new Error("sftp_not_configured");
-  const filePath = trimString(sourceRef);
+  const filePath = sanitizeSftpSourceRef(sourceRef);
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "storage-sftp-dl-"));
   const localPath = path.join(tmpDir, path.basename(filePath) || "download.xlsx");
   try {
-    const scpArgs = [...ctx.args, "-q", `${ctx.target}:${filePath}`, localPath];
+    const remotePathArg = `${ctx.target}:${quoteScpRemotePath(filePath)}`;
+    const scpArgs = [...ctx.args, "-q", remotePathArg, localPath];
     const proc = spawn("scp", scpArgs, { env: ctx.env, stdio: ["ignore", "pipe", "pipe"] });
     let stderr = "";
     proc.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
