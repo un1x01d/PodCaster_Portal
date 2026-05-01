@@ -347,6 +347,54 @@ test("database init creates import job, approval, and audit log schema", async (
   assert.match(source, /ALTER TABLE report_source_imports ADD COLUMN IF NOT EXISTS job_id/);
 });
 
+test("database init includes report source autosync state and indexes", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const dbPath = path.join(__dirname, "..", "src", "config", "db.js");
+  const source = fs.readFileSync(dbPath, "utf8");
+
+  assert.match(source, /ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS sync_enabled BOOLEAN NOT NULL DEFAULT FALSE/);
+  assert.match(source, /ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS sync_provider TEXT/);
+  assert.match(source, /ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS sync_source_ref TEXT/);
+  assert.match(source, /ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS sync_remote_marker TEXT/);
+  assert.match(source, /ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS sync_last_attempted_marker TEXT/);
+  assert.match(source, /CREATE INDEX IF NOT EXISTS idx_report_sources_autosync_enabled ON report_sources\(sync_enabled, sync_provider, sync_group_id\)/);
+});
+
+test("report source autosync can be toggled after import from the source picker UI", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
+  const sheetRoutesPath = path.join(repoRoot, "backend", "src", "routes", "sheetRoutes.js");
+  const sheetControllerPath = path.join(repoRoot, "backend", "src", "controllers", "sheetController.js");
+  const dashboardBodyPath = path.join(repoRoot, "frontend", "src", "components", "dashboard", "DashboardBody.jsx");
+  const appPath = path.join(repoRoot, "frontend", "src", "App.jsx");
+
+  const routesSource = fs.readFileSync(sheetRoutesPath, "utf8");
+  const controllerSource = fs.readFileSync(sheetControllerPath, "utf8");
+  const dashboardSource = fs.readFileSync(dashboardBodyPath, "utf8");
+  const appSource = fs.readFileSync(appPath, "utf8");
+
+  assert.match(routesSource, /router\.patch\("\/report-sources\/:id\/autosync", asyncHandler\(updateReportSourceAutosync\)\)/);
+  assert.match(controllerSource, /export async function updateReportSourceAutosync\(req, res\)/);
+  assert.match(controllerSource, /autosync_source_not_configured/);
+  assert.match(dashboardSource, /toggleReportSourceAutosync/);
+  assert.match(dashboardSource, /Autosync ON/);
+  assert.match(dashboardSource, /Autosync OFF/);
+  assert.match(appSource, /refreshReportSources={refreshReportSources}/);
+});
+
+test("autosync worker is started and stopped with server lifecycle", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const serverPath = path.join(__dirname, "..", "server.js");
+  const source = fs.readFileSync(serverPath, "utf8");
+
+  assert.match(source, /startReportSourceAutosyncWorker/);
+  assert.match(source, /stopReportSourceAutosyncWorker/);
+  assert.match(source, /startReportSourceAutosyncWorker\(\);/);
+  assert.match(source, /await stopReportSourceAutosyncWorker\(\);/);
+});
+
 test("uploads support durable async db queue with sync fallback", async () => {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
@@ -367,6 +415,31 @@ test("uploads support durable async db queue with sync fallback", async () => {
   assert.match(env, /IMPORT_DB_QUEUE_ENABLED=true/);
   assert.match(env, /IMPORT_JOB_MAX_ATTEMPTS=3/);
   assert.match(env, /AUDIT_LOG_MAX_METADATA_BYTES=8192/);
+});
+
+test("provider imports carry autosync metadata and stable Dropbox file ids", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
+  const appPath = path.join(repoRoot, "frontend", "src", "App.jsx");
+  const dashboardBodyPath = path.join(repoRoot, "frontend", "src", "components", "dashboard", "DashboardBody.jsx");
+  const googleControllerPath = path.join(repoRoot, "backend", "src", "controllers", "googleController.js");
+  const dropboxControllerPath = path.join(repoRoot, "backend", "src", "controllers", "dropboxController.js");
+  const onedriveControllerPath = path.join(repoRoot, "backend", "src", "controllers", "onedriveController.js");
+
+  const appSource = fs.readFileSync(appPath, "utf8");
+  const dashboardSource = fs.readFileSync(dashboardBodyPath, "utf8");
+  const googleSource = fs.readFileSync(googleControllerPath, "utf8");
+  const dropboxSource = fs.readFileSync(dropboxControllerPath, "utf8");
+  const onedriveSource = fs.readFileSync(onedriveControllerPath, "utf8");
+
+  assert.match(appSource, /autosync_enabled: autosyncEnabled \? "1" : "0"/);
+  assert.match(appSource, /fileId,\n\s*name,/);
+  assert.match(dashboardSource, /Auto-sync this source when the file changes/);
+  assert.match(dashboardSource, /fileId: selectedDropboxFile\.id/);
+  assert.match(googleSource, /autosync_provider: "google_drive"/);
+  assert.match(dropboxSource, /autosync_provider: "dropbox"/);
+  assert.match(dropboxSource, /const fileId = String\(req\.body\?\.fileId/);
+  assert.match(onedriveSource, /autosync_provider: "onedrive"/);
 });
 
 test("prometheus route labels are normalized to avoid object id cardinality", async () => {
@@ -418,7 +491,7 @@ test("dashboard chat responses are read-only unless explicitly opted into ui act
   assert.match(source, /if \(onUpdateChart && actions\.chart && actions\.chart\.valueColumn\)/);
 });
 
-test("chat fallback path enforces a hard row cap before full in-memory analysis", async () => {
+test("chat fallback path automatically tries direct aggregates before full in-memory analysis", async () => {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
   const controllerPath = path.join(__dirname, "..", "src", "controllers", "chatController.js");
@@ -426,7 +499,14 @@ test("chat fallback path enforces a hard row cap before full in-memory analysis"
 
   assert.match(source, /const CHAT_MAX_ROWS = Number\.parseInt\(process\.env\.CHAT_MAX_ROWS \|\| "50000", 10\);/);
   assert.match(source, /const effectiveLimit = rowLimit \|\| \(CHAT_MAX_ROWS \+ 1\);/);
-  assert.match(source, /if \(!rowLimit && rows\.length > CHAT_MAX_ROWS\)/);
+  assert.match(source, /function inferAggregateOperationFromMessage\(message = "", ai = \{\}\)/);
+  assert.match(source, /function inferLikelyMetricColumn\(headers = \[\], sampleRows = \[\], message = "", candidates = \[\]\)/);
+  assert.match(source, /function inferLikelyDimensionColumn\(headers = \[\], sampleRows = \[\], excludedColumns = \[\]\)/);
+  assert.match(source, /function inferLikelyPeriodColumn\(headers = \[\], sampleRows = \[\], candidates = \[\]\)/);
+  assert.match(source, /const fallback = await computeLargeDatasetAggregateFallback\(/);
+  assert.match(source, /operation: resolvedOperation,/);
+  assert.match(source, /targetColumn: resolvedTarget,/);
+  assert.match(source, /groupBy: resolvedGroupBy,/);
   assert.match(source, /error: "chat_dataset_too_large"/);
 });
 
@@ -624,6 +704,120 @@ test("system settings endpoints use platform admin helper consistently", async (
   assert.match(source, /export async function getCustomerInvitationPolicy\(req, res\)/);
   assert.match(source, /export async function setCustomerInvitationPolicy\(req, res\)/);
   assert.match(source, /if \(!isPlatformAdminUser\(req\.user\)\) return res\.status\(403\)\.json\(\{ error: "Forbidden" \}\);/);
+});
+
+test("autosync interval is configurable in system settings and read dynamically by the worker", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
+  const userRoutesPath = path.join(repoRoot, "backend", "src", "routes", "userRoutes.js");
+  const userControllerPath = path.join(repoRoot, "backend", "src", "controllers", "userController.js");
+  const sheetControllerPath = path.join(repoRoot, "backend", "src", "controllers", "sheetController.js");
+  const uiPath = path.join(repoRoot, "frontend", "src", "UserManagement.jsx");
+
+  const userRoutesSource = fs.readFileSync(userRoutesPath, "utf8");
+  const userControllerSource = fs.readFileSync(userControllerPath, "utf8");
+  const sheetControllerSource = fs.readFileSync(sheetControllerPath, "utf8");
+  const uiSource = fs.readFileSync(uiPath, "utf8");
+
+  assert.match(userRoutesSource, /router\.get\("\/admin\/settings\/autosync-interval", asyncHandler\(getAutosyncPollIntervalSetting\)\)/);
+  assert.match(userRoutesSource, /router\.patch\("\/admin\/settings\/autosync-interval", asyncHandler\(setAutosyncPollIntervalSetting\)\)/);
+  assert.match(userControllerSource, /export async function getAutosyncPollIntervalSetting\(req, res\)/);
+  assert.match(userControllerSource, /export async function setAutosyncPollIntervalSetting\(req, res\)/);
+  assert.match(userControllerSource, /autosync_poll_interval_settings/);
+  assert.match(sheetControllerSource, /async function loadAutosyncPollIntervalMs\(\)/);
+  assert.match(sheetControllerSource, /const AUTOSYNC_POLL_SETTINGS_KEY = "autosync_poll_interval_settings";/);
+  assert.match(sheetControllerSource, /loadAutosyncPollIntervalMs\(\)/);
+  assert.match(uiSource, /Autosync Check Interval/);
+  assert.match(uiSource, /fetchAutosyncIntervalSetting/);
+  assert.match(uiSource, /saveAutosyncIntervalSetting/);
+});
+
+test("email ingest settings are exposed in system settings and linked to Google Workspace routing docs", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
+  const userRoutesPath = path.join(repoRoot, "backend", "src", "routes", "userRoutes.js");
+  const userControllerPath = path.join(repoRoot, "backend", "src", "controllers", "userController.js");
+  const uiPath = path.join(repoRoot, "frontend", "src", "UserManagement.jsx");
+
+  const userRoutesSource = fs.readFileSync(userRoutesPath, "utf8");
+  const userControllerSource = fs.readFileSync(userControllerPath, "utf8");
+  const uiSource = fs.readFileSync(uiPath, "utf8");
+
+  assert.match(userRoutesSource, /router\.get\("\/admin\/settings\/email-ingest", asyncHandler\(getEmailIngestSetting\)\)/);
+  assert.match(userRoutesSource, /router\.patch\("\/admin\/settings\/email-ingest", asyncHandler\(setEmailIngestSetting\)\)/);
+  assert.match(userControllerSource, /export async function getEmailIngestSetting\(req, res\)/);
+  assert.match(userControllerSource, /export async function setEmailIngestSetting\(req, res\)/);
+  assert.match(userControllerSource, /EMAIL_INGEST_SETTINGS_KEY = "email_ingest_settings"/);
+  assert.match(uiSource, /Email Ingest/);
+  assert.match(uiSource, /Add a domain or domain alias/);
+  assert.match(uiSource, /Set up Default routing for your organization/);
+  assert.match(uiSource, /Get misaddressed email in a catch-all mailbox/);
+});
+
+test("email ingest allowlist is normalized and route wiring is public but CSRF-exempt", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
+  const userControllerPath = path.join(repoRoot, "backend", "src", "controllers", "userController.js");
+  const emailRoutesPath = path.join(repoRoot, "backend", "src", "routes", "emailRoutes.js");
+  const csrfPath = path.join(repoRoot, "backend", "src", "middleware", "csrf.js");
+  const dbPath = path.join(repoRoot, "backend", "src", "config", "db.js");
+
+  const userControllerSource = fs.readFileSync(userControllerPath, "utf8");
+  const emailRoutesSource = fs.readFileSync(emailRoutesPath, "utf8");
+  const csrfSource = fs.readFileSync(csrfPath, "utf8");
+  const dbSource = fs.readFileSync(dbPath, "utf8");
+
+  assert.match(userControllerSource, /EMAIL_INGEST_ALLOWLIST_KEY = "email_ingest_allowlist"/);
+  assert.match(userControllerSource, /normalizeEmailIngestSenderAllowlist/);
+  assert.match(userControllerSource, /resolveScopedGroupForIntegrationSettings\(req\)/);
+  assert.match(emailRoutesSource, /router\.post\(\s*"\/email-ingest\/inbound",\s*uploadRateLimit,\s*upload\.fields\(\[/s);
+  assert.match(csrfSource, /"\/email-ingest\/inbound"/);
+  assert.match(dbSource, /idx_report_sources_email_sync_source/);
+});
+
+test("email ingest allowlist normalization lowercases and dedupes domains", async () => {
+  const mod = await import(`../src/controllers/userController.js?t=${Date.now()}_email_allowlist`);
+  const normalized = mod.normalizeEmailIngestSenderAllowlist({
+    allowedSenderDomains: ["Customer.com", "customer.com", "  Partner.ORG  ", "", null],
+  });
+  assert.deepEqual(normalized, ["customer.com", "partner.org"]);
+});
+
+test("storage options are exposed in system settings and wire connection tests for SFTP, GCS, S3, and Azure Blob Storage", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
+  const userRoutesPath = path.join(repoRoot, "backend", "src", "routes", "userRoutes.js");
+  const storageControllerPath = path.join(repoRoot, "backend", "src", "controllers", "storageController.js");
+  const uiPath = path.join(repoRoot, "frontend", "src", "UserManagement.jsx");
+  const cardPath = path.join(repoRoot, "frontend", "src", "components", "common", "StorageOptionCard.jsx");
+
+  const userRoutesSource = fs.readFileSync(userRoutesPath, "utf8");
+  const storageControllerSource = fs.readFileSync(storageControllerPath, "utf8");
+  const uiSource = fs.readFileSync(uiPath, "utf8");
+  const cardSource = fs.readFileSync(cardPath, "utf8");
+
+  assert.match(userRoutesSource, /router\.get\("\/admin\/settings\/sftp-storage", asyncHandler\(getSftpStorageSetting\)\)/);
+  assert.match(userRoutesSource, /router\.post\("\/admin\/settings\/sftp-storage\/test", asyncHandler\(testSftpStorageSetting\)\)/);
+  assert.match(userRoutesSource, /router\.get\("\/admin\/settings\/gcs-storage", asyncHandler\(getGcsStorageSetting\)\)/);
+  assert.match(userRoutesSource, /router\.post\("\/admin\/settings\/gcs-storage\/test", asyncHandler\(testGcsStorageSetting\)\)/);
+  assert.match(userRoutesSource, /router\.get\("\/admin\/settings\/s3-storage", asyncHandler\(getS3StorageSetting\)\)/);
+  assert.match(userRoutesSource, /router\.post\("\/admin\/settings\/s3-storage\/test", asyncHandler\(testS3StorageSetting\)\)/);
+  assert.match(userRoutesSource, /router\.get\("\/admin\/settings\/azure-blob-storage", asyncHandler\(getAzureBlobStorageSetting\)\)/);
+  assert.match(userRoutesSource, /router\.post\("\/admin\/settings\/azure-blob-storage\/test", asyncHandler\(testAzureBlobStorageSetting\)\)/);
+  assert.match(storageControllerSource, /export async function getSftpStorageSetting\(req, res\)/);
+  assert.match(storageControllerSource, /export async function testSftpStorageSetting\(req, res\)/);
+  assert.match(storageControllerSource, /export async function getGcsStorageSetting\(req, res\)/);
+  assert.match(storageControllerSource, /export async function testGcsStorageSetting\(req, res\)/);
+  assert.match(storageControllerSource, /export async function getS3StorageSetting\(req, res\)/);
+  assert.match(storageControllerSource, /export async function testS3StorageSetting\(req, res\)/);
+  assert.match(storageControllerSource, /export async function getAzureBlobStorageSetting\(req, res\)/);
+  assert.match(storageControllerSource, /export async function testAzureBlobStorageSetting\(req, res\)/);
+  assert.match(uiSource, /Storage Options/);
+  assert.match(uiSource, /SCP \/ SFTP/);
+  assert.match(uiSource, /Google Cloud Storage/);
+  assert.match(uiSource, /Amazon S3/);
+  assert.match(uiSource, /Azure Blob Storage/);
+  assert.match(cardSource, /export default function StorageOptionCard/);
 });
 
 test("customer-scoped OAuth settings do not fall back to global config", async () => {

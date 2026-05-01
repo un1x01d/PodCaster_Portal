@@ -417,6 +417,437 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
     return null;
 }
 
+function inferAggregateBucketFromMessage(message = "", ai = {}) {
+  const msg = String(message || "").toLowerCase();
+  const op = String(ai?.operation || "").toLowerCase();
+  if (op === "year_over_year" || /\b(yoy|year over year|year-over-year|annual growth|yearly growth|last year|previous year|год к году|г\/г|р\/р|річне обчислення)\b/i.test(msg)) {
+    return "year";
+  }
+  if (/\b(quarter|quarterly|qoq|q\/q|quarter over quarter|quarter-over-quarter)\b/i.test(msg)) {
+    return "quarter";
+  }
+  if (/\b(month|monthly|mom|m\/m|month over month|month-over-month|trend|over time|timeline|chart|plot|graph)\b/i.test(msg) || op === "trend" || op === "chart" || op === "plot") {
+    return "month";
+  }
+  return null;
+}
+
+function inferAggregateOperationFromMessage(message = "", ai = {}) {
+  const msg = String(message || "").toLowerCase();
+  const op = String(ai?.operation || "").toLowerCase();
+  if (["count", "sum", "avg", "max", "min", "top_n", "year_over_year", "chart", "plot", "trend"].includes(op)) {
+    return op;
+  }
+  if (/\b(how many|count|number of|total rows|row count|records? (?:are|were)|entries?)\b/i.test(msg)) return "count";
+  if (/\b(average|mean|per (?:day|week|month|year|customer|user|order|transaction))\b/i.test(msg)) return "avg";
+  if (/\b(top|highest|largest|biggest|best|most|leading|drivers?|rank(?:ing)?|bottom|lowest|least|smallest)\b/i.test(msg)) return "top_n";
+  if (/\b(yoy|year over year|year-over-year|annual growth|yearly growth|last year|previous year|trend|over time|timeline|monthly|quarterly)\b/i.test(msg)) return "year_over_year";
+  if (/\b(total|sum|combined|overall|revenue|sales|income|cost|expense|spend|profit|amount|balance|cash|budget|fees?|taxes?|orders?|payments?)\b/i.test(msg)) return "sum";
+  return null;
+}
+
+function inferLikelyMetricColumn(headers = [], sampleRows = [], message = "", candidates = []) {
+  const headerList = Array.isArray(headers) ? headers : [];
+  const sampleList = Array.isArray(sampleRows) ? sampleRows : [];
+  for (const candidate of (Array.isArray(candidates) ? candidates : []).map((c) => String(c || "").trim()).filter(Boolean)) {
+    const exact = headerList.find((h) => String(h).trim().toLowerCase() === candidate.toLowerCase());
+    if (exact) return exact;
+    const loose = headerList.find((h) => String(h).trim().toLowerCase().includes(candidate.toLowerCase()));
+    if (loose) return loose;
+  }
+
+  const msg = String(message || "").toLowerCase();
+  const ranked = headerList
+    .map((header) => {
+      const samples = sampleList.slice(0, 20).map((row) => row?.[header]).filter((v) => v !== null && v !== undefined && String(v).trim() !== "");
+      const numericHits = samples.filter((v) => toNum(v) !== null).length;
+      const dateHits = samples.filter((v) => parseDateValue(v) !== null).length;
+      const name = String(header || "").toLowerCase();
+      const businessMatch = /\b(revenue|sales|income|profit|amount|total|cost|expense|spend|margin|balance|cash|budget|fee|tax|payment|order|qty|quantity|units?)\b/i.test(name)
+        ? 6
+        : 0;
+      const messageMatch = /\b(revenue|sales|income|profit|amount|total|cost|expense|spend|margin|balance|cash|budget|fee|tax|payment|order|qty|quantity|units?)\b/i.test(msg)
+        && /\b(revenue|sales|income|profit|amount|total|cost|expense|spend|margin|balance|cash|budget|fee|tax|payment|order|qty|quantity|units?)\b/i.test(name)
+        ? 8
+        : 0;
+      return {
+        header,
+        score: (numericHits * 4) + businessMatch + messageMatch + (samples.length ? Math.min(samples.length, 8) : 0) - (dateHits * 3),
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+  return ranked[0]?.score > 0 ? ranked[0].header : null;
+}
+
+function inferLikelyDimensionColumn(headers = [], sampleRows = [], excludedColumns = []) {
+  const headerList = Array.isArray(headers) ? headers : [];
+  const excluded = new Set((Array.isArray(excludedColumns) ? excludedColumns : []).map((c) => String(c || "").toLowerCase()));
+  const usable = headerList.filter((h) => !excluded.has(String(h || "").toLowerCase()));
+  if (!usable.length) return null;
+
+  const productLike = findProductLikeColumn(usable);
+  if (productLike) return productLike;
+
+  const ranked = usable
+    .map((header) => {
+      const samples = (Array.isArray(sampleRows) ? sampleRows : []).slice(0, 30).map((row) => row?.[header]).filter((v) => v !== null && v !== undefined && String(v).trim() !== "");
+      if (!samples.length) return { header, score: 0 };
+      const stringSamples = samples.filter((v) => typeof v === "string" && v.trim() !== "");
+      const numericHits = samples.filter((v) => toNum(v) !== null).length;
+      const dateHits = samples.filter((v) => parseDateValue(v) !== null).length;
+      const uniqueCount = new Set(samples.map((v) => String(v).trim().toLowerCase())).size;
+      const diversityScore = Math.min(uniqueCount, samples.length) / samples.length;
+      const name = String(header || "").toLowerCase();
+      const nameScore = /\b(customer|client|account|vendor|supplier|region|country|category|product|item|type|segment|department|team|owner|status)\b/i.test(name) ? 8 : 0;
+      return {
+        header,
+        score: (stringSamples.length * 2) + (diversityScore * 10) + nameScore - (numericHits * 2) - (dateHits * 3),
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  return ranked[0]?.score > 0 ? ranked[0].header : null;
+}
+
+function inferLikelyPeriodColumn(headers = [], sampleRows = [], candidates = []) {
+  const headerList = Array.isArray(headers) ? headers : [];
+  const sampleList = Array.isArray(sampleRows) ? sampleRows : [];
+  const normalizedCandidates = (Array.isArray(candidates) ? candidates : [])
+    .map((c) => String(c || "").trim())
+    .filter(Boolean);
+  const seen = new Set();
+
+  const classify = (header, samples) => {
+    const name = String(header || "").toLowerCase();
+    const sampleVals = Array.isArray(samples) ? samples : [];
+    const yearHits = sampleVals.filter((v) => {
+      const n = Number(String(v || "").trim());
+      return Number.isInteger(n) && n >= 1900 && n <= 2200;
+    }).length;
+    const quarterHits = sampleVals.filter((v) => /^(q[1-4]|[1-4]\s*quarter|quarter\s*[1-4]|[ivx]{1,4}\s*quarter|[1-4]\s*квартал|q[1-4]\s*\d{4})$/i.test(String(v || "").trim())).length;
+    const monthHits = sampleVals.filter((v) => parseDateValue(v) !== null && /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек|січ|лют|бер|кві|трав|чер|лип|сер|вер|жов|лис|груд)/i.test(String(v || "").trim()) || /month/i.test(name)).length;
+    const dateHits = sampleVals.filter((v) => parseDateValue(v) !== null).length;
+    if (/year/i.test(name) || yearHits >= Math.max(2, Math.ceil(sampleVals.length / 2))) return { column: header, mode: "year" };
+    if (/quarter/i.test(name) || quarterHits >= Math.max(2, Math.ceil(sampleVals.length / 2))) return { column: header, mode: "quarter" };
+    if (/month|period/i.test(name) || monthHits >= Math.max(2, Math.ceil(sampleVals.length / 2))) return { column: header, mode: "month" };
+    if (dateHits >= Math.max(2, Math.ceil(sampleVals.length / 2))) return { column: header, mode: "date" };
+    return null;
+  };
+
+  for (const candidate of normalizedCandidates) {
+    if (seen.has(candidate.toLowerCase())) continue;
+    seen.add(candidate.toLowerCase());
+    const resolved = headerList.find((h) => String(h).trim().toLowerCase() === candidate.toLowerCase())
+      || headerList.find((h) => String(h).trim().toLowerCase().includes(candidate.toLowerCase()))
+      || null;
+    if (!resolved) continue;
+    const samples = sampleList.slice(0, 20).map((row) => row?.[resolved]).filter((v) => v !== null && v !== undefined && String(v).trim() !== "");
+    const classified = classify(resolved, samples);
+    if (classified) return classified;
+  }
+
+  for (const header of headerList) {
+    const samples = sampleList.slice(0, 20).map((row) => row?.[header]).filter((v) => v !== null && v !== undefined && String(v).trim() !== "");
+    const classified = classify(header, samples);
+    if (classified) return classified;
+  }
+  return null;
+}
+
+async function inferLikelyDateColumn(headers = [], sampleRows = [], candidates = []) {
+  const headerList = Array.isArray(headers) ? headers : [];
+  const sampleList = Array.isArray(sampleRows) ? sampleRows : [];
+  const seen = new Set();
+  const tryCandidate = async (candidate) => {
+    const raw = String(candidate || "").trim();
+    if (!raw || seen.has(raw.toLowerCase())) return null;
+    seen.add(raw.toLowerCase());
+    const resolved = headerList.find((h) => String(h).trim().toLowerCase() === raw.toLowerCase())
+      || headerList.find((h) => String(h).trim().toLowerCase().includes(raw.toLowerCase()))
+      || null;
+    if (!resolved) return null;
+    const samples = sampleList.slice(0, 20).map((row) => row?.[resolved]).filter((v) => v !== null && v !== undefined && String(v).trim() !== "");
+    if (!samples.length) return null;
+    const dateHits = samples.filter((v) => parseDateValue(v) !== null).length;
+    return dateHits >= Math.max(2, Math.ceil(samples.length / 2)) ? resolved : null;
+  };
+
+  for (const candidate of candidates) {
+    const hit = await tryCandidate(candidate);
+    if (hit) return hit;
+  }
+
+  const hinted = headerList.filter((h) => looksLikeDateHeader(h));
+  for (const candidate of hinted) {
+    const hit = await tryCandidate(candidate);
+    if (hit) return hit;
+  }
+
+  for (const header of headerList) {
+    const hit = await tryCandidate(header);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function buildChatWhereClause({ tabName = null, filters = [], rowFiltersList = [], startParamIndex = 1 }) {
+  const params = [];
+  let where = "WHERE sheet_id = $1";
+
+  if (tabName) {
+    where += ` AND tab_name = $${params.length + 2}`;
+    params.push(tabName);
+  }
+
+  const rowFilterSql = buildRowFilterWhereClause(rowFiltersList, params.length + 2);
+  if (rowFilterSql.sql) {
+    where += rowFilterSql.sql;
+    params.push(...rowFilterSql.params);
+  }
+
+  filters.forEach((f) => {
+    if (!f?.column) return;
+    if (f.operator === "in") {
+      const values = Array.isArray(f.values) ? f.values.map((v) => String(v ?? "")).filter((v) => v !== "") : [];
+      if (!values.length) return;
+      const colIdx = params.length + 2;
+      const valIdx = params.length + 3;
+      params.push(f.column, values);
+      where += ` AND ((row_data->>$${colIdx}) = ANY($${valIdx}::text[]))`;
+      return;
+    }
+    if (f.value === undefined) return;
+
+    let colSql = `row_data->>$${params.length + 2}`;
+    if (f.column === "Year") colSql = `EXTRACT(YEAR FROM (CAST(row_data->>$${params.length + 2} AS DATE)))::text`;
+    if (f.column === "Month") colSql = `TO_CHAR(CAST(row_data->>$${params.length + 2} AS DATE), 'Month')`;
+    if (f.column === "Quarter") colSql = `'Q' || TO_CHAR(CAST(row_data->>$${params.length + 2} AS DATE), 'Q YYYY')`;
+
+    const valIdx = params.length + 3;
+    params.push(f.column === "Year" || f.column === "Month" || f.column === "Quarter" ? "Date" : f.column, String(f.value));
+    const numericFilterVal = toNum(f.value);
+    const dateFilterVal = toSqlDateLiteral(f.value);
+    const isVirtualDateCol = f.column === "Year" || f.column === "Month" || f.column === "Quarter";
+    const useDateComparators = !isVirtualDateCol && !!dateFilterVal && (
+      looksLikeDateText(f.value) ||
+      /date|time|day|month|year|period|quarter|дата|період|рік|год/i.test(String(f.column || ""))
+    );
+
+    switch (f.operator) {
+      case "gt":
+        if (useDateComparators) {
+          params[params.length - 1] = dateFilterVal;
+          where += ` AND (to_date(${colSql}, 'MM-DD-YYYY') > $${valIdx}::date)`;
+        } else if (numericFilterVal !== null) {
+          params[params.length - 1] = String(numericFilterVal);
+          where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) > $${valIdx}::numeric)`;
+        } else {
+          where += ` AND (${colSql} > $${valIdx})`;
+        }
+        break;
+      case "gte":
+        if (useDateComparators) {
+          params[params.length - 1] = dateFilterVal;
+          where += ` AND (to_date(${colSql}, 'MM-DD-YYYY') >= $${valIdx}::date)`;
+        } else if (numericFilterVal !== null) {
+          params[params.length - 1] = String(numericFilterVal);
+          where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) >= $${valIdx}::numeric)`;
+        } else {
+          where += ` AND (${colSql} >= $${valIdx})`;
+        }
+        break;
+      case "lt":
+        if (useDateComparators) {
+          params[params.length - 1] = dateFilterVal;
+          where += ` AND (to_date(${colSql}, 'MM-DD-YYYY') < $${valIdx}::date)`;
+        } else if (numericFilterVal !== null) {
+          params[params.length - 1] = String(numericFilterVal);
+          where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) < $${valIdx}::numeric)`;
+        } else {
+          where += ` AND (${colSql} < $${valIdx})`;
+        }
+        break;
+      case "lte":
+        if (useDateComparators) {
+          params[params.length - 1] = dateFilterVal;
+          where += ` AND (to_date(${colSql}, 'MM-DD-YYYY') <= $${valIdx}::date)`;
+        } else if (numericFilterVal !== null) {
+          params[params.length - 1] = String(numericFilterVal);
+          where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) <= $${valIdx}::numeric)`;
+        } else {
+          where += ` AND (${colSql} <= $${valIdx})`;
+        }
+        break;
+      case "equals":
+        where += ` AND (${colSql} = $${valIdx})`;
+        break;
+      default:
+        where += ` AND (${colSql} ILIKE $${valIdx})`;
+        params[params.length - 1] = `%${f.value}%`;
+        break;
+    }
+  });
+
+  return { where, params };
+}
+
+async function computeLargeDatasetAggregateFallback({
+  sheetId,
+  user,
+  operation = null,
+  targetColumn = null,
+  groupBy = null,
+  message = "",
+  ai = {},
+  headers = [],
+  sampleRows = [],
+  activeFilters = [],
+  rowFiltersList = [],
+  tabName = null,
+  locale = "en",
+}) {
+  const directFilters = Array.isArray(activeFilters) ? activeFilters : [];
+  const { where, params } = buildChatWhereClause({
+    tabName,
+    filters: directFilters,
+    rowFiltersList,
+  });
+  const inferredOperation = inferAggregateOperationFromMessage(message, { operation: operation || ai?.operation });
+  const bucket = inferAggregateBucketFromMessage(message, { operation: operation || ai?.operation });
+  const directOp = ["count", "sum", "avg", "max", "min", "top_n"].includes(inferredOperation) ? inferredOperation : null;
+  const periodInfo = inferLikelyPeriodColumn(headers, sampleRows, [
+    ai?.chart?.date_column,
+    groupBy,
+    ai?.group_by,
+    targetColumn,
+    ai?.target_column,
+  ]);
+  const dateColumn = periodInfo?.column || await inferLikelyDateColumn(headers, sampleRows, [
+    ai?.chart?.date_column,
+    groupBy,
+    ai?.group_by,
+    targetColumn,
+    ai?.target_column,
+  ]);
+  const periodMode = periodInfo?.mode || "date";
+  const metricColumn = await resolveColumn(headers, targetColumn || ai?.target_column || ai?.chart?.value_column, sampleRows)
+    || inferLikelyMetricColumn(headers, sampleRows, message, [targetColumn, ai?.target_column, ai?.chart?.value_column]);
+  const dimensionColumn = await resolveColumn(headers, groupBy || ai?.group_by, sampleRows)
+    || inferLikelyDimensionColumn(headers, sampleRows, [metricColumn, dateColumn]);
+
+  const allowedColumnSet = Array.isArray(headers) && headers.length ? new Set(headers.map((h) => String(h))) : null;
+  if (allowedColumnSet && dateColumn && !allowedColumnSet.has(String(dateColumn))) return null;
+  if (allowedColumnSet && metricColumn && !allowedColumnSet.has(String(metricColumn))) return null;
+  if (allowedColumnSet && dimensionColumn && !allowedColumnSet.has(String(dimensionColumn))) return null;
+
+  if (directOp) {
+    if (directOp === "count") {
+      const rows = await query(`SELECT COUNT(*) as c FROM sheet_rows ${where}`, params);
+      return { answer: `Count: ${rows[0]?.c || 0} rows`, previewRows: [], chart: null };
+    }
+
+    if (directOp === "top_n") {
+      if (!metricColumn || !dimensionColumn) return null;
+    } else if (!metricColumn) {
+      return null;
+    }
+
+    const agg = await computeSqlAggregation({
+      sheetId,
+      user,
+      operation: directOp,
+      targetColumn: metricColumn,
+      groupBy: directOp === "top_n" ? dimensionColumn : null,
+      filters: directFilters,
+      rowFiltersList,
+      allowedColumns: headers,
+      limit: ai?.limit,
+      locale,
+      tabName,
+    });
+    if (agg) {
+      return {
+        answer: agg.answer,
+        previewRows: agg.previewRows || [],
+        chart: directOp === "top_n" ? null : {
+          dateColumn: null,
+          valueColumn: metricColumn,
+          segmentBy: directOp === "top_n" ? dimensionColumn : null,
+          aggregation: directOp === "avg" ? "avg" : "sum",
+        },
+      };
+    }
+  }
+
+  if (!bucket || !dateColumn || !metricColumn) return null;
+
+  const dateParamIdx = params.length + 2;
+  const metricParamIdx = params.length + 3;
+  const safeBucket = bucket === "quarter" ? "quarter" : (bucket === "month" ? "month" : "year");
+  const bucketExpr = periodMode === "year"
+    ? `NULLIF(regexp_replace(row_data->>$${dateParamIdx}, '[^0-9]', '', 'g'), '')`
+    : periodMode === "quarter"
+      ? `COALESCE(NULLIF(row_data->>$${dateParamIdx}, ''), 'Unknown')`
+      : periodMode === "month"
+        ? `COALESCE(NULLIF(row_data->>$${dateParamIdx}, ''), TO_CHAR(CAST(row_data->>$${dateParamIdx} AS DATE), 'YYYY-MM'))`
+        : safeBucket === "quarter"
+          ? `'Q' || TO_CHAR(CAST(row_data->>$${dateParamIdx} AS DATE), 'Q YYYY')`
+          : safeBucket === "month"
+            ? `TO_CHAR(CAST(row_data->>$${dateParamIdx} AS DATE), 'YYYY-MM')`
+            : `EXTRACT(YEAR FROM (CAST(row_data->>$${dateParamIdx} AS DATE)))::text`;
+
+  params.push(dateColumn, metricColumn);
+  const rows = await query(
+    `SELECT ${bucketExpr} AS period,
+            SUM(CAST(NULLIF(regexp_replace(row_data->>$${metricParamIdx}, '[^0-9.-]', '', 'g'), '') AS NUMERIC)) AS value
+       FROM sheet_rows
+       ${where}
+      GROUP BY period
+      ORDER BY period ASC`,
+    params
+  );
+
+  if (!rows.length) return null;
+  const normalizedRows = rows.map((r) => ({
+    period: String(r.period ?? ""),
+    value: Number(r.value ?? 0),
+  })).filter((r) => r.period && Number.isFinite(r.value));
+  if (!normalizedRows.length) return null;
+
+  if (safeBucket === "year" && normalizedRows.length >= 2) {
+    const last = normalizedRows[normalizedRows.length - 1];
+    const prev = normalizedRows[normalizedRows.length - 2];
+    const delta = last.value - prev.value;
+    const pct = prev.value !== 0 ? (delta / Math.abs(prev.value)) * 100 : null;
+    const answer = pct === null
+      ? `Year-over-year change for ${metricColumn}: ${formatValue(delta, locale, metricColumn)}.`
+      : `Year-over-year change for ${metricColumn}: ${formatValue(delta, locale, metricColumn)} (${delta >= 0 ? "+" : ""}${pct.toFixed(2)}%).`;
+    return {
+      answer,
+      previewRows: normalizedRows.slice(-5),
+      chart: {
+        dateColumn,
+        valueColumn: metricColumn,
+        segmentBy: null,
+        aggregation: "sum",
+      },
+    };
+  }
+
+  const recent = normalizedRows.slice(-6);
+  const seriesText = recent.map((r, idx) => `${idx + 1}. ${r.period}: ${formatValue(r.value, locale, metricColumn)}`).join("\n");
+  return {
+    answer: `${metricColumn} by ${safeBucket}:\n${seriesText}`,
+    previewRows: recent,
+    chart: {
+      dateColumn,
+      valueColumn: metricColumn,
+      segmentBy: null,
+      aggregation: "sum",
+    },
+  };
+}
+
 async function computeDeterministicAnswer(operation, rows, targetColumn, groupBy, limit = 5, locale = "en", queryText = "") {
   const op = (operation || "none").toLowerCase();
   const lang = String(locale || "en").toLowerCase();
@@ -1812,6 +2243,12 @@ export async function chatQuery(req, res) {
 
     const numericOps = new Set(["count", "sum", "avg", "max", "min", "top_n"]);
     let exec = null;
+    let chart = (["chart", "plot", "trend"].includes(ai?.operation) && ai?.chart) ? {
+      dateColumn: await resolveColumn(aiHeaders, ai.chart.date_column, sampleRows),
+      valueColumn: await resolveColumn(aiHeaders, ai.chart.value_column, sampleRows),
+      segmentBy: await resolveColumn(aiHeaders, ai.chart.segment_by, sampleRows),
+      aggregation: ai.chart.aggregation || "sum"
+    } : null;
 
     if (numericOps.has(resolvedOperation)) {
         exec = await computeSqlAggregation({
@@ -1834,31 +2271,58 @@ export async function chatQuery(req, res) {
         // Only NOW load full rows if we really need to (YoY, custom ratios)
         const fullLoad = await loadAccessibleRows(sheetId, req.user, selectedTab);
         if (fullLoad?.tooLarge) {
-          return res.status(413).json({
-            error: "chat_dataset_too_large",
-            maxRows: CHAT_MAX_ROWS,
-            message: "Dataset is too large for this chat analysis path. Narrow filters or use a direct aggregate query.",
+          const fallback = await computeLargeDatasetAggregateFallback({
+            sheetId,
+            user: req.user,
+            operation: resolvedOperation,
+            targetColumn: resolvedTarget,
+            groupBy: resolvedGroupBy,
+            message,
+            ai,
+            headers: aiHeaders,
+            sampleRows,
+            activeFilters: activeDashboardFilters,
+            rowFiltersList: loadedSample?.rowFiltersList || [],
+            tabName: selectedTab,
+            locale,
           });
+          if (fallback) {
+            exec = {
+              answer: fallback.answer,
+              previewRows: fallback.previewRows || [],
+            };
+            if (fallback.chart) chart = fallback.chart;
+          } else {
+            return res.status(413).json({
+              error: "chat_dataset_too_large",
+              maxRows: CHAT_MAX_ROWS,
+              message: "Dataset is too large for this chat analysis path. Narrow filters or use a direct aggregate query.",
+            });
+          }
         }
-        // Note: For memory-based fallback, we might still need augmentation if requested
-        const augmented = (resolvedGroupBy === "Year" || resolvedGroupBy === "Month" || resolvedGroupBy === "Quarter")
-            ? augmentRowsWithQuarter(
-              projectRowsToHeaders(fullLoad.rows, aiHeaders),
-              aiHeaders
-            )
-            : { rows: projectRowsToHeaders(fullLoad.rows, aiHeaders), headers: aiHeaders };
+        if (!exec) {
+          // Note: For memory-based fallback, we might still need augmentation if requested
+          const augmented = (resolvedGroupBy === "Year" || resolvedGroupBy === "Month" || resolvedGroupBy === "Quarter")
+              ? augmentRowsWithQuarter(
+                projectRowsToHeaders(fullLoad.rows, aiHeaders),
+                aiHeaders
+              )
+              : { rows: projectRowsToHeaders(fullLoad.rows, aiHeaders), headers: aiHeaders };
 
-        const matchedRows = applyFilters(augmented.rows, executionFilters);
-        exec = await computeDeterministicAnswer(resolvedOperation, matchedRows, resolvedTarget, resolvedGroupBy, ai?.limit, locale, message);
+          const matchedRows = applyFilters(augmented.rows, executionFilters);
+          exec = await computeDeterministicAnswer(resolvedOperation, matchedRows, resolvedTarget, resolvedGroupBy, ai?.limit, locale, message);
+        }
     }
 
     const isChartOp = ["chart", "plot", "trend"].includes(ai?.operation);
-    const chart = (isChartOp && ai?.chart) ? {
-      dateColumn: await resolveColumn(aiHeaders, ai.chart.date_column, sampleRows),
-      valueColumn: await resolveColumn(aiHeaders, ai.chart.value_column, sampleRows),
-      segmentBy: await resolveColumn(aiHeaders, ai.chart.segment_by, sampleRows),
-      aggregation: ai.chart.aggregation || "sum"
-    } : null;
+    if (!chart && isChartOp && ai?.chart) {
+      chart = {
+        dateColumn: await resolveColumn(aiHeaders, ai.chart.date_column, sampleRows),
+        valueColumn: await resolveColumn(aiHeaders, ai.chart.value_column, sampleRows),
+        segmentBy: await resolveColumn(aiHeaders, ai.chart.segment_by, sampleRows),
+        aggregation: ai.chart.aggregation || "sum"
+      };
+    }
 
     let answer = ai?.answer || exec.answer || "Done.";
     

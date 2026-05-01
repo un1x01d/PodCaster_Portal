@@ -11,6 +11,7 @@ import { initDb, query as dbQuery, closeDbPool } from "./src/config/db.js";
 import { validateProductionConfig } from "./src/config/runtime.js";
 import authRoutes from "./src/routes/authRoutes.js";
 import sheetRoutes from "./src/routes/sheetRoutes.js";
+import emailRoutes from "./src/routes/emailRoutes.js";
 import userRoutes from "./src/routes/userRoutes.js";
 import viewRoutes from "./src/routes/viewRoutes.js";
 import chatRoutes from "./src/routes/chatRoutes.js";
@@ -22,7 +23,7 @@ import oneDriveRoutes from "./src/routes/oneDriveRoutes.js";
 import { ensureCsrfCookie, csrfProtect } from "./src/middleware/csrf.js";
 import { recordHttpRequest } from "./src/utils/metrics.js";
 import { cleanupOldInvitations } from "./src/utils/invitationLifecycle.js";
-import { startImportJobWorker, stopImportJobWorker } from "./src/controllers/sheetController.js";
+import { startImportJobWorker, stopImportJobWorker, startReportSourceAutosyncWorker, stopReportSourceAutosyncWorker } from "./src/controllers/sheetController.js";
 
 const app = express();
 // Force restart
@@ -105,6 +106,7 @@ app.get("/readyz", async (_req, res) => {
 // Routes
 app.use("/auth", authRoutes); // /auth/login, /auth/me, /auth/change-password
 app.use("/", sheetRoutes); // /sheets, /upload
+app.use("/", emailRoutes); // /email-ingest/inbound
 app.use("/", userRoutes);  // /users, /groups (customers), /permissions
 app.use("/", viewRoutes);  // /views
 app.use("/", chatRoutes);  // /chat/query
@@ -152,6 +154,7 @@ if (fs.existsSync(frontendDist)) {
         req.path.startsWith("/google") || 
         req.path.startsWith("/dropbox") || 
         req.path.startsWith("/onedrive") || 
+        req.path.startsWith("/email-ingest") ||
         req.path.startsWith("/healthz") || 
         req.path.startsWith("/readyz")) {
       return next();
@@ -170,6 +173,7 @@ try {
 
 // Starts the in-process DB import worker. Work durability is provided by Postgres job state.
 startImportJobWorker();
+startReportSourceAutosyncWorker();
 
 const server = app.listen(PORT, () =>
   console.log(`✅ Backend running on :${PORT} • SheetJS:`, XLSX?.version || "unknown")
@@ -205,6 +209,7 @@ async function shutdown(signal) {
   try {
     if (invitationCleanupTimer) clearInterval(invitationCleanupTimer);
     // Stop claim loop before closing DB pool to avoid mid-shutdown lease/claim failures.
+    await stopReportSourceAutosyncWorker();
     await stopImportJobWorker();
     await new Promise((resolve, reject) => {
       server.close((err) => (err ? reject(err) : resolve()));

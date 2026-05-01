@@ -14,17 +14,24 @@ import {
 } from "../utils/authorization.js";
 import { writeAuditLog } from "../utils/auditLog.js";
 import { normalizeGroupEntitlements } from "../utils/entitlements.js";
+import { downloadProviderAutosyncFile, fetchProviderAutosyncMetadata } from "../utils/providerAutosync.js";
+import { ensureReportSourcesSchema } from "../config/db.js";
+import {
+    getAppSettingValueWithScopedFallback,
+    normalizeEmailIngestSenderAllowlist,
+    normalizeEmailIngestSettings,
+} from "./userController.js";
 
 const MAX_UPLOAD_SHEETS = Number.parseInt(
     process.env.MAX_UPLOAD_SHEETS || (process.env.NODE_ENV === "production" ? "20" : "50"),
     10
 );
 const MAX_UPLOAD_ROWS_PER_SHEET = Number.parseInt(
-    process.env.MAX_UPLOAD_ROWS_PER_SHEET || (process.env.NODE_ENV === "production" ? "50000" : "200000"),
+    process.env.MAX_UPLOAD_ROWS_PER_SHEET || (process.env.NODE_ENV === "production" ? "300000" : "300000"),
     10
 );
 const MAX_UPLOAD_TOTAL_ROWS = Number.parseInt(
-    process.env.MAX_UPLOAD_TOTAL_ROWS || (process.env.NODE_ENV === "production" ? "100000" : "500000"),
+    process.env.MAX_UPLOAD_TOTAL_ROWS || (process.env.NODE_ENV === "production" ? "900000" : "900000"),
     10
 );
 const MAX_UPLOAD_COLUMNS = Number.parseInt(
@@ -86,6 +93,158 @@ function sanitizeDisplayName(value) {
 
 function sanitizeReportSourceName(value) {
     return String(value || "").trim().replace(/\s+/g, " ").slice(0, 160);
+}
+
+function normalizeEmailAddress(value) {
+    return String(value || "").trim().toLowerCase();
+}
+
+function normalizeEmailLocalPart(value) {
+    return String(value || "").trim().toLowerCase().split("+")[0].trim();
+}
+
+function extractEmailAddresses(value) {
+    const entries = Array.isArray(value)
+        ? value
+        : String(value || "")
+            .split(/[\n,;]+/)
+            .map((item) => item.trim());
+    return Array.from(new Set(entries.map((entry) => {
+        const raw = String(entry || "").trim();
+        if (!raw) return "";
+        const angle = raw.match(/<([^>]+)>/);
+        return normalizeEmailAddress(angle ? angle[1] : raw);
+    }).filter(Boolean)));
+}
+
+function emailDomainFromAddress(value) {
+    const email = normalizeEmailAddress(value);
+    const idx = email.lastIndexOf("@");
+    return idx > 0 ? email.slice(idx + 1) : "";
+}
+
+async function loadEmailIngestSettingsForGroup(groupId) {
+    const settingsRows = await getAppSettingValueWithScopedFallback("email_ingest_settings", null);
+    const scopedAllowlistRows = groupId
+        ? await getAppSettingValueWithScopedFallback("email_ingest_allowlist", groupId)
+        : null;
+    const allowlistRows = scopedAllowlistRows ?? await getAppSettingValueWithScopedFallback("email_ingest_allowlist", null);
+    const current = normalizeEmailIngestSettings(settingsRows || {});
+    return {
+        ...current,
+        allowedSenderDomains: normalizeEmailIngestSenderAllowlist(allowlistRows || settingsRows || {}),
+    };
+}
+
+function senderDomainIsAllowed(senderEmail, allowedDomains = []) {
+    const senderDomain = emailDomainFromAddress(senderEmail);
+    if (!senderDomain) return false;
+    const normalizedAllowed = Array.isArray(allowedDomains)
+        ? allowedDomains.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean)
+        : [];
+    if (!normalizedAllowed.length) return false;
+    return normalizedAllowed.some((allowed) => senderDomain === allowed || senderDomain.endsWith(`.${allowed}`));
+}
+
+async function resolveEmailIngestCustomer(client, recipients, settings) {
+    const addressPrefix = String(settings?.addressPrefix || "customer").trim().toLowerCase() || "customer";
+    const addressMode = String(settings?.addressMode || "slug").trim().toLowerCase() === "id" ? "id" : "slug";
+    const inboundDomain = String(settings?.inboundDomain || "").trim().toLowerCase();
+    const candidates = Array.isArray(recipients) ? recipients : [];
+    for (const recipient of candidates) {
+        const email = normalizeEmailAddress(recipient);
+        if (!email || !email.includes("@")) continue;
+        const [localRaw, domainRaw] = email.split("@");
+        const domain = String(domainRaw || "").trim().toLowerCase();
+        if (inboundDomain && domain !== inboundDomain && !domain.endsWith(`.${inboundDomain}`)) continue;
+        const local = normalizeEmailLocalPart(localRaw);
+        const prefixToken = `${addressPrefix}-`;
+        if (!local.startsWith(prefixToken)) continue;
+        const alias = local.slice(prefixToken.length).trim();
+        if (!alias) continue;
+
+        if (addressMode === "id" || /^\d+$/.test(alias)) {
+            const groupId = Number.parseInt(alias, 10);
+            if (!Number.isInteger(groupId) || groupId <= 0) continue;
+            const rows = await client.query(
+                `SELECT c.id AS customer_id, c.group_id, c.slug, c.name AS customer_name, c.db_name, g.name AS group_name
+                   FROM customers c
+                   JOIN groups g ON g.id = c.group_id
+                  WHERE c.group_id = $1
+                    AND c.status = 'active'
+                  LIMIT 1`,
+                [groupId]
+            );
+            if (rows.rows.length) return { ...rows.rows[0], recipientAddress: email };
+            continue;
+        }
+
+        const rows = await client.query(
+            `SELECT c.id AS customer_id, c.group_id, c.slug, c.name AS customer_name, c.db_name, g.name AS group_name
+               FROM customers c
+               JOIN groups g ON g.id = c.group_id
+              WHERE LOWER(c.slug) = LOWER($1)
+                AND c.status = 'active'
+              LIMIT 1`,
+            [alias]
+        );
+        if (rows.rows.length) return { ...rows.rows[0], recipientAddress: email };
+    }
+    return null;
+}
+
+async function resolveOrCreateEmailReportSource(client, { groupId, recipientAddress, customerName, fileLabel, messageId = null }) {
+    const sourceRef = normalizeEmailAddress(recipientAddress);
+    const sourceName = sanitizeReportSourceName(customerName || sourceRef || `Customer ${groupId}`);
+    const existing = await client.query(
+        `SELECT rs.id, rs.name, rs.current_sheet_id, s.headers AS current_headers
+           FROM report_sources rs
+           LEFT JOIN sheets s ON s.id = rs.current_sheet_id
+          WHERE rs.sync_provider = 'email'
+            AND rs.sync_group_id = $1
+            AND rs.sync_source_ref = $2
+          LIMIT 1
+          FOR UPDATE`,
+        [groupId, sourceRef]
+    );
+    if (existing.rows.length) {
+        const row = existing.rows[0];
+        return {
+            id: row.id,
+            name: row.name,
+            previousSheetId: row.current_sheet_id || null,
+            previousHeaders: typeof row.current_headers === "string" ? JSON.parse(row.current_headers) : (row.current_headers || []),
+            isNew: false,
+        };
+    }
+
+    const inserted = await client.query(
+        `INSERT INTO report_sources
+            (name, created_by, is_inferred, sync_enabled, sync_provider, sync_source_ref, sync_group_id, sync_display_name, sync_file_label, sync_remote_marker, sync_last_attempted_marker, sync_last_synced_at, sync_updated_at, updated_at)
+         VALUES
+            ($1, NULL, FALSE, TRUE, 'email', $2, $3, $4, $5, $6, $6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+         ON CONFLICT (sync_provider, sync_group_id, sync_source_ref)
+         DO UPDATE SET name = EXCLUDED.name,
+                       sync_enabled = TRUE,
+                       sync_display_name = EXCLUDED.sync_display_name,
+                       sync_file_label = COALESCE(EXCLUDED.sync_file_label, report_sources.sync_file_label),
+                       sync_remote_marker = COALESCE(EXCLUDED.sync_remote_marker, report_sources.sync_remote_marker),
+                       sync_last_attempted_marker = COALESCE(EXCLUDED.sync_last_attempted_marker, report_sources.sync_last_attempted_marker),
+                       sync_last_synced_at = CURRENT_TIMESTAMP,
+                       sync_last_error = NULL,
+                       sync_updated_at = CURRENT_TIMESTAMP,
+                       updated_at = CURRENT_TIMESTAMP
+         RETURNING id, name`,
+        [sourceName, sourceRef, groupId, customerName || sourceName, fileLabel || null]
+    );
+
+    return {
+        id: inserted.rows[0].id,
+        name: inserted.rows[0].name,
+        previousSheetId: null,
+        previousHeaders: [],
+        isNew: true,
+    };
 }
 
 export function buildHeaderDiff(previousHeaders = [], nextHeaders = []) {
@@ -337,9 +496,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const XLSX_WORKER_PATH = path.join(__dirname, "..", "utils", "xlsxWorker.js");
 const XLSX_WORKER_TIMEOUT_MS = Number.parseInt(process.env.XLSX_WORKER_TIMEOUT_MS || "45000", 10);
-const XLSX_WORKER_DEFAULT_MEMORY_MB = Number.parseInt(process.env.XLSX_WORKER_DEFAULT_MEMORY_MB || "512", 10);
+const XLSX_WORKER_DEFAULT_MEMORY_MB = Number.parseInt(process.env.XLSX_WORKER_DEFAULT_MEMORY_MB || "8192", 10);
 const XLSX_WORKER_MIN_MEMORY_MB = Number.parseInt(process.env.XLSX_WORKER_MIN_MEMORY_MB || "64", 10);
-const XLSX_WORKER_MAX_MEMORY_MB = Number.parseInt(process.env.XLSX_WORKER_MAX_MEMORY_MB || "4096", 10);
+const XLSX_WORKER_MAX_MEMORY_MB = Number.parseInt(process.env.XLSX_WORKER_MAX_MEMORY_MB || "8192", 10);
 
 function uploadRequiresApproval(req) {
     const requested = req.body?.approval_required ?? req.body?.approvalRequired;
@@ -354,7 +513,75 @@ function uploadUsesDbQueue(req) {
     if (requested !== undefined) {
         return ["1", "true", "yes", "on"].includes(String(requested || "").trim().toLowerCase());
     }
-    return IMPORT_DB_QUEUE_ENABLED;
+    return false;
+}
+
+function parseBooleanLike(value) {
+    return ["1", "true", "yes", "on"].includes(String(value || "").trim().toLowerCase());
+}
+
+function parsePositiveIntLike(value) {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function parseAutosyncConfig(body = {}) {
+    const enabled = parseBooleanLike(body?.autosync_enabled ?? body?.autosyncEnabled);
+    if (!enabled) return null;
+    const provider = String(body?.autosync_provider ?? body?.autosyncProvider ?? "").trim().toLowerCase();
+    const sourceRef = String(body?.autosync_source_ref ?? body?.autosyncSourceRef ?? "").trim();
+    const groupId = parsePositiveIntLike(body?.autosync_group_id ?? body?.autosyncGroupId);
+    const userId = parsePositiveIntLike(body?.autosync_user_id ?? body?.autosyncUserId);
+    const remoteMarker = String(body?.autosync_remote_marker ?? body?.autosyncRemoteMarker ?? "").trim() || null;
+    const remoteModifiedAt = String(body?.autosync_remote_modified_at ?? body?.autosyncRemoteModifiedAt ?? "").trim() || null;
+    const displayName = String(body?.autosync_display_name ?? body?.autosyncDisplayName ?? "").trim() || null;
+    const fileLabel = String(body?.autosync_file_label ?? body?.autosyncFileLabel ?? "").trim() || null;
+    if (!provider || !sourceRef || !userId) return null;
+    return {
+        enabled: true,
+        provider,
+        sourceRef,
+        groupId,
+        userId,
+        remoteMarker,
+        remoteModifiedAt,
+        displayName,
+        fileLabel,
+    };
+}
+
+async function applyReportSourceAutosyncConfig(client, reportSourceId, autosyncConfig = null) {
+    if (!autosyncConfig?.enabled) return;
+    await client.query(
+        `UPDATE report_sources
+            SET sync_enabled = TRUE,
+                sync_provider = $2,
+                sync_source_ref = $3,
+                sync_group_id = $4,
+                sync_user_id = $5,
+                sync_display_name = $6,
+                sync_file_label = $7,
+                sync_remote_marker = COALESCE($8, sync_remote_marker),
+                sync_last_attempted_marker = COALESCE($8, sync_last_attempted_marker),
+                sync_remote_modified_at = COALESCE($9::timestamp, sync_remote_modified_at),
+                sync_last_checked_at = CURRENT_TIMESTAMP,
+                sync_last_synced_at = CURRENT_TIMESTAMP,
+                sync_last_error = NULL,
+                sync_updated_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+          WHERE id = $1`,
+        [
+            reportSourceId,
+            autosyncConfig.provider,
+            autosyncConfig.sourceRef,
+            autosyncConfig.groupId,
+            autosyncConfig.userId,
+            autosyncConfig.displayName,
+            autosyncConfig.fileLabel,
+            autosyncConfig.remoteMarker,
+            autosyncConfig.remoteModifiedAt,
+        ]
+    );
 }
 
 async function userCanApproveReportSource(client, user, reportSourceId) {
@@ -579,6 +806,8 @@ async function executeImportFromParsedWorkbook({
     originalName,
     user,
     enforceOwnership = true,
+    autosyncConfig = null,
+    fileSizeBytes = 0,
 }) {
     const { sheetNames, sheets, cleanup } = parsedResult || {};
     if (cleanup && (cleanup.formulasStripped || cleanup.metadataEntriesStripped)) {
@@ -683,11 +912,11 @@ async function executeImportFromParsedWorkbook({
         const importRes = await client.query(
             `INSERT INTO report_source_imports
                (report_source_id, sheet_id, import_version, file_label, original_filename, imported_by,
-                schema_status, schema_diff, status, published_at, published_by, job_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
-                     CASE WHEN $9 = 'published' THEN CURRENT_TIMESTAMP ELSE NULL END,
-                     CASE WHEN $9 = 'published' THEN $6 ELSE NULL END,
-                     $10)
+                schema_status, schema_diff, status, published_at, published_by, job_id, file_size_bytes)
+               VALUES ($1, $2, $3, $4, $5, $6::int, $7, $8, $9,
+                        CASE WHEN $9 = 'published' THEN CURRENT_TIMESTAMP ELSE NULL END,
+                        CASE WHEN $9 = 'published' THEN $6::int ELSE NULL END,
+                        $10, $11)
              RETURNING id`,
             [
                 reportSource.id,
@@ -700,6 +929,7 @@ async function executeImportFromParsedWorkbook({
                 JSON.stringify(headerDiff),
                 importStatus,
                 importJobId,
+                Number(fileSizeBytes || 0),
             ]
         );
         const importId = importRes.rows[0].id;
@@ -719,6 +949,10 @@ async function executeImportFromParsedWorkbook({
                   WHERE id = $1`,
                 [reportSource.id]
             );
+        }
+
+        if (autosyncConfig?.enabled) {
+            await applyReportSourceAutosyncConfig(client, reportSource.id, autosyncConfig);
         }
 
         const responsePayload = {
@@ -776,6 +1010,9 @@ async function enqueueDbImportJob({
     contentType,
     fileSize,
     parseMemoryLimitMb,
+    autosyncConfig = null,
+    mode = null,
+    enforceOwnership = true,
 }) {
     // Persist both the job and payload in one transaction so a restart cannot drop queued work.
     const payloadMeta = {
@@ -786,21 +1023,32 @@ async function enqueueDbImportJob({
         reportSourceName: rawReportSourceName || null,
         queuedByUserId: user?.id || null,
         parseMemoryLimitMb: normalizeWorkerMemoryLimitMb(parseMemoryLimitMb),
+        autosyncEnabled: !!autosyncConfig?.enabled,
+        autosyncProvider: autosyncConfig?.provider || null,
+        autosyncSourceRef: autosyncConfig?.sourceRef || null,
+        autosyncGroupId: autosyncConfig?.groupId || null,
+        autosyncUserId: autosyncConfig?.userId || null,
+        autosyncRemoteMarker: autosyncConfig?.remoteMarker || null,
+        autosyncRemoteModifiedAt: autosyncConfig?.remoteModifiedAt || null,
+        autosyncDisplayName: autosyncConfig?.displayName || null,
+        autosyncFileLabel: autosyncConfig?.fileLabel || null,
     };
     const client = await getClient();
     try {
         await client.query("BEGIN");
-        const resolvedSource = await resolveReportSourceForUpload(client, {
-            reportSourceId: rawReportSourceId || null,
-            reportSourceName: rawReportSourceName || null,
-            user,
-        });
+        const resolvedSource = enforceOwnership
+            ? await resolveReportSourceForUpload(client, {
+                reportSourceId: rawReportSourceId || null,
+                reportSourceName: rawReportSourceName || null,
+                user,
+            })
+            : await loadReportSourceForImport(client, rawReportSourceId);
         payloadMeta.reportSourceId = resolvedSource.id;
         payloadMeta.reportSourceName = resolvedSource.name;
 
         await createImportJob(client, {
             id: importJobId,
-            mode: approvalRequired ? "async_pending_approval" : "async",
+            mode: mode || (approvalRequired ? "async_pending_approval" : "async"),
             status: "queued",
             stage: "queued",
             requestedBy: user?.id || null,
@@ -908,19 +1156,19 @@ async function markImportJobRetryable({ id, attempts, maxAttempts, error }) {
     return "retryable";
 }
 
-async function executeQueuedImportJob(job) {
+async function executeQueuedImportJob(job, payloadRows = null) {
     // Payload lives in DB until the job reaches a terminal state.
-    const payloadRows = await query(
+    const rows = payloadRows || await query(
         `SELECT file_bytes, payload_meta, byte_size
            FROM import_job_payloads
           WHERE job_id = $1
           LIMIT 1`,
         [job.id]
     );
-    if (!payloadRows.length) {
+    if (!rows.length) {
         throw toImportError("import_payload_missing", 500);
     }
-    const payload = payloadRows[0];
+    const payload = rows[0];
     const payloadMeta = parseJsonMaybe(payload.payload_meta, {}) || {};
     const displayName = sanitizeDisplayName(payloadMeta.displayName);
     const fileLabel = String(payloadMeta.fileLabel || displayName || "File").trim();
@@ -940,6 +1188,18 @@ async function executeQueuedImportJob(job) {
         originalName: String(job.original_filename || "uploaded.xlsx"),
         user: { id: job.requested_by || null, role: "admin" },
         enforceOwnership: false,
+        fileSizeBytes: Number(payload.byte_size || payloadMeta.fileSize || 0),
+        autosyncConfig: payloadMeta.autosyncEnabled ? {
+            enabled: true,
+            provider: payloadMeta.autosyncProvider,
+            sourceRef: payloadMeta.autosyncSourceRef,
+            groupId: payloadMeta.autosyncGroupId,
+            userId: payloadMeta.autosyncUserId,
+            remoteMarker: payloadMeta.autosyncRemoteMarker,
+            remoteModifiedAt: payloadMeta.autosyncRemoteModifiedAt,
+            displayName: payloadMeta.autosyncDisplayName,
+            fileLabel: payloadMeta.autosyncFileLabel,
+        } : null,
     });
 
     await query("DELETE FROM import_job_payloads WHERE job_id = $1", [job.id]);
@@ -963,8 +1223,15 @@ async function executeQueuedImportJob(job) {
 async function processNextImportJob(ownerId) {
     const job = await claimNextImportJob(ownerId);
     if (!job) return false;
+    const payloadRows = await query(
+        `SELECT file_bytes, payload_meta, byte_size
+           FROM import_job_payloads
+          WHERE job_id = $1
+          LIMIT 1`,
+        [job.id]
+    );
     try {
-        await executeQueuedImportJob(job);
+        await executeQueuedImportJob(job, payloadRows);
     } catch (err) {
         const outcome = await markImportJobRetryable({
             id: job.id,
@@ -974,6 +1241,18 @@ async function processNextImportJob(ownerId) {
         });
         if (outcome === "failed") {
             console.error(`[import_worker] job=${job.id} failed:`, err?.message || err);
+            const payloadMeta = parseJsonMaybe(payloadRows?.[0]?.payload_meta, {}) || {};
+            if (String(job.mode || "").toLowerCase() === "autosync" && job.report_source_id && payloadMeta.autosyncEnabled) {
+                await query(
+                    `UPDATE report_sources
+                        SET sync_last_error = $2,
+                            sync_last_checked_at = CURRENT_TIMESTAMP,
+                            sync_updated_at = CURRENT_TIMESTAMP,
+                            updated_at = CURRENT_TIMESTAMP
+                      WHERE id = $1`,
+                    [job.report_source_id, String(err?.message || "autosync_failed").slice(0, 500)]
+                );
+            }
             await writeAuditLog({
                 actorUserId: job.requested_by || null,
                 action: "import.failed",
@@ -1049,6 +1328,288 @@ export async function stopImportJobWorker() {
     importWorkerOwnerId = null;
 }
 
+const AUTOSYNC_POLL_SETTINGS_KEY = "autosync_poll_interval_settings";
+const AUTOSYNC_DEFAULT_POLL_MS = Math.max(15000, Number.parseInt(process.env.AUTOSYNC_POLL_MS || "300000", 10) || 300000);
+const AUTOSYNC_MAX_CLAIMS_PER_TICK = Math.max(1, Number.parseInt(process.env.AUTOSYNC_MAX_CLAIMS_PER_TICK || "5", 10) || 5);
+const AUTOSYNC_RECHECK_MS = Math.max(60000, Number.parseInt(process.env.AUTOSYNC_RECHECK_MS || "60000", 10) || 60000);
+let autosyncWorkerTimer = null;
+let autosyncWorkerRunning = false;
+let autosyncWorkerOwnerId = null;
+let autosyncWorkerStopped = false;
+
+async function loadAutosyncPollIntervalMs() {
+    try {
+        const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [AUTOSYNC_POLL_SETTINGS_KEY]);
+        const rawMinutes = Number.parseInt(rows?.[0]?.value?.intervalMinutes ?? rows?.[0]?.value?.pollMinutes ?? rows?.[0]?.value?.minutes, 10);
+        const minutes = Number.isFinite(rawMinutes) ? Math.min(1440, Math.max(1, rawMinutes)) : null;
+        return minutes ? minutes * 60 * 1000 : AUTOSYNC_DEFAULT_POLL_MS;
+    } catch (err) {
+        console.error("[autosync_worker] failed to load interval setting:", err?.message || err);
+        return AUTOSYNC_DEFAULT_POLL_MS;
+    }
+}
+
+async function claimAutosyncReportSources(ownerId) {
+    const client = await getClient();
+    try {
+        await client.query("BEGIN");
+        const claimed = await client.query(
+            `WITH candidate AS (
+                SELECT id
+                  FROM report_sources
+                 WHERE sync_enabled = TRUE
+                   AND sync_provider IN ('google_drive', 'dropbox', 'onedrive')
+                   AND sync_source_ref IS NOT NULL
+                   AND sync_user_id IS NOT NULL
+                   AND (sync_last_checked_at IS NULL OR sync_last_checked_at <= CURRENT_TIMESTAMP - (($2 || ' milliseconds')::interval))
+                 ORDER BY COALESCE(sync_last_checked_at, created_at) ASC, id ASC
+                 FOR UPDATE SKIP LOCKED
+                 LIMIT $1
+            )
+            UPDATE report_sources rs
+               SET sync_last_checked_at = CURRENT_TIMESTAMP,
+                   sync_updated_at = CURRENT_TIMESTAMP,
+                   updated_at = CURRENT_TIMESTAMP
+              FROM candidate c
+             WHERE rs.id = c.id
+         RETURNING rs.id, rs.name, rs.sync_provider, rs.sync_source_ref, rs.sync_group_id,
+                   rs.sync_user_id, rs.sync_display_name, rs.sync_file_label, rs.sync_remote_marker,
+                   rs.sync_last_attempted_marker, rs.sync_remote_modified_at, rs.sync_last_error`,
+            [AUTOSYNC_MAX_CLAIMS_PER_TICK, String(AUTOSYNC_RECHECK_MS)]
+        );
+        await client.query("COMMIT");
+        return claimed.rows || [];
+    } catch (err) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw err;
+    } finally {
+        client.release();
+    }
+}
+
+async function updateAutosyncSourceState(sourceId, values = {}) {
+    const assignments = [];
+    const params = [sourceId];
+    const push = (sqlExpr, value) => {
+        params.push(value);
+        assignments.push(`${sqlExpr} = $${params.length}`);
+    };
+    if (Object.prototype.hasOwnProperty.call(values, "sync_remote_marker")) push("sync_remote_marker", values.sync_remote_marker);
+    if (Object.prototype.hasOwnProperty.call(values, "sync_last_attempted_marker")) push("sync_last_attempted_marker", values.sync_last_attempted_marker);
+    if (Object.prototype.hasOwnProperty.call(values, "sync_remote_modified_at")) push("sync_remote_modified_at", values.sync_remote_modified_at);
+    if (Object.prototype.hasOwnProperty.call(values, "sync_last_synced_at")) push("sync_last_synced_at", values.sync_last_synced_at);
+    if (Object.prototype.hasOwnProperty.call(values, "sync_last_error")) push("sync_last_error", values.sync_last_error);
+    if (Object.prototype.hasOwnProperty.call(values, "sync_last_checked_at")) push("sync_last_checked_at", values.sync_last_checked_at);
+    if (Object.prototype.hasOwnProperty.call(values, "sync_display_name")) push("sync_display_name", values.sync_display_name);
+    if (Object.prototype.hasOwnProperty.call(values, "sync_file_label")) push("sync_file_label", values.sync_file_label);
+    if (Object.prototype.hasOwnProperty.call(values, "sync_provider")) push("sync_provider", values.sync_provider);
+    if (Object.prototype.hasOwnProperty.call(values, "sync_source_ref")) push("sync_source_ref", values.sync_source_ref);
+    if (Object.prototype.hasOwnProperty.call(values, "sync_group_id")) push("sync_group_id", values.sync_group_id);
+    if (Object.prototype.hasOwnProperty.call(values, "sync_user_id")) push("sync_user_id", values.sync_user_id);
+    if (!assignments.length) return;
+    await query(
+        `UPDATE report_sources
+            SET ${assignments.join(", ")},
+                sync_updated_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+          WHERE id = $1`,
+        params
+    );
+}
+
+async function processAutosyncReportSource(source) {
+    const provider = String(source?.sync_provider || "").trim().toLowerCase();
+    const sourceRef = String(source?.sync_source_ref || "").trim();
+    const groupId = parsePositiveIntLike(source?.sync_group_id);
+    const userId = parsePositiveIntLike(source?.sync_user_id);
+    if (!provider || !sourceRef || !userId) return;
+
+    const remoteMeta = await fetchProviderAutosyncMetadata({
+        provider,
+        groupId,
+        userId,
+        sourceRef,
+    });
+    if (!remoteMeta?.remoteMarker) {
+        await updateAutosyncSourceState(source.id, {
+            sync_last_error: "autosync_remote_marker_missing",
+            sync_last_checked_at: new Date().toISOString(),
+        });
+        return;
+    }
+
+    const currentMarker = String(source.sync_remote_marker || "").trim();
+    const lastAttemptedMarker = String(source.sync_last_attempted_marker || "").trim();
+
+    if (!currentMarker && !lastAttemptedMarker) {
+        await updateAutosyncSourceState(source.id, {
+            sync_remote_marker: remoteMeta.remoteMarker,
+            sync_last_attempted_marker: remoteMeta.remoteMarker,
+            sync_remote_modified_at: remoteMeta.remoteModifiedAt || null,
+            sync_last_error: null,
+            sync_last_checked_at: new Date().toISOString(),
+        });
+        return;
+    }
+
+    if (remoteMeta.remoteMarker === currentMarker || remoteMeta.remoteMarker === lastAttemptedMarker) {
+        return;
+    }
+
+    const displayName = String(source.sync_display_name || source.name || remoteMeta.originalName || "Report source").trim();
+    const fileLabel = String(source.sync_file_label || source.name || displayName || "File").trim();
+    const downloaded = await downloadProviderAutosyncFile({
+        provider,
+        groupId,
+        userId,
+        sourceRef,
+    });
+
+    if (IMPORT_DB_QUEUE_ENABLED) {
+        const importJobId = randomUUID();
+        await enqueueDbImportJob({
+            user: { id: userId, role: "admin" },
+            approvalRequired: false,
+            importJobId,
+            originalName: downloaded.originalName || remoteMeta.originalName || `${displayName}.xlsx`,
+            displayName,
+            fileLabel,
+            rawReportSourceId: String(source.id),
+            rawReportSourceName: source.name || displayName,
+            fileBuffer: downloaded.buffer,
+            contentType: downloaded.mimeType || "application/octet-stream",
+            fileSize: downloaded.buffer.length || 0,
+            parseMemoryLimitMb: null,
+            autosyncConfig: {
+                enabled: true,
+                provider,
+                sourceRef,
+                groupId,
+                userId,
+                remoteMarker: remoteMeta.remoteMarker,
+                remoteModifiedAt: remoteMeta.remoteModifiedAt,
+                displayName,
+                fileLabel,
+            },
+            mode: "autosync",
+            enforceOwnership: false,
+        });
+        await updateAutosyncSourceState(source.id, {
+            sync_last_attempted_marker: remoteMeta.remoteMarker,
+            sync_remote_modified_at: remoteMeta.remoteModifiedAt || null,
+            sync_last_error: null,
+            sync_last_checked_at: new Date().toISOString(),
+            sync_display_name: displayName,
+            sync_file_label: fileLabel,
+            sync_provider: provider,
+            sync_source_ref: sourceRef,
+            sync_group_id: groupId,
+            sync_user_id: userId,
+        });
+        return;
+    }
+
+    const parsedResult = await parseWorkbookBufferOrThrow(downloaded.buffer, { memoryLimitMb: null });
+    await executeImportFromParsedWorkbook({
+        parsedResult,
+        approvalRequired: false,
+        importJobId: randomUUID(),
+        reportSourceId: source.id,
+        reportSourceName: source.name || displayName,
+        displayName,
+        fileLabel,
+        originalName: downloaded.originalName || remoteMeta.originalName || `${displayName}.xlsx`,
+        user: { id: userId, role: "admin" },
+        enforceOwnership: false,
+        fileSizeBytes: Number(downloaded?.size || downloaded?.buffer?.length || 0),
+        autosyncConfig: {
+            enabled: true,
+            provider,
+            sourceRef,
+            groupId,
+            userId,
+            remoteMarker: remoteMeta.remoteMarker,
+            remoteModifiedAt: remoteMeta.remoteModifiedAt,
+            displayName,
+            fileLabel,
+        },
+    });
+}
+
+async function processAutosyncSourcesForCurrentDb(ownerId) {
+    await ensureReportSourcesSchema();
+    const sources = await claimAutosyncReportSources(ownerId);
+    if (!sources.length) return false;
+    let claimedAny = false;
+    for (const source of sources) {
+        claimedAny = true;
+        try {
+            await processAutosyncReportSource(source);
+        } catch (err) {
+            console.error(`[autosync_worker] source=${source.id} failed:`, err?.message || err);
+            await updateAutosyncSourceState(source.id, {
+                sync_last_error: String(err?.message || "autosync_failed").slice(0, 500),
+                sync_last_checked_at: new Date().toISOString(),
+            });
+        }
+    }
+    return claimedAny;
+}
+
+async function scheduleNextAutosyncWorkerTick() {
+    if (autosyncWorkerStopped) return;
+    if (autosyncWorkerTimer) {
+        clearTimeout(autosyncWorkerTimer);
+        autosyncWorkerTimer = null;
+    }
+    const delayMs = await loadAutosyncPollIntervalMs();
+    if (autosyncWorkerStopped) return;
+    autosyncWorkerTimer = setTimeout(() => {
+        void runReportSourceAutosyncWorkerTick();
+    }, delayMs);
+    if (autosyncWorkerTimer.unref) autosyncWorkerTimer.unref();
+}
+
+async function runReportSourceAutosyncWorkerTick() {
+    if (autosyncWorkerStopped) return;
+    if (autosyncWorkerRunning) {
+        await scheduleNextAutosyncWorkerTick();
+        return;
+    }
+    autosyncWorkerRunning = true;
+    try {
+        await processAutosyncSourcesForCurrentDb(autosyncWorkerOwnerId);
+        await forEachActiveTenantPool(async (tenant) => {
+            await processAutosyncSourcesForCurrentDb(`${autosyncWorkerOwnerId}:${tenant.db_name}`);
+        });
+    } catch (err) {
+        console.error("[autosync_worker] tick failed:", err?.message || err);
+    } finally {
+        autosyncWorkerRunning = false;
+        await scheduleNextAutosyncWorkerTick();
+    }
+}
+
+export function startReportSourceAutosyncWorker() {
+    if (autosyncWorkerTimer) return;
+    autosyncWorkerStopped = false;
+    autosyncWorkerOwnerId = `${process.pid}:${randomUUID().slice(0, 8)}`;
+    void scheduleNextAutosyncWorkerTick();
+    console.log(`[autosync_worker] started owner=${autosyncWorkerOwnerId} poll_ms=dynamic`);
+}
+
+export async function stopReportSourceAutosyncWorker() {
+    if (autosyncWorkerTimer) {
+        clearTimeout(autosyncWorkerTimer);
+        autosyncWorkerTimer = null;
+    }
+    autosyncWorkerStopped = true;
+    while (autosyncWorkerRunning) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    autosyncWorkerOwnerId = null;
+}
+
 export async function uploadSheet(req, res) {
     let filePath = req.file?.path;
     let importJobId = req.importJobId || randomUUID();
@@ -1068,6 +1629,7 @@ export async function uploadSheet(req, res) {
         const approvalRequired = uploadRequiresApproval(req);
         const rawReportSourceId = req.body?.reportSourceId ?? req.body?.report_source_id;
         const rawReportSourceName = req.body?.reportSourceName ?? req.body?.report_source_name;
+        const autosyncConfig = parseAutosyncConfig(req.body);
         if (!displayName) {
             if (filePath) fs.unlink(filePath, () => {});
             return res.status(400).json({ error: "display_name_required" });
@@ -1098,6 +1660,7 @@ export async function uploadSheet(req, res) {
                 contentType: req.file?.mimetype || null,
                 fileSize: req.file?.size || fileBuffer.length || 0,
                 parseMemoryLimitMb,
+                autosyncConfig,
             });
             await writeAuditLog({
                 req,
@@ -1106,11 +1669,12 @@ export async function uploadSheet(req, res) {
                 resourceId: importJobId,
                 metadata: {
                     report_source_id: resolvedSource.id,
-                    report_source_name: resolvedSource.name,
-                    approval_required: !!approvalRequired,
-                    mode: "async_db_queue",
-                    file_size: Number(req.file?.size || fileBuffer.length || 0),
-                },
+                report_source_name: resolvedSource.name,
+                autosync_enabled: !!autosyncConfig?.enabled,
+                approval_required: !!approvalRequired,
+                mode: "async_db_queue",
+                file_size: Number(req.file?.size || fileBuffer.length || 0),
+            },
             });
             return res.status(202).json({
                 status: "queued",
@@ -1120,6 +1684,7 @@ export async function uploadSheet(req, res) {
                 reportSourceId: resolvedSource.id,
                 report_source_id: resolvedSource.id,
                 report_source_name: resolvedSource.name,
+                autosync_enabled: !!autosyncConfig?.enabled,
                 filename: originalName,
                 display_name: displayName,
             });
@@ -1159,6 +1724,8 @@ export async function uploadSheet(req, res) {
             originalName,
             user: req.user,
             enforceOwnership: true,
+            fileSizeBytes: Number(req.file?.size || fileBuffer.length || 0),
+            autosyncConfig,
         });
 
         await writeAuditLog({
@@ -1212,6 +1779,169 @@ export async function uploadSheet(req, res) {
         if (filePath) {
             fs.unlink(filePath, () => {});
         }
+    }
+}
+
+export async function ingestEmailAttachment(req, res) {
+    let importJobId = req.importJobId || randomUUID();
+    let importJobCreated = false;
+    try {
+        const file = req.file
+            || req.files?.file?.[0]
+            || req.files?.attachment?.[0]
+            || (Array.isArray(req.files) ? req.files[0] : null);
+        if (!file) return res.status(400).json({ error: "No file" });
+
+        const senderEmail = normalizeEmailAddress(
+            req.body?.from
+            || req.body?.sender
+            || req.body?.mail_from
+            || req.body?.mailFrom
+            || req.body?.envelopeFrom
+            || req.body?.sourceEmail
+        );
+        if (!senderEmail) return res.status(400).json({ error: "sender_email_required" });
+
+        const recipientValues = [
+            req.body?.to,
+            req.body?.recipient,
+            req.body?.envelopeTo,
+            req.body?.deliveredTo,
+            req.body?.originalRecipient,
+        ].filter(Boolean);
+        const recipientAddresses = extractEmailAddresses(recipientValues.join("\n"));
+        if (!recipientAddresses.length) return res.status(400).json({ error: "recipient_email_required" });
+
+        const baseSettings = await loadEmailIngestSettingsForGroup(null);
+        if (baseSettings.enabled === false) return res.status(403).json({ error: "email_ingest_disabled" });
+
+        const targetCustomer = await resolveEmailIngestCustomer({ query }, recipientAddresses, baseSettings);
+        if (!targetCustomer) return res.status(404).json({ error: "customer_email_not_resolved" });
+
+        const customerSettings = await loadEmailIngestSettingsForGroup(targetCustomer.group_id);
+        if (customerSettings.requireApprovedSenders && !senderDomainIsAllowed(senderEmail, customerSettings.allowedSenderDomains)) {
+            return res.status(403).json({ error: "sender_domain_not_allowed" });
+        }
+
+        const originalName = String(file.originalname || "email-attachment.xlsx").trim() || "email-attachment.xlsx";
+        const subject = String(req.body?.subject || req.body?.emailSubject || "").trim();
+        const fileLabel = String(req.body?.file_label || req.body?.fileLabel || subject || path.basename(originalName, path.extname(originalName)) || originalName).trim() || originalName;
+        const displayName = sanitizeDisplayName(
+            req.body?.display_name
+            || req.body?.displayName
+            || targetCustomer.customer_name
+            || targetCustomer.group_name
+            || fileLabel
+        );
+
+        const client = await getClient();
+        let reportSource = null;
+        try {
+            await client.query("BEGIN");
+            reportSource = await resolveOrCreateEmailReportSource(client, {
+                groupId: targetCustomer.group_id,
+                recipientAddress: targetCustomer.recipientAddress || recipientAddresses[0],
+                customerName: targetCustomer.customer_name || targetCustomer.group_name,
+                fileLabel,
+                messageId: String(req.body?.messageId || req.body?.message_id || "").trim() || null,
+            });
+
+            await createImportJob(client, {
+                id: importJobId,
+                mode: "email",
+                status: "running",
+                stage: "processing",
+                requestedBy: null,
+                reportSourceId: reportSource.id,
+                originalFilename: originalName,
+                maxAttempts: 1,
+            });
+            await client.query("COMMIT");
+            importJobCreated = true;
+        } catch (err) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw err;
+        } finally {
+            client.release();
+        }
+
+        const parseMemoryLimitMb = await resolveTenantParseMemoryLimitMb({ customer_group_id: targetCustomer.group_id });
+        const fileBuffer = file.buffer || (file.path ? await fs.promises.readFile(file.path) : null);
+        if (!fileBuffer) return res.status(400).json({ error: "file_buffer_missing" });
+        const parsedResult = await parseWorkbookBufferOrThrow(fileBuffer, { memoryLimitMb: parseMemoryLimitMb });
+
+        const { responsePayload, importStatus } = await executeImportFromParsedWorkbook({
+            parsedResult,
+            approvalRequired: false,
+            importJobId,
+            reportSourceId: reportSource.id,
+            reportSourceName: reportSource.name,
+            displayName,
+            fileLabel,
+            originalName,
+            user: null,
+            enforceOwnership: false,
+            fileSizeBytes: Number(file?.size || fileBuffer.length || 0),
+            autosyncConfig: null,
+        });
+
+        await writeAuditLog({
+            req,
+            action: "email_ingest.imported",
+            resourceType: "report_source_import",
+            resourceId: responsePayload.importId,
+            metadata: {
+                report_source_id: responsePayload.report_source_id,
+                sheet_id: responsePayload.sheetId,
+                job_id: importJobId,
+                rows: responsePayload.rows,
+                tabs: Array.isArray(responsePayload.tabs) ? responsePayload.tabs.length : 0,
+                schema_status: responsePayload.schema_status,
+                sender_email: senderEmail,
+                recipient_email: targetCustomer.recipientAddress || "",
+                source_group_id: targetCustomer.group_id,
+                mode: "email",
+                import_status: importStatus,
+            },
+        });
+        return res.json({
+            ...responsePayload,
+            email_sender: senderEmail,
+            email_recipient: targetCustomer.recipientAddress,
+            customer_group_id: targetCustomer.group_id,
+            customer_id: targetCustomer.customer_id,
+        });
+    } catch (e) {
+        console.error("email ingest failed:", e);
+        if (importJobCreated) {
+            try {
+                await query(
+                    `UPDATE import_jobs
+                        SET status = 'failed',
+                            stage = 'failed',
+                            error = $2,
+                            finished_at = CURRENT_TIMESTAMP,
+                            lease_owner = NULL,
+                            lease_expires_at = NULL,
+                            next_attempt_at = NULL,
+                            updated_at = CURRENT_TIMESTAMP
+                      WHERE id = $1`,
+                    [importJobId, String(e?.message || "email_ingest_failed").slice(0, 500)]
+                );
+            } catch {
+                // Preserve the original ingest error response.
+            }
+        }
+        if (e?.code === "LIMIT_FILE_SIZE") {
+            return res.status(413).json({ error: "file_too_large", maxMB: 100 });
+        }
+        if (e?.statusCode) {
+            const body = { error: e.message || "email_ingest_failed" };
+            if (e.publicMessage) body.message = e.publicMessage;
+            if (e.details && typeof e.details === "object") Object.assign(body, e.details);
+            return res.status(e.statusCode).json(body);
+        }
+        return res.status(500).json({ error: "email_ingest_failed", message: e.message || "An unexpected error occurred during email ingest." });
     }
 }
 
@@ -1423,6 +2153,11 @@ export async function listReportSources(req, res) {
     if (req.user.role === "admin") {
         const rows = await query(
             `SELECT rs.id, rs.name, rs.current_sheet_id, rs.is_inferred,
+                    rs.sync_enabled, rs.sync_provider, rs.sync_source_ref,
+                    rs.sync_group_id, rs.sync_user_id, rs.sync_display_name,
+                    rs.sync_file_label, rs.sync_remote_marker, rs.sync_last_attempted_marker,
+                    rs.sync_remote_modified_at, rs.sync_last_checked_at, rs.sync_last_synced_at,
+                    rs.sync_last_error,
                     rs.created_at, rs.updated_at,
                     COALESCE(import_counts.import_count, 0)::int AS import_count
              FROM report_sources rs
@@ -1439,6 +2174,11 @@ export async function listReportSources(req, res) {
 
     const rows = await query(
         `SELECT DISTINCT rs.id, rs.name, rs.current_sheet_id, rs.is_inferred,
+                rs.sync_enabled, rs.sync_provider, rs.sync_source_ref,
+                rs.sync_group_id, rs.sync_user_id, rs.sync_display_name,
+                rs.sync_file_label, rs.sync_remote_marker, rs.sync_last_attempted_marker,
+                rs.sync_remote_modified_at, rs.sync_last_checked_at, rs.sync_last_synced_at,
+                rs.sync_last_error,
                 rs.created_at, rs.updated_at,
                 COALESCE(import_counts.import_count, 0)::int AS import_count
          FROM report_sources rs
@@ -1473,6 +2213,61 @@ export async function listReportSources(req, res) {
     res.json(rows);
 }
 
+export async function updateReportSourceAutosync(req, res) {
+    const sourceId = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(sourceId) || sourceId <= 0) {
+        return res.status(400).json({ error: "invalid_report_source_id" });
+    }
+    const enabled = parseBooleanLike(req.body?.enabled ?? req.body?.sync_enabled ?? req.body?.syncEnabled);
+    const client = await getClient();
+    try {
+        await client.query("BEGIN");
+        const sourceRes = await client.query(
+            `SELECT id, created_by, sync_provider, sync_source_ref, sync_enabled
+               FROM report_sources
+              WHERE id = $1
+              FOR UPDATE`,
+            [sourceId]
+        );
+        if (!sourceRes.rows.length) {
+            await client.query("ROLLBACK");
+            return res.status(404).json({ error: "not_found" });
+        }
+        const source = sourceRes.rows[0];
+        const canApprove = await userCanApproveReportSource(client, req.user, sourceId);
+        if (!canApprove) {
+            await client.query("ROLLBACK");
+            return res.status(403).json({ error: "Forbidden" });
+        }
+        if (enabled && (!String(source.sync_provider || "").trim() || !String(source.sync_source_ref || "").trim())) {
+            await client.query("ROLLBACK");
+            return res.status(409).json({ error: "autosync_source_not_configured" });
+        }
+        await client.query(
+            `UPDATE report_sources
+                SET sync_enabled = $2,
+                    sync_last_error = CASE WHEN $2 THEN NULL ELSE sync_last_error END,
+                    updated_at = CURRENT_TIMESTAMP
+              WHERE id = $1`,
+            [sourceId, enabled]
+        );
+        await client.query("COMMIT");
+        await writeAuditLog({
+            req,
+            action: "report_source.autosync_updated",
+            resourceType: "report_source",
+            resourceId: sourceId,
+            metadata: { enabled },
+        });
+        return res.json({ success: true, id: sourceId, sync_enabled: enabled });
+    } catch (err) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw err;
+    } finally {
+        client.release();
+    }
+}
+
 export async function getReportSourceImports(req, res) {
     const sourceId = Number.parseInt(req.params.id, 10);
     if (!Number.isInteger(sourceId) || sourceId <= 0) {
@@ -1490,7 +2285,7 @@ export async function getReportSourceImports(req, res) {
         `SELECT rsi.id, rsi.report_source_id, rsi.sheet_id, rsi.import_version, rsi.file_label,
                 rsi.original_filename, rsi.schema_status, rsi.schema_diff, rsi.status,
                 rsi.published_at, rsi.published_by, rsi.rejected_at, rsi.rejected_by,
-                rsi.review_notes, rsi.job_id, rsi.created_at,
+                rsi.review_notes, rsi.job_id, rsi.file_size_bytes, rsi.created_at,
                 s.display_name, s.filename, s.uploaded_at,
                 COALESCE(NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), u.email) AS imported_by_name
          FROM report_source_imports rsi

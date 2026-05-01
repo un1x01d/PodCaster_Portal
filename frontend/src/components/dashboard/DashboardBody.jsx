@@ -13,6 +13,8 @@ import TrendsOverlay from "./TrendsOverlay";
 import TwoConditionOverlay from "./TwoConditionOverlay";
 import EbitdaMenu from "./EbitdaMenu";
 import InsightFeed from "./InsightFeed";
+import SourceProviderIcon from "../common/SourceProviderIcon";
+import StorageImportPicker from "../common/StorageImportPicker";
 import { DASHBOARD_COPY_EN } from "../../hooks/useDashboardI18n";
 
 import { renderMaybeDate, formatSmart } from "../../utils/formatting";
@@ -24,6 +26,7 @@ export default function DashboardBody(props) {
         token,
         API,
         sheetId,
+        setSheetId,
         file,
         setFile,
         selectedFileName,
@@ -46,7 +49,12 @@ export default function DashboardBody(props) {
         handleOneDriveImport,
         handleOneDriveConnect,
         oneDriveEnabled,
+        sftpStorageEnabled,
+        gcsStorageEnabled,
+        s3StorageEnabled,
+        azureBlobStorageEnabled,
         loadData,
+        refreshReportSources = () => {},
         selectedViewId,
         setSelectedViewId,
         views,
@@ -109,8 +117,10 @@ export default function DashboardBody(props) {
 
         // Tab support
         tabs,
+        setTabs,
         activeTab,
-        onTabChange,
+        onTabChange = () => {},
+        tabListCacheRef = { current: {} },
 
         // Calcs
         appendCalculatedColumn,
@@ -455,10 +465,248 @@ export default function DashboardBody(props) {
     const [oneDriveBreadcrumbs, setOneDriveBreadcrumbs] = useState([{ id: "root", name: "OneDrive" }]);
     const [selectedOneDriveFile, setSelectedOneDriveFile] = useState(null);
     const [isNewLabel, setIsNewLabel] = useState(false);
+    const [autosyncEnabled, setAutosyncEnabled] = useState(false);
+    const [autosyncToggleBusyId, setAutosyncToggleBusyId] = useState("");
+    const [storagePickers, setStoragePickers] = useState({
+        sftp_storage: {
+            open: false,
+            entries: [],
+            loading: false,
+            breadcrumbs: [{ path: "", name: "SFTP" }],
+            selected: null,
+            selectedReportSourceId: "",
+            fileLabel: "",
+            isNewLabel: false,
+            autosyncEnabled: false,
+        },
+        gcs_storage: {
+            open: false,
+            entries: [],
+            loading: false,
+            breadcrumbs: [{ path: "", name: "Google Cloud Storage" }],
+            selected: null,
+            selectedReportSourceId: "",
+            fileLabel: "",
+            isNewLabel: false,
+            autosyncEnabled: false,
+        },
+        s3_storage: {
+            open: false,
+            entries: [],
+            loading: false,
+            breadcrumbs: [{ path: "", name: "Amazon S3" }],
+            selected: null,
+            selectedReportSourceId: "",
+            fileLabel: "",
+            isNewLabel: false,
+            autosyncEnabled: false,
+        },
+        azure_blob_storage: {
+            open: false,
+            entries: [],
+            loading: false,
+            breadcrumbs: [{ path: "", name: "Azure Blob Storage" }],
+            selected: null,
+            selectedReportSourceId: "",
+            fileLabel: "",
+            isNewLabel: false,
+            autosyncEnabled: false,
+        },
+    });
+
+    const storageProviderMeta = React.useMemo(() => ({
+        sftp_storage: { label: "SFTP", title: "Import from SFTP", rootName: "SFTP" },
+        gcs_storage: { label: "Google Cloud Storage", title: "Import from Google Cloud Storage", rootName: "Google Cloud Storage" },
+        s3_storage: { label: "Amazon S3", title: "Import from Amazon S3", rootName: "Amazon S3" },
+        azure_blob_storage: { label: "Azure Blob Storage", title: "Import from Azure Blob Storage", rootName: "Azure Blob Storage" },
+    }), []);
+
+    const anyStoragePickerOpen = useMemo(() => Object.values(storagePickers).some((picker) => picker.open), [storagePickers]);
+
+    useEffect(() => {
+        if (!drivePickerOpen && !dropboxPickerOpen && !oneDrivePickerOpen && !anyStoragePickerOpen) {
+            setAutosyncEnabled(false);
+            return;
+        }
+        const selectedSource = (reportSources || []).find((source) => String(source.id || "") === String(selectedReportSourceId || ""));
+        setAutosyncEnabled(!!selectedSource?.sync_enabled);
+    }, [drivePickerOpen, dropboxPickerOpen, oneDrivePickerOpen, anyStoragePickerOpen, reportSources, selectedReportSourceId]);
+
+    const toggleReportSourceAutosync = React.useCallback(async (sourceId, nextEnabled) => {
+        const id = String(sourceId || "");
+        if (!id || autosyncToggleBusyId) return;
+        setAutosyncToggleBusyId(id);
+        try {
+            await axios.patch(`${API}/report-sources/${id}/autosync`, { enabled: !!nextEnabled }, {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            await refreshReportSources();
+        } catch (e) {
+            alert(e?.response?.data?.error || "Failed to update autosync setting");
+        } finally {
+            setAutosyncToggleBusyId("");
+        }
+    }, [API, token, autosyncToggleBusyId, refreshReportSources]);
 
     const toggleMenu = (key) => {
         setExpandedMenus((prev) => ({ ...prev, [key]: !prev[key] }));
     };
+
+    const setStoragePicker = React.useCallback((provider, patch) => {
+        setStoragePickers((prev) => ({
+            ...prev,
+            [provider]: {
+                ...prev[provider],
+                ...patch,
+            },
+        }));
+    }, []);
+
+    const resetStoragePicker = React.useCallback((provider, rootName) => {
+        setStoragePickers((prev) => ({
+            ...prev,
+            [provider]: {
+                open: false,
+                entries: [],
+                loading: false,
+                breadcrumbs: [{ path: "", name: rootName }],
+                selected: null,
+                selectedReportSourceId: "",
+                fileLabel: "",
+                isNewLabel: false,
+                autosyncEnabled: false,
+            },
+        }));
+    }, []);
+
+    const fetchStorageEntries = React.useCallback(async (provider, nextPath = "", nextBreadcrumbs = null) => {
+        const meta = storageProviderMeta[provider];
+        if (!meta) return;
+        setStoragePicker(provider, { loading: true });
+        try {
+            const res = await axios.get(`${API}/storage/${provider}/files`, {
+                params: nextPath ? { path: nextPath } : undefined,
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            const normalized = Array.isArray(res?.data?.entries)
+                ? res.data.entries.map((entry) => ({
+                    ...entry,
+                    id: String(entry?.id || entry?.path || ""),
+                    name: String(entry?.name || ""),
+                    path: String(entry?.path || entry?.id || ""),
+                    isFolder: !!entry?.isFolder,
+                    size: Number(entry?.size || 0),
+                    updatedAt: entry?.updatedAt || null,
+                })).filter((entry) => entry.id)
+                : [];
+            setStoragePicker(provider, {
+                entries: normalized,
+                breadcrumbs: Array.isArray(nextBreadcrumbs) && nextBreadcrumbs.length ? nextBreadcrumbs : [{ path: "", name: meta.rootName }],
+                loading: false,
+            });
+        } catch (e) {
+            console.error(`Fetch ${meta.label} entries failed:`, e);
+            alert(e?.response?.data?.error || `Failed to fetch ${meta.label} files`);
+            setStoragePicker(provider, { loading: false });
+        }
+    }, [API, token, setStoragePicker, storageProviderMeta]);
+
+    const openStoragePicker = React.useCallback((provider) => {
+        const meta = storageProviderMeta[provider];
+        if (!meta) return;
+        setStoragePicker(provider, {
+            open: true,
+            selected: null,
+            selectedReportSourceId: "",
+            fileLabel: "",
+            isNewLabel: false,
+            autosyncEnabled: false,
+            breadcrumbs: [{ path: "", name: meta.rootName }],
+        });
+        fetchStorageEntries(provider, "", [{ path: "", name: meta.rootName }]);
+    }, [fetchStorageEntries, setStoragePicker, storageProviderMeta]);
+
+    const closeStoragePicker = React.useCallback((provider) => {
+        const meta = storageProviderMeta[provider];
+        if (!meta) return;
+        resetStoragePicker(provider, meta.rootName);
+    }, [resetStoragePicker, storageProviderMeta]);
+
+    const navigateStoragePicker = React.useCallback((provider, index) => {
+        const picker = storagePickers[provider];
+        const meta = storageProviderMeta[provider];
+        if (!picker || !meta) return;
+        const nextBreadcrumbs = picker.breadcrumbs.slice(0, index + 1);
+        const target = nextBreadcrumbs[nextBreadcrumbs.length - 1];
+        setStoragePicker(provider, { selected: null });
+        fetchStorageEntries(provider, target?.path || "", nextBreadcrumbs);
+    }, [fetchStorageEntries, setStoragePicker, storagePickers, storageProviderMeta]);
+
+    const handleStorageEntrySelect = React.useCallback((provider, entry) => {
+        const picker = storagePickers[provider];
+        const meta = storageProviderMeta[provider];
+        if (!picker || !meta) return;
+        if (entry?.isFolder) {
+            const nextBreadcrumbs = (picker.breadcrumbs || []).concat([{ path: entry.path || "", name: entry.name || "Folder" }]);
+            setStoragePicker(provider, { selected: null });
+            fetchStorageEntries(provider, entry.path || "", nextBreadcrumbs);
+            return;
+        }
+        setStoragePicker(provider, { selected: entry });
+    }, [fetchStorageEntries, setStoragePicker, storagePickers, storageProviderMeta]);
+
+    const handleStorageImport = React.useCallback(async (provider, selectedEntry) => {
+        const picker = storagePickers[provider];
+        const meta = storageProviderMeta[provider];
+        if (!picker || !meta || !selectedEntry || !String(picker.fileLabel || "").trim()) return;
+        try {
+            const res = await axios.post(
+                `${API}/storage/${provider}/import`,
+                {
+                    sourceRef: selectedEntry.path || selectedEntry.id,
+                    name: selectedEntry.name,
+                    display_name: String(picker.fileLabel).trim(),
+                    file_label: String(picker.fileLabel).trim(),
+                    autosync_enabled: picker.autosyncEnabled ? "1" : "0",
+                    ...(picker.selectedReportSourceId ? { report_source_id: picker.selectedReportSourceId } : { report_source_name: String(picker.fileLabel).trim() }),
+                },
+                { headers: { Authorization: `Bearer ${token}` } }
+            );
+
+            if (res.data?.status === "queued") {
+                alert(`${meta.label} import queued for processing.`);
+                refreshReportSources();
+                closeStoragePicker(provider);
+                return;
+            }
+            if (res.data?.status === "pending_approval") {
+                alert(`Imported from ${meta.label} and waiting for approval.`);
+                refreshReportSources();
+                closeStoragePicker(provider);
+                return;
+            }
+            alert(`Imported from ${meta.label}!`);
+            if (res.data?.sheetId) {
+                setSheetId(res.data.sheetId);
+                const activeName = res.data.display_name || res.data.filename;
+                setSelectedFileName(activeName);
+                localStorage.setItem("activeFilename", activeName);
+                if (res.data.tabs && res.data.tabs.length > 0) {
+                    tabListCacheRef.current[String(res.data.sheetId)] = res.data.tabs;
+                    setTabs(res.data.tabs);
+                    onTabChange(res.data.tabs[0]);
+                    localStorage.setItem("activeTab", res.data.tabs[0]);
+                }
+                loadData(res.data.sheetId);
+                refreshReportSources();
+            }
+        } catch (e) {
+            console.error(e);
+            alert(e?.response?.data?.error || `${meta.label} import failed`);
+        } finally {
+            closeStoragePicker(provider);
+        }
+    }, [closeStoragePicker, loadData, onTabChange, refreshReportSources, setSelectedFileName, setSheetId, setTabs, storagePickers, storageProviderMeta, tabListCacheRef]);
 
     const activeView = views.find((v) => String(v.id) === String(selectedViewId));
 
@@ -1147,12 +1395,8 @@ export default function DashboardBody(props) {
     }, [reportSources]);
 
     const labelOptions = React.useMemo(() => {
-        if (!selectedReportSourceId) return [];
-        const imports = reportSourceImports[selectedReportSourceId] || [];
-        const labels = new Set(imports.map(i => i.file_label).filter(Boolean));
-        const options = Array.from(labels).sort().map(l => ({ label: l, value: l }));
-        return [...options, { label: "+ Create New Label", value: "__NEW__" }];
-    }, [selectedReportSourceId, reportSourceImports]);
+        return [];
+    }, []);
 
     useEffect(() => {
         if (selectedReportSourceId) {
@@ -1708,14 +1952,12 @@ export default function DashboardBody(props) {
                                                     onClick={openDrivePicker}
                                                     className="left-menu-action inline-flex items-center gap-2"
                                                 >
-                                                    <svg viewBox="0 0 87 78" width="14" height="14" aria-hidden="true" className="shrink-0">
-                                                        <path fill="#0066DA" d="M6.6 77.3L0 65.9L22.4 27.2H35.6L6.6 77.3Z" />
-                                                        <path fill="#00AC47" d="M80.4 77.3H6.6L13.2 65.9H87L80.4 77.3Z" />
-                                                        <path fill="#EA4335" d="M50.8 0L87 65.9H73.8L37.6 0H50.8Z" />
-                                                        <path fill="#00832D" d="M35.6 27.2L42.2 15.8H55.4L48.8 27.2H35.6Z" />
-                                                        <path fill="#2684FC" d="M22.4 27.2L29 15.8H42.2L35.6 27.2H22.4Z" />
-                                                        <path fill="#FFBA00" d="M48.8 27.2L55.4 15.8L77.8 54.5L71.2 65.9L48.8 27.2Z" />
-                                                    </svg>
+                                                    <img
+                                                        src="https://fonts.gstatic.com/s/i/productlogos/drive_2020q4/v8/web-64dp/logo_drive_2020q4_color_2x_web_64dp.png"
+                                                        alt=""
+                                                        aria-hidden="true"
+                                                        className="h-3.5 w-3.5 shrink-0"
+                                                    />
                                                     <span>Import from Google Drive</span>
                                                 </button>
                                                 <button
@@ -1738,6 +1980,46 @@ export default function DashboardBody(props) {
                                                     <img src="https://upload.wikimedia.org/wikipedia/commons/e/e7/Microsoft_OneDrive_Icon_%282025_-_present%29.svg" alt="OneDrive" className="h-3.5 w-3.5 shrink-0" />
                                                     <span>Import from OneDrive</span>
                                                 </button>
+                                                {sftpStorageEnabled && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => openStoragePicker("sftp_storage")}
+                                                        className="left-menu-action inline-flex items-center gap-2"
+                                                    >
+                                                        <SourceProviderIcon provider="sftp_storage" className="h-3.5 w-3.5 shrink-0" />
+                                                        <span>Import from SFTP</span>
+                                                    </button>
+                                                )}
+                                                {gcsStorageEnabled && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => openStoragePicker("gcs_storage")}
+                                                        className="left-menu-action inline-flex items-center gap-2"
+                                                    >
+                                                        <SourceProviderIcon provider="gcs_storage" className="h-3.5 w-3.5 shrink-0" />
+                                                        <span>Import from Google Cloud Storage</span>
+                                                    </button>
+                                                )}
+                                                {s3StorageEnabled && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => openStoragePicker("s3_storage")}
+                                                        className="left-menu-action inline-flex items-center gap-2"
+                                                    >
+                                                        <SourceProviderIcon provider="s3_storage" className="h-3.5 w-3.5 shrink-0" />
+                                                        <span>Import from Amazon S3</span>
+                                                    </button>
+                                                )}
+                                                {azureBlobStorageEnabled && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => openStoragePicker("azure_blob_storage")}
+                                                        className="left-menu-action inline-flex items-center gap-2"
+                                                    >
+                                                        <SourceProviderIcon provider="azure_blob_storage" className="h-3.5 w-3.5 shrink-0" />
+                                                        <span>Import from Azure Blob Storage</span>
+                                                    </button>
+                                                )}
                                             </div>
                                     )}
                                 </div>
@@ -1902,6 +2184,15 @@ export default function DashboardBody(props) {
                                     maxLength={120}
                                 />
                             )}
+                            <label className="flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-700">
+                                <input
+                                    type="checkbox"
+                                    checked={autosyncEnabled}
+                                    onChange={(e) => setAutosyncEnabled(e.target.checked)}
+                                    className="h-3.5 w-3.5 rounded border-slate-300 text-slate-800 focus:ring-slate-500"
+                                />
+                                Auto-sync this source when the file changes
+                            </label>
                         </div>
                         <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-4 py-3">
                             <button type="button" onClick={closeDrivePicker} className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
@@ -1920,6 +2211,7 @@ export default function DashboardBody(props) {
                                         reportSourceId: selectedReportSourceId,
                                         reportSourceName: selectedReportSourceId ? "" : fileLabel,
                                         fileLabel: fileLabel,
+                                        autosyncEnabled,
                                     });
                                     setFileLabel("");
                                     closeDrivePicker();
@@ -2046,6 +2338,15 @@ export default function DashboardBody(props) {
                                     maxLength={120}
                                 />
                             )}
+                            <label className="flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-700">
+                                <input
+                                    type="checkbox"
+                                    checked={autosyncEnabled}
+                                    onChange={(e) => setAutosyncEnabled(e.target.checked)}
+                                    className="h-3.5 w-3.5 rounded border-slate-300 text-slate-800 focus:ring-slate-500"
+                                />
+                                Auto-sync this source when the file changes
+                            </label>
                         </div>
                         <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-4 py-3">
                             <button type="button" onClick={closeDropboxPicker} className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
@@ -2058,11 +2359,13 @@ export default function DashboardBody(props) {
                                     if (!selectedDropboxFile) return;
                                     handleDropboxImport({
                                         pathLower: selectedDropboxFile.pathLower,
+                                        fileId: selectedDropboxFile.id,
                                         name: selectedDropboxFile.name,
                                         displayName: fileLabel,
                                         reportSourceId: selectedReportSourceId,
                                         reportSourceName: selectedReportSourceId ? "" : fileLabel,
                                         fileLabel: fileLabel,
+                                        autosyncEnabled,
                                     });
                                     setFileLabel("");
                                     closeDropboxPicker();
@@ -2188,6 +2491,15 @@ export default function DashboardBody(props) {
                                     maxLength={120}
                                 />
                             )}
+                            <label className="flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-700">
+                                <input
+                                    type="checkbox"
+                                    checked={autosyncEnabled}
+                                    onChange={(e) => setAutosyncEnabled(e.target.checked)}
+                                    className="h-3.5 w-3.5 rounded border-slate-300 text-slate-800 focus:ring-slate-500"
+                                />
+                                Auto-sync this source when the file changes
+                            </label>
                         </div>
                         <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-4 py-3">
                             <button type="button" onClick={closeOneDrivePicker} className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
@@ -2205,6 +2517,7 @@ export default function DashboardBody(props) {
                                         reportSourceId: selectedReportSourceId,
                                         reportSourceName: selectedReportSourceId ? "" : fileLabel,
                                         fileLabel: fileLabel,
+                                        autosyncEnabled,
                                     });
                                     setFileLabel("");
                                     closeOneDrivePicker();
@@ -2224,6 +2537,102 @@ export default function DashboardBody(props) {
                     </div>
                 </div>
             )}
+            <StorageImportPicker
+                open={storagePickers.sftp_storage.open}
+                title={storageProviderMeta.sftp_storage.title}
+                subtitle="Supported files: CSV, XLS, XLSX"
+                provider="sftp_storage"
+                breadcrumbs={storagePickers.sftp_storage.breadcrumbs}
+                entries={storagePickers.sftp_storage.entries}
+                loading={storagePickers.sftp_storage.loading}
+                selectedEntry={storagePickers.sftp_storage.selected}
+                onNavigate={(index) => navigateStoragePicker("sftp_storage", index)}
+                onSelect={(entry) => handleStorageEntrySelect("sftp_storage", entry)}
+                onClose={() => closeStoragePicker("sftp_storage")}
+                reportSourceOptions={reportSourceOptions}
+                selectedReportSourceId={storagePickers.sftp_storage.selectedReportSourceId}
+                onChangeReportSourceId={(e) => setStoragePicker("sftp_storage", { selectedReportSourceId: e.target.value })}
+                labelOptions={labelOptions}
+                fileLabel={storagePickers.sftp_storage.fileLabel}
+                onChangeFileLabel={(value) => setStoragePicker("sftp_storage", { fileLabel: value })}
+                isNewLabel={storagePickers.sftp_storage.isNewLabel}
+                onChangeIsNewLabel={(value) => setStoragePicker("sftp_storage", { isNewLabel: !!value })}
+                autosyncEnabled={storagePickers.sftp_storage.autosyncEnabled}
+                onChangeAutosyncEnabled={(value) => setStoragePicker("sftp_storage", { autosyncEnabled: !!value })}
+                onImport={(entry) => handleStorageImport("sftp_storage", entry)}
+            />
+            <StorageImportPicker
+                open={storagePickers.gcs_storage.open}
+                title={storageProviderMeta.gcs_storage.title}
+                subtitle="Supported files: CSV, XLS, XLSX"
+                provider="gcs_storage"
+                breadcrumbs={storagePickers.gcs_storage.breadcrumbs}
+                entries={storagePickers.gcs_storage.entries}
+                loading={storagePickers.gcs_storage.loading}
+                selectedEntry={storagePickers.gcs_storage.selected}
+                onNavigate={(index) => navigateStoragePicker("gcs_storage", index)}
+                onSelect={(entry) => handleStorageEntrySelect("gcs_storage", entry)}
+                onClose={() => closeStoragePicker("gcs_storage")}
+                reportSourceOptions={reportSourceOptions}
+                selectedReportSourceId={storagePickers.gcs_storage.selectedReportSourceId}
+                onChangeReportSourceId={(e) => setStoragePicker("gcs_storage", { selectedReportSourceId: e.target.value })}
+                labelOptions={labelOptions}
+                fileLabel={storagePickers.gcs_storage.fileLabel}
+                onChangeFileLabel={(value) => setStoragePicker("gcs_storage", { fileLabel: value })}
+                isNewLabel={storagePickers.gcs_storage.isNewLabel}
+                onChangeIsNewLabel={(value) => setStoragePicker("gcs_storage", { isNewLabel: !!value })}
+                autosyncEnabled={storagePickers.gcs_storage.autosyncEnabled}
+                onChangeAutosyncEnabled={(value) => setStoragePicker("gcs_storage", { autosyncEnabled: !!value })}
+                onImport={(entry) => handleStorageImport("gcs_storage", entry)}
+            />
+            <StorageImportPicker
+                open={storagePickers.s3_storage.open}
+                title={storageProviderMeta.s3_storage.title}
+                subtitle="Supported files: CSV, XLS, XLSX"
+                provider="s3_storage"
+                breadcrumbs={storagePickers.s3_storage.breadcrumbs}
+                entries={storagePickers.s3_storage.entries}
+                loading={storagePickers.s3_storage.loading}
+                selectedEntry={storagePickers.s3_storage.selected}
+                onNavigate={(index) => navigateStoragePicker("s3_storage", index)}
+                onSelect={(entry) => handleStorageEntrySelect("s3_storage", entry)}
+                onClose={() => closeStoragePicker("s3_storage")}
+                reportSourceOptions={reportSourceOptions}
+                selectedReportSourceId={storagePickers.s3_storage.selectedReportSourceId}
+                onChangeReportSourceId={(e) => setStoragePicker("s3_storage", { selectedReportSourceId: e.target.value })}
+                labelOptions={labelOptions}
+                fileLabel={storagePickers.s3_storage.fileLabel}
+                onChangeFileLabel={(value) => setStoragePicker("s3_storage", { fileLabel: value })}
+                isNewLabel={storagePickers.s3_storage.isNewLabel}
+                onChangeIsNewLabel={(value) => setStoragePicker("s3_storage", { isNewLabel: !!value })}
+                autosyncEnabled={storagePickers.s3_storage.autosyncEnabled}
+                onChangeAutosyncEnabled={(value) => setStoragePicker("s3_storage", { autosyncEnabled: !!value })}
+                onImport={(entry) => handleStorageImport("s3_storage", entry)}
+            />
+            <StorageImportPicker
+                open={storagePickers.azure_blob_storage.open}
+                title={storageProviderMeta.azure_blob_storage.title}
+                subtitle="Supported files: CSV, XLS, XLSX"
+                provider="azure_blob_storage"
+                breadcrumbs={storagePickers.azure_blob_storage.breadcrumbs}
+                entries={storagePickers.azure_blob_storage.entries}
+                loading={storagePickers.azure_blob_storage.loading}
+                selectedEntry={storagePickers.azure_blob_storage.selected}
+                onNavigate={(index) => navigateStoragePicker("azure_blob_storage", index)}
+                onSelect={(entry) => handleStorageEntrySelect("azure_blob_storage", entry)}
+                onClose={() => closeStoragePicker("azure_blob_storage")}
+                reportSourceOptions={reportSourceOptions}
+                selectedReportSourceId={storagePickers.azure_blob_storage.selectedReportSourceId}
+                onChangeReportSourceId={(e) => setStoragePicker("azure_blob_storage", { selectedReportSourceId: e.target.value })}
+                labelOptions={labelOptions}
+                fileLabel={storagePickers.azure_blob_storage.fileLabel}
+                onChangeFileLabel={(value) => setStoragePicker("azure_blob_storage", { fileLabel: value })}
+                isNewLabel={storagePickers.azure_blob_storage.isNewLabel}
+                onChangeIsNewLabel={(value) => setStoragePicker("azure_blob_storage", { isNewLabel: !!value })}
+                autosyncEnabled={storagePickers.azure_blob_storage.autosyncEnabled}
+                onChangeAutosyncEnabled={(value) => setStoragePicker("azure_blob_storage", { autosyncEnabled: !!value })}
+                onImport={(entry) => handleStorageImport("azure_blob_storage", entry)}
+            />
 
             <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-y-auto scroll-smooth" ref={tableContainerRef}>
                 <div className="flex flex-col min-h-full">
@@ -2344,21 +2753,41 @@ export default function DashboardBody(props) {
                                                                     const sortedGroups = Object.values(groups).sort((a, b) => new Date(b[0]?.uploaded_at || 0) - new Date(a[0]?.uploaded_at || 0));
 
                                                                     return (
-                                                                        <div key={key} className="rounded-lg border border-slate-100 bg-slate-50/60 overflow-hidden">
-                                                                            <button
-                                                                                type="button"
-                                                                                onClick={() => setPrimaryExpandedSources((prev) => {
-                                                                                    const next = new Set(prev);
-                                                                                    if (next.has(key)) next.delete(key); else next.add(key);
-                                                                                    return next;
-                                                                                })}
-                                                                                className="w-full flex items-center justify-between gap-3 px-3 py-2 hover:bg-slate-100 transition-colors"
-                                                                            >
-                                                                                <div className="min-w-0 text-left text-[11px] font-black text-slate-800 truncate">
-                                                                                    {source.name || `Report source ${source.id}`} · <span className="text-slate-500">{imports.length} file{imports.length === 1 ? "" : "s"}</span>
-                                                                                </div>
-                                                                                <span className={`text-[10px] text-slate-400 transition-transform ${isExpanded ? "rotate-180" : ""}`}>▼</span>
-                                                                            </button>
+                                                                        <div key={key} className="rounded-lg border border-slate-100 bg-slate-50/60 overflow-visible">
+                                                                            <div className="w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-100 transition-colors">
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={() => setPrimaryExpandedSources((prev) => {
+                                                                                        const next = new Set(prev);
+                                                                                        if (next.has(key)) next.delete(key); else next.add(key);
+                                                                                        return next;
+                                                                                    })}
+                                                                                    className="flex-1 min-w-0 flex items-center justify-between gap-3 text-left"
+                                                                                >
+                                                                                    <div className="min-w-0 text-left text-[11px] font-black text-slate-800 truncate">
+                                                                                        <span className="inline-flex items-center gap-1.5 min-w-0">
+                                                                                            <SourceProviderIcon provider={source.sync_provider} className="h-3.5 w-3.5 shrink-0 text-slate-500" />
+                                                                                            <span className="truncate">{source.name || `Report source ${source.id}`}</span>
+                                                                                        </span>
+                                                                                        <span> · </span>
+                                                                                        <span className="text-slate-500">{imports.length} file{imports.length === 1 ? "" : "s"}</span>
+                                                                                    </div>
+                                                                                    <span className={`text-[10px] text-slate-400 transition-transform ${isExpanded ? "rotate-180" : ""}`}>▼</span>
+                                                                                </button>
+                                                                                {source.sync_provider && source.sync_source_ref ? (
+                                                                                    <button
+                                                                                        type="button"
+                                                                                        onClick={() => toggleReportSourceAutosync(source.id, !source.sync_enabled)}
+                                                                                        disabled={autosyncToggleBusyId === key}
+                                                                                        className={`rounded-md border px-2 py-1 text-[10px] font-semibold transition-colors ${source.sync_enabled ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-100"} ${autosyncToggleBusyId === key ? "opacity-60 cursor-not-allowed" : ""}`}
+                                                                                        title={source.sync_enabled ? "Disable autosync" : "Enable autosync"}
+                                                                                    >
+                                                                                        {autosyncToggleBusyId === key ? "Saving..." : (source.sync_enabled ? "Autosync ON" : "Autosync OFF")}
+                                                                                    </button>
+                                                                                ) : (
+                                                                                    <span className="rounded-md border border-slate-200 bg-slate-100 px-2 py-1 text-[10px] font-semibold text-slate-400" title="Enable autosync when importing the file">Autosync off</span>
+                                                                                )}
+                                                                            </div>
                                                                             {isExpanded && (
                                                                                 <div className="bg-white border-t border-slate-100 py-1">
                                                                                     {sortedGroups.map((group) => {
@@ -2367,18 +2796,19 @@ export default function DashboardBody(props) {
                                                                                         const fileKey = `${key}:${label}`;
                                                                                         const revisionMenuChars = Math.min(100, Math.max(38, String(label || "").length + 20));
                                                                                         const isSelectedGroup = group.some((i) => String(i.sheet_id) === String(sheetId));
+                                                                                        const isVersionMenuOpen = primaryFileVersionMenuKey === fileKey;
                                                                                         return (
-                                                                                            <div
-                                                                                                key={fileKey}
-                                                                                                className={`group flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors ${isSelectedGroup ? "bg-indigo-50" : "hover:bg-indigo-50/70"}`}
-                                                                                                onClick={() => {
-                                                                                                    const nextSheetId = String(latest?.sheet_id || "");
-                                                                                                    if (nextSheetId && nextSheetId !== String(sheetId || "")) props.loadStored && props.loadStored(nextSheetId);
-                                                                                                    setPrimaryFileVersionMenuKey(null);
-                                                                                                    setPrimarySourcePickerOpen(false);
-                                                                                                }}
-                                                                                            >
-                                                                                                <div className="relative w-10 shrink-0 flex justify-center file-version-dropdown-container">
+                                                                                    <div
+                                                                                        key={fileKey}
+                                                                                        className={`group relative flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors ${isSelectedGroup ? "bg-indigo-50" : "hover:bg-indigo-50/70"} ${isVersionMenuOpen ? "z-[150]" : "z-0"}`}
+                                                                                        onClick={() => {
+                                                                                            const nextSheetId = String(latest?.sheet_id || "");
+                                                                                            if (nextSheetId && nextSheetId !== String(sheetId || "")) props.loadStored && props.loadStored(nextSheetId);
+                                                                                            setPrimaryFileVersionMenuKey(null);
+                                                                                            setPrimarySourcePickerOpen(false);
+                                                                                        }}
+                                                                                    >
+                                                                                        <div className="relative z-20 w-10 shrink-0 flex justify-center file-version-dropdown-container">
                                                                                                     <button
                                                                                                         type="button"
                                                                                                         onClick={(e) => {
@@ -2391,9 +2821,9 @@ export default function DashboardBody(props) {
                                                                                                     </button>
                                                                                                     {primaryFileVersionMenuKey === fileKey && (
                                                                                                         <div
-                                                                                                            className="absolute left-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-xl z-[90] py-1"
+                                                                                                            className="absolute left-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-xl z-[100] py-1"
                                                                                                             style={{ width: `${revisionMenuChars}ch`, maxWidth: "min(90vw, 980px)" }}
-                                                                                                        >
+                                                                                                       >
                                                                                                             <div className="max-h-48 overflow-auto custom-scrollbar">
                                                                                                                 {group.map((v) => (
                                                                                                                     <button
@@ -2409,9 +2839,12 @@ export default function DashboardBody(props) {
                                                                                                                     >
                                                                                                                         <span className="w-7 shrink-0 text-[8px] font-black text-slate-400 text-center">v{v.import_version}</span>
                                                                                                                         <div className="min-w-0 flex-1">
-                                                                                                                            <div className="text-[10px] font-medium text-slate-700 whitespace-nowrap">
-                                                                                                                                {label}
-                                                                                                                                {v.uploaded_at ? ` · Updated: ${new Date(v.uploaded_at).toLocaleDateString()}` : ""}
+                                                                                                                            <div className="flex items-center gap-1.5 min-w-0">
+                                                                                                                                <SourceProviderIcon provider={source.sync_provider} className="h-3 w-3 shrink-0 text-slate-500" />
+                                                                                                                                <div className="text-[10px] font-bold text-slate-700 whitespace-nowrap">
+                                                                                                                                    {label}
+                                                                                                                                    {v.uploaded_at ? ` · Updated: ${new Date(v.uploaded_at).toLocaleDateString()}` : ""}
+                                                                                                                                </div>
                                                                                                                             </div>
                                                                                                                         </div>
                                                                                                                     </button>
@@ -2785,22 +3218,42 @@ export default function DashboardBody(props) {
                                                             Object.values(groups).forEach((g) => g.sort((a, b) => (b.import_version || 0) - (a.import_version || 0)));
                                                             const sortedGroups = Object.values(groups).sort((a, b) => new Date(b[0]?.uploaded_at || 0) - new Date(a[0]?.uploaded_at || 0));
 
-                                                            return (
-                                                                <div key={key} className="rounded-lg border border-slate-100 bg-slate-50/60 overflow-hidden">
-                                                                    <button
-                                                                        type="button"
-                                                                        onClick={() => setSecondaryExpandedSources((prev) => {
-                                                                            const next = new Set(prev);
-                                                                            if (next.has(key)) next.delete(key); else next.add(key);
-                                                                            return next;
-                                                                        })}
-                                                                        className="w-full flex items-center justify-between gap-3 px-3 py-2 hover:bg-slate-100 transition-colors"
-                                                                    >
-                                                                        <div className="min-w-0 text-left text-[11px] font-black text-slate-800 truncate">
-                                                                            {source.name || `Report source ${source.id}`} · <span className="text-slate-500">{imports.length} file{imports.length === 1 ? "" : "s"}</span>
-                                                                        </div>
-                                                                        <span className={`text-[10px] text-slate-400 transition-transform ${isExpanded ? "rotate-180" : ""}`}>▼</span>
-                                                                    </button>
+                                                                    return (
+                                                                    <div key={key} className="rounded-lg border border-slate-100 bg-slate-50/60 overflow-visible">
+                                                                    <div className="w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-100 transition-colors">
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => setSecondaryExpandedSources((prev) => {
+                                                                                const next = new Set(prev);
+                                                                                if (next.has(key)) next.delete(key); else next.add(key);
+                                                                                return next;
+                                                                            })}
+                                                                            className="flex-1 min-w-0 flex items-center justify-between gap-3 text-left"
+                                                                        >
+                                                                                        <div className="min-w-0 text-left text-[11px] font-black text-slate-800 truncate">
+                                                                                            <span className="inline-flex items-center gap-1.5 min-w-0">
+                                                                                                <SourceProviderIcon provider={source.sync_provider} className="h-3.5 w-3.5 shrink-0 text-slate-500" />
+                                                                                                <span className="truncate">{source.name || `Report source ${source.id}`}</span>
+                                                                                            </span>
+                                                                                            <span> · </span>
+                                                                                            <span className="text-slate-500">{imports.length} file{imports.length === 1 ? "" : "s"}</span>
+                                                                                        </div>
+                                                                            <span className={`text-[10px] text-slate-400 transition-transform ${isExpanded ? "rotate-180" : ""}`}>▼</span>
+                                                                        </button>
+                                                                        {source.sync_provider && source.sync_source_ref ? (
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => toggleReportSourceAutosync(source.id, !source.sync_enabled)}
+                                                                                disabled={autosyncToggleBusyId === key}
+                                                                                className={`rounded-md border px-2 py-1 text-[10px] font-semibold transition-colors ${source.sync_enabled ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-100"} ${autosyncToggleBusyId === key ? "opacity-60 cursor-not-allowed" : ""}`}
+                                                                                title={source.sync_enabled ? "Disable autosync" : "Enable autosync"}
+                                                                            >
+                                                                                {autosyncToggleBusyId === key ? "Saving..." : (source.sync_enabled ? "Autosync ON" : "Autosync OFF")}
+                                                                            </button>
+                                                                        ) : (
+                                                                            <span className="rounded-md border border-slate-200 bg-slate-100 px-2 py-1 text-[10px] font-semibold text-slate-400" title="Enable autosync when importing the file">Autosync off</span>
+                                                                        )}
+                                                                    </div>
                                                                     {isExpanded && (
                                                                         <div className="bg-white border-t border-slate-100 py-1">
                                                                             {sortedGroups.map((group) => {
@@ -2808,10 +3261,11 @@ export default function DashboardBody(props) {
                                                                                 const label = resolveFileLabel(latest);
                                                                                 const fileKey = `${key}:${label}`;
                                                                                 const isSelectedGroup = group.some((i) => String(i.sheet_id) === String(secondarySheetId));
+                                                                                const isVersionMenuOpen = secondaryFileVersionMenuKey === fileKey;
                                                                                 return (
                                                                                     <div
                                                                                         key={fileKey}
-                                                                                        className={`group flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors ${isSelectedGroup ? "bg-emerald-50" : "hover:bg-emerald-50/70"}`}
+                                                                                        className={`group relative flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors ${isSelectedGroup ? "bg-emerald-50" : "hover:bg-emerald-50/70"} ${isVersionMenuOpen ? "z-[150]" : "z-0"}`}
                                                                                         onClick={() => {
                                                                                             const nextSheetId = String(latest?.sheet_id || "");
                                                                                             if (nextSheetId) setSecondarySheetId(nextSheetId);
@@ -2819,7 +3273,7 @@ export default function DashboardBody(props) {
                                                                                             setSecondarySourcePickerOpen(false);
                                                                                         }}
                                                                                     >
-                                                                                        <div className="relative w-10 shrink-0 flex justify-center file-version-dropdown-container">
+                                                                                        <div className="relative z-20 w-10 shrink-0 flex justify-center file-version-dropdown-container">
                                                                                             <button
                                                                                                 type="button"
                                                                                                 onClick={(e) => {
@@ -2832,7 +3286,7 @@ export default function DashboardBody(props) {
                                                                                             </button>
                                                                                             {secondaryFileVersionMenuKey === fileKey && (
                                                                                                 <div
-                                                                                                    className="absolute left-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-xl z-[90] py-1"
+                                                                                                    className="absolute left-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-xl z-[100] py-1"
                                                                                                     style={{ width: `${Math.min(100, Math.max(38, String(label || "").length + 20))}ch`, maxWidth: "min(90vw, 980px)" }}
                                                                                                 >
                                                                                                     <div className="max-h-48 overflow-auto custom-scrollbar">
@@ -2850,9 +3304,12 @@ export default function DashboardBody(props) {
                                                                                                             >
                                                                                                                 <span className="w-7 shrink-0 text-[8px] font-black text-slate-400 text-center">v{v.import_version}</span>
                                                                                                                 <div className="min-w-0 flex-1">
-                                                                                                                    <div className="text-[10px] font-medium text-slate-700 whitespace-nowrap">
-                                                                                                                        {label}
-                                                                                                                        {v.uploaded_at ? ` · Updated: ${new Date(v.uploaded_at).toLocaleDateString()}` : ""}
+                                                                                                                    <div className="flex items-center gap-1.5 min-w-0">
+                                                                                                                        <SourceProviderIcon provider={source.sync_provider} className="h-3 w-3 shrink-0 text-slate-500" />
+                                                                                                                        <div className="text-[10px] font-bold text-slate-700 whitespace-nowrap">
+                                                                                                                            {label}
+                                                                                                                            {v.uploaded_at ? ` · Updated: ${new Date(v.uploaded_at).toLocaleDateString()}` : ""}
+                                                                                                                        </div>
                                                                                                                     </div>
                                                                                                                 </div>
                                                                                                             </button>

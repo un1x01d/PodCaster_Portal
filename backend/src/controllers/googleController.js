@@ -7,6 +7,7 @@ import { tmpdir } from "os";
 import { createHmac, randomBytes, timingSafeEqual } from "crypto";
 import { decryptSettingValue } from "../utils/settingsCrypto.js";
 import { groupHasFeature } from "../utils/entitlements.js";
+import { fetchProviderAutosyncMetadata } from "../utils/providerAutosync.js";
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
@@ -629,11 +630,15 @@ export async function importGoogleDriveFile(req, res) {
     const fileName = String(req.body?.name || "google-drive-file").trim();
     const mimeType = String(req.body?.mimeType || "").trim();
     const displayName = String(req.body?.display_name || req.body?.displayName || "").trim();
+    const autosyncEnabled = ["1", "true", "yes", "on"].includes(String(req.body?.autosync_enabled ?? req.body?.autosyncEnabled ?? "").trim().toLowerCase());
 
     if (!fileId) return res.status(400).json({ error: "file_id_required" });
     if (!displayName) return res.status(400).json({ error: "display_name_required" });
 
     const accessToken = await getValidAccessTokenForUser(cfg, req.user.id);
+    const autosyncMeta = autosyncEnabled
+      ? await fetchProviderAutosyncMetadata({ provider: "google_drive", groupId, userId: req.user.id, sourceRef: fileId })
+      : null;
     const downloaded = await downloadGoogleDriveFile(accessToken, fileId, mimeType);
 
     const ext = path.extname(fileName || "") || downloaded.extension;
@@ -652,6 +657,17 @@ export async function importGoogleDriveFile(req, res) {
     req.body = {
       ...(req.body || {}),
       display_name: displayName,
+      ...(autosyncEnabled ? {
+        autosync_enabled: "1",
+        autosync_provider: "google_drive",
+        autosync_source_ref: fileId,
+        autosync_group_id: String(groupId || ""),
+        autosync_user_id: String(req.user.id || ""),
+        autosync_remote_marker: autosyncMeta?.remoteMarker || "",
+        autosync_remote_modified_at: autosyncMeta?.remoteModifiedAt || "",
+        autosync_display_name: displayName,
+        autosync_file_label: String(req.body?.file_label || req.body?.fileLabel || displayName || "").trim(),
+      } : {}),
     };
 
     return uploadSheet(req, res);

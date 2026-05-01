@@ -194,6 +194,80 @@ async function initControlSchema(db) {
   await db.query(`CREATE INDEX IF NOT EXISTS idx_customers_status ON customers(status);`);
 }
 
+export async function ensureReportSourcesSchema(db = activePool()) {
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS report_sources (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      created_by INT,
+      current_sheet_id TEXT UNIQUE,
+      is_inferred BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS created_by INT;`);
+  await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS current_sheet_id TEXT UNIQUE;`);
+  await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS is_inferred BOOLEAN NOT NULL DEFAULT FALSE;`);
+  await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS sync_enabled BOOLEAN NOT NULL DEFAULT FALSE;`);
+  await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS sync_provider TEXT;`);
+  await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS sync_source_ref TEXT;`);
+  await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS sync_group_id INT;`);
+  await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS sync_user_id INT;`);
+  await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS sync_display_name TEXT;`);
+  await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS sync_file_label TEXT;`);
+  await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS sync_remote_marker TEXT;`);
+  await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS sync_last_attempted_marker TEXT;`);
+  await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS sync_remote_modified_at TIMESTAMP;`);
+  await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS sync_last_checked_at TIMESTAMP;`);
+  await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS sync_last_synced_at TIMESTAMP;`);
+  await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS sync_last_error TEXT;`);
+  await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS sync_updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
+  await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_report_sources_created_by ON report_sources(created_by);`);
+  await db.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_report_sources_current_sheet_id ON report_sources(current_sheet_id);`);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_report_sources_autosync_enabled ON report_sources(sync_enabled, sync_provider, sync_group_id);`);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_report_sources_autosync_user ON report_sources(sync_user_id, sync_enabled);`);
+  await db.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_report_sources_email_sync_source ON report_sources(sync_provider, sync_group_id, sync_source_ref) WHERE sync_provider = 'email' AND sync_source_ref IS NOT NULL AND sync_group_id IS NOT NULL;`);
+  await db.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE table_name='report_sources' AND constraint_name='report_sources_created_by_fk'
+      ) THEN
+        ALTER TABLE report_sources
+          ADD CONSTRAINT report_sources_created_by_fk
+          FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL;
+      END IF;
+    END $$;
+  `);
+  await db.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE table_name='report_sources' AND constraint_name='report_sources_sync_group_fk'
+      ) THEN
+        ALTER TABLE report_sources
+          ADD CONSTRAINT report_sources_sync_group_fk
+          FOREIGN KEY (sync_group_id) REFERENCES groups(id) ON DELETE SET NULL;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE table_name='report_sources' AND constraint_name='report_sources_sync_user_fk'
+      ) THEN
+        ALTER TABLE report_sources
+          ADD CONSTRAINT report_sources_sync_user_fk
+          FOREIGN KEY (sync_user_id) REFERENCES users(id) ON DELETE SET NULL;
+      END IF;
+    END $$;
+  `);
+}
+
 async function seedTenantCustomerShell(tenantPool, group) {
   const entitlements = group.entitlements && typeof group.entitlements === "object" ? group.entitlements : {};
   await tenantPool.query(
@@ -552,37 +626,7 @@ export async function initDb(targetPool = pool, options = {}) {
   // Legacy folder model is deprecated. Report sources are now customer-scoped without folder dependencies.
 
   // REPORT SOURCES: stable business objects that can receive recurring imports.
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS report_sources (
-      id SERIAL PRIMARY KEY,
-      name TEXT NOT NULL,
-      created_by INT,
-      current_sheet_id TEXT UNIQUE,
-      is_inferred BOOLEAN NOT NULL DEFAULT FALSE,
-      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
-  await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS created_by INT;`);
-  await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS current_sheet_id TEXT UNIQUE;`);
-  await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS is_inferred BOOLEAN NOT NULL DEFAULT FALSE;`);
-  await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
-  await db.query(`CREATE INDEX IF NOT EXISTS idx_report_sources_created_by ON report_sources(created_by);`);
-  await db.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_report_sources_current_sheet_id ON report_sources(current_sheet_id);`);
-  await db.query(`
-    DO $$
-    BEGIN
-      IF NOT EXISTS (
-        SELECT 1
-        FROM information_schema.table_constraints
-        WHERE table_name='report_sources' AND constraint_name='report_sources_created_by_fk'
-      ) THEN
-        ALTER TABLE report_sources
-          ADD CONSTRAINT report_sources_created_by_fk
-          FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL;
-      END IF;
-    END $$;
-  `);
+  await ensureReportSourcesSchema(db);
 
   // SHEETS
   await db.query(`
@@ -670,6 +714,24 @@ export async function initDb(targetPool = pool, options = {}) {
   await db.query(`ALTER TABLE report_source_imports ADD COLUMN IF NOT EXISTS rejected_by INT REFERENCES users(id) ON DELETE SET NULL;`);
   await db.query(`ALTER TABLE report_source_imports ADD COLUMN IF NOT EXISTS review_notes TEXT;`);
   await db.query(`ALTER TABLE report_source_imports ADD COLUMN IF NOT EXISTS job_id TEXT;`);
+  await db.query(`ALTER TABLE report_source_imports ADD COLUMN IF NOT EXISTS file_size_bytes BIGINT;`);
+  await db.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'sheets' AND column_name = 'file_size'
+      ) THEN
+        UPDATE report_source_imports rsi
+           SET file_size_bytes = s.file_size
+          FROM sheets s
+         WHERE s.id = rsi.sheet_id
+           AND rsi.file_size_bytes IS NULL
+           AND s.file_size IS NOT NULL;
+      END IF;
+    END $$;
+  `);
 
   await db.query(`
     CREATE TABLE IF NOT EXISTS import_jobs (

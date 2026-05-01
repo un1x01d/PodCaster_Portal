@@ -3,7 +3,7 @@ import { query } from "../config/db.js";
 import { isEnglishLocale, normalizeLocale, translateDashboardCards } from "../utils/dashboardLocalization.js";
 import { checkSheetAccess, hasReportSourceOwnerAccess, loadSheetPermissionSets } from "../utils/authorization.js";
 
-const INSIGHT_MAX_ROWS = Number.parseInt(process.env.INSIGHT_MAX_ROWS || "100000", 10);
+const INSIGHT_MAX_ROWS = Number.parseInt(process.env.INSIGHT_MAX_ROWS || "300000", 10);
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10);

@@ -5,6 +5,7 @@ import path from "path";
 import { tmpdir } from "os";
 import { createHmac, timingSafeEqual } from "crypto";
 import { decryptSettingValue } from "../utils/settingsCrypto.js";
+import { fetchProviderAutosyncMetadata } from "../utils/providerAutosync.js";
 
 const DROPBOX_AUTH_BASE = "https://www.dropbox.com/oauth2/authorize";
 const DROPBOX_TOKEN_URL = "https://api.dropboxapi.com/oauth2/token";
@@ -409,14 +410,20 @@ export async function importDropboxFile(req, res) {
     if (!isAdmin && !isGroupAdmin) return res.status(403).json({ error: "Forbidden" });
 
     const filePath = String(req.body?.pathLower || req.body?.path || "").trim();
+    const fileId = String(req.body?.fileId || req.body?.file_id || "").trim();
     const fileName = String(req.body?.name || path.basename(filePath) || "dropbox-file").trim();
     const displayName = String(req.body?.display_name || req.body?.displayName || "").trim();
+    const autosyncEnabled = ["1", "true", "yes", "on"].includes(String(req.body?.autosync_enabled ?? req.body?.autosyncEnabled ?? "").trim().toLowerCase());
 
     if (!filePath) return res.status(400).json({ error: "file_path_required" });
     if (!displayName) return res.status(400).json({ error: "display_name_required" });
     if (!isSupportedSpreadsheetName(fileName)) return res.status(415).json({ error: "unsupported_file_type" });
 
     const accessToken = await getValidAccessTokenForUser(cfg, req.user.id);
+    const autosyncSourceRef = fileId || filePath;
+    const autosyncMeta = autosyncEnabled
+      ? await fetchProviderAutosyncMetadata({ provider: "dropbox", groupId, userId: req.user.id, sourceRef: autosyncSourceRef })
+      : null;
     const downloadResp = await fetchWithTimeout(DROPBOX_DOWNLOAD_URL, {
       method: "POST",
       headers: {
@@ -450,6 +457,17 @@ export async function importDropboxFile(req, res) {
     req.body = {
       ...(req.body || {}),
       display_name: displayName,
+      ...(autosyncEnabled ? {
+        autosync_enabled: "1",
+        autosync_provider: "dropbox",
+        autosync_source_ref: autosyncSourceRef,
+        autosync_group_id: String(groupId || ""),
+        autosync_user_id: String(req.user.id || ""),
+        autosync_remote_marker: autosyncMeta?.remoteMarker || "",
+        autosync_remote_modified_at: autosyncMeta?.remoteModifiedAt || "",
+        autosync_display_name: displayName,
+        autosync_file_label: String(req.body?.file_label || req.body?.fileLabel || displayName || "").trim(),
+      } : {}),
     };
 
     return uploadSheet(req, res);

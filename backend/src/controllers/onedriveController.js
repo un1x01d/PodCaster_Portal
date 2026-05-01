@@ -5,6 +5,7 @@ import path from "path";
 import { tmpdir } from "os";
 import { createHmac, timingSafeEqual } from "crypto";
 import { decryptSettingValue } from "../utils/settingsCrypto.js";
+import { fetchProviderAutosyncMetadata } from "../utils/providerAutosync.js";
 
 const MS_AUTH_BASE = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
 const MS_TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
@@ -373,11 +374,15 @@ export async function importOneDriveFile(req, res) {
     const itemId = String(req.body?.itemId || "").trim();
     const fileName = String(req.body?.name || "onedrive-file").trim();
     const displayName = String(req.body?.display_name || req.body?.displayName || "").trim();
+    const autosyncEnabled = ["1", "true", "yes", "on"].includes(String(req.body?.autosync_enabled ?? req.body?.autosyncEnabled ?? "").trim().toLowerCase());
     if (!itemId) return res.status(400).json({ error: "item_id_required" });
     if (!displayName) return res.status(400).json({ error: "display_name_required" });
     if (!isSupportedSpreadsheetName(fileName)) return res.status(415).json({ error: "unsupported_file_type" });
 
     const accessToken = await getValidAccessTokenForUser(cfg, req.user.id);
+    const autosyncMeta = autosyncEnabled
+      ? await fetchProviderAutosyncMetadata({ provider: "onedrive", groupId, userId: req.user.id, sourceRef: itemId })
+      : null;
     const downloadResp = await fetchWithTimeout(`${MS_GRAPH_BASE}/me/drive/items/${encodeURIComponent(itemId)}/content`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
@@ -405,6 +410,17 @@ export async function importOneDriveFile(req, res) {
     req.body = {
       ...(req.body || {}),
       display_name: displayName,
+      ...(autosyncEnabled ? {
+        autosync_enabled: "1",
+        autosync_provider: "onedrive",
+        autosync_source_ref: itemId,
+        autosync_group_id: String(groupId || ""),
+        autosync_user_id: String(req.user.id || ""),
+        autosync_remote_marker: autosyncMeta?.remoteMarker || "",
+        autosync_remote_modified_at: autosyncMeta?.remoteModifiedAt || "",
+        autosync_display_name: displayName,
+        autosync_file_label: String(req.body?.file_label || req.body?.fileLabel || displayName || "").trim(),
+      } : {}),
     };
     return uploadSheet(req, res);
   } catch (e) {

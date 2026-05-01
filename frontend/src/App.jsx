@@ -529,6 +529,10 @@ export default function App() {
   const [googleEnabled, setGoogleEnabled] = useState(true);
   const [dropboxEnabled, setDropboxEnabled] = useState(true);
   const [oneDriveEnabled, setOneDriveEnabled] = useState(true);
+  const [sftpStorageEnabled, setSftpStorageEnabled] = useState(true);
+  const [gcsStorageEnabled, setGcsStorageEnabled] = useState(true);
+  const [s3StorageEnabled, setS3StorageEnabled] = useState(true);
+  const [azureBlobStorageEnabled, setAzureBlobStorageEnabled] = useState(true);
   const [metricsExposureEnabled, setMetricsExposureEnabled] = useState(true);
   const dashboardI18n = useDashboardI18n({ enabled: !!user });
 
@@ -567,6 +571,8 @@ export default function App() {
   const [uploadProgressLoaded, setUploadProgressLoaded] = useState(0);
   const [uploadProgressTotal, setUploadProgressTotal] = useState(0);
   const [uploadProgressPercent, setUploadProgressPercent] = useState(0);
+  const [uploadProgressPhase, setUploadProgressPhase] = useState("uploading");
+  const [uploadProgressError, setUploadProgressError] = useState("");
 
   // My files (sheet selection)
   const [myFiles, setMyFiles] = useState([]);
@@ -1466,6 +1472,10 @@ export default function App() {
     setUploadProgressLoaded(0);
     setUploadProgressTotal(inferredTotal > 0 ? inferredTotal : 0);
     setUploadProgressPercent(0);
+    setUploadProgressPhase("uploading");
+    setUploadProgressError("");
+
+    let uploadFailed = false;
 
     try {
       const res = await axios.post(`${API}/upload`, formData, {
@@ -1481,23 +1491,29 @@ export default function App() {
           const percent = total > 0 ? Math.round((boundedLoaded / total) * 100) : 0;
           setUploadProgressLoaded(boundedLoaded);
           setUploadProgressTotal(total);
-          setUploadProgressPercent(Math.max(0, Math.min(100, percent)));
+          if (percent >= 100) {
+            setUploadProgressPhase("processing");
+            setUploadProgressPercent(95);
+          } else {
+            setUploadProgressPhase("uploading");
+            setUploadProgressPercent(Math.max(0, Math.min(95, percent)));
+          }
         },
       });
+      setUploadProgressPhase("complete");
       setUploadProgressPercent(100);
       if (res.data?.status === "queued") {
-        alert("Upload queued for import processing.");
+        setUploadProgressError("Upload queued for import processing.");
         refreshReportSources();
         return;
       }
       if (res.data?.status === "pending_approval") {
-        alert("Uploaded and waiting for approval.");
+        setUploadProgressError("Uploaded and waiting for approval.");
         setUploadDisplayName("");
         setReportSourceName("");
         refreshReportSources();
         return;
       }
-      alert("Uploaded!");
       if (res.data.sheetId) {
         setSheetId(res.data.sheetId);
         const activeName = res.data.display_name || res.data.filename;
@@ -1521,16 +1537,19 @@ export default function App() {
       }
     } catch (e) {
       console.error(e);
-      alert("Upload failed");
+      uploadFailed = true;
+      const backendMessage = e?.response?.data?.publicMessage || e?.response?.data?.message || e?.response?.data?.error || e?.message || "Upload failed";
+      setUploadProgressPhase("failed");
+      setUploadProgressPercent(100);
+      setUploadProgressError(String(backendMessage));
     } finally {
-      setUploadProgressOpen(false);
-      setUploadProgressLoaded(0);
-      setUploadProgressTotal(0);
-      setUploadProgressPercent(0);
+      if (!uploadFailed) {
+        refreshReportSources();
+      }
     }
   };
 
-  const handleGoogleDriveImport = async ({ fileId, name, mimeType, displayName, reportSourceId = "", reportSourceName: newReportSourceName = "", fileLabel = "" }) => {
+  const handleGoogleDriveImport = async ({ fileId, name, mimeType, displayName, reportSourceId = "", reportSourceName: newReportSourceName = "", fileLabel = "", autosyncEnabled = false }) => {
     if (!fileId || !String(displayName || "").trim()) return;
     if (!reportSourceId && !String(newReportSourceName || "").trim()) return;
     try {
@@ -1542,6 +1561,7 @@ export default function App() {
           mimeType,
           display_name: String(displayName).trim(),
           file_label: String(fileLabel || displayName).trim(),
+          autosync_enabled: autosyncEnabled ? "1" : "0",
           ...(reportSourceId ? { report_source_id: reportSourceId } : { report_source_name: String(newReportSourceName).trim() }),
         },
         { headers: { Authorization: `Bearer ${token}` } }
@@ -1586,7 +1606,7 @@ export default function App() {
     }
   };
 
-  const handleDropboxImport = async ({ pathLower, name, displayName, reportSourceId = "", reportSourceName: newReportSourceName = "", fileLabel = "" }) => {
+  const handleDropboxImport = async ({ pathLower, fileId = "", name, displayName, reportSourceId = "", reportSourceName: newReportSourceName = "", fileLabel = "", autosyncEnabled = false }) => {
     if (!pathLower || !String(displayName || "").trim()) return;
     if (!reportSourceId && !String(newReportSourceName || "").trim()) return;
     try {
@@ -1594,9 +1614,11 @@ export default function App() {
         `${API}/dropbox/import`,
         {
           pathLower,
+          fileId,
           name,
           display_name: String(displayName).trim(),
           file_label: String(fileLabel || displayName).trim(),
+          autosync_enabled: autosyncEnabled ? "1" : "0",
           ...(reportSourceId ? { report_source_id: reportSourceId } : { report_source_name: String(newReportSourceName).trim() }),
         },
         { headers: { Authorization: `Bearer ${token}` } }
@@ -1641,7 +1663,7 @@ export default function App() {
     }
   };
 
-  const handleOneDriveImport = async ({ itemId, name, displayName, reportSourceId = "", reportSourceName: newReportSourceName = "", fileLabel = "" }) => {
+  const handleOneDriveImport = async ({ itemId, name, displayName, reportSourceId = "", reportSourceName: newReportSourceName = "", fileLabel = "", autosyncEnabled = false }) => {
     if (!itemId || !String(displayName || "").trim()) return;
     if (!reportSourceId && !String(newReportSourceName || "").trim()) return;
     try {
@@ -1652,6 +1674,7 @@ export default function App() {
           name,
           display_name: String(displayName).trim(),
           file_label: String(fileLabel || displayName).trim(),
+          autosync_enabled: autosyncEnabled ? "1" : "0",
           ...(reportSourceId ? { report_source_id: reportSourceId } : { report_source_name: String(newReportSourceName).trim() }),
         },
         { headers: { Authorization: `Bearer ${token}` } }
@@ -1886,6 +1909,18 @@ export default function App() {
     axios.get(`${API}/auth/onedrive/status`)
       .then((r) => setOneDriveEnabled(r?.data?.enabled !== false))
       .catch(() => setOneDriveEnabled(true));
+    axios.get(`${API}/storage/sftp_storage/status`)
+      .then((r) => setSftpStorageEnabled(r?.data?.enabled !== false))
+      .catch(() => setSftpStorageEnabled(true));
+    axios.get(`${API}/storage/gcs_storage/status`)
+      .then((r) => setGcsStorageEnabled(r?.data?.enabled !== false))
+      .catch(() => setGcsStorageEnabled(true));
+    axios.get(`${API}/storage/s3_storage/status`)
+      .then((r) => setS3StorageEnabled(r?.data?.enabled !== false))
+      .catch(() => setS3StorageEnabled(true));
+    axios.get(`${API}/storage/azure_blob_storage/status`)
+      .then((r) => setAzureBlobStorageEnabled(r?.data?.enabled !== false))
+      .catch(() => setAzureBlobStorageEnabled(true));
   }, []);
 
   useEffect(() => {
@@ -2325,7 +2360,7 @@ export default function App() {
                   <>
                     <DashboardBody
                       user={user} token={token} API={API}
-                      sheetId={sheetId} activeFilename={activeFilename}
+                      sheetId={sheetId} setSheetId={setSheetId} activeFilename={activeFilename}
                       file={file} setFile={setFile}
                       selectedFileName={selectedFileName} setSelectedFileName={setSelectedFileName}
                       uploadDisplayName={uploadDisplayName}
@@ -2347,7 +2382,12 @@ export default function App() {
                       handleOneDriveConnect={handleOneDriveConnect}
                       dropboxEnabled={dropboxEnabled}
                       oneDriveEnabled={oneDriveEnabled}
+                      sftpStorageEnabled={sftpStorageEnabled}
+                      gcsStorageEnabled={gcsStorageEnabled}
+                      s3StorageEnabled={s3StorageEnabled}
+                      azureBlobStorageEnabled={azureBlobStorageEnabled}
                       loadData={loadData}
+                      refreshReportSources={refreshReportSources}
                       selectedViewId={selectedViewId} setSelectedViewId={setSelectedViewId}
                       views={views} setViews={setViews}
                       setPendingViewName={setPendingViewName}
@@ -2391,9 +2431,10 @@ export default function App() {
                       filterAnchorRefs={filterAnchorRefs}
                       filterBtnRefs={filterBtnRefs}
                       myFiles={myFiles} loadStored={(id) => { hydrateSheetContext(id, { preserveFilters: false, preferCache: true }); }}
-                      tabs={tabs}
+                      tabs={tabs} setTabs={setTabs}
                       activeTab={activeTab}
                       onTabChange={handleTabChange}
+                      tabListCacheRef={tabListCacheRef}
                       hasRequiredColumns={hasRequiredColumns}
                       appendCalculatedColumn={appendCalculatedColumn}
                       onInsightApplyFilter={applyContainsFilter}
@@ -2458,17 +2499,54 @@ export default function App() {
           {uploadProgressOpen && (
             <div className="fixed inset-0 z-[1000] bg-slate-900/55 backdrop-blur-sm flex items-center justify-center px-4">
               <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl border border-slate-200 p-5">
-                <div className="text-sm font-black text-slate-900 tracking-tight">Uploading Spreadsheet</div>
+                <div className="text-sm font-black text-slate-900 tracking-tight">
+                  {uploadProgressPhase === "processing" ? "Uploading Spreadsheet" : uploadProgressPhase === "complete" ? "Upload Complete" : "Uploading Spreadsheet"}
+                </div>
+                <div className="mt-1 text-[11px] font-semibold text-slate-500">
+                  {uploadProgressPhase === "processing"
+                    ? "Upload finished. Processing on the server..."
+                    : uploadProgressPhase === "complete"
+                      ? (uploadProgressError || "File uploaded and imported.")
+                      : uploadProgressPhase === "failed"
+                        ? <span className="font-black text-rose-700">{uploadProgressError || "Upload failed."}</span>
+                        : "Sending the file to the server..."}
+                </div>
                 <div className="mt-4 h-2.5 rounded-full bg-slate-200 overflow-hidden">
                   <div
-                    className="h-full bg-indigo-600 transition-[width] duration-200 ease-out"
+                    className={`h-full transition-[width] duration-200 ease-out ${uploadProgressPhase === "failed" ? "bg-rose-600" : uploadProgressPhase === "complete" ? "bg-emerald-600" : "bg-indigo-600"}`}
                     style={{ width: `${Math.max(0, Math.min(100, uploadProgressPercent))}%` }}
                   />
                 </div>
                 <div className="mt-2 flex items-center justify-between text-[11px] font-semibold text-slate-600">
                   <span>{formatBytes(uploadProgressLoaded)} / {formatBytes(uploadProgressTotal)}</span>
-                  <span>{Math.max(0, Math.min(100, uploadProgressPercent))}%</span>
+                  <span>
+                    {uploadProgressPhase === "processing"
+                      ? "processing"
+                      : uploadProgressPhase === "complete"
+                        ? "complete"
+                      : uploadProgressPhase === "failed"
+                        ? "failed"
+                      : `${Math.max(0, Math.min(100, uploadProgressPercent))}%`}
+                  </span>
                 </div>
+                {(uploadProgressPhase === "failed" || uploadProgressPhase === "complete") && (
+                  <div className="mt-4 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUploadProgressOpen(false);
+                        setUploadProgressLoaded(0);
+                        setUploadProgressTotal(0);
+                        setUploadProgressPercent(0);
+                        setUploadProgressPhase("uploading");
+                        setUploadProgressError("");
+                      }}
+                      className="rounded-md bg-slate-900 px-3 py-1 text-[10px] font-semibold text-white hover:bg-slate-800"
+                    >
+                      Close
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           )}

@@ -1,6 +1,7 @@
 // UserManagement.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
+import StorageOptionCard from "./components/common/StorageOptionCard.jsx";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
 
@@ -51,6 +52,191 @@ const RESET_PASSWORD_REQUIRED_SETS = [
   "0123456789",
   "!@#$%^&*()-_=+[]{};:,.?",
 ];
+
+const STORAGE_PROVIDER_DEFS = [
+  {
+    key: "sftp",
+    title: "SCP / SFTP",
+    apiBase: "sftp-storage",
+    summary: (state) => (
+      state.form.enabled
+        ? `${state.form.host || "No host"}${state.form.port ? `:${state.form.port}` : ""}${state.form.username ? ` as ${state.form.username}` : ""}`
+        : "Disabled"
+    ),
+    helpLinks: [
+      { href: "https://www.openssh.com/manual.html", label: "OpenSSH / SFTP usage guide" },
+    ],
+    fields: [
+      { name: "enabled", type: "checkbox", label: "Enable SFTP / SCP storage" },
+      { name: "host", label: "Host", placeholder: "sftp.example.com" },
+      { name: "port", label: "Port", type: "number", defaultValue: 22, placeholder: "22" },
+      { name: "username", label: "Username", placeholder: "sftp-user" },
+      {
+        name: "authMode",
+        label: "Authentication mode",
+        type: "select",
+        defaultValue: "password",
+        options: [
+          { value: "password", label: "Password" },
+          { value: "ssh_key", label: "SSH key" },
+        ],
+      },
+      {
+        name: "password",
+        label: "Password",
+        type: "password",
+        secret: true,
+        metaKey: "hasPassword",
+        placeholder: "SFTP password",
+        showWhen: (form) => String(form.authMode || "password") === "password",
+      },
+      {
+        name: "privateKey",
+        label: "Private key",
+        type: "textarea",
+        rows: 6,
+        secret: true,
+        metaKey: "hasPrivateKey",
+        placeholder: "-----BEGIN OPENSSH PRIVATE KEY-----",
+        showWhen: (form) => String(form.authMode || "password") === "ssh_key",
+      },
+      {
+        name: "passphrase",
+        label: "Key passphrase",
+        type: "password",
+        secret: true,
+        metaKey: "hasPassphrase",
+        placeholder: "Optional passphrase",
+        showWhen: (form) => String(form.authMode || "password") === "ssh_key",
+      },
+      { name: "remotePath", label: "Remote path", placeholder: "/incoming" },
+    ],
+  },
+  {
+    key: "gcs",
+    title: "Google Cloud Storage",
+    apiBase: "gcs-storage",
+    summary: (state) => (
+      state.form.enabled
+        ? `${state.form.bucket || "No bucket"}${state.form.projectId ? ` • ${state.form.projectId}` : ""}`
+        : "Disabled"
+    ),
+    helpLinks: [
+      { href: "https://cloud.google.com/storage/docs/authentication", label: "Google Cloud Storage authentication" },
+      { href: "https://cloud.google.com/iam/docs/service-accounts", label: "Create and manage service accounts" },
+    ],
+    fields: [
+      { name: "enabled", type: "checkbox", label: "Enable Google Cloud Storage" },
+      { name: "projectId", label: "Project ID", placeholder: "my-gcp-project" },
+      { name: "bucket", label: "Bucket", placeholder: "customer-reports" },
+      { name: "clientEmail", label: "Service account email", placeholder: "storage-import@project.iam.gserviceaccount.com" },
+      {
+        name: "privateKey",
+        label: "Private key",
+        type: "textarea",
+        rows: 6,
+        secret: true,
+        metaKey: "hasPrivateKey",
+        placeholder: "-----BEGIN PRIVATE KEY-----",
+      },
+      { name: "tokenUri", label: "Token URI", defaultValue: "https://oauth2.googleapis.com/token", placeholder: "https://oauth2.googleapis.com/token" },
+      { name: "prefix", label: "Object prefix", placeholder: "reports/" },
+    ],
+  },
+  {
+    key: "s3",
+    title: "Amazon S3",
+    apiBase: "s3-storage",
+    summary: (state) => (
+      state.form.enabled
+        ? `${state.form.bucket || "No bucket"}${state.form.region ? ` • ${state.form.region}` : ""}`
+        : "Disabled"
+    ),
+    helpLinks: [
+      { href: "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html", label: "AWS access key guidance" },
+      { href: "https://docs.aws.amazon.com/AmazonS3/latest/userguide/Welcome.html", label: "Amazon S3 user guide" },
+    ],
+    fields: [
+      { name: "enabled", type: "checkbox", label: "Enable Amazon S3" },
+      { name: "bucket", label: "Bucket", placeholder: "customer-reports" },
+      { name: "region", label: "Region", placeholder: "us-east-1" },
+      { name: "accessKeyId", label: "Access key ID", placeholder: "AKIA..." },
+      {
+        name: "secretAccessKey",
+        label: "Secret access key",
+        type: "password",
+        secret: true,
+        metaKey: "hasSecretAccessKey",
+        placeholder: "S3 secret access key",
+      },
+      { name: "endpointUrl", label: "Custom endpoint URL", defaultValue: "", placeholder: "https://s3.us-east-1.amazonaws.com" },
+      { name: "pathStyleAccess", type: "checkbox", label: "Use path-style access" },
+      { name: "prefix", label: "Object prefix", placeholder: "reports/" },
+    ],
+  },
+  {
+    key: "azure",
+    title: "Azure Blob Storage",
+    apiBase: "azure-blob-storage",
+    summary: (state) => (
+      state.form.enabled
+        ? `${state.form.accountName || "No account"}${state.form.container ? ` • ${state.form.container}` : ""}`
+        : "Disabled"
+    ),
+    helpLinks: [
+      { href: "https://learn.microsoft.com/en-us/azure/storage/blobs/storage-quickstart-blobs-portal", label: "Azure Blob Storage quickstart" },
+      { href: "https://learn.microsoft.com/en-us/azure/storage/common/storage-account-keys-manage", label: "Manage storage account keys" },
+    ],
+    fields: [
+      { name: "enabled", type: "checkbox", label: "Enable Azure Blob Storage" },
+      { name: "accountName", label: "Account name", placeholder: "mystorageaccount" },
+      {
+        name: "accountKey",
+        label: "Account key",
+        type: "password",
+        secret: true,
+        metaKey: "hasAccountKey",
+        placeholder: "Azure storage account key",
+      },
+      { name: "container", label: "Container", placeholder: "customer-reports" },
+      { name: "endpointSuffix", label: "Endpoint suffix", defaultValue: "blob.core.windows.net", placeholder: "blob.core.windows.net" },
+      { name: "prefix", label: "Blob prefix", placeholder: "reports/" },
+    ],
+  },
+];
+
+function createStorageProviderState(def) {
+  const form = {};
+  const meta = {};
+  for (const field of def.fields) {
+    if (field.secret) {
+      meta[field.metaKey] = false;
+      form[field.name] = "";
+      continue;
+    }
+    if (field.type === "checkbox") {
+      form[field.name] = false;
+      continue;
+    }
+    if (field.type === "number") {
+      form[field.name] = field.defaultValue ?? "";
+      continue;
+    }
+    form[field.name] = field.defaultValue ?? "";
+  }
+  return {
+    form,
+    meta,
+    open: false,
+    saving: false,
+    testing: false,
+    testStatus: null,
+  };
+}
+
+function createInitialStorageState() {
+  return Object.fromEntries(STORAGE_PROVIDER_DEFS.map((def) => [def.key, createStorageProviderState(def)]));
+}
 
 function secureRandomInt(max) {
   if (window.crypto?.getRandomValues) {
@@ -149,7 +335,7 @@ export default function UserManagement({ token, user, sheetId }) {
   });
   const [oneDriveOauthSaving, setOneDriveOauthSaving] = useState(false);
   const [oneDriveOauthTesting, setOneDriveOauthTesting] = useState(false);
-  const [integrationOpen, setIntegrationOpen] = useState({ google: true, dropbox: false, onedrive: false });
+  const [integrationOpen, setIntegrationOpen] = useState({ google: false, dropbox: false, onedrive: false, emailIngest: false });
   const [integrationTestStatus, setIntegrationTestStatus] = useState({ google: null, dropbox: null, onedrive: null });
   const [smtpMeta, setSmtpMeta] = useState({
     hasPassword: false,
@@ -189,6 +375,22 @@ export default function UserManagement({ token, user, sheetId }) {
   const [insightTranslationCacheSaving, setInsightTranslationCacheSaving] = useState(false);
   const [metricsExposure, setMetricsExposure] = useState({ enabled: true });
   const [metricsExposureSaving, setMetricsExposureSaving] = useState(false);
+  const [autosyncInterval, setAutosyncInterval] = useState({ intervalMinutes: 5 });
+  const [autosyncIntervalSaving, setAutosyncIntervalSaving] = useState(false);
+  const [emailIngestConfig, setEmailIngestConfig] = useState({
+    enabled: true,
+    provider: "google_workspace",
+    inboundDomain: "",
+    routeMailbox: "",
+    addressPrefix: "customer",
+    addressMode: "slug",
+    routingMode: "catch_all",
+    requireApprovedSenders: true,
+    allowedSenderDomains: [],
+    notes: "",
+  });
+  const [emailIngestSaving, setEmailIngestSaving] = useState(false);
+  const [storageSettings, setStorageSettings] = useState(() => createInitialStorageState());
 
   // user-level permissions UI (select a sheet from user's groups)
   const [selectedUserId, setSelectedUserId] = useState(null);
@@ -289,6 +491,150 @@ export default function UserManagement({ token, user, sheetId }) {
     if (Number.isInteger(gid) && gid > 0) return { groupId: gid };
     return {};
   }, [selectedGroupId]);
+  const emailIngestScopeParams = useMemo(() => {
+    const gid = Number(selectedGroupId);
+    if (Number.isInteger(gid) && gid > 0) return { groupId: gid };
+    if (!isSuperAdmin && Array.isArray(groups) && groups.length === 1) return { groupId: Number(groups[0].id) };
+    return {};
+  }, [selectedGroupId, groups, isSuperAdmin]);
+  const storageScopeParams = useMemo(() => {
+    const gid = Number(selectedGroupId);
+    if (Number.isInteger(gid) && gid > 0) return { groupId: gid };
+    if (!isSuperAdmin && Array.isArray(groups) && groups.length === 1) return { groupId: Number(groups[0].id) };
+    return {};
+  }, [selectedGroupId, groups, isSuperAdmin]);
+
+  const updateStorageProvider = (providerKey, updater) => {
+    setStorageSettings((prev) => {
+      const providerDef = STORAGE_PROVIDER_DEFS.find((def) => def.key === providerKey);
+      const current = prev[providerKey] || (providerDef ? createStorageProviderState(providerDef) : { form: {}, meta: {}, open: false, saving: false, testing: false, testStatus: null });
+      const nextValue = typeof updater === "function" ? updater(current) : { ...current, ...updater };
+      return { ...prev, [providerKey]: nextValue };
+    });
+  };
+
+  const fetchStorageSetting = async (provider) => {
+    if (!canManageIntegrations) return;
+    if (!isSuperAdmin && !storageScopeParams.groupId && !emailIngestScopeParams.groupId && !selectedGroupId) return;
+    try {
+      const res = await axios.get(`${API}/admin/settings/${provider.apiBase}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: storageScopeParams,
+      });
+      const data = res?.data || {};
+      updateStorageProvider(provider.key, (current) => {
+        const next = { ...current };
+        next.meta = {
+          ...current.meta,
+          ...(provider.fields || []).reduce((acc, field) => {
+            if (field.secret) acc[field.metaKey] = !!data[field.metaKey];
+            return acc;
+          }, {}),
+        };
+        next.form = {
+          ...current.form,
+          ...provider.fields.reduce((acc, field) => {
+            if (field.secret) {
+              acc[field.name] = "";
+              return acc;
+            }
+            if (field.type === "checkbox") {
+              acc[field.name] = !!data[field.name];
+              return acc;
+            }
+            if (field.type === "number") {
+              acc[field.name] = data[field.name] ?? field.defaultValue ?? "";
+              return acc;
+            }
+            acc[field.name] = data[field.name] ?? field.defaultValue ?? "";
+            return acc;
+          }, {}),
+        };
+        next.testStatus = null;
+        return next;
+      });
+    } catch (e) {
+      console.error(`fetchStorageSetting(${provider.key}) failed`, e);
+    }
+  };
+
+  const saveStorageSetting = async (provider) => {
+    if (!canManageIntegrations) return;
+    const current = storageSettings[provider.key];
+    if (!current || current.saving) return;
+    if (!isSuperAdmin && !storageScopeParams.groupId && !selectedGroupId && !emailIngestScopeParams.groupId) {
+      alert("Select a customer first.");
+      return;
+    }
+    updateStorageProvider(provider.key, { saving: true });
+    try {
+      const payload = { ...storageScopeParams, enabled: !!current.form.enabled };
+      for (const field of provider.fields) {
+        if (field.name === "enabled") continue;
+        if (field.secret) {
+          const hasExisting = !!current.meta?.[field.metaKey];
+          const value = current.form[field.name] || (hasExisting ? "***" : "");
+          payload[field.name] = value;
+          continue;
+        }
+        payload[field.name] = current.form[field.name];
+      }
+      const res = await axios.patch(`${API}/admin/settings/${provider.apiBase}`, payload, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || {};
+      updateStorageProvider(provider.key, (prev) => ({
+        ...prev,
+        meta: {
+          ...prev.meta,
+          ...(provider.fields || []).reduce((acc, field) => {
+            if (field.secret) acc[field.metaKey] = !!data[field.metaKey];
+            return acc;
+          }, {}),
+        },
+        form: {
+          ...prev.form,
+          ...provider.fields.reduce((acc, field) => {
+            if (field.secret) {
+              acc[field.name] = "";
+              return acc;
+            }
+            acc[field.name] = data[field.name] ?? prev.form[field.name];
+            return acc;
+          }, {}),
+        },
+        testStatus: null,
+      }));
+      alert(`${provider.title} settings updated`);
+    } catch (e) {
+      alert(e.response?.data?.error || `Failed to update ${provider.title} settings`);
+    } finally {
+      updateStorageProvider(provider.key, { saving: false });
+    }
+  };
+
+  const testStorageSetting = async (provider) => {
+    if (!canManageIntegrations) return;
+    const current = storageSettings[provider.key];
+    if (!current || current.testing) return;
+    if (!isSuperAdmin && !storageScopeParams.groupId && !selectedGroupId && !emailIngestScopeParams.groupId) {
+      alert("Select a customer first.");
+      return;
+    }
+    updateStorageProvider(provider.key, { testing: true });
+    try {
+      const res = await axios.post(`${API}/admin/settings/${provider.apiBase}/test`, { ...storageScopeParams }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      updateStorageProvider(provider.key, { testStatus: "success" });
+      alert(res?.data?.message === "storage_probe_success" ? `${provider.title} connection validated.` : `${provider.title} probe completed.`);
+    } catch (e) {
+      updateStorageProvider(provider.key, { testStatus: "error" });
+      alert(e.response?.data?.error || `${provider.title} connection test failed`);
+    } finally {
+      updateStorageProvider(provider.key, { testing: false });
+    }
+  };
 
   const fetchReportSources = async () => {
     try {
@@ -812,6 +1158,46 @@ export default function UserManagement({ token, user, sheetId }) {
     }
   };
 
+  const fetchAutosyncIntervalSetting = async () => {
+    if (!isSuperAdmin) return;
+    try {
+      const res = await axios.get(`${API}/admin/settings/autosync-interval`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setAutosyncInterval({
+        intervalMinutes: Number(res?.data?.intervalMinutes || 5),
+      });
+    } catch (e) {
+      console.error("fetchAutosyncIntervalSetting failed", e);
+    }
+  };
+
+  const fetchEmailIngestSetting = async () => {
+    if (!canManageIntegrations) return;
+    if (!isSuperAdmin && !inviteGroupId) return;
+    try {
+      const res = await axios.get(`${API}/admin/settings/email-ingest`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: emailIngestScopeParams,
+      });
+      const data = res?.data || {};
+      setEmailIngestConfig({
+        enabled: data.enabled !== false,
+        provider: data.provider || "google_workspace",
+        inboundDomain: data.inboundDomain || "",
+        routeMailbox: data.routeMailbox || "",
+        addressPrefix: data.addressPrefix || "customer",
+        addressMode: data.addressMode || "slug",
+        routingMode: data.routingMode || "catch_all",
+        requireApprovedSenders: data.requireApprovedSenders !== false,
+        allowedSenderDomains: Array.isArray(data.allowedSenderDomains) ? data.allowedSenderDomains : [],
+        notes: data.notes || "",
+      });
+    } catch (e) {
+      console.error("fetchEmailIngestSetting failed", e);
+    }
+  };
+
   const saveMetricsExposureSetting = async (enabledOverride = null) => {
     if (!isSuperAdmin || metricsExposureSaving) return;
     setMetricsExposureSaving(true);
@@ -846,6 +1232,71 @@ export default function UserManagement({ token, user, sheetId }) {
       alert(e.response?.data?.error || "Failed to save insight translation cache settings");
     } finally {
       setInsightTranslationCacheSaving(false);
+    }
+  };
+
+  const saveAutosyncIntervalSetting = async () => {
+    if (!isSuperAdmin || autosyncIntervalSaving) return;
+    setAutosyncIntervalSaving(true);
+    try {
+      const payload = {
+        intervalMinutes: Number.parseInt(String(autosyncInterval.intervalMinutes || "").trim(), 10) || 5,
+      };
+      const res = await axios.patch(`${API}/admin/settings/autosync-interval`, payload, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setAutosyncInterval({
+        intervalMinutes: Number(res?.data?.intervalMinutes || payload.intervalMinutes),
+      });
+      alert("Autosync interval settings saved");
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to save autosync interval settings");
+    } finally {
+      setAutosyncIntervalSaving(false);
+    }
+  };
+
+  const saveEmailIngestSetting = async () => {
+    if (!canManageIntegrations || emailIngestSaving) return;
+    if (!isSuperAdmin && !inviteGroupId) return;
+    setEmailIngestSaving(true);
+    try {
+      const payload = {
+        enabled: emailIngestConfig.enabled !== false,
+        provider: "google_workspace",
+        inboundDomain: String(emailIngestConfig.inboundDomain || "").trim().toLowerCase(),
+        routeMailbox: String(emailIngestConfig.routeMailbox || "").trim().toLowerCase(),
+        addressPrefix: String(emailIngestConfig.addressPrefix || "customer").trim(),
+        addressMode: emailIngestConfig.addressMode === "id" ? "id" : "slug",
+        routingMode: emailIngestConfig.routingMode === "default_routing" ? "default_routing" : "catch_all",
+        requireApprovedSenders: emailIngestConfig.requireApprovedSenders !== false,
+        allowedSenderDomains: Array.isArray(emailIngestConfig.allowedSenderDomains)
+          ? emailIngestConfig.allowedSenderDomains
+          : String(emailIngestConfig.allowedSenderDomains || "").split(/[\n,]+/).map((v) => v.trim()).filter(Boolean),
+        notes: String(emailIngestConfig.notes || "").trim(),
+      };
+      const res = await axios.patch(`${API}/admin/settings/email-ingest`, payload, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: emailIngestScopeParams,
+      });
+      const data = res?.data || {};
+      setEmailIngestConfig({
+        enabled: data.enabled !== false,
+        provider: data.provider || "google_workspace",
+        inboundDomain: data.inboundDomain || "",
+        routeMailbox: data.routeMailbox || "",
+        addressPrefix: data.addressPrefix || "customer",
+        addressMode: data.addressMode || "slug",
+        routingMode: data.routingMode || "catch_all",
+        requireApprovedSenders: data.requireApprovedSenders !== false,
+        allowedSenderDomains: Array.isArray(data.allowedSenderDomains) ? data.allowedSenderDomains : [],
+        notes: data.notes || "",
+      });
+      alert("Email ingest settings saved");
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to save email ingest settings");
+    } finally {
+      setEmailIngestSaving(false);
     }
   };
 
@@ -1044,11 +1495,14 @@ export default function UserManagement({ token, user, sheetId }) {
       fetchGoogleOauthSetting();
       fetchDropboxOauthSetting();
       fetchOneDriveOauthSetting();
+      STORAGE_PROVIDER_DEFS.forEach((provider) => { void fetchStorageSetting(provider); });
+      fetchEmailIngestSetting();
       fetchSmtpSetting();
       fetchInviteEmailTemplate();
       fetchInvitationPolicy();
       fetchInsightTranslationCacheSetting();
       fetchMetricsExposureSetting();
+      fetchAutosyncIntervalSetting();
     }
   }, [token]);
 
@@ -1057,11 +1511,14 @@ export default function UserManagement({ token, user, sheetId }) {
     fetchGoogleOauthSetting();
     fetchDropboxOauthSetting();
     fetchOneDriveOauthSetting();
+    STORAGE_PROVIDER_DEFS.forEach((provider) => { void fetchStorageSetting(provider); });
+    fetchEmailIngestSetting();
     fetchSmtpSetting();
     fetchInviteEmailTemplate();
     fetchInsightTranslationCacheSetting();
     fetchMetricsExposureSetting();
-  }, [token, canManageIntegrations, selectedGroupId]);
+    fetchAutosyncIntervalSetting();
+  }, [token, canManageIntegrations, selectedGroupId, groups, isSuperAdmin]);
 
 
 
@@ -2680,12 +3137,175 @@ export default function UserManagement({ token, user, sheetId }) {
         <>
         {canManageIntegrations && (
           <div className="mb-4 rounded-md border border-slate-200 bg-slate-50 p-4 space-y-3">
-            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Cloud Storage</div>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Storage Options</div>
             {!isSuperAdmin && !selectedGroupId && (
               <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
                 Select a customer to configure scoped integration credentials.
               </div>
             )}
+            <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Autosync Check Interval</div>
+                <span className="text-[10px] font-semibold text-slate-400">{autosyncInterval.intervalMinutes || 5} min</span>
+              </div>
+              <input
+                className="input-premium py-1.5 text-[11px] font-semibold"
+                type="number"
+                min="1"
+                max="1440"
+                placeholder="Interval in minutes"
+                value={autosyncInterval.intervalMinutes}
+                onChange={(e) => setAutosyncInterval((prev) => ({ ...prev, intervalMinutes: e.target.value }))}
+              />
+              <div className="text-[10px] text-slate-500">
+                Cloud drive sources are checked for file updates on this interval.
+              </div>
+              <button
+                type="button"
+                onClick={saveAutosyncIntervalSetting}
+                disabled={autosyncIntervalSaving}
+                className={`btn-premium bg-slate-800 text-white w-full py-1.5 text-[11px] ${autosyncIntervalSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+              >
+                {autosyncIntervalSaving ? "Saving..." : "Save Autosync Interval"}
+              </button>
+            </div>
+            <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Email Ingest</div>
+                  <span className={`text-[10px] font-semibold ${emailIngestConfig.enabled !== false ? "text-emerald-600" : "text-slate-400"}`}>
+                    {emailIngestConfig.enabled !== false ? "Enabled" : "Disabled"}
+                  </span>
+                  {!emailIngestConfig.enabled && <span className="text-[10px] font-semibold text-slate-400">Configured</span>}
+                </div>
+                <button
+                  type="button"
+                  className="text-[10px] font-semibold text-slate-600 hover:text-slate-900"
+                  onClick={() => setIntegrationOpen((prev) => ({ ...prev, emailIngest: !prev.emailIngest }))}
+                >
+                  {integrationOpen.emailIngest ? "Collapse" : "Expand"}
+                </button>
+              </div>
+              {integrationOpen.emailIngest && (
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 px-2 py-1 rounded-md border border-slate-200">
+                      <input
+                        type="checkbox"
+                        checked={emailIngestConfig.enabled !== false}
+                        disabled={!isSuperAdmin}
+                        onChange={(e) => setEmailIngestConfig((prev) => ({ ...prev, enabled: e.target.checked }))}
+                      />
+                      Enable email ingestion
+                    </label>
+                    <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 px-2 py-1 rounded-md border border-slate-200">
+                      <input
+                        type="checkbox"
+                        checked={emailIngestConfig.requireApprovedSenders !== false}
+                        disabled={!isSuperAdmin}
+                        onChange={(e) => setEmailIngestConfig((prev) => ({ ...prev, requireApprovedSenders: e.target.checked }))}
+                      />
+                      Require approved senders
+                    </label>
+                  </div>
+                  <input
+                    className="input-premium py-1.5 text-[11px] font-semibold"
+                    placeholder="Inbound domain (e.g. reports.example.com)"
+                    value={emailIngestConfig.inboundDomain}
+                    disabled={!isSuperAdmin}
+                    onChange={(e) => setEmailIngestConfig((prev) => ({ ...prev, inboundDomain: e.target.value }))}
+                  />
+                  <input
+                    className="input-premium py-1.5 text-[11px] font-semibold"
+                    placeholder="Inbound mailbox / catch-all destination (e.g. imports@reports.example.com)"
+                    value={emailIngestConfig.routeMailbox}
+                    disabled={!isSuperAdmin}
+                    onChange={(e) => setEmailIngestConfig((prev) => ({ ...prev, routeMailbox: e.target.value }))}
+                  />
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    <input
+                      className="input-premium py-1.5 text-[11px] font-semibold"
+                      placeholder="Customer address prefix (e.g. customer)"
+                      value={emailIngestConfig.addressPrefix}
+                      disabled={!isSuperAdmin}
+                      onChange={(e) => setEmailIngestConfig((prev) => ({ ...prev, addressPrefix: e.target.value }))}
+                    />
+                    <select
+                      className="input-premium py-1.5 text-[11px] font-semibold"
+                      value={emailIngestConfig.addressMode}
+                      disabled={!isSuperAdmin}
+                      onChange={(e) => setEmailIngestConfig((prev) => ({ ...prev, addressMode: e.target.value }))}
+                    >
+                      <option value="slug">Use customer slug</option>
+                      <option value="id">Use customer ID</option>
+                    </select>
+                  </div>
+                  <select
+                    className="input-premium py-1.5 text-[11px] font-semibold"
+                    value={emailIngestConfig.routingMode}
+                    disabled={!isSuperAdmin}
+                    onChange={(e) => setEmailIngestConfig((prev) => ({ ...prev, routingMode: e.target.value }))}
+                  >
+                    <option value="catch_all">Google Workspace catch-all routing</option>
+                    <option value="default_routing">Google Workspace default routing</option>
+                  </select>
+                  <textarea
+                    className="input-premium py-1.5 text-[11px] font-semibold min-h-[84px]"
+                    placeholder="Allowed sender domains, one per line or comma-separated (e.g. customer.com)"
+                    value={Array.isArray(emailIngestConfig.allowedSenderDomains) ? emailIngestConfig.allowedSenderDomains.join("\n") : String(emailIngestConfig.allowedSenderDomains || "")}
+                    onChange={(e) => setEmailIngestConfig((prev) => ({ ...prev, allowedSenderDomains: String(e.target.value || "").split(/[\n,]+/).map((v) => v.trim()).filter(Boolean) }))}
+                  />
+                  <input
+                    className="input-premium py-1.5 text-[11px] font-semibold"
+                    placeholder="Internal notes"
+                    value={emailIngestConfig.notes}
+                    disabled={!isSuperAdmin}
+                    onChange={(e) => setEmailIngestConfig((prev) => ({ ...prev, notes: e.target.value }))}
+                  />
+                  <div className="text-[10px] text-slate-500">
+                    Allowed sender domains are applied to the selected customer when a customer is selected; otherwise they update the global default.
+                  </div>
+                  <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600 space-y-1">
+                    <div className="font-semibold text-slate-700">Google Workspace setup</div>
+                    <a
+                      className="block text-blue-700 hover:underline"
+                      href="https://support.google.com/a/answer/7502379?hl=en"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Add a domain or domain alias
+                    </a>
+                    <a
+                      className="block text-blue-700 hover:underline"
+                      href="https://support.google.com/a/answer/2368153?hl=en"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Set up Default routing for your organization
+                    </a>
+                    <a
+                      className="block text-blue-700 hover:underline"
+                      href="https://support.google.com/a/answer/12943537?hl=en"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Get misaddressed email in a catch-all mailbox
+                    </a>
+                    <div className="text-slate-500">
+                      This address should route inbound attachments to the mailbox the app watches. Generated customer addresses can be derived from the prefix + customer slug or ID.
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={saveEmailIngestSetting}
+                    disabled={emailIngestSaving}
+                    className={`btn-premium bg-slate-800 text-white w-full py-1.5 text-[11px] ${emailIngestSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                  >
+                    {emailIngestSaving ? "Saving..." : "Save Email Ingest Settings"}
+                  </button>
+                </>
+              )}
+            </div>
             <div className={`rounded-md border bg-white p-3 space-y-2 ${googleConfigured && integrationTestStatus.google === "success" ? "border-emerald-400" : "border-slate-200"}`}>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -2782,6 +3402,46 @@ export default function UserManagement({ token, user, sheetId }) {
               </>
               )}
             </div>
+            {STORAGE_PROVIDER_DEFS.map((provider) => {
+              const state = storageSettings[provider.key] || createStorageProviderState(provider);
+              const configured = !!state.form.enabled && provider.fields
+                .filter((field) => field.name !== "enabled")
+                .every((field) => {
+                  if (field.secret) return !!state.meta?.[field.metaKey] || !!String(state.form[field.name] || "").trim();
+                  if (field.type === "checkbox") return true;
+                  if (field.type === "number") return Number.parseInt(state.form[field.name], 10) > 0;
+                  return !!String(state.form[field.name] || "").trim();
+                });
+              return (
+                <StorageOptionCard
+                  key={provider.key}
+                  title={provider.title}
+                  summary={provider.summary(state)}
+                  configured={configured}
+                  tested={state.testStatus === "success"}
+                  open={state.open}
+                  onToggleOpen={() => updateStorageProvider(provider.key, (prev) => ({ ...prev, open: !prev.open }))}
+                  enabled={!!state.form.enabled}
+                  form={state.form}
+                  meta={state.meta}
+                  fields={provider.fields}
+                  onChange={(fieldName, fieldValue, fieldDef) => {
+                    updateStorageProvider(provider.key, (prev) => ({
+                      ...prev,
+                      form: { ...prev.form, [fieldName]: fieldValue },
+                      ...(fieldDef?.secret ? { meta: { ...prev.meta, [fieldDef.metaKey]: prev.meta?.[fieldDef.metaKey] } } : {}),
+                    }));
+                  }}
+                  onSave={() => saveStorageSetting(provider)}
+                  onTest={() => testStorageSetting(provider)}
+                  saving={!!state.saving}
+                  testing={!!state.testing}
+                  saveLabel={`Save ${provider.title}`}
+                  testLabel="Test Connection"
+                  helpLinks={provider.helpLinks}
+                />
+              );
+            })}
           </div>
         )}
 

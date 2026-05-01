@@ -273,16 +273,21 @@ export default function InsightFeed({
     loadInsights();
   }, [loadInsights]);
 
+  const displayCards = React.useMemo(() => {
+    if (!Array.isArray(cards) || cards.length === 0) return [];
+    return cards.filter((card) => !String(card?.type || "").startsWith("ai_"));
+  }, [cards]);
+
   React.useEffect(() => {
-    if (!sheetId || !Array.isArray(cards) || cards.length === 0) return;
-    const firstChart = cards.find((c) => c?.actions?.chart)?.actions?.chart;
+    if (!sheetId || !Array.isArray(displayCards) || displayCards.length === 0) return;
+    const firstChart = displayCards.find((c) => c?.actions?.chart)?.actions?.chart;
     if (!firstChart) return;
 
     const chartKey = `${sheetId}:${JSON.stringify(firstChart)}`;
     if (autoChartKeyRef.current === chartKey) return;
     autoChartKeyRef.current = chartKey;
     onOpenChart?.(firstChart);
-  }, [sheetId, cards, onOpenChart]);
+  }, [sheetId, displayCards, onOpenChart]);
 
   const updateSetting = (key, value) => {
     setSettings((prev) => ({ ...(prev || {}), [key]: value }));
@@ -309,11 +314,6 @@ export default function InsightFeed({
       setSaving(false);
     }
   };
-
-  const displayCards = React.useMemo(() => {
-    if (!Array.isArray(cards) || cards.length === 0) return [];
-    return cards;
-  }, [cards]);
 
   return (
     <section className={`rounded-md border border-slate-200 bg-white shadow-sm ${className}`}>
@@ -425,7 +425,7 @@ export default function InsightFeed({
       <div className="p-4">
         {loading && <div className="text-sm text-slate-500">{ui.loadingInsights}</div>}
         {error && <div className="text-sm text-rose-600">{error}</div>}
-        {!loading && !error && cards.length === 0 && (
+        {!loading && !error && displayCards.length === 0 && (
           <div className="text-sm text-slate-500">{ui.noInsightsYet}</div>
         )}
 

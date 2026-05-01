@@ -26,7 +26,10 @@ const HEAVY_LIST_CACHE_MAX = Number.parseInt(process.env.HEAVY_LIST_CACHE_MAX ||
 const ENABLE_STORAGE_USAGE_METRICS = String(process.env.ENABLE_STORAGE_USAGE_METRICS || "").toLowerCase() === "true";
 const CUSTOMER_INVITE_BASE_URL = String(process.env.CUSTOMER_INVITE_BASE_URL || "").trim();
 const INSIGHT_TRANSLATION_CACHE_SETTINGS_KEY = "insight_translation_cache_settings";
+const AUTOSYNC_POLL_INTERVAL_SETTINGS_KEY = "autosync_poll_interval_settings";
 const METRICS_EXPOSURE_SETTINGS_KEY = "metrics_exposure_settings";
+const EMAIL_INGEST_SETTINGS_KEY = "email_ingest_settings";
+const EMAIL_INGEST_ALLOWLIST_KEY = "email_ingest_allowlist";
 const RAW_INSIGHT_TRANSLATION_CACHE_TTL_MS = Number.parseInt(
     process.env.INSIGHT_TRANSLATION_CACHE_TTL_MS || `${60 * 60 * 1000}`,
     10
@@ -839,13 +842,13 @@ function normalizeOauthConfigForSave(current, body) {
     };
 }
 
-function appSettingKeyForGroup(baseKey, groupId) {
+export function appSettingKeyForGroup(baseKey, groupId) {
     return Number.isInteger(groupId) && groupId > 0 ? `group:${groupId}:${baseKey}` : baseKey;
 }
 
-async function resolveScopedGroupForIntegrationSettings(req) {
+export async function resolveScopedGroupForIntegrationSettings(req) {
     const requestedGroupId = parsePositiveInt(req.query?.groupId ?? req.body?.groupId);
-    if (req.user.role === "admin") {
+    if (isPlatformAdminUser(req.user)) {
         return { groupId: requestedGroupId };
     }
 
@@ -871,7 +874,7 @@ async function resolveScopedGroupForIntegrationSettings(req) {
     throw err;
 }
 
-async function getAppSettingValueWithScopedFallback(baseKey, groupId) {
+export async function getAppSettingValueWithScopedFallback(baseKey, groupId) {
     const scopedKey = appSettingKeyForGroup(baseKey, groupId);
     const scopedRows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [scopedKey]);
     if (scopedRows.length) return scopedRows[0]?.value;
@@ -1382,6 +1385,52 @@ function normalizeMetricsExposureSettings(raw = {}) {
     };
 }
 
+const DEFAULT_AUTOSYNC_POLL_INTERVAL_MINUTES = Math.max(
+    1,
+    Number.parseInt(process.env.AUTOSYNC_POLL_INTERVAL_MINUTES || "5", 10) || 5
+);
+
+function normalizeAutosyncPollIntervalSettings(raw = {}) {
+    const intervalMinutesRaw = Number.parseInt(
+        raw?.intervalMinutes ?? raw?.pollMinutes ?? raw?.minutes ?? DEFAULT_AUTOSYNC_POLL_INTERVAL_MINUTES,
+        10
+    );
+    const intervalMinutes = Number.isFinite(intervalMinutesRaw)
+        ? Math.min(1440, Math.max(1, intervalMinutesRaw))
+        : DEFAULT_AUTOSYNC_POLL_INTERVAL_MINUTES;
+    return { intervalMinutes };
+}
+
+export function normalizeEmailIngestSettings(raw = {}) {
+    const routingMode = String(raw?.routingMode || raw?.routeMode || "catch_all").trim().toLowerCase() === "default_routing"
+        ? "default_routing"
+        : "catch_all";
+    const addressMode = String(raw?.addressMode || raw?.customerAddressMode || "slug").trim().toLowerCase() === "id"
+        ? "id"
+        : "slug";
+    return {
+        enabled: raw?.enabled !== false,
+        provider: "google_workspace",
+        inboundDomain: String(raw?.inboundDomain || raw?.emailDomain || "").trim().toLowerCase(),
+        routeMailbox: String(raw?.routeMailbox || raw?.mailbox || "").trim().toLowerCase(),
+        addressPrefix: String(raw?.addressPrefix || raw?.customerAddressPrefix || "customer").trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-") || "customer",
+        addressMode,
+        routingMode,
+        requireApprovedSenders: raw?.requireApprovedSenders !== false,
+        notes: String(raw?.notes || "").trim(),
+    };
+}
+
+export function normalizeEmailIngestSenderAllowlist(raw = {}) {
+    const allowedSenderDomains = Array.isArray(raw?.allowedSenderDomains)
+        ? raw.allowedSenderDomains
+        : String(raw?.allowedSenderDomains || raw?.allowedSenderDomainsCsv || "")
+            .split(/[\n,]+/)
+            .map((value) => String(value || "").trim())
+            .filter(Boolean);
+    return Array.from(new Set(allowedSenderDomains.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean)));
+}
+
 function isPlatformAdminUser(user) {
     const role = String(user?.role || "").trim().toLowerCase();
     return role === "admin" || role === "super_admin" || role === "superadmin" || !!user?.is_admin || !!user?.super_admin;
@@ -1439,6 +1488,78 @@ export async function setMetricsExposureSetting(req, res) {
         metadata: next,
     });
     return res.json({ success: true, ...next });
+}
+
+export async function getAutosyncPollIntervalSetting(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [AUTOSYNC_POLL_INTERVAL_SETTINGS_KEY]);
+    const current = normalizeAutosyncPollIntervalSettings(rows?.[0]?.value || {});
+    return res.json(current);
+}
+
+export async function setAutosyncPollIntervalSetting(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    const next = normalizeAutosyncPollIntervalSettings(req.body || {});
+    await query(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+         ON CONFLICT (key)
+         DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+        [AUTOSYNC_POLL_INTERVAL_SETTINGS_KEY, JSON.stringify(next)]
+    );
+    await writeAuditLog({
+        req,
+        action: "autosync_poll_interval.settings_updated",
+        resourceType: "app_settings",
+        resourceId: AUTOSYNC_POLL_INTERVAL_SETTINGS_KEY,
+        metadata: next,
+    });
+    return res.json({ success: true, ...next });
+}
+
+export async function getEmailIngestSetting(req, res) {
+    const scope = await resolveScopedGroupForIntegrationSettings(req);
+    const currentRows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [EMAIL_INGEST_SETTINGS_KEY]);
+    const scopedAllowlistRaw = scope.groupId
+        ? await getAppSettingValueWithScopedFallback(EMAIL_INGEST_ALLOWLIST_KEY, scope.groupId)
+        : null;
+    const allowlistRaw = scopedAllowlistRaw ?? await getAppSettingValueWithScopedFallback(EMAIL_INGEST_ALLOWLIST_KEY, null);
+    const current = normalizeEmailIngestSettings(currentRows?.[0]?.value || {});
+    return res.json({
+        ...current,
+        allowedSenderDomains: normalizeEmailIngestSenderAllowlist(allowlistRaw || currentRows?.[0]?.value || {}),
+        groupId: scope.groupId || null,
+    });
+}
+
+export async function setEmailIngestSetting(req, res) {
+    const scope = await resolveScopedGroupForIntegrationSettings(req);
+    const next = normalizeEmailIngestSettings(req.body || {});
+    const allowedSenderDomains = normalizeEmailIngestSenderAllowlist(req.body || {});
+    if (isPlatformAdminUser(req.user)) {
+        await query(
+            `INSERT INTO app_settings (key, value, updated_at)
+             VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+             ON CONFLICT (key)
+             DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+            [EMAIL_INGEST_SETTINGS_KEY, JSON.stringify(next)]
+        );
+    }
+    await query(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+         ON CONFLICT (key)
+         DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+        [appSettingKeyForGroup(EMAIL_INGEST_ALLOWLIST_KEY, scope.groupId), JSON.stringify({ allowedSenderDomains })]
+    );
+    await writeAuditLog({
+        req,
+        action: "email_ingest.settings_updated",
+        resourceType: "app_settings",
+        resourceId: appSettingKeyForGroup(EMAIL_INGEST_ALLOWLIST_KEY, scope.groupId),
+        metadata: { ...next, allowedSenderDomains, groupId: scope.groupId || null },
+    });
+    return res.json({ success: true, ...next, allowedSenderDomains, groupId: scope.groupId || null });
 }
 
 export async function getMyMetricsExposureSetting(req, res) {

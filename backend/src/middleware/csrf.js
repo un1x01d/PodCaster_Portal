@@ -12,6 +12,7 @@ const CSRF_EXEMPT_PATHS = new Set([
   "/auth/invitations/accept",
   "/auth/2fa/verify",
   "/auth/2fa/sms/resend",
+  "/email-ingest/inbound",
 ]);
 
 function normalizePathname(pathname) {

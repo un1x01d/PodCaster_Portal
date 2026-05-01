@@ -16,12 +16,21 @@ import {
     getCustomerInvitationPolicy, setCustomerInvitationPolicy,
     getInsightTranslationCacheSetting, setInsightTranslationCacheSetting,
     getMetricsExposureSetting, setMetricsExposureSetting, getMyMetricsExposureSetting,
+    getAutosyncPollIntervalSetting, setAutosyncPollIntervalSetting,
+    getEmailIngestSetting, setEmailIngestSetting,
     getUserGroups,
     listGroups, createGroup, provisionGroupDatabase, updateGroup, deleteGroup, getGroupMembers, updateGroupMembers, getGroupSheets,
     addUserToGroup, removeUserFromGroup, toggleGroupAdmin,
     getUserKpiOverrides, setUserKpiOverrides,
     listAuditLogs
 } from "../controllers/userController.js";
+import {
+    getSftpStorageSetting, setSftpStorageSetting, testSftpStorageSetting,
+    getGcsStorageSetting, setGcsStorageSetting, testGcsStorageSetting,
+    getS3StorageSetting, setS3StorageSetting, testS3StorageSetting,
+    getAzureBlobStorageSetting, setAzureBlobStorageSetting, testAzureBlobStorageSetting,
+    getStorageProviderStatus, listStorageProviderFiles, importStorageProviderFile,
+} from "../controllers/storageController.js";
 import { auth } from "../middleware/auth.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { invitationIssueRateLimit } from "../middleware/rateLimit.js";
@@ -68,6 +77,25 @@ router.get("/admin/settings/insight-translation-cache", asyncHandler(getInsightT
 router.patch("/admin/settings/insight-translation-cache", asyncHandler(setInsightTranslationCacheSetting));
 router.get("/admin/settings/metrics-exposure", asyncHandler(getMetricsExposureSetting));
 router.patch("/admin/settings/metrics-exposure", asyncHandler(setMetricsExposureSetting));
+router.get("/admin/settings/autosync-interval", asyncHandler(getAutosyncPollIntervalSetting));
+router.patch("/admin/settings/autosync-interval", asyncHandler(setAutosyncPollIntervalSetting));
+router.get("/admin/settings/email-ingest", asyncHandler(getEmailIngestSetting));
+router.patch("/admin/settings/email-ingest", asyncHandler(setEmailIngestSetting));
+router.get("/admin/settings/sftp-storage", asyncHandler(getSftpStorageSetting));
+router.patch("/admin/settings/sftp-storage", asyncHandler(setSftpStorageSetting));
+router.post("/admin/settings/sftp-storage/test", asyncHandler(testSftpStorageSetting));
+router.get("/admin/settings/gcs-storage", asyncHandler(getGcsStorageSetting));
+router.patch("/admin/settings/gcs-storage", asyncHandler(setGcsStorageSetting));
+router.post("/admin/settings/gcs-storage/test", asyncHandler(testGcsStorageSetting));
+router.get("/admin/settings/s3-storage", asyncHandler(getS3StorageSetting));
+router.patch("/admin/settings/s3-storage", asyncHandler(setS3StorageSetting));
+router.post("/admin/settings/s3-storage/test", asyncHandler(testS3StorageSetting));
+router.get("/admin/settings/azure-blob-storage", asyncHandler(getAzureBlobStorageSetting));
+router.patch("/admin/settings/azure-blob-storage", asyncHandler(setAzureBlobStorageSetting));
+router.post("/admin/settings/azure-blob-storage/test", asyncHandler(testAzureBlobStorageSetting));
+router.get("/storage/:provider/status", asyncHandler(getStorageProviderStatus));
+router.get("/storage/:provider/files", asyncHandler(listStorageProviderFiles));
+router.post("/storage/:provider/import", asyncHandler(importStorageProviderFile));
 
 // Customers (legacy route names remain /groups for API compatibility)
 router.post("/groups/:id/users/:userId/admin", asyncHandler(toggleGroupAdmin));
