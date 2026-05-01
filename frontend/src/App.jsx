@@ -1752,7 +1752,7 @@ export default function App() {
       await axios.delete(`${API}/sheets/${id}`, { headers: { Authorization: `Bearer ${token}` } });
       setMyFiles((prev) => prev.filter((f) => f.id !== id));
       setFolderFiles((prev) => prev.filter((f) => f.id !== id));
-      refreshReportSources();
+      await refreshReportSources();
 
       if (id === sheetId) {
         setSheetId(null);
@@ -1764,7 +1764,10 @@ export default function App() {
       }
     } catch (e) {
       console.error(e);
-      alert("Failed to delete");
+      const msg = e?.response?.data?.error || e?.message || "Failed to delete";
+      alert(`Failed to delete: ${msg}`);
+      // Reconcile UI in case backend partially changed pointers/import status before error surfacing.
+      await refreshReportSources();
     }
   };
 

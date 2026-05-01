@@ -710,6 +710,51 @@ function computeCategoryDeltas(rows, dateCol, metricCol, categoryCol, currentPer
     .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
 }
 
+function computeYearlyCategoryDrivers(rows, dateCol, metricCol, categoryCol, targetYear = null) {
+  if (!dateCol || !metricCol || !categoryCol) return { year: null, drivers: [] };
+  const byYearAndCategory = new Map();
+  const years = new Set();
+
+  rows.forEach((r) => {
+    const parsedDate = parseDate(r?.[dateCol]);
+    const value = parseNum(r?.[metricCol]);
+    if (!parsedDate || value === null) return;
+    const year = Number(parsedDate.getUTCFullYear());
+    if (!Number.isFinite(year)) return;
+    years.add(year);
+    const category = String(r?.[categoryCol] ?? "Unknown");
+    const key = `${year}::${category}`;
+    byYearAndCategory.set(key, (byYearAndCategory.get(key) || 0) + value);
+  });
+
+  const resolvedYear = Number.isFinite(Number(targetYear))
+    ? Number(targetYear)
+    : (years.size ? Math.max(...Array.from(years)) : null);
+  if (!resolvedYear) return { year: null, drivers: [] };
+
+  const entries = [];
+  let total = 0;
+  byYearAndCategory.forEach((sum, key) => {
+    const [yearText, category] = String(key).split("::");
+    const year = Number(yearText);
+    if (year !== resolvedYear) return;
+    total += sum;
+    entries.push({ key: category, value: sum });
+  });
+
+  const denom = Math.abs(total) > 0 ? Math.abs(total) : 1;
+  const drivers = entries
+    .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
+    .map((entry) => ({
+      key: entry.key,
+      current: entry.value,
+      delta: entry.value,
+      sharePct: (entry.value / denom) * 100,
+    }));
+
+  return { year: resolvedYear, drivers };
+}
+
 async function buildInsights({ rows, headers, settings, context }) {
   const out = [];
   const detected = detectColumns(headers, rows, settings);
@@ -810,36 +855,39 @@ async function buildInsights({ rows, headers, settings, context }) {
 
   if (categoryCol && last) {
     categoryDeltas = computeCategoryDeltas(rows, dateCol, metricCol, categoryCol, last.period, prev?.period || null);
+    const { year: latestYear, drivers: yearlyDrivers } = computeYearlyCategoryDrivers(rows, dateCol, metricCol, categoryCol);
+    const topYearlyDrivers = yearlyDrivers.slice(0, 5);
 
-    if (categoryDeltas.length) {
-      const top = categoryDeltas[0];
+    if (topYearlyDrivers.length) {
+      const top = topYearlyDrivers[0];
       topCategoryDriver = top;
-        out.push({
-          id: "ins-driver",
-          type: "driver_breakdown",
-          title: `Top driver: ${top.key} (${metricCol})`,
-          bullets: [
-          `${top.key} changed by ${top.delta >= 0 ? "+" : "-"}${money(Math.abs(top.delta))} vs prior period.`,
-          `Current value: ${money(top.current)}${prev ? ` | Previous: ${money(top.prev)}` : ""}`,
-          `This is the largest contributor in ${categoryCol}.`,
-        ],
-          impact: Math.abs(top.delta) > 0 ? "medium" : "low",
-          urgency: "medium",
-          confidence: 0.88,
-          relevance: 0.95,
-          score: 0.7,
-          delta: top.delta,
-          direction: top.delta >= 0 ? "up" : "down",
-          graph: {
-            labels: prev ? [prev.period, last.period] : [last.period],
-            values: prev ? [top.prev, top.current] : [top.current],
-          },
+      out.push({
+        id: "ins-driver",
+        type: "driver_breakdown",
+        title: `Top drivers for ${latestYear}: ${metricCol}`,
+        bullets: topYearlyDrivers.map((driver, idx) => (
+          `${idx + 1}. ${driver.key}: ${money(driver.current)} (${toPct(driver.sharePct)} of yearly total)`
+        )),
+        impact: Math.abs(top.delta) > 0 ? "medium" : "low",
+        urgency: "medium",
+        confidence: 0.9,
+        relevance: 0.95,
+        score: 0.74,
+        delta: top.delta,
+        direction: top.delta >= 0 ? "up" : "down",
+        graph: {
+          labels: topYearlyDrivers.map((d) => d.key),
+          values: topYearlyDrivers.map((d) => d.current),
+        },
         actions: {
           filter: { column: categoryCol, value: top.key },
           chart: { dateColumn: dateCol, valueColumn: metricCol, segmentBy: categoryCol, aggregation: "sum" },
-          saveViewName: `${top.key} driver view`,
+          saveViewName: `${latestYear} top drivers`,
         },
       });
+    } else if (categoryDeltas.length) {
+      const top = categoryDeltas[0];
+      topCategoryDriver = top;
     }
   }
 

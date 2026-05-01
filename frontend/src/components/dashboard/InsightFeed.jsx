@@ -5,15 +5,27 @@ import { DASHBOARD_COPY_EN, formatTemplate } from "../../hooks/useDashboardI18n"
 function Sparkline({ graph, cardType, locale, copy }) {
   const [hoveredIndex, setHoveredIndex] = React.useState(null);
   const [tooltipPos, setTooltipPos] = React.useState(null);
+  const containerRef = React.useRef(null);
+  const [chartWidth, setChartWidth] = React.useState(320);
   const clean = Array.isArray(graph?.values)
     ? graph.values.map((v) => Number(v)).filter((v) => Number.isFinite(v))
     : [];
   const labels = Array.isArray(graph?.labels) ? graph.labels : [];
   if (clean.length < 2) return null;
-  const w = 320;
+  React.useEffect(() => {
+    if (!containerRef.current || typeof ResizeObserver === "undefined") return undefined;
+    const el = containerRef.current;
+    const ro = new ResizeObserver((entries) => {
+      const width = Number(entries?.[0]?.contentRect?.width || 0);
+      if (width > 0) setChartWidth(Math.max(220, Math.floor(width)));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const w = chartWidth;
   const h = 100; // Reduced from 132 to allow more space for text
-  const padLeft = 42;
-  const padRight = 12;
+  const padLeft = 30;
+  const padRight = 8;
   const padTop = 10;
   const padBottom = 24;
   const chartW = w - padLeft - padRight;
@@ -41,6 +53,12 @@ function Sparkline({ graph, cardType, locale, copy }) {
     }
     return text;
   };
+  const isDateLabel = (value) => {
+    const text = String(value || "");
+    return /^\d{4}-\d{2}$/.test(text) || /^\d{4}-\d{2}-\d{2}$/.test(text);
+  };
+  const usesDateAxis = labels.some((label) => isDateLabel(label));
+  const xAxisTitle = cardType === "driver_breakdown" && !usesDateAxis ? "Drivers" : copy.period;
   const coords = clean.map((v, i) => {
     const x = padLeft + i * stepX;
     const y = yFor(v);
@@ -105,7 +123,7 @@ function Sparkline({ graph, cardType, locale, copy }) {
   const shouldFlipLeft = hoveredPoint ? hoveredPoint[0] > w - (tooltipWidth / 2) - 18 : false;
   const shouldDropBelow = hoveredPoint ? hoveredPoint[1] < padTop + 30 : false;
   return (
-    <div className="relative mt-2 rounded border border-slate-200 bg-transparent p-1">
+    <div ref={containerRef} className="relative mt-2 w-full rounded border border-slate-200 bg-transparent p-1">
       <svg
         viewBox={`0 0 ${w} ${h}`}
         className="w-full h-[100px]"
@@ -183,7 +201,7 @@ function Sparkline({ graph, cardType, locale, copy }) {
         ))}
         <text x={padLeft} y={h - 8} textAnchor="start" fill="#64748b" fontSize="9">{xStart}</text>
         <text x={w - padRight} y={h - 8} textAnchor="end" fill="#64748b" fontSize="9">{xEnd}</text>
-        <text x={w / 2} y={h - 4} textAnchor="middle" fill="#64748b" fontSize="8" fontWeight="600">{copy.period}</text>
+        <text x={w / 2} y={h - 4} textAnchor="middle" fill="#64748b" fontSize="8" fontWeight="600">{xAxisTitle}</text>
       </svg>
       {forecastStartIndex !== null && (
         <div className="mt-1 flex justify-end pr-1">

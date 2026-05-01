@@ -1040,10 +1040,7 @@ export default function DashboardBody(props) {
                 secondarySerializableFilters[col] = Array.isArray(val) ? val : (val instanceof Set ? Array.from(val) : [val]);
             });
         }
-        const rowCount = selectedPrimaryRowIndexes.length;
-        const colCount = selectedPrimaryColumns.length;
-        const suggestedName = `Selection ${rowCount}x${colCount}`;
-        setPendingViewName(suggestedName);
+        setPendingViewName("");
         setSaveViewConfigOverride({
             columnFilters: filters || {},
             visibleColumns: selectedPrimaryColumns,
@@ -1283,19 +1280,82 @@ export default function DashboardBody(props) {
         [secondaryCompareRows, secondarySortConfig, sortRowsForDiff]
     );
 
-    const primaryDiffCellSet = React.useMemo(() => {
-        if (!primaryCompareSheetId || !Array.isArray(sortedData) || !sortedData.length) return new Set();
-        const changed = new Set();
-        sortedData.forEach((row, rowIndex) => {
-            const baseRow = primarySortedCompareRows[rowIndex] || {};
-            (displayHeaders || []).forEach((col) => {
-                const curr = normalizeCellForDiff(row?.[col]);
-                const prev = normalizeCellForDiff(baseRow?.[col]);
-                if (curr !== prev) changed.add(`${rowIndex}::${col}`);
+    const splitPaneDiffSets = React.useMemo(() => {
+        const empty = { primary: new Set(), secondary: new Set() };
+        if (!comparisonOn || !secondarySheetId) return empty;
+
+        const leftMeta = getSelectedSourceMeta(sheetId);
+        const rightMeta = getSelectedSourceMeta(secondarySheetId);
+        const leftSourceId = String(leftMeta?.selectedSource?.id || "");
+        const rightSourceId = String(rightMeta?.selectedSource?.id || "");
+        if (!leftSourceId || leftSourceId !== rightSourceId) return empty;
+
+        const leftLabel = String(leftMeta?.selectedImport?.file_label || "").trim().toLowerCase();
+        const rightLabel = String(rightMeta?.selectedImport?.file_label || "").trim().toLowerCase();
+        if (leftLabel && rightLabel && leftLabel !== rightLabel) return empty;
+
+        const primaryRows = Array.isArray(sortedData) ? sortedData : [];
+        const secondaryRows = Array.isArray(secondaryData) ? secondaryData : [];
+        if (!primaryRows.length || !secondaryRows.length) return empty;
+
+        const activeFilters = Object.entries(secondaryColumnFilters)
+            .filter(([, allowed]) => allowed instanceof Set && allowed.size > 0);
+        const filteredSecondaryRows = !activeFilters.length
+            ? secondaryRows
+            : secondaryRows.filter((row) => activeFilters.every(([col, allowed]) => (
+                allowed.has(String(row?.[col] ?? ""))
+            )));
+
+        const sharedColumns = (displayHeaders || []).filter((col) => (
+            (activeSecondaryFields || []).includes(col)
+        ));
+        if (!sharedColumns.length || !filteredSecondaryRows.length) return empty;
+
+        const rowCount = Math.min(primaryRows.length, filteredSecondaryRows.length);
+        const primaryChanged = new Set();
+        const secondaryChanged = new Set();
+
+        for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+            const leftRow = primaryRows[rowIndex] || {};
+            const rightRow = filteredSecondaryRows[rowIndex] || {};
+            sharedColumns.forEach((col) => {
+                const leftVal = normalizeCellForDiff(leftRow?.[col]);
+                const rightVal = normalizeCellForDiff(rightRow?.[col]);
+                if (leftVal !== rightVal) {
+                    primaryChanged.add(`${rowIndex}::${col}`);
+                    secondaryChanged.add(`${rowIndex}::${col}`);
+                }
             });
-        });
+        }
+
+        return { primary: primaryChanged, secondary: secondaryChanged };
+    }, [
+        comparisonOn,
+        secondarySheetId,
+        sheetId,
+        getSelectedSourceMeta,
+        sortedData,
+        secondaryData,
+        secondaryColumnFilters,
+        displayHeaders,
+        activeSecondaryFields,
+        normalizeCellForDiff,
+    ]);
+
+    const primaryDiffCellSet = React.useMemo(() => {
+        const changed = new Set(splitPaneDiffSets.primary);
+        if (primaryCompareSheetId && Array.isArray(sortedData) && sortedData.length) {
+            sortedData.forEach((row, rowIndex) => {
+                const baseRow = primarySortedCompareRows[rowIndex] || {};
+                (displayHeaders || []).forEach((col) => {
+                    const curr = normalizeCellForDiff(row?.[col]);
+                    const prev = normalizeCellForDiff(baseRow?.[col]);
+                    if (curr !== prev) changed.add(`${rowIndex}::${col}`);
+                });
+            });
+        }
         return changed;
-    }, [primaryCompareSheetId, sortedData, primarySortedCompareRows, displayHeaders, normalizeCellForDiff]);
+    }, [splitPaneDiffSets.primary, primaryCompareSheetId, sortedData, primarySortedCompareRows, displayHeaders, normalizeCellForDiff]);
 
     const primaryMissingColumns = React.useMemo(() => {
         if (!primaryCompareSheetId) return [];
@@ -1307,6 +1367,7 @@ export default function DashboardBody(props) {
     }, [primaryCompareSheetId, primaryCompareRows, activePrimaryFields]);
 
     const secondaryDiffCellSet = React.useMemo(() => {
+        const changed = new Set(splitPaneDiffSets.secondary);
         const rows = Array.isArray(secondaryData) ? secondaryData : [];
         const activeFilters = Object.entries(secondaryColumnFilters)
             .filter(([, allowed]) => allowed instanceof Set && allowed.size > 0);
@@ -1315,18 +1376,18 @@ export default function DashboardBody(props) {
             : rows.filter((row) => activeFilters.every(([col, allowed]) => (
                 allowed.has(String(row?.[col] ?? ""))
             )));
-        if (!secondaryCompareSheetId || !filteredRows.length) return new Set();
-        const changed = new Set();
-        filteredRows.forEach((row, rowIndex) => {
-            const baseRow = secondarySortedCompareRows[rowIndex] || {};
-            (activeSecondaryFields || []).forEach((col) => {
-                const curr = normalizeCellForDiff(row?.[col]);
-                const prev = normalizeCellForDiff(baseRow?.[col]);
-                if (curr !== prev) changed.add(`${rowIndex}::${col}`);
+        if (secondaryCompareSheetId && filteredRows.length) {
+            filteredRows.forEach((row, rowIndex) => {
+                const baseRow = secondarySortedCompareRows[rowIndex] || {};
+                (activeSecondaryFields || []).forEach((col) => {
+                    const curr = normalizeCellForDiff(row?.[col]);
+                    const prev = normalizeCellForDiff(baseRow?.[col]);
+                    if (curr !== prev) changed.add(`${rowIndex}::${col}`);
+                });
             });
-        });
+        }
         return changed;
-    }, [secondaryCompareSheetId, secondaryData, secondaryColumnFilters, secondarySortedCompareRows, activeSecondaryFields, normalizeCellForDiff]);
+    }, [splitPaneDiffSets.secondary, secondaryCompareSheetId, secondaryData, secondaryColumnFilters, secondarySortedCompareRows, activeSecondaryFields, normalizeCellForDiff]);
 
     const secondaryMissingColumns = React.useMemo(() => {
         if (!secondaryCompareSheetId) return [];
@@ -2928,6 +2989,22 @@ export default function DashboardBody(props) {
                                                 )}
                                             </div>
                                         </div>
+                                        {comparisonOn && (
+                                            <div className="grid grid-cols-[48px_minmax(0,1fr)] items-center gap-1">
+                                                <span className="text-[10px] font-bold text-slate-600">Columns</span>
+                                                <div style={{ width: `${primaryFieldsMenuWidthCh}ch`, maxWidth: "100%" }}>
+                                                    <MultiSelect
+                                                        options={displayHeaders}
+                                                        value={primaryFields}
+                                                        onChange={setPrimaryFields}
+                                                        placeholder="Select columns..."
+                                                        className="w-full"
+                                                        activeColor="blue"
+                                                        dense
+                                                    />
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                     {canManageViews && (
                                         <div className="flex items-center justify-end gap-1.5 shrink-0">
@@ -2962,22 +3039,6 @@ export default function DashboardBody(props) {
                                         </div>
                                     )}
                                 </div>
-                                {comparisonOn && (
-                                    <div className="grid grid-cols-[48px_minmax(0,1fr)] items-center gap-1">
-                                        <span className="text-[10px] font-bold text-slate-600">Columns</span>
-                                        <div style={{ width: `${primaryFieldsMenuWidthCh}ch`, maxWidth: "100%" }}>
-                                            <MultiSelect
-                                                options={displayHeaders}
-                                                value={primaryFields}
-                                                onChange={setPrimaryFields}
-                                                placeholder="Select columns..."
-                                                className="w-full"
-                                                activeColor="blue"
-                                                dense
-                                            />
-                                        </div>
-                                    </div>
-                                )}
                                 {primaryCompareSheetId && primaryMissingColumns.length > 0 && (
                                     <div className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[10px] font-bold text-amber-800">
                                         Warning: Compared revision is missing {primaryMissingColumns.length} column(s): {primaryMissingColumns.join(", ")}

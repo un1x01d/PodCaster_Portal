@@ -2812,6 +2812,21 @@ export async function deleteSheet(req, res) {
 
     try {
         await client.query("BEGIN");
+        const importJobsReg = await client.query("SELECT to_regclass('import_jobs') AS reg");
+        const hasImportJobsTable = !!importJobsReg.rows?.[0]?.reg;
+        let importJobsHasImportId = false;
+        let importJobsHasSheetId = false;
+        if (hasImportJobsTable) {
+            const colRes = await client.query(
+                `SELECT column_name
+                   FROM information_schema.columns
+                  WHERE table_name = 'import_jobs'
+                    AND column_name IN ('import_id', 'sheet_id')`
+            );
+            const cols = new Set((colRes.rows || []).map((r) => String(r.column_name)));
+            importJobsHasImportId = cols.has("import_id");
+            importJobsHasSheetId = cols.has("sheet_id");
+        }
 
         const s = await client.query("SELECT id FROM sheets WHERE id = $1 LIMIT 1 FOR UPDATE", [id]);
         if (!s.rows.length) {
@@ -2839,25 +2854,29 @@ export async function deleteSheet(req, res) {
 
         // Delete imports tied to this sheet and scrub jobs that referenced those imports.
         if (importIds.length > 0) {
-            await client.query(
-                `UPDATE import_jobs
-                    SET import_id = NULL,
-                        sheet_id = NULL,
-                        updated_at = CURRENT_TIMESTAMP
-                  WHERE import_id = ANY($1::int[])`,
-                [importIds]
-            );
+            if (hasImportJobsTable && (importJobsHasImportId || importJobsHasSheetId)) {
+                const sets = [];
+                if (importJobsHasImportId) sets.push("import_id = NULL");
+                if (importJobsHasSheetId) sets.push("sheet_id = NULL");
+                await client.query(
+                    `UPDATE import_jobs
+                        SET ${sets.join(", ")}
+                      WHERE import_id = ANY($1::int[])`,
+                    [importIds]
+                );
+            }
             await client.query("DELETE FROM report_source_imports WHERE id = ANY($1::int[])", [importIds]);
         }
 
         // Cleanup jobs directly keyed by the sheet id.
-        await client.query(
-            `UPDATE import_jobs
-                SET sheet_id = NULL,
-                    updated_at = CURRENT_TIMESTAMP
-              WHERE sheet_id = $1`,
-            [id]
-        );
+        if (hasImportJobsTable && importJobsHasSheetId) {
+            await client.query(
+                `UPDATE import_jobs
+                    SET sheet_id = NULL
+                  WHERE sheet_id = $1`,
+                [id]
+            );
+        }
 
         // Delete Sheet (Rows cascade via FK)
         await client.query("DELETE FROM sheets WHERE id = $1", [id]);
