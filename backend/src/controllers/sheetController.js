@@ -13,9 +13,10 @@ import {
     resolveViewColumnAllowlist as resolveViewColumnAllowlistFromAuth,
 } from "../utils/authorization.js";
 import { writeAuditLog } from "../utils/auditLog.js";
-import { normalizeGroupEntitlements } from "../utils/entitlements.js";
+import { normalizeGroupEntitlements, groupHasFeature } from "../utils/entitlements.js";
 import { downloadProviderAutosyncFile, fetchProviderAutosyncMetadata } from "../utils/providerAutosync.js";
 import { ensureReportSourcesSchema } from "../config/db.js";
+import { DLP_SETTINGS_KEY, normalizeDlpSettings, scanRowsForDlp, applyDlpColumnMasking } from "../utils/dlp.js";
 import {
     getAppSettingValueWithScopedFallback,
     normalizeEmailIngestSenderAllowlist,
@@ -381,7 +382,7 @@ async function resolveReportSourceForUpload(client, { reportSourceId, reportSour
     const sourceId = Number.parseInt(reportSourceId, 10);
     if (Number.isInteger(sourceId) && sourceId > 0) {
         const source = await client.query(
-            `SELECT rs.id, rs.name, rs.created_by, rs.current_sheet_id, s.headers AS current_headers
+            `SELECT rs.id, rs.name, rs.created_by, rs.current_sheet_id, rs.sync_group_id, s.headers AS current_headers
              FROM report_sources rs
              LEFT JOIN sheets s ON s.id = rs.current_sheet_id
              WHERE rs.id = $1`,
@@ -403,6 +404,7 @@ async function resolveReportSourceForUpload(client, { reportSourceId, reportSour
         return {
             id: row.id,
             name: row.name,
+            syncGroupId: row.sync_group_id || null,
             previousSheetId: row.current_sheet_id || null,
             previousHeaders: typeof row.current_headers === "string" ? JSON.parse(row.current_headers) : (row.current_headers || []),
             isNew: false,
@@ -424,6 +426,7 @@ async function resolveReportSourceForUpload(client, { reportSourceId, reportSour
     return {
         id: inserted.rows[0].id,
         name: inserted.rows[0].name,
+        syncGroupId: Number.parseInt(user?.customer_group_id ?? user?.group_id, 10) || null,
         previousSheetId: null,
         previousHeaders: [],
         isNew: true,
@@ -438,7 +441,7 @@ async function loadReportSourceForImport(client, reportSourceId) {
         throw err;
     }
     const source = await client.query(
-        `SELECT rs.id, rs.name, rs.current_sheet_id, s.headers AS current_headers
+        `SELECT rs.id, rs.name, rs.current_sheet_id, rs.sync_group_id, s.headers AS current_headers
          FROM report_sources rs
          LEFT JOIN sheets s ON s.id = rs.current_sheet_id
          WHERE rs.id = $1
@@ -454,10 +457,22 @@ async function loadReportSourceForImport(client, reportSourceId) {
     return {
         id: row.id,
         name: row.name,
+        syncGroupId: row.sync_group_id || null,
         previousSheetId: row.current_sheet_id || null,
         previousHeaders: typeof row.current_headers === "string" ? JSON.parse(row.current_headers) : (row.current_headers || []),
         isNew: false,
     };
+}
+
+function resolveImportGroupId(user, reportSource) {
+    const raw = reportSource?.syncGroupId ?? user?.customer_group_id ?? user?.group_id;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+async function loadDlpSettings(client) {
+    const rows = await client.query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [DLP_SETTINGS_KEY]);
+    return normalizeDlpSettings(rows?.rows?.[0]?.value || rows?.[0]?.value || {});
 }
 
 async function carryForwardSourceSecurity(client, { previousSheetId, nextSheetId, previousHeaders, nextHeaders }) {
@@ -825,7 +840,8 @@ async function executeImportFromParsedWorkbook({
     autosyncConfig = null,
     fileSizeBytes = 0,
 }) {
-    const { sheetNames, sheets, cleanup } = parsedResult || {};
+    const { sheetNames, sheets: parsedSheets, cleanup } = parsedResult || {};
+    let sheets = parsedSheets;
     if (cleanup && (cleanup.formulasStripped || cleanup.metadataEntriesStripped)) {
         console.info(
             `[upload_cleanup] formulas_stripped=${Number(cleanup.formulasStripped || 0)} metadata_entries_stripped=${Number(cleanup.metadataEntriesStripped || 0)}`
@@ -853,6 +869,33 @@ async function executeImportFromParsedWorkbook({
             });
         } else {
             reportSource = await loadReportSourceForImport(client, reportSourceId);
+        }
+
+        const groupId = resolveImportGroupId(user, reportSource);
+        if (groupId) {
+            const groupRes = await client.query("SELECT id, entitlements FROM groups WHERE id = $1 LIMIT 1", [groupId]);
+            const group = groupRes.rows?.[0];
+            if (group && groupHasFeature(group, "dlp")) {
+                const dlp = await loadDlpSettings(client);
+                if (dlp.enabled) {
+                    const scan = scanRowsForDlp(sheets, dlp);
+                    if (dlp.maskDetectedColumns && scan.findings.length > 0) {
+                        sheets = applyDlpColumnMasking(sheets, scan.maskedColumns);
+                    }
+                    if (scan.findings.length > 0 && dlp.mode === "block") {
+                        const err = toImportError("dlp_blocked", 403, "Import blocked by DLP policy.");
+                        err.details = {
+                            groupId,
+                            findingsCount: scan.findings.length,
+                            scannedCells: scan.scannedCells,
+                            capped: scan.capped,
+                            maskedColumns: scan.maskedColumns || {},
+                            findings: scan.findings,
+                        };
+                        throw err;
+                    }
+                }
+            }
         }
 
         const sheetId = `${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;

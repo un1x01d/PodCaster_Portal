@@ -13,11 +13,13 @@ import {
     getQuickbooksIntegrationSetting, setQuickbooksIntegrationSetting,
     getQuickbooksOauthSetting, setQuickbooksOauthSetting,
     testQuickbooksOauthSetting,
+    getSamlSsoSetting, setSamlSsoSetting, testSamlSsoSetting,
     getSsoSetting, setSsoSetting,
     getSmtpSetting, setSmtpSetting,
     getInviteEmailTemplateSetting, setInviteEmailTemplateSetting, previewInviteEmailTemplate,
     getCustomerInvitationPolicy, setCustomerInvitationPolicy,
     getInsightTranslationCacheSetting, setInsightTranslationCacheSetting,
+    getDlpSetting, setDlpSetting,
     getMetricsExposureSetting, setMetricsExposureSetting, getMyMetricsExposureSetting,
     getAutosyncPollIntervalSetting, setAutosyncPollIntervalSetting,
     getEmailIngestSetting, setEmailIngestSetting,
@@ -72,6 +74,9 @@ router.patch("/admin/settings/quickbooks-integration", asyncHandler(setQuickbook
 router.get("/admin/settings/quickbooks-oauth", asyncHandler(getQuickbooksOauthSetting));
 router.patch("/admin/settings/quickbooks-oauth", asyncHandler(setQuickbooksOauthSetting));
 router.post("/admin/settings/quickbooks-oauth/test", asyncHandler(testQuickbooksOauthSetting));
+router.get("/admin/settings/saml-sso", asyncHandler(getSamlSsoSetting));
+router.patch("/admin/settings/saml-sso", asyncHandler(setSamlSsoSetting));
+router.post("/admin/settings/saml-sso/test", asyncHandler(testSamlSsoSetting));
 router.get("/admin/settings/sso", asyncHandler(getSsoSetting));
 router.patch("/admin/settings/sso", asyncHandler(setSsoSetting));
 router.get("/admin/settings/smtp", asyncHandler(getSmtpSetting));
@@ -83,6 +88,8 @@ router.get("/admin/settings/customer-invitations", asyncHandler(getCustomerInvit
 router.patch("/admin/settings/customer-invitations", asyncHandler(setCustomerInvitationPolicy));
 router.get("/admin/settings/insight-translation-cache", asyncHandler(getInsightTranslationCacheSetting));
 router.patch("/admin/settings/insight-translation-cache", asyncHandler(setInsightTranslationCacheSetting));
+router.get("/admin/settings/dlp", asyncHandler(getDlpSetting));
+router.patch("/admin/settings/dlp", asyncHandler(setDlpSetting));
 router.get("/admin/settings/metrics-exposure", asyncHandler(getMetricsExposureSetting));
 router.patch("/admin/settings/metrics-exposure", asyncHandler(setMetricsExposureSetting));
 router.get("/admin/settings/autosync-interval", asyncHandler(getAutosyncPollIntervalSetting));

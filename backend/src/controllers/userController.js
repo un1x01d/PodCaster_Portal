@@ -14,6 +14,7 @@ import { writeAuditLog } from "../utils/auditLog.js";
 import { normalizeGroupEntitlements, groupHasFeature } from "../utils/entitlements.js";
 import { sendInvitationEmail, loadInviteEmailTemplate, normalizeInviteEmailTemplateForSave, renderInviteTemplate } from "../utils/smtpMailer.js";
 import { loadInvitationPolicy, saveInvitationPolicy, computeInvitationExpiryDate } from "../utils/invitationLifecycle.js";
+import { DLP_SETTINGS_KEY, normalizeDlpSettings } from "../utils/dlp.js";
 import { randomBytes, createHash } from "crypto";
 
 const EXPOSE_TEMP_PASSWORDS = process.env.EXPOSE_TEMP_PASSWORDS
@@ -1399,6 +1400,111 @@ export async function testQuickbooksOauthSetting(req, res) {
     }
 }
 
+function decryptSamlSsoConfig(raw) {
+    const cfg = raw && typeof raw === "object" ? raw : {};
+    return {
+        idpSsoUrl: String(cfg.idpSsoUrl || "").trim(),
+        idpEntityId: String(cfg.idpEntityId || "").trim(),
+        spEntityId: String(cfg.spEntityId || "").trim(),
+        acsUrl: String(cfg.acsUrl || "").trim(),
+        nameIdFormat: String(cfg.nameIdFormat || "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress").trim(),
+        x509Certificate: String(cfg.x509Certificate || "").trim(),
+        defaultRelayState: String(cfg.defaultRelayState || "").trim(),
+    };
+}
+
+function normalizeSamlSsoConfigForSave(current, body) {
+    const next = {
+        idpSsoUrl: typeof body?.idpSsoUrl === "string" ? body.idpSsoUrl.trim() : String(current.idpSsoUrl || ""),
+        idpEntityId: typeof body?.idpEntityId === "string" ? body.idpEntityId.trim() : String(current.idpEntityId || ""),
+        spEntityId: typeof body?.spEntityId === "string" ? body.spEntityId.trim() : String(current.spEntityId || ""),
+        acsUrl: typeof body?.acsUrl === "string" ? body.acsUrl.trim() : String(current.acsUrl || ""),
+        nameIdFormat: typeof body?.nameIdFormat === "string" && body.nameIdFormat.trim()
+            ? body.nameIdFormat.trim()
+            : String(current.nameIdFormat || "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"),
+        x509Certificate: typeof body?.x509Certificate === "string" ? body.x509Certificate.trim() : String(current.x509Certificate || ""),
+        defaultRelayState: typeof body?.defaultRelayState === "string" ? body.defaultRelayState.trim() : String(current.defaultRelayState || ""),
+    };
+    return next;
+}
+
+function isValidHttpUrl(value) {
+    try {
+        const u = new URL(String(value || ""));
+        return u.protocol === "https:" || u.protocol === "http:";
+    } catch (_) {
+        return false;
+    }
+}
+
+function samlConfigIsComplete(cfg) {
+    return !!(
+        String(cfg?.idpSsoUrl || "").trim()
+        && String(cfg?.idpEntityId || "").trim()
+        && String(cfg?.spEntityId || "").trim()
+        && String(cfg?.acsUrl || "").trim()
+    );
+}
+
+export async function getSamlSsoSetting(req, res) {
+    try {
+        const scope = await resolveScopedGroupForIntegrationSettings(req);
+        const value = await getAppSettingValueWithScopedFallback("saml_sso", scope.groupId);
+        const cfg = decryptSamlSsoConfig(value || {});
+        res.json({
+            ...cfg,
+            hasX509Certificate: !!String(cfg.x509Certificate || "").trim(),
+            groupId: scope.groupId || null,
+        });
+    } catch (err) {
+        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
+}
+
+export async function setSamlSsoSetting(req, res) {
+    try {
+        const scope = await resolveScopedGroupForIntegrationSettings(req);
+        const key = appSettingKeyForGroup("saml_sso", scope.groupId);
+        const currentRaw = await getAppSettingValueWithScopedFallback("saml_sso", scope.groupId);
+        const current = decryptSamlSsoConfig(currentRaw || {});
+        const next = normalizeSamlSsoConfigForSave(current, req.body);
+
+        await query(
+            `INSERT INTO app_settings (key, value, updated_at)
+             VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+             ON CONFLICT (key)
+             DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+            [key, JSON.stringify(next)]
+        );
+
+        res.json({
+            success: true,
+            ...next,
+            hasX509Certificate: !!String(next.x509Certificate || "").trim(),
+            groupId: scope.groupId || null,
+        });
+    } catch (err) {
+        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
+}
+
+export async function testSamlSsoSetting(req, res) {
+    try {
+        const scope = await resolveScopedGroupForIntegrationSettings(req);
+        const value = await getAppSettingValueWithScopedFallback("saml_sso", scope.groupId);
+        const cfg = decryptSamlSsoConfig(value || {});
+        if (!samlConfigIsComplete(cfg)) {
+            return res.status(400).json({ ok: false, error: "saml_not_configured", groupId: scope.groupId || null });
+        }
+        if (!isValidHttpUrl(cfg.idpSsoUrl) || !isValidHttpUrl(cfg.acsUrl)) {
+            return res.status(400).json({ ok: false, error: "saml_invalid_url", groupId: scope.groupId || null });
+        }
+        return res.json({ ok: true, message: "saml_configuration_valid", groupId: scope.groupId || null });
+    } catch (err) {
+        return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
+}
+
 function decryptSmtpConfig(raw) {
     const cfg = raw && typeof raw === "object" ? raw : {};
     return {
@@ -1542,7 +1648,7 @@ function normalizeInsightTranslationCacheSettings(raw = {}) {
 
 function normalizeMetricsExposureSettings(raw = {}) {
     return {
-        enabled: raw?.enabled !== false,
+        enabled: raw?.enabled === true,
     };
 }
 
@@ -1629,6 +1735,33 @@ export async function getMetricsExposureSetting(req, res) {
     const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [METRICS_EXPOSURE_SETTINGS_KEY]);
     const current = normalizeMetricsExposureSettings(rows?.[0]?.value || {});
     return res.json(current);
+}
+
+export async function getDlpSetting(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [DLP_SETTINGS_KEY]);
+    const current = normalizeDlpSettings(rows?.[0]?.value || {});
+    return res.json({ ...current, configured: rows.length > 0 });
+}
+
+export async function setDlpSetting(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    const next = normalizeDlpSettings(req.body || {});
+    await query(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+         ON CONFLICT (key)
+         DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+        [DLP_SETTINGS_KEY, JSON.stringify(next)]
+    );
+    await writeAuditLog({
+        req,
+        action: "dlp.settings_updated",
+        resourceType: "app_settings",
+        resourceId: DLP_SETTINGS_KEY,
+        metadata: next,
+    });
+    return res.json({ success: true, configured: true, ...next });
 }
 
 export async function setMetricsExposureSetting(req, res) {

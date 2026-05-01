@@ -1,7 +1,18 @@
 // UserManagement.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
-import StorageOptionCard from "./components/common/StorageOptionCard.jsx";
+import CustomerFormModal from "./components/admin/CustomerFormModal.jsx";
+import PasswordResetModal from "./components/admin/PasswordResetModal.jsx";
+import IntegrationSettingsPanel from "./components/admin/IntegrationSettingsPanel.jsx";
+import {
+  INTEGRATION_LOGOS,
+  QUICKBOOKS_DATA_TYPE_OPTIONS,
+  STORAGE_PROVIDER_DEFS,
+  createInitialStorageState,
+  createStorageProviderState,
+  generateAdminPassword,
+  normalizeGroupEntitlements,
+} from "./components/admin/userManagementConfig.js";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
 
@@ -22,287 +33,6 @@ function saveTemplates(arr) {
   localStorage.setItem(LS_KEY, JSON.stringify(arr || []));
 }
 
-const DEFAULT_GROUP_ENTITLEMENTS = {
-  maxUsers: "",
-  maxReportSources: "",
-  maxAiQueriesPerMonth: "",
-  aiMonthlyBudgetUsd: "",
-  maxImportParseMemoryMb: "",
-  features: {
-    manageUsers: true,
-    managePermissions: true,
-    manageGroupAdmins: false,
-    ai: true,
-    exports: true,
-    imports: true,
-    approvalFlow: false,
-    auditLogs: false,
-    sso: true,
-    googleDrive: true,
-    dropbox: true,
-    oneDrive: true,
-    quickbooks: true,
-  },
-};
-
-const RESET_PASSWORD_LENGTH = 16;
-const RESET_PASSWORD_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()-_=+[]{};:,.?";
-const RESET_PASSWORD_REQUIRED_SETS = [
-  "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-  "abcdefghijklmnopqrstuvwxyz",
-  "0123456789",
-  "!@#$%^&*()-_=+[]{};:,.?",
-];
-
-const QUICKBOOKS_DATA_TYPE_OPTIONS = [
-  "Accounts",
-  "Bills",
-  "Customers",
-  "Invoices",
-  "Items",
-  "JournalEntries",
-  "Payments",
-  "Vendors",
-];
-
-const INTEGRATION_LOGOS = {
-  google: "https://www.google.com/s2/favicons?domain=google.com&sz=64",
-  dropbox: "https://www.google.com/s2/favicons?domain=dropbox.com&sz=64",
-  onedrive: "https://www.google.com/s2/favicons?domain=onedrive.live.com&sz=64",
-  quickbooks: "https://www.google.com/s2/favicons?domain=quickbooks.intuit.com&sz=64",
-  sftp: "https://api.iconify.design/solar:folder-with-files-bold.svg?color=%230ea5e9",
-  gcs: "https://www.google.com/s2/favicons?domain=cloud.google.com&sz=64",
-  s3: "https://www.google.com/s2/favicons?domain=s3.amazonaws.com&sz=64",
-  azure: "https://www.google.com/s2/favicons?domain=azure.microsoft.com&sz=64",
-  email: "https://api.iconify.design/solar:letter-bold.svg?color=%230ea5e9",
-};
-
-const STORAGE_PROVIDER_DEFS = [
-  {
-    key: "sftp",
-    title: "SCP / SFTP",
-    logoUrl: INTEGRATION_LOGOS.sftp,
-    apiBase: "sftp-storage",
-    summary: (state) => (
-      state.form.enabled
-        ? `${state.form.host || "No host"}${state.form.port ? `:${state.form.port}` : ""}${state.form.username ? ` as ${state.form.username}` : ""}`
-        : "Disabled"
-    ),
-    helpLinks: [
-      { href: "https://www.openssh.com/manual.html", label: "OpenSSH / SFTP usage guide" },
-    ],
-    fields: [
-      { name: "enabled", type: "checkbox", label: "Enable SFTP / SCP storage" },
-      { name: "host", label: "Host", placeholder: "sftp.example.com" },
-      { name: "port", label: "Port", type: "number", defaultValue: 22, placeholder: "22" },
-      { name: "username", label: "Username", placeholder: "sftp-user" },
-      {
-        name: "authMode",
-        label: "Authentication mode",
-        type: "select",
-        defaultValue: "password",
-        options: [
-          { value: "password", label: "Password" },
-          { value: "ssh_key", label: "SSH key" },
-        ],
-      },
-      {
-        name: "password",
-        label: "Password",
-        type: "password",
-        secret: true,
-        metaKey: "hasPassword",
-        placeholder: "SFTP password",
-        showWhen: (form) => String(form.authMode || "password") === "password",
-      },
-      {
-        name: "privateKey",
-        label: "Private key",
-        type: "textarea",
-        rows: 6,
-        secret: true,
-        metaKey: "hasPrivateKey",
-        placeholder: "-----BEGIN OPENSSH PRIVATE KEY-----",
-        showWhen: (form) => String(form.authMode || "password") === "ssh_key",
-      },
-      {
-        name: "passphrase",
-        label: "Key passphrase",
-        type: "password",
-        secret: true,
-        metaKey: "hasPassphrase",
-        placeholder: "Optional passphrase",
-        showWhen: (form) => String(form.authMode || "password") === "ssh_key",
-      },
-      { name: "remotePath", label: "Remote path", placeholder: "/incoming" },
-    ],
-  },
-  {
-    key: "gcs",
-    title: "Google Cloud Storage",
-    logoUrl: INTEGRATION_LOGOS.gcs,
-    apiBase: "gcs-storage",
-    summary: (state) => (
-      state.form.enabled
-        ? `${state.form.bucket || "No bucket"}${state.form.projectId ? ` • ${state.form.projectId}` : ""}`
-        : "Disabled"
-    ),
-    helpLinks: [
-      { href: "https://cloud.google.com/storage/docs/authentication", label: "Google Cloud Storage authentication" },
-      { href: "https://cloud.google.com/iam/docs/service-accounts", label: "Create and manage service accounts" },
-    ],
-    fields: [
-      { name: "enabled", type: "checkbox", label: "Enable Google Cloud Storage" },
-      { name: "projectId", label: "Project ID", placeholder: "my-gcp-project" },
-      { name: "bucket", label: "Bucket", placeholder: "customer-reports" },
-      { name: "clientEmail", label: "Service account email", placeholder: "storage-import@project.iam.gserviceaccount.com" },
-      {
-        name: "privateKey",
-        label: "Private key",
-        type: "textarea",
-        rows: 6,
-        secret: true,
-        metaKey: "hasPrivateKey",
-        placeholder: "-----BEGIN PRIVATE KEY-----",
-      },
-      { name: "tokenUri", label: "Token URI", defaultValue: "https://oauth2.googleapis.com/token", placeholder: "https://oauth2.googleapis.com/token" },
-      { name: "prefix", label: "Object prefix", placeholder: "reports/" },
-    ],
-  },
-  {
-    key: "s3",
-    title: "Amazon S3",
-    logoUrl: INTEGRATION_LOGOS.s3,
-    apiBase: "s3-storage",
-    summary: (state) => (
-      state.form.enabled
-        ? `${state.form.bucket || "No bucket"}${state.form.region ? ` • ${state.form.region}` : ""}`
-        : "Disabled"
-    ),
-    helpLinks: [
-      { href: "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html", label: "AWS access key guidance" },
-      { href: "https://docs.aws.amazon.com/AmazonS3/latest/userguide/Welcome.html", label: "Amazon S3 user guide" },
-    ],
-    fields: [
-      { name: "enabled", type: "checkbox", label: "Enable Amazon S3" },
-      { name: "bucket", label: "Bucket", placeholder: "customer-reports" },
-      { name: "region", label: "Region", placeholder: "us-east-1" },
-      { name: "accessKeyId", label: "Access key ID", placeholder: "AKIA..." },
-      {
-        name: "secretAccessKey",
-        label: "Secret access key",
-        type: "password",
-        secret: true,
-        metaKey: "hasSecretAccessKey",
-        placeholder: "S3 secret access key",
-      },
-      { name: "endpointUrl", label: "Custom endpoint URL", defaultValue: "", placeholder: "https://s3.us-east-1.amazonaws.com" },
-      { name: "pathStyleAccess", type: "checkbox", label: "Use path-style access" },
-      { name: "prefix", label: "Object prefix", placeholder: "reports/" },
-    ],
-  },
-  {
-    key: "azure",
-    title: "Azure Blob Storage",
-    logoUrl: INTEGRATION_LOGOS.azure,
-    apiBase: "azure-blob-storage",
-    summary: (state) => (
-      state.form.enabled
-        ? `${state.form.accountName || "No account"}${state.form.container ? ` • ${state.form.container}` : ""}`
-        : "Disabled"
-    ),
-    helpLinks: [
-      { href: "https://learn.microsoft.com/en-us/azure/storage/blobs/storage-quickstart-blobs-portal", label: "Azure Blob Storage quickstart" },
-      { href: "https://learn.microsoft.com/en-us/azure/storage/common/storage-account-keys-manage", label: "Manage storage account keys" },
-    ],
-    fields: [
-      { name: "enabled", type: "checkbox", label: "Enable Azure Blob Storage" },
-      { name: "accountName", label: "Account name", placeholder: "mystorageaccount" },
-      {
-        name: "accountKey",
-        label: "Account key",
-        type: "password",
-        secret: true,
-        metaKey: "hasAccountKey",
-        placeholder: "Azure storage account key",
-      },
-      { name: "container", label: "Container", placeholder: "customer-reports" },
-      { name: "endpointSuffix", label: "Endpoint suffix", defaultValue: "blob.core.windows.net", placeholder: "blob.core.windows.net" },
-      { name: "prefix", label: "Blob prefix", placeholder: "reports/" },
-    ],
-  },
-];
-
-function createStorageProviderState(def) {
-  const form = {};
-  const meta = {};
-  for (const field of def.fields) {
-    if (field.secret) {
-      meta[field.metaKey] = false;
-      form[field.name] = "";
-      continue;
-    }
-    if (field.type === "checkbox") {
-      form[field.name] = false;
-      continue;
-    }
-    if (field.type === "number") {
-      form[field.name] = field.defaultValue ?? "";
-      continue;
-    }
-    form[field.name] = field.defaultValue ?? "";
-  }
-  return {
-    form,
-    meta,
-    open: false,
-    saving: false,
-    testing: false,
-    testStatus: null,
-  };
-}
-
-function createInitialStorageState() {
-  return Object.fromEntries(STORAGE_PROVIDER_DEFS.map((def) => [def.key, createStorageProviderState(def)]));
-}
-
-function secureRandomInt(max) {
-  if (window.crypto?.getRandomValues) {
-    const value = new Uint32Array(1);
-    window.crypto.getRandomValues(value);
-    return value[0] % max;
-  }
-  return Math.floor(Math.random() * max);
-}
-
-function generateAdminPassword(length = RESET_PASSWORD_LENGTH) {
-  const chars = RESET_PASSWORD_REQUIRED_SETS.map((set) => set[secureRandomInt(set.length)]);
-  while (chars.length < length) {
-    chars.push(RESET_PASSWORD_ALPHABET[secureRandomInt(RESET_PASSWORD_ALPHABET.length)]);
-  }
-  for (let i = chars.length - 1; i > 0; i -= 1) {
-    const j = secureRandomInt(i + 1);
-    [chars[i], chars[j]] = [chars[j], chars[i]];
-  }
-  return chars.join("");
-}
-
-function normalizeGroupEntitlements(value) {
-  const raw = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  return {
-    ...DEFAULT_GROUP_ENTITLEMENTS,
-    ...raw,
-    maxUsers: raw.maxUsers ?? "",
-      maxReportSources: raw.maxReportSources ?? "",
-      maxAiQueriesPerMonth: raw.maxAiQueriesPerMonth ?? "",
-      aiMonthlyBudgetUsd: raw.aiMonthlyBudgetUsd ?? "",
-      maxImportParseMemoryMb: raw.maxImportParseMemoryMb ?? "",
-      features: {
-      ...DEFAULT_GROUP_ENTITLEMENTS.features,
-      ...(raw.features || {}),
-    },
-  };
-}
 
 export default function UserManagement({ token, user, sheetId }) {
   const trunc = (s, n) => (s && s.length > n ? s.slice(0, n) + "..." : s);
@@ -385,8 +115,29 @@ export default function UserManagement({ token, user, sheetId }) {
   });
   const [quickbooksOauthSaving, setQuickbooksOauthSaving] = useState(false);
   const [quickbooksOauthTesting, setQuickbooksOauthTesting] = useState(false);
-  const [integrationOpen, setIntegrationOpen] = useState({ google: false, dropbox: false, onedrive: false, quickbooks: false, emailIngest: false });
-  const [integrationTestStatus, setIntegrationTestStatus] = useState({ google: null, dropbox: null, onedrive: null, quickbooks: null });
+  const [samlMeta, setSamlMeta] = useState({
+    idpSsoUrl: "",
+    idpEntityId: "",
+    spEntityId: "",
+    acsUrl: "",
+    nameIdFormat: "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
+    x509Certificate: "",
+    defaultRelayState: "",
+    hasX509Certificate: false,
+  });
+  const [samlForm, setSamlForm] = useState({
+    idpSsoUrl: "",
+    idpEntityId: "",
+    spEntityId: "",
+    acsUrl: "",
+    nameIdFormat: "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
+    x509Certificate: "",
+    defaultRelayState: "",
+  });
+  const [samlSaving, setSamlSaving] = useState(false);
+  const [samlTesting, setSamlTesting] = useState(false);
+  const [integrationOpen, setIntegrationOpen] = useState({ google: false, dropbox: false, onedrive: false, quickbooks: false, saml: false, emailIngest: false });
+  const [integrationTestStatus, setIntegrationTestStatus] = useState({ google: null, dropbox: null, onedrive: null, quickbooks: null, saml: null });
   const [smtpMeta, setSmtpMeta] = useState({
     hasPassword: false,
     passwordMasked: "",
@@ -423,10 +174,22 @@ export default function UserManagement({ token, user, sheetId }) {
   const [invitePolicySaving, setInvitePolicySaving] = useState(false);
   const [insightTranslationCache, setInsightTranslationCache] = useState({ ttlMinutes: 60 });
   const [insightTranslationCacheSaving, setInsightTranslationCacheSaving] = useState(false);
-  const [metricsExposure, setMetricsExposure] = useState({ enabled: true });
+  const [dlpSettings, setDlpSettings] = useState({
+    enabled: false,
+    mode: "block",
+    checkSsn: true,
+    checkCreditCard: true,
+    maskDetectedColumns: false,
+    configured: false,
+  });
+  const [dlpSettingsSaving, setDlpSettingsSaving] = useState(false);
+  const [dlpSettingsOpen, setDlpSettingsOpen] = useState(false);
+  const [smtpSettingsOpen, setSmtpSettingsOpen] = useState(false);
+  const [metricsExposure, setMetricsExposure] = useState({ enabled: false });
   const [metricsExposureSaving, setMetricsExposureSaving] = useState(false);
   const [autosyncInterval, setAutosyncInterval] = useState({ intervalMinutes: 5 });
   const [autosyncIntervalSaving, setAutosyncIntervalSaving] = useState(false);
+  const metricsUrl = useMemo(() => `${String(API || "").replace(/\/+$/, "")}/metrics`, []);
   const [emailIngestConfig, setEmailIngestConfig] = useState({
     enabled: true,
     provider: "google_workspace",
@@ -539,6 +302,12 @@ export default function UserManagement({ token, user, sheetId }) {
     && quickbooksOauthMeta.hasClientSecret
     && quickbooksOauthMeta.redirectUri
     && quickbooksOauthMeta.companyId;
+  const samlConfigured = !!(
+    samlMeta.idpSsoUrl
+    && samlMeta.idpEntityId
+    && samlMeta.spEntityId
+    && samlMeta.acsUrl
+  );
 
   const integrationScopeParams = useMemo(() => {
     const gid = Number(selectedGroupId);
@@ -565,6 +334,14 @@ export default function UserManagement({ token, user, sheetId }) {
       const nextValue = typeof updater === "function" ? updater(current) : { ...current, ...updater };
       return { ...prev, [providerKey]: nextValue };
     });
+  };
+  const coerceBoolean = (value) => {
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (["false", "0", "no", "off", ""].includes(normalized)) return false;
+      if (["true", "1", "yes", "on"].includes(normalized)) return true;
+    }
+    return !!value;
   };
 
   const fetchStorageSetting = async (provider) => {
@@ -593,7 +370,7 @@ export default function UserManagement({ token, user, sheetId }) {
               return acc;
             }
             if (field.type === "checkbox") {
-              acc[field.name] = !!data[field.name];
+              acc[field.name] = coerceBoolean(data[field.name]);
               return acc;
             }
             if (field.type === "number") {
@@ -1117,6 +894,104 @@ export default function UserManagement({ token, user, sheetId }) {
     }
   };
 
+  const fetchSamlSetting = async () => {
+    if (!canManageIntegrations) return;
+    if (!isSuperAdmin && !selectedGroupId) return;
+    try {
+      const res = await axios.get(`${API}/admin/settings/saml-sso`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: integrationScopeParams,
+      });
+      const data = res?.data || {};
+      setSamlMeta({
+        idpSsoUrl: data.idpSsoUrl || "",
+        idpEntityId: data.idpEntityId || "",
+        spEntityId: data.spEntityId || "",
+        acsUrl: data.acsUrl || "",
+        nameIdFormat: data.nameIdFormat || "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
+        x509Certificate: data.x509Certificate || "",
+        defaultRelayState: data.defaultRelayState || "",
+        hasX509Certificate: !!data.hasX509Certificate,
+      });
+      setSamlForm({
+        idpSsoUrl: data.idpSsoUrl || "",
+        idpEntityId: data.idpEntityId || "",
+        spEntityId: data.spEntityId || "",
+        acsUrl: data.acsUrl || "",
+        nameIdFormat: data.nameIdFormat || "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
+        x509Certificate: data.x509Certificate || "",
+        defaultRelayState: data.defaultRelayState || "",
+      });
+      setIntegrationTestStatus((prev) => ({ ...prev, saml: null }));
+    } catch (e) {
+      console.error("fetchSamlSetting failed", e);
+    }
+  };
+
+  const saveSamlSetting = async () => {
+    if (!canManageIntegrations || samlSaving) return;
+    if (!isSuperAdmin && !selectedGroupId) {
+      alert("Select a customer first.");
+      return;
+    }
+    setSamlSaving(true);
+    try {
+      const payload = {
+        idpSsoUrl: samlForm.idpSsoUrl || "",
+        idpEntityId: samlForm.idpEntityId || "",
+        spEntityId: samlForm.spEntityId || "",
+        acsUrl: samlForm.acsUrl || "",
+        nameIdFormat: samlForm.nameIdFormat || "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
+        x509Certificate: samlForm.x509Certificate || "",
+        defaultRelayState: samlForm.defaultRelayState || "",
+        ...integrationScopeParams,
+      };
+      const res = await axios.patch(`${API}/admin/settings/saml-sso`, payload, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || {};
+      setSamlMeta({
+        idpSsoUrl: data.idpSsoUrl || "",
+        idpEntityId: data.idpEntityId || "",
+        spEntityId: data.spEntityId || "",
+        acsUrl: data.acsUrl || "",
+        nameIdFormat: data.nameIdFormat || "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
+        x509Certificate: data.x509Certificate || "",
+        defaultRelayState: data.defaultRelayState || "",
+        hasX509Certificate: !!data.hasX509Certificate,
+      });
+      setIntegrationTestStatus((prev) => ({ ...prev, saml: null }));
+      alert("SAML settings updated");
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to update SAML settings");
+    } finally {
+      setSamlSaving(false);
+    }
+  };
+
+  const testSamlSetting = async () => {
+    if (!canManageIntegrations || samlTesting) return;
+    if (!isSuperAdmin && !selectedGroupId) {
+      alert("Select a customer first.");
+      return;
+    }
+    setSamlTesting(true);
+    try {
+      const res = await axios.post(`${API}/admin/settings/saml-sso/test`, { ...integrationScopeParams }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setIntegrationTestStatus((prev) => ({ ...prev, saml: "success" }));
+      alert(res?.data?.message === "saml_configuration_valid"
+        ? "SAML configuration validated."
+        : "SAML probe completed.");
+    } catch (e) {
+      setIntegrationTestStatus((prev) => ({ ...prev, saml: "error" }));
+      alert(e.response?.data?.error || "SAML test failed");
+    } finally {
+      setSamlTesting(false);
+    }
+  };
+
   const fetchSmtpSetting = async () => {
     if (!isSuperAdmin) return;
     try {
@@ -1309,6 +1184,26 @@ export default function UserManagement({ token, user, sheetId }) {
     }
   };
 
+  const fetchDlpSetting = async () => {
+    if (!isSuperAdmin) return;
+    try {
+      const res = await axios.get(`${API}/admin/settings/dlp`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || {};
+      setDlpSettings({
+        enabled: data.enabled !== false,
+        mode: data.mode || "block",
+        checkSsn: data.checkSsn !== false,
+        checkCreditCard: data.checkCreditCard !== false,
+        maskDetectedColumns: data.maskDetectedColumns === true,
+        configured: data.configured === true,
+      });
+    } catch (e) {
+      console.error("fetchDlpSetting failed", e);
+    }
+  };
+
   const fetchMetricsExposureSetting = async () => {
     if (!isSuperAdmin) return;
     try {
@@ -1316,7 +1211,7 @@ export default function UserManagement({ token, user, sheetId }) {
         headers: { Authorization: `Bearer ${token}` },
       });
       setMetricsExposure({
-        enabled: res?.data?.enabled !== false,
+        enabled: res?.data?.enabled === true,
       });
     } catch (e) {
       console.error("fetchMetricsExposureSetting failed", e);
@@ -1371,7 +1266,7 @@ export default function UserManagement({ token, user, sheetId }) {
       const res = await axios.patch(`${API}/admin/settings/metrics-exposure`, payload, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      setMetricsExposure({ enabled: res?.data?.enabled !== false });
+      setMetricsExposure({ enabled: res?.data?.enabled === true });
     } catch (e) {
       alert(e.response?.data?.error || "Failed to save metrics exposure setting");
     } finally {
@@ -1397,6 +1292,37 @@ export default function UserManagement({ token, user, sheetId }) {
       alert(e.response?.data?.error || "Failed to save insight translation cache settings");
     } finally {
       setInsightTranslationCacheSaving(false);
+    }
+  };
+
+  const saveDlpSetting = async () => {
+    if (!isSuperAdmin || dlpSettingsSaving) return;
+    setDlpSettingsSaving(true);
+    try {
+      const payload = {
+        enabled: dlpSettings.enabled !== false,
+        mode: ["block", "warn", "log"].includes(dlpSettings.mode) ? dlpSettings.mode : "block",
+        checkSsn: dlpSettings.checkSsn !== false,
+        checkCreditCard: dlpSettings.checkCreditCard !== false,
+        maskDetectedColumns: dlpSettings.maskDetectedColumns === true,
+      };
+      const res = await axios.patch(`${API}/admin/settings/dlp`, payload, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || payload;
+      setDlpSettings({
+        enabled: data.enabled !== false,
+        mode: data.mode || "block",
+        checkSsn: data.checkSsn !== false,
+        checkCreditCard: data.checkCreditCard !== false,
+        maskDetectedColumns: data.maskDetectedColumns === true,
+        configured: true,
+      });
+      alert("DLP settings saved");
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to save DLP settings");
+    } finally {
+      setDlpSettingsSaving(false);
     }
   };
 
@@ -1661,12 +1587,14 @@ export default function UserManagement({ token, user, sheetId }) {
       fetchDropboxOauthSetting();
       fetchOneDriveOauthSetting();
       fetchQuickbooksOauthSetting();
+      fetchSamlSetting();
       STORAGE_PROVIDER_DEFS.forEach((provider) => { void fetchStorageSetting(provider); });
       fetchEmailIngestSetting();
       fetchSmtpSetting();
       fetchInviteEmailTemplate();
       fetchInvitationPolicy();
       fetchInsightTranslationCacheSetting();
+      fetchDlpSetting();
       fetchMetricsExposureSetting();
       fetchAutosyncIntervalSetting();
     }
@@ -1678,11 +1606,13 @@ export default function UserManagement({ token, user, sheetId }) {
     fetchDropboxOauthSetting();
     fetchOneDriveOauthSetting();
     fetchQuickbooksOauthSetting();
+    fetchSamlSetting();
     STORAGE_PROVIDER_DEFS.forEach((provider) => { void fetchStorageSetting(provider); });
     fetchEmailIngestSetting();
     fetchSmtpSetting();
     fetchInviteEmailTemplate();
     fetchInsightTranslationCacheSetting();
+    fetchDlpSetting();
     fetchMetricsExposureSetting();
     fetchAutosyncIntervalSetting();
   }, [token, canManageIntegrations, selectedGroupId, groups, isSuperAdmin]);
@@ -2923,10 +2853,12 @@ export default function UserManagement({ token, user, sheetId }) {
                         ["imports", "Imports"],
                         ["approvalFlow", "Approvals"],
                         ["auditLogs", "Audit logs"],
+                        ["sso", "SSO / SAML"],
                         ["googleDrive", "Google Drive"],
                         ["dropbox", "Dropbox"],
                         ["oneDrive", "OneDrive"],
                         ["quickbooks", "QuickBooks"],
+                        ["dlp", "DLP"],
                       ].map(([key, label]) => (
                         <label key={key} className="flex items-center gap-1.5 text-[10px] font-semibold text-slate-600">
                           <input
@@ -2963,42 +2895,119 @@ export default function UserManagement({ token, user, sheetId }) {
                 <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Metrics Exposure</div>
                 <button
                   type="button"
-                  onClick={() => saveMetricsExposureSetting(!(metricsExposure.enabled !== false))}
+                  onClick={() => saveMetricsExposureSetting(!(metricsExposure.enabled === true))}
                   disabled={metricsExposureSaving}
-                  className={`btn-premium px-2 py-1 text-[10px] font-semibold ${metricsExposure.enabled !== false ? "bg-emerald-600 text-white hover:bg-emerald-700" : "bg-slate-200 text-slate-700 hover:bg-slate-300"} ${metricsExposureSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                  className={`btn-premium min-w-[84px] h-7 rounded-md px-3 text-[10px] font-semibold ${metricsExposure.enabled === true ? "bg-emerald-600 text-white hover:bg-emerald-700" : "bg-slate-200 text-slate-700 hover:bg-slate-300"} ${metricsExposureSaving ? "opacity-60 cursor-not-allowed" : ""}`}
                 >
-                  {metricsExposureSaving ? "Saving..." : (metricsExposure.enabled !== false ? "ON" : "OFF")}
+                  {metricsExposureSaving ? "Saving..." : (metricsExposure.enabled === true ? "ON" : "OFF")}
                 </button>
               </div>
-              <div className="text-[10px] text-slate-500">Expose client view metrics to users.</div>
+              {metricsExposure.enabled === true && (
+                <div className="text-[10px] text-slate-500">
+                  Metrics URL: <span className="font-semibold text-slate-700">{metricsUrl}</span>
+                </div>
+              )}
+            </div>
+            <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">DLP Rules</div>
+                  <span className={`text-[10px] font-semibold ${dlpSettings.configured ? "text-emerald-600" : "text-slate-400"}`}>
+                    {dlpSettings.configured ? "Configured" : "Not configured"}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="text-[10px] font-semibold text-slate-600 hover:text-slate-900"
+                  onClick={() => setDlpSettingsOpen((prev) => !prev)}
+                >
+                  {dlpSettingsOpen ? "Collapse" : "Expand"}
+                </button>
+              </div>
+              {dlpSettingsOpen && (
+                <>
+                  <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+                    <input type="checkbox" checked={dlpSettings.enabled !== false} onChange={(e) => setDlpSettings((prev) => ({ ...prev, enabled: e.target.checked }))} />
+                    Enable DLP globally
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {["block", "warn", "log"].map((mode) => (
+                      <label key={mode} className="inline-flex items-center gap-2 text-[10px] font-semibold text-slate-700 border border-slate-200 rounded-md px-2 py-1">
+                        <input
+                          type="radio"
+                          name="dlp-mode"
+                          checked={dlpSettings.mode === mode}
+                          onChange={() => setDlpSettings((prev) => ({ ...prev, mode }))}
+                        />
+                        {mode.toUpperCase()}
+                      </label>
+                    ))}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+                      <input type="checkbox" checked={dlpSettings.checkSsn !== false} onChange={(e) => setDlpSettings((prev) => ({ ...prev, checkSsn: e.target.checked }))} />
+                      Detect SSN
+                    </label>
+                    <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+                      <input type="checkbox" checked={dlpSettings.checkCreditCard !== false} onChange={(e) => setDlpSettings((prev) => ({ ...prev, checkCreditCard: e.target.checked }))} />
+                      Detect Credit Cards
+                    </label>
+                    <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 col-span-2">
+                      <input type="checkbox" checked={dlpSettings.maskDetectedColumns === true} onChange={(e) => setDlpSettings((prev) => ({ ...prev, maskDetectedColumns: e.target.checked }))} />
+                      Mask detected columns on import
+                    </label>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={saveDlpSetting}
+                    disabled={dlpSettingsSaving}
+                    className={`btn-premium bg-slate-800 text-white w-full py-1.5 text-[11px] ${dlpSettingsSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                  >
+                    {dlpSettingsSaving ? "Saving..." : "Save DLP Settings"}
+                  </button>
+                </>
+              )}
             </div>
             <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">SMTP Configuration</div>
-                <span className={`text-[10px] font-semibold ${smtpMeta.host && smtpMeta.username && smtpMeta.hasPassword ? "text-emerald-600" : "text-slate-400"}`}>
-                  {smtpMeta.host && smtpMeta.username && smtpMeta.hasPassword ? "Configured" : "Not configured"}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className={`text-[10px] font-semibold ${smtpMeta.host && smtpMeta.username && smtpMeta.hasPassword ? "text-emerald-600" : "text-slate-400"}`}>
+                    {smtpMeta.host && smtpMeta.username && smtpMeta.hasPassword ? "Configured" : "Not configured"}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSmtpSettingsOpen((prev) => !prev)}
+                    className="text-[10px] font-semibold text-slate-600 hover:text-slate-900"
+                  >
+                    {smtpSettingsOpen ? "Collapse" : "Expand"}
+                  </button>
+                </div>
               </div>
-              <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="SMTP Host" value={smtpForm.host} onChange={(e) => setSmtpForm((prev) => ({ ...prev, host: e.target.value }))} />
-              <div className="grid grid-cols-2 gap-2">
-                <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="1" placeholder="Port" value={smtpForm.port} onChange={(e) => setSmtpForm((prev) => ({ ...prev, port: e.target.value }))} />
-                <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 px-2 py-1 rounded-md border border-slate-200">
-                  <input type="checkbox" checked={!!smtpForm.secure} onChange={(e) => setSmtpForm((prev) => ({ ...prev, secure: e.target.checked }))} />
-                  Use TLS
-                </label>
-              </div>
-              <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="SMTP Username" value={smtpForm.username} onChange={(e) => setSmtpForm((prev) => ({ ...prev, username: e.target.value }))} />
-              <input type="password" className="input-premium py-1.5 text-[11px] font-semibold" placeholder={smtpMeta.hasPassword ? "***" : "SMTP Password"} value={smtpForm.password} onChange={(e) => setSmtpForm((prev) => ({ ...prev, password: e.target.value }))} autoComplete="new-password" />
-              <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="From Email" value={smtpForm.fromEmail} onChange={(e) => setSmtpForm((prev) => ({ ...prev, fromEmail: e.target.value }))} />
-              <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="From Name" value={smtpForm.fromName} onChange={(e) => setSmtpForm((prev) => ({ ...prev, fromName: e.target.value }))} />
-              <button
-                type="button"
-                onClick={saveSmtpSetting}
-                disabled={smtpSaving}
-                className={`btn-premium bg-slate-800 text-white w-full py-1.5 text-[11px] ${smtpSaving ? "opacity-60 cursor-not-allowed" : ""}`}
-              >
-                {smtpSaving ? "Saving..." : "Save SMTP Settings"}
-              </button>
+              {smtpSettingsOpen && (
+                <>
+                  <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="SMTP Host" value={smtpForm.host} onChange={(e) => setSmtpForm((prev) => ({ ...prev, host: e.target.value }))} />
+                  <div className="grid grid-cols-2 gap-2">
+                    <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="1" placeholder="Port" value={smtpForm.port} onChange={(e) => setSmtpForm((prev) => ({ ...prev, port: e.target.value }))} />
+                    <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 px-2 py-1 rounded-md border border-slate-200">
+                      <input type="checkbox" checked={!!smtpForm.secure} onChange={(e) => setSmtpForm((prev) => ({ ...prev, secure: e.target.checked }))} />
+                      Use TLS
+                    </label>
+                  </div>
+                  <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="SMTP Username" value={smtpForm.username} onChange={(e) => setSmtpForm((prev) => ({ ...prev, username: e.target.value }))} />
+                  <input type="password" className="input-premium py-1.5 text-[11px] font-semibold" placeholder={smtpMeta.hasPassword ? "***" : "SMTP Password"} value={smtpForm.password} onChange={(e) => setSmtpForm((prev) => ({ ...prev, password: e.target.value }))} autoComplete="new-password" />
+                  <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="From Email" value={smtpForm.fromEmail} onChange={(e) => setSmtpForm((prev) => ({ ...prev, fromEmail: e.target.value }))} />
+                  <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="From Name" value={smtpForm.fromName} onChange={(e) => setSmtpForm((prev) => ({ ...prev, fromName: e.target.value }))} />
+                  <button
+                    type="button"
+                    onClick={saveSmtpSetting}
+                    disabled={smtpSaving}
+                    className={`btn-premium bg-slate-800 text-white w-full py-1.5 text-[11px] ${smtpSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                  >
+                    {smtpSaving ? "Saving..." : "Save SMTP Settings"}
+                  </button>
+                </>
+              )}
             </div>
             <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
               <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Insight Translation Cache</div>
@@ -3303,476 +3312,105 @@ export default function UserManagement({ token, user, sheetId }) {
         </div>
         {!collapsedSections.integrations && (
         <>
-        {canManageIntegrations && (
-          <div className="mb-4 rounded-md border border-slate-200 bg-slate-50 p-4 space-y-3">
-            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Storage Options</div>
-            {!isSuperAdmin && !selectedGroupId && (
-              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
-                Select a customer to configure scoped integration credentials.
-              </div>
-            )}
-            <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Autosync Check Interval</div>
-                <span className="text-[10px] font-semibold text-slate-400">{autosyncInterval.intervalMinutes || 5} min</span>
-              </div>
-              <input
-                className="input-premium py-1.5 text-[11px] font-semibold"
-                type="number"
-                min="1"
-                max="1440"
-                placeholder="Interval in minutes"
-                value={autosyncInterval.intervalMinutes}
-                onChange={(e) => setAutosyncInterval((prev) => ({ ...prev, intervalMinutes: e.target.value }))}
-              />
-              <div className="text-[10px] text-slate-500">
-                Cloud drive sources are checked for file updates on this interval.
-              </div>
-              <button
-                type="button"
-                onClick={saveAutosyncIntervalSetting}
-                disabled={autosyncIntervalSaving}
-                className={`btn-premium bg-slate-800 text-white w-full py-1.5 text-[11px] ${autosyncIntervalSaving ? "opacity-60 cursor-not-allowed" : ""}`}
-              >
-                {autosyncIntervalSaving ? "Saving..." : "Save Autosync Interval"}
-              </button>
-            </div>
-            <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <img src={INTEGRATION_LOGOS.email} alt="Email icon" className="h-4 w-4 rounded-sm object-contain bg-white" loading="lazy" />
-                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Email Ingest</div>
-                  <span className={`text-[10px] font-semibold ${emailIngestConfig.enabled !== false ? "text-emerald-600" : "text-slate-400"}`}>
-                    {emailIngestConfig.enabled !== false ? "Enabled" : "Disabled"}
-                  </span>
-                  {!emailIngestConfig.enabled && <span className="text-[10px] font-semibold text-slate-400">Configured</span>}
-                </div>
-                <button
-                  type="button"
-                  className="text-[10px] font-semibold text-slate-600 hover:text-slate-900"
-                  onClick={() => setIntegrationOpen((prev) => ({ ...prev, emailIngest: !prev.emailIngest }))}
-                >
-                  {integrationOpen.emailIngest ? "Collapse" : "Expand"}
-                </button>
-              </div>
-              {integrationOpen.emailIngest && (
-                <>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 px-2 py-1 rounded-md border border-slate-200">
-                      <input
-                        type="checkbox"
-                        checked={emailIngestConfig.enabled !== false}
-                        disabled={!isSuperAdmin}
-                        onChange={(e) => setEmailIngestConfig((prev) => ({ ...prev, enabled: e.target.checked }))}
-                      />
-                      Enable email ingestion
-                    </label>
-                    <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 px-2 py-1 rounded-md border border-slate-200">
-                      <input
-                        type="checkbox"
-                        checked={emailIngestConfig.requireApprovedSenders !== false}
-                        disabled={!isSuperAdmin}
-                        onChange={(e) => setEmailIngestConfig((prev) => ({ ...prev, requireApprovedSenders: e.target.checked }))}
-                      />
-                      Require approved senders
-                    </label>
-                  </div>
-                  <input
-                    className="input-premium py-1.5 text-[11px] font-semibold"
-                    placeholder="Inbound domain (e.g. reports.example.com)"
-                    value={emailIngestConfig.inboundDomain}
-                    disabled={!isSuperAdmin}
-                    onChange={(e) => setEmailIngestConfig((prev) => ({ ...prev, inboundDomain: e.target.value }))}
-                  />
-                  <input
-                    className="input-premium py-1.5 text-[11px] font-semibold"
-                    placeholder="Inbound mailbox / catch-all destination (e.g. imports@reports.example.com)"
-                    value={emailIngestConfig.routeMailbox}
-                    disabled={!isSuperAdmin}
-                    onChange={(e) => setEmailIngestConfig((prev) => ({ ...prev, routeMailbox: e.target.value }))}
-                  />
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    <input
-                      className="input-premium py-1.5 text-[11px] font-semibold"
-                      placeholder="Customer address prefix (e.g. customer)"
-                      value={emailIngestConfig.addressPrefix}
-                      disabled={!isSuperAdmin}
-                      onChange={(e) => setEmailIngestConfig((prev) => ({ ...prev, addressPrefix: e.target.value }))}
-                    />
-                    <select
-                      className="input-premium py-1.5 text-[11px] font-semibold"
-                      value={emailIngestConfig.addressMode}
-                      disabled={!isSuperAdmin}
-                      onChange={(e) => setEmailIngestConfig((prev) => ({ ...prev, addressMode: e.target.value }))}
-                    >
-                      <option value="slug">Use customer slug</option>
-                      <option value="id">Use customer ID</option>
-                    </select>
-                  </div>
-                  <select
-                    className="input-premium py-1.5 text-[11px] font-semibold"
-                    value={emailIngestConfig.routingMode}
-                    disabled={!isSuperAdmin}
-                    onChange={(e) => setEmailIngestConfig((prev) => ({ ...prev, routingMode: e.target.value }))}
-                  >
-                    <option value="catch_all">Google Workspace catch-all routing</option>
-                    <option value="default_routing">Google Workspace default routing</option>
-                  </select>
-                  <textarea
-                    className="input-premium py-1.5 text-[11px] font-semibold min-h-[84px]"
-                    placeholder="Allowed sender domains, one per line or comma-separated (e.g. customer.com)"
-                    value={Array.isArray(emailIngestConfig.allowedSenderDomains) ? emailIngestConfig.allowedSenderDomains.join("\n") : String(emailIngestConfig.allowedSenderDomains || "")}
-                    onChange={(e) => setEmailIngestConfig((prev) => ({ ...prev, allowedSenderDomains: String(e.target.value || "").split(/[\n,]+/).map((v) => v.trim()).filter(Boolean) }))}
-                  />
-                  <input
-                    className="input-premium py-1.5 text-[11px] font-semibold"
-                    placeholder="Internal notes"
-                    value={emailIngestConfig.notes}
-                    disabled={!isSuperAdmin}
-                    onChange={(e) => setEmailIngestConfig((prev) => ({ ...prev, notes: e.target.value }))}
-                  />
-                  <div className="text-[10px] text-slate-500">
-                    Allowed sender domains are applied to the selected customer when a customer is selected; otherwise they update the global default.
-                  </div>
-                  <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600 space-y-1">
-                    <div className="font-semibold text-slate-700">Google Workspace setup</div>
-                    <a
-                      className="block text-blue-700 hover:underline"
-                      href="https://support.google.com/a/answer/7502379?hl=en"
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Add a domain or domain alias
-                    </a>
-                    <a
-                      className="block text-blue-700 hover:underline"
-                      href="https://support.google.com/a/answer/2368153?hl=en"
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Set up Default routing for your organization
-                    </a>
-                    <a
-                      className="block text-blue-700 hover:underline"
-                      href="https://support.google.com/a/answer/12943537?hl=en"
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Get misaddressed email in a catch-all mailbox
-                    </a>
-                    <div className="text-slate-500">
-                      This address should route inbound attachments to the mailbox the app watches. Generated customer addresses can be derived from the prefix + customer slug or ID.
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={saveEmailIngestSetting}
-                    disabled={emailIngestSaving}
-                    className={`btn-premium bg-slate-800 text-white w-full py-1.5 text-[11px] ${emailIngestSaving ? "opacity-60 cursor-not-allowed" : ""}`}
-                  >
-                    {emailIngestSaving ? "Saving..." : "Save Email Ingest Settings"}
-                  </button>
-                </>
-              )}
-            </div>
-            <div className={`rounded-md border bg-white p-3 space-y-2 ${googleConfigured && integrationTestStatus.google === "success" ? "border-emerald-400" : "border-slate-200"}`}>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <img src={INTEGRATION_LOGOS.google} alt="Google logo" className="h-4 w-4 rounded-sm object-contain bg-white" loading="lazy" />
-                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Google OAuth Configuration</div>
-                  <span className={`text-[10px] font-semibold ${googleConfigured ? "text-emerald-600" : "text-slate-400"}`}>
-                    {googleConfigured ? "Configured" : "Not configured"}
-                  </span>
-                  {integrationTestStatus.google === "success" && <span className="text-[10px] font-semibold text-emerald-600">Tested</span>}
-                </div>
-                <button type="button" className="text-[10px] font-semibold text-slate-600 hover:text-slate-900" onClick={() => setIntegrationOpen((prev) => ({ ...prev, google: !prev.google }))}>
-                  {integrationOpen.google ? "Collapse" : "Expand"}
-                </button>
-              </div>
-              {integrationOpen.google && (
-              <>
-              <input type="password" className="input-premium" placeholder={googleOauthMeta.hasClientId ? "***" : "Google Client ID"} value={googleOauthForm.clientId} onChange={(e) => setGoogleOauthForm((prev) => ({ ...prev, clientId: e.target.value }))} autoComplete="new-password" />
-              <input type="password" className="input-premium" placeholder={googleOauthMeta.hasClientSecret ? "***" : "Google Client Secret"} value={googleOauthForm.clientSecret} onChange={(e) => setGoogleOauthForm((prev) => ({ ...prev, clientSecret: e.target.value }))} autoComplete="new-password" />
-              <input className="input-premium" placeholder="Redirect URI" value={googleOauthForm.redirectUri} onChange={(e) => setGoogleOauthForm((prev) => ({ ...prev, redirectUri: e.target.value }))} />
-              <input className="input-premium" placeholder="Frontend URL" value={googleOauthForm.frontendUrl} onChange={(e) => setGoogleOauthForm((prev) => ({ ...prev, frontendUrl: e.target.value }))} />
-              <div className="grid grid-cols-2 gap-2">
-                <button type="button" onClick={saveGoogleOauthSetting} disabled={googleOauthSaving} className={`btn-premium bg-slate-800 text-white w-full py-2 ${googleOauthSaving ? "opacity-60 cursor-not-allowed" : ""}`}>{googleOauthSaving ? "Saving..." : "Save Google OAuth"}</button>
-                <button type="button" onClick={testGoogleOauthSetting} disabled={googleOauthTesting} className={`btn-premium bg-indigo-600 text-white w-full py-2 ${googleOauthTesting ? "opacity-60 cursor-not-allowed" : ""}`}>{googleOauthTesting ? "Testing..." : "Test Google OAuth"}</button>
-              </div>
-              <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600 space-y-1">
-                <div className="font-semibold text-slate-700">Setup help</div>
-                <a className="block text-blue-700 hover:underline" href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer">Configure credentials in Google Cloud Console</a>
-                <div className="text-slate-500">Required Scopes: `drive.readonly`, `openid`, `email`, `profile`</div>
-                <a className="block text-blue-700 hover:underline" href="https://developers.google.com/identity/protocols/oauth2/web-server" target="_blank" rel="noreferrer">Google OAuth2 Web Server guide</a>
-              </div>
-              </>
-              )}
-            </div>
-            <div className={`rounded-md border bg-white p-3 space-y-2 ${dropboxConfigured && integrationTestStatus.dropbox === "success" ? "border-emerald-400" : "border-slate-200"}`}>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <img src={INTEGRATION_LOGOS.dropbox} alt="Dropbox logo" className="h-4 w-4 rounded-sm object-contain bg-white" loading="lazy" />
-                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Dropbox OAuth Configuration</div>
-                  <span className={`text-[10px] font-semibold ${dropboxConfigured ? "text-emerald-600" : "text-slate-400"}`}>
-                    {dropboxConfigured ? "Configured" : "Not configured"}
-                  </span>
-                  {integrationTestStatus.dropbox === "success" && <span className="text-[10px] font-semibold text-emerald-600">Tested</span>}
-                </div>
-                <button type="button" className="text-[10px] font-semibold text-slate-600 hover:text-slate-900" onClick={() => setIntegrationOpen((prev) => ({ ...prev, dropbox: !prev.dropbox }))}>
-                  {integrationOpen.dropbox ? "Collapse" : "Expand"}
-                </button>
-              </div>
-              {integrationOpen.dropbox && (
-              <>
-              <input type="password" className="input-premium" placeholder={dropboxOauthMeta.hasClientId ? "***" : "Dropbox App Key (Client ID)"} value={dropboxOauthForm.clientId} onChange={(e) => setDropboxOauthForm((prev) => ({ ...prev, clientId: e.target.value }))} autoComplete="new-password" />
-              <input type="password" className="input-premium" placeholder={dropboxOauthMeta.hasClientSecret ? "***" : "Dropbox App Secret (Client Secret)"} value={dropboxOauthForm.clientSecret} onChange={(e) => setDropboxOauthForm((prev) => ({ ...prev, clientSecret: e.target.value }))} autoComplete="new-password" />
-              <input className="input-premium" placeholder="Redirect URI" value={dropboxOauthForm.redirectUri} onChange={(e) => setDropboxOauthForm((prev) => ({ ...prev, redirectUri: e.target.value }))} />
-              <input className="input-premium" placeholder="Frontend URL" value={dropboxOauthForm.frontendUrl} onChange={(e) => setDropboxOauthForm((prev) => ({ ...prev, frontendUrl: e.target.value }))} />
-              <div className="grid grid-cols-2 gap-2">
-                <button type="button" onClick={saveDropboxOauthSetting} disabled={dropboxOauthSaving} className={`btn-premium bg-slate-800 text-white w-full py-2 ${dropboxOauthSaving ? "opacity-60 cursor-not-allowed" : ""}`}>{dropboxOauthSaving ? "Saving..." : "Save Dropbox OAuth"}</button>
-                <button type="button" onClick={testDropboxOauthSetting} disabled={dropboxOauthTesting} className={`btn-premium bg-indigo-600 text-white w-full py-2 ${dropboxOauthTesting ? "opacity-60 cursor-not-allowed" : ""}`}>{dropboxOauthTesting ? "Testing..." : "Test Dropbox OAuth"}</button>
-              </div>
-              <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600 space-y-1">
-                <div className="font-semibold text-slate-700">Setup help</div>
-                <a className="block text-blue-700 hover:underline" href="https://www.dropbox.com/developers/apps" target="_blank" rel="noreferrer">Create/Manage apps in Dropbox Console</a>
-                <div className="text-slate-500">Required Permissions: `files.metadata.read`, `files.content.read`</div>
-                <a className="block text-blue-700 hover:underline" href="https://www.dropbox.com/developers/documentation/http/documentation#oauth2-authorize" target="_blank" rel="noreferrer">Dropbox OAuth2 guide</a>
-              </div>
-              </>
-              )}
-            </div>
-            <div className={`rounded-md border bg-white p-3 space-y-2 ${oneDriveConfigured && integrationTestStatus.onedrive === "success" ? "border-emerald-400" : "border-slate-200"}`}>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <img src={INTEGRATION_LOGOS.onedrive} alt="OneDrive logo" className="h-4 w-4 rounded-sm object-contain bg-white" loading="lazy" />
-                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">OneDrive OAuth Configuration</div>
-                  <span className={`text-[10px] font-semibold ${oneDriveConfigured ? "text-emerald-600" : "text-slate-400"}`}>
-                    {oneDriveConfigured ? "Configured" : "Not configured"}
-                  </span>
-                  {integrationTestStatus.onedrive === "success" && <span className="text-[10px] font-semibold text-emerald-600">Tested</span>}
-                </div>
-                <button type="button" className="text-[10px] font-semibold text-slate-600 hover:text-slate-900" onClick={() => setIntegrationOpen((prev) => ({ ...prev, onedrive: !prev.onedrive }))}>
-                  {integrationOpen.onedrive ? "Collapse" : "Expand"}
-                </button>
-              </div>
-              {integrationOpen.onedrive && (
-              <>
-              <input type="password" className="input-premium" placeholder={oneDriveOauthMeta.hasClientId ? "***" : "Microsoft Application (Client) ID"} value={oneDriveOauthForm.clientId} onChange={(e) => setOneDriveOauthForm((prev) => ({ ...prev, clientId: e.target.value }))} autoComplete="new-password" />
-              <input type="password" className="input-premium" placeholder={oneDriveOauthMeta.hasClientSecret ? "***" : "Microsoft Client Secret"} value={oneDriveOauthForm.clientSecret} onChange={(e) => setOneDriveOauthForm((prev) => ({ ...prev, clientSecret: e.target.value }))} autoComplete="new-password" />
-              <input className="input-premium" placeholder="Redirect URI" value={oneDriveOauthForm.redirectUri} onChange={(e) => setOneDriveOauthForm((prev) => ({ ...prev, redirectUri: e.target.value }))} />
-              <input className="input-premium" placeholder="Frontend URL" value={oneDriveOauthForm.frontendUrl} onChange={(e) => setOneDriveOauthForm((prev) => ({ ...prev, frontendUrl: e.target.value }))} />
-              <div className="grid grid-cols-2 gap-2">
-                <button type="button" onClick={saveOneDriveOauthSetting} disabled={oneDriveOauthSaving} className={`btn-premium bg-slate-800 text-white w-full py-2 ${oneDriveOauthSaving ? "opacity-60 cursor-not-allowed" : ""}`}>{oneDriveOauthSaving ? "Saving..." : "Save OneDrive OAuth"}</button>
-                <button type="button" onClick={testOneDriveOauthSetting} disabled={oneDriveOauthTesting} className={`btn-premium bg-indigo-600 text-white w-full py-2 ${oneDriveOauthTesting ? "opacity-60 cursor-not-allowed" : ""}`}>{oneDriveOauthTesting ? "Testing..." : "Test OneDrive OAuth"}</button>
-              </div>
-              <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600 space-y-1">
-                <div className="font-semibold text-slate-700">Setup help</div>
-                <a className="block text-blue-700 hover:underline" href="https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app" target="_blank" rel="noreferrer">Register app in Microsoft Entra ID</a>
-                <a className="block text-blue-700 hover:underline" href="https://learn.microsoft.com/en-us/graph/permissions-reference#filesread" target="_blank" rel="noreferrer">Required Microsoft Graph scopes: `Files.Read`, `User.Read`, `offline_access`</a>
-                <a className="block text-blue-700 hover:underline" href="https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow" target="_blank" rel="noreferrer">Authorization code flow guide</a>
-              </div>
-              </>
-              )}
-            </div>
-            <div className={`rounded-md border bg-white p-3 space-y-2 ${quickbooksConfigured && integrationTestStatus.quickbooks === "success" ? "border-emerald-400" : "border-slate-200"}`}>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <img src={INTEGRATION_LOGOS.quickbooks} alt="QuickBooks logo" className="h-4 w-4 rounded-sm object-contain bg-white" loading="lazy" />
-                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">QuickBooks OAuth Configuration</div>
-                  <span className={`text-[10px] font-semibold ${quickbooksConfigured ? "text-emerald-600" : "text-slate-400"}`}>
-                    {quickbooksConfigured ? "Configured" : "Not configured"}
-                  </span>
-                  {integrationTestStatus.quickbooks === "success" && <span className="text-[10px] font-semibold text-emerald-600">Tested</span>}
-                </div>
-                <button type="button" className="text-[10px] font-semibold text-slate-600 hover:text-slate-900" onClick={() => setIntegrationOpen((prev) => ({ ...prev, quickbooks: !prev.quickbooks }))}>
-                  {integrationOpen.quickbooks ? "Collapse" : "Expand"}
-                </button>
-              </div>
-              {integrationOpen.quickbooks && (
-              <>
-              <input type="password" className="input-premium" placeholder={quickbooksOauthMeta.hasClientId ? "***" : "QuickBooks Client ID"} value={quickbooksOauthForm.clientId} onChange={(e) => setQuickbooksOauthForm((prev) => ({ ...prev, clientId: e.target.value }))} autoComplete="new-password" />
-              <input type="password" className="input-premium" placeholder={quickbooksOauthMeta.hasClientSecret ? "***" : "QuickBooks Client Secret"} value={quickbooksOauthForm.clientSecret} onChange={(e) => setQuickbooksOauthForm((prev) => ({ ...prev, clientSecret: e.target.value }))} autoComplete="new-password" />
-              <input className="input-premium" placeholder="Redirect URI" value={quickbooksOauthForm.redirectUri} onChange={(e) => setQuickbooksOauthForm((prev) => ({ ...prev, redirectUri: e.target.value }))} />
-              <input className="input-premium" placeholder="Frontend URL" value={quickbooksOauthForm.frontendUrl} onChange={(e) => setQuickbooksOauthForm((prev) => ({ ...prev, frontendUrl: e.target.value }))} />
-              <select className="input-premium" value={quickbooksOauthForm.environment} onChange={(e) => setQuickbooksOauthForm((prev) => ({ ...prev, environment: e.target.value === "sandbox" ? "sandbox" : "production" }))}>
-                <option value="production">Production</option>
-                <option value="sandbox">Sandbox</option>
-              </select>
-              <input className="input-premium" placeholder="Company ID (Realm ID)" value={quickbooksOauthForm.companyId} onChange={(e) => setQuickbooksOauthForm((prev) => ({ ...prev, companyId: e.target.value }))} />
-              <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600 space-y-2">
-                <div className="font-semibold text-slate-700">Read-only import data types</div>
-                <div className="grid grid-cols-2 gap-1">
-                  {QUICKBOOKS_DATA_TYPE_OPTIONS.map((dataType) => {
-                    const selected = quickbooksOauthForm.selectedDataTypes.includes(dataType);
-                    return (
-                      <label key={dataType} className="flex items-center gap-1.5 text-[10px] font-semibold text-slate-600">
-                        <input
-                          type="checkbox"
-                          checked={selected}
-                          onChange={(e) => setQuickbooksOauthForm((prev) => {
-                            const current = Array.isArray(prev.selectedDataTypes) ? prev.selectedDataTypes : [];
-                            const next = e.target.checked
-                              ? Array.from(new Set([...current, dataType]))
-                              : current.filter((entry) => entry !== dataType);
-                            return { ...prev, selectedDataTypes: next };
-                          })}
-                        />
-                        {dataType}
-                      </label>
-                    );
-                  })}
-                </div>
-                <div className="text-slate-500">Choose what this workspace can import from QuickBooks. All imports are read-only.</div>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <button type="button" onClick={saveQuickbooksOauthSetting} disabled={quickbooksOauthSaving} className={`btn-premium bg-slate-800 text-white w-full py-2 ${quickbooksOauthSaving ? "opacity-60 cursor-not-allowed" : ""}`}>{quickbooksOauthSaving ? "Saving..." : "Save QuickBooks OAuth"}</button>
-                <button type="button" onClick={testQuickbooksOauthSetting} disabled={quickbooksOauthTesting} className={`btn-premium bg-indigo-600 text-white w-full py-2 ${quickbooksOauthTesting ? "opacity-60 cursor-not-allowed" : ""}`}>{quickbooksOauthTesting ? "Testing..." : "Test QuickBooks OAuth"}</button>
-              </div>
-              <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600 space-y-1">
-                <div className="font-semibold text-slate-700">Setup help</div>
-                <a className="block text-blue-700 hover:underline" href="https://developer.intuit.com/app/developer/qbo/docs/develop/authentication-and-authorization/oauth-2.0" target="_blank" rel="noreferrer">QuickBooks OAuth 2.0 guide</a>
-                <a className="block text-blue-700 hover:underline" href="https://developer.intuit.com/app/developer/qbo/docs/learn-about-concepts/scopes" target="_blank" rel="noreferrer">QuickBooks scopes reference</a>
-                <a className="block text-blue-700 hover:underline" href="https://developer.intuit.com/app/developer/qbo/docs/develop/sdks-and-samples-collections/php/authorization#get-your-realm-id" target="_blank" rel="noreferrer">Find your Company ID (Realm ID)</a>
-              </div>
-              </>
-              )}
-            </div>
-            {STORAGE_PROVIDER_DEFS.map((provider) => {
-              const state = storageSettings[provider.key] || createStorageProviderState(provider);
-              const configured = !!state.form.enabled && provider.fields
-                .filter((field) => field.name !== "enabled")
-                .every((field) => {
-                  if (field.secret) return !!state.meta?.[field.metaKey] || !!String(state.form[field.name] || "").trim();
-                  if (field.type === "checkbox") return true;
-                  if (field.type === "number") return Number.parseInt(state.form[field.name], 10) > 0;
-                  return !!String(state.form[field.name] || "").trim();
-                });
-              return (
-                <StorageOptionCard
-                  key={provider.key}
-                  title={provider.title}
-                  logoUrl={provider.logoUrl}
-                  logoAlt={`${provider.title} logo`}
-                  summary={provider.summary(state)}
-                  configured={configured}
-                  tested={state.testStatus === "success"}
-                  open={state.open}
-                  onToggleOpen={() => updateStorageProvider(provider.key, (prev) => ({ ...prev, open: !prev.open }))}
-                  enabled={!!state.form.enabled}
-                  form={state.form}
-                  meta={state.meta}
-                  fields={provider.fields}
-                  onChange={(fieldName, fieldValue, fieldDef) => {
-                    updateStorageProvider(provider.key, (prev) => ({
-                      ...prev,
-                      form: { ...prev.form, [fieldName]: fieldValue },
-                      ...(fieldDef?.secret ? { meta: { ...prev.meta, [fieldDef.metaKey]: prev.meta?.[fieldDef.metaKey] } } : {}),
-                    }));
-                  }}
-                  onSave={() => saveStorageSetting(provider)}
-                  onTest={() => testStorageSetting(provider)}
-                  saving={!!state.saving}
-                  testing={!!state.testing}
-                  saveLabel={`Save ${provider.title}`}
-                  testLabel="Test Connection"
-                  helpLinks={provider.helpLinks}
-                />
-              );
-            })}
-          </div>
-        )}
+        <IntegrationSettingsPanel
+          canManageIntegrations={canManageIntegrations}
+          isSuperAdmin={isSuperAdmin}
+          selectedGroupId={selectedGroupId}
+          reportSourceOptions={reportSourceOptions}
+          autosyncInterval={autosyncInterval}
+          autosyncIntervalSaving={autosyncIntervalSaving}
+          setAutosyncInterval={setAutosyncInterval}
+          saveAutosyncIntervalSetting={saveAutosyncIntervalSetting}
+          INTEGRATION_LOGOS={INTEGRATION_LOGOS}
+          emailIngestConfig={emailIngestConfig}
+          emailIngestSaving={emailIngestSaving}
+          integrationOpen={integrationOpen}
+          setIntegrationOpen={setIntegrationOpen}
+          setEmailIngestConfig={setEmailIngestConfig}
+          saveEmailIngestSetting={saveEmailIngestSetting}
+          googleConfigured={googleConfigured}
+          googleOauthMeta={googleOauthMeta}
+          googleOauthForm={googleOauthForm}
+          googleOauthSaving={googleOauthSaving}
+          googleOauthTesting={googleOauthTesting}
+          setGoogleOauthForm={setGoogleOauthForm}
+          saveGoogleOauthSetting={saveGoogleOauthSetting}
+          testGoogleOauthSetting={testGoogleOauthSetting}
+          dropboxConfigured={dropboxConfigured}
+          dropboxOauthMeta={dropboxOauthMeta}
+          dropboxOauthForm={dropboxOauthForm}
+          dropboxOauthSaving={dropboxOauthSaving}
+          dropboxOauthTesting={dropboxOauthTesting}
+          setDropboxOauthForm={setDropboxOauthForm}
+          saveDropboxOauthSetting={saveDropboxOauthSetting}
+          testDropboxOauthSetting={testDropboxOauthSetting}
+          oneDriveConfigured={oneDriveConfigured}
+          oneDriveOauthMeta={oneDriveOauthMeta}
+          oneDriveOauthForm={oneDriveOauthForm}
+          oneDriveOauthSaving={oneDriveOauthSaving}
+          oneDriveOauthTesting={oneDriveOauthTesting}
+          setOneDriveOauthForm={setOneDriveOauthForm}
+          saveOneDriveOauthSetting={saveOneDriveOauthSetting}
+          testOneDriveOauthSetting={testOneDriveOauthSetting}
+          quickbooksConfigured={quickbooksConfigured}
+          quickbooksOauthMeta={quickbooksOauthMeta}
+          quickbooksOauthForm={quickbooksOauthForm}
+          quickbooksOauthSaving={quickbooksOauthSaving}
+          quickbooksOauthTesting={quickbooksOauthTesting}
+          samlConfigured={samlConfigured}
+          samlMeta={samlMeta}
+          samlForm={samlForm}
+          samlSaving={samlSaving}
+          samlTesting={samlTesting}
+          QUICKBOOKS_DATA_TYPE_OPTIONS={QUICKBOOKS_DATA_TYPE_OPTIONS}
+          setQuickbooksOauthForm={setQuickbooksOauthForm}
+          saveQuickbooksOauthSetting={saveQuickbooksOauthSetting}
+          testQuickbooksOauthSetting={testQuickbooksOauthSetting}
+          setSamlForm={setSamlForm}
+          saveSamlSetting={saveSamlSetting}
+          testSamlSetting={testSamlSetting}
+          integrationTestStatus={integrationTestStatus}
+          STORAGE_PROVIDER_DEFS={STORAGE_PROVIDER_DEFS}
+          createStorageProviderState={createStorageProviderState}
+          storageSettings={storageSettings}
+          updateStorageProvider={updateStorageProvider}
+          saveStorageSetting={saveStorageSetting}
+          testStorageSetting={testStorageSetting}
+        />
 
         </>
         )}
       </section>
 
       </div>
-      {customerFormOpen && (
-        <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-slate-950/60 px-4">
-          <div className="w-full max-w-xl rounded-lg border border-slate-200 bg-white p-4 shadow-2xl space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="text-[12px] font-semibold text-slate-900">{customerFormMode === "edit" ? "Edit Customer" : "New Customer"}</div>
-              <button type="button" className="text-[11px] font-semibold text-slate-500 hover:text-slate-900" onClick={() => setCustomerFormOpen(false)}>Close</button>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-              <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="Customer First Name" value={newCustomerFirstName} onChange={(e) => setNewCustomerFirstName(e.target.value)} />
-              <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="Customer Last Name" value={newCustomerLastName} onChange={(e) => setNewCustomerLastName(e.target.value)} />
-              <input className="input-premium py-1.5 text-[11px] font-semibold md:col-span-2" placeholder="Company Name" value={newCustomerCompanyName} onChange={(e) => setNewCustomerCompanyName(e.target.value)} />
-              <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="Email" value={newCustomerEmail} onChange={(e) => setNewCustomerEmail(e.target.value)} />
-              <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="Phone (optional)" value={newCustomerPhone} onChange={(e) => setNewCustomerPhone(e.target.value)} />
-            </div>
-            <div className="flex justify-end">
-              <button type="button" className="btn-premium bg-slate-800 text-white px-4 py-1.5 text-[11px]" onClick={saveCustomerForm}>Save</button>
-            </div>
-          </div>
-        </div>
-      )}
-      {passwordResetModal.open && (
-        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-slate-950/60 px-4">
-          <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-5 shadow-2xl">
-            <div className="mb-4">
-              <h3 className="text-base font-semibold text-slate-900">Reset Password</h3>
-              <p className="mt-1 text-xs text-slate-500">
-                Set a new temporary password for {passwordResetModal.label || "this user"}. The user must change it after login.
-              </p>
-            </div>
-            <div className="space-y-3">
-              <label className="block">
-                <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">New Password</span>
-                <input
-                  className="input-premium w-full"
-                  type="password"
-                  autoComplete="new-password"
-                  value={passwordResetModal.password}
-                  onChange={(e) => setPasswordResetModal((prev) => ({ ...prev, password: e.target.value }))}
-                />
-              </label>
-              <label className="block">
-                <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">Repeat Password</span>
-                <input
-                  className="input-premium w-full"
-                  type="password"
-                  autoComplete="new-password"
-                  value={passwordResetModal.repeat}
-                  onChange={(e) => setPasswordResetModal((prev) => ({ ...prev, repeat: e.target.value }))}
-                />
-              </label>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-                  type="button"
-                  onClick={fillGeneratedResetPassword}
-                >
-                  Generate 16-character password
-                </button>
-                <button
-                  className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800 hover:bg-amber-100"
-                  type="button"
-                  onClick={copyResetPassword}
-                >
-                  Copy password
-                </button>
-              </div>
-            </div>
-            <div className="mt-5 flex justify-end gap-2">
-              <button
-                className="rounded-md border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50"
-                type="button"
-                onClick={closePasswordResetModal}
-              >
-                Cancel
-              </button>
-              <button
-                className="rounded-md bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800"
-                type="button"
-                onClick={submitPasswordReset}
-              >
-                Reset Password
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <CustomerFormModal
+        open={customerFormOpen}
+        mode={customerFormMode}
+        firstName={newCustomerFirstName}
+        lastName={newCustomerLastName}
+        companyName={newCustomerCompanyName}
+        email={newCustomerEmail}
+        phone={newCustomerPhone}
+        onClose={() => setCustomerFormOpen(false)}
+        onSave={saveCustomerForm}
+        onFirstNameChange={setNewCustomerFirstName}
+        onLastNameChange={setNewCustomerLastName}
+        onCompanyNameChange={setNewCustomerCompanyName}
+        onEmailChange={setNewCustomerEmail}
+        onPhoneChange={setNewCustomerPhone}
+      />
+      <PasswordResetModal
+        open={passwordResetModal.open}
+        label={passwordResetModal.label}
+        password={passwordResetModal.password}
+        repeat={passwordResetModal.repeat}
+        onPasswordChange={(value) => setPasswordResetModal((prev) => ({ ...prev, password: value }))}
+        onRepeatChange={(value) => setPasswordResetModal((prev) => ({ ...prev, repeat: value }))}
+        onClose={closePasswordResetModal}
+        onGenerate={fillGeneratedResetPassword}
+        onCopy={copyResetPassword}
+        onSubmit={submitPasswordReset}
+      />
     </div>
     </div>
   );

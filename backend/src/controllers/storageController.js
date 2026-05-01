@@ -35,6 +35,11 @@ function maskIfPresent(value) {
 
 function toBoolean(value, fallback = false) {
   if (value === undefined) return !!fallback;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["false", "0", "no", "off", ""].includes(normalized)) return false;
+    if (["true", "1", "yes", "on"].includes(normalized)) return true;
+  }
   return !!value;
 }
 

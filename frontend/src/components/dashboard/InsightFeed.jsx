@@ -2,6 +2,33 @@ import React from "react";
 import api from "../../api";
 import { DASHBOARD_COPY_EN, formatTemplate } from "../../hooks/useDashboardI18n";
 
+const INSIGHT_AUDIO_CACHE_NAME = "insight-ticket-audio-v1";
+
+async function getCachedInsightAudioBlob(cacheKey) {
+  try {
+    if (typeof window === "undefined" || !("caches" in window)) return null;
+    const cache = await window.caches.open(INSIGHT_AUDIO_CACHE_NAME);
+    const response = await cache.match(new Request(`/__insight_audio_cache__/${encodeURIComponent(cacheKey)}`));
+    if (!response) return null;
+    return await response.blob();
+  } catch {
+    return null;
+  }
+}
+
+async function setCachedInsightAudioBlob(cacheKey, blob) {
+  try {
+    if (typeof window === "undefined" || !("caches" in window) || !blob) return;
+    const cache = await window.caches.open(INSIGHT_AUDIO_CACHE_NAME);
+    await cache.put(
+      new Request(`/__insight_audio_cache__/${encodeURIComponent(cacheKey)}`),
+      new Response(blob, { headers: { "Content-Type": "audio/mpeg" } })
+    );
+  } catch {
+    // Best-effort local cache.
+  }
+}
+
 function Sparkline({ graph, cardType, locale, copy, direction = null }) {
   const [hoveredIndex, setHoveredIndex] = React.useState(null);
   const [tooltipPos, setTooltipPos] = React.useState(null);
@@ -252,11 +279,16 @@ export default function InsightFeed({
   const ui = copy || DASHBOARD_COPY_EN;
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState("");
+  const [audioError, setAudioError] = React.useState("");
   const [cards, setCards] = React.useState([]);
   const [settings, setSettings] = React.useState(null);
   const [available, setAvailable] = React.useState({ dateColumns: [], metricColumns: [] });
   const [showSettings, setShowSettings] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
+  const [audioLoadingCardId, setAudioLoadingCardId] = React.useState("");
+  const [audioPlayingCardId, setAudioPlayingCardId] = React.useState("");
+  const [revisionKey, setRevisionKey] = React.useState("");
+  const currentAudioRef = React.useRef(null);
   const autoChartKeyRef = React.useRef("");
   const renderDriverChangesBullet = React.useCallback((text, key) => {
     const line = String(text || "");
@@ -349,17 +381,118 @@ export default function InsightFeed({
     }
     setLoading(true);
     setError("");
+    setAudioError("");
     try {
       const res = await api.get(`/insights/${sheetId}`, { params: { context, locale, forceRefresh: forceRefresh ? "1" : undefined } });
       setCards(Array.isArray(res?.data?.cards) ? res.data.cards : []);
       setSettings(res?.data?.settings || null);
       setAvailable(res?.data?.available || { dateColumns: [], metricColumns: [] });
+      setRevisionKey(String(res?.data?.meta?.revisionKey || ""));
     } catch (e) {
       setError(getInsightErrorMessage(e));
     } finally {
       setLoading(false);
     }
   }, [sheetId, context, locale, getInsightErrorMessage]);
+
+  React.useEffect(() => () => {
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause();
+      currentAudioRef.current.src = "";
+      currentAudioRef.current = null;
+    }
+  }, []);
+
+  const stopCurrentAudio = React.useCallback(() => {
+    if (!currentAudioRef.current) return;
+    currentAudioRef.current.onended = null;
+    currentAudioRef.current.onerror = null;
+    currentAudioRef.current.pause();
+    currentAudioRef.current.src = "";
+    currentAudioRef.current = null;
+    setAudioPlayingCardId("");
+  }, []);
+
+  const playCardAudio = React.useCallback(async (card) => {
+    if (!sheetId || !card?.id) return;
+    if (audioPlayingCardId && audioPlayingCardId === card.id) {
+      stopCurrentAudio();
+      return;
+    }
+    setAudioLoadingCardId(card.id);
+    setAudioError("");
+    try {
+      stopCurrentAudio();
+      const requestPayload = {
+        cardId: String(card.id),
+        revisionKey: String(revisionKey || "none"),
+        locale: locale || "en",
+        title: String(card.title || ""),
+        bullets: Array.isArray(card.bullets) ? card.bullets : [],
+      };
+      const localCacheKey = JSON.stringify({
+        sheetId: String(sheetId || ""),
+        revisionKey: String(revisionKey || "none"),
+        locale: locale || "en",
+        cardId: String(card.id || ""),
+        title: String(card.title || ""),
+        bullets: Array.isArray(card.bullets) ? card.bullets.map((b) => String(b || "")) : [],
+      });
+
+      const playBlob = async (blob) => {
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        currentAudioRef.current = audio;
+        setAudioPlayingCardId(card.id);
+        audio.onended = () => {
+          URL.revokeObjectURL(url);
+          if (currentAudioRef.current === audio) currentAudioRef.current = null;
+          setAudioPlayingCardId("");
+        };
+        audio.onerror = () => {
+          URL.revokeObjectURL(url);
+          if (currentAudioRef.current === audio) currentAudioRef.current = null;
+          setAudioPlayingCardId("");
+          setAudioError("Failed to play ticket audio");
+        };
+        await audio.play();
+      };
+
+      let lastErr = null;
+      const cachedBlob = await getCachedInsightAudioBlob(localCacheKey);
+      if (cachedBlob) {
+        await playBlob(cachedBlob);
+        setAudioLoadingCardId("");
+        return;
+      }
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const response = await api.post(
+            `/insights/${sheetId}/audio`,
+            requestPayload,
+            { responseType: "blob" }
+          );
+          const blob = response?.data instanceof Blob ? response.data : new Blob([response.data], { type: "audio/mpeg" });
+          await setCachedInsightAudioBlob(localCacheKey, blob);
+          await playBlob(blob);
+          lastErr = null;
+          break;
+        } catch (err) {
+          lastErr = err;
+          if (attempt === 0) {
+            await new Promise((resolve) => setTimeout(resolve, 250));
+            continue;
+          }
+        }
+      }
+      if (lastErr) throw lastErr;
+    } catch (e) {
+      setAudioError(e?.response?.data?.error || "Failed to play ticket audio");
+      setAudioPlayingCardId("");
+    } finally {
+      setAudioLoadingCardId("");
+    }
+  }, [audioPlayingCardId, locale, revisionKey, sheetId, stopCurrentAudio]);
 
   React.useEffect(() => {
     loadInsights();
@@ -542,6 +675,7 @@ export default function InsightFeed({
       <div className="p-4">
         {loading && <div className="text-sm text-slate-500">{ui.loadingInsights}</div>}
         {error && <div className="text-sm text-rose-600">{error}</div>}
+        {!error && audioError && <div className="text-sm text-amber-600">{audioError}</div>}
         {!loading && !error && displayCards.length === 0 && (
           <div className="text-sm text-slate-500">{ui.noInsightsYet}</div>
         )}
@@ -571,23 +705,37 @@ export default function InsightFeed({
                 >
                   <div className="flex flex-none flex-wrap items-center justify-between gap-2">
                     <h4 className="text-sm font-semibold text-slate-900">{card.title}</h4>
-                    {(card.type === "recommendation" || card.type === "attention" || isMajorWarning || card.type === "change_alert") && (
-                      <span
-                        className={`rounded-full border bg-white px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
-                          isDirectional
-                            ? (directionalTone === "down"
-                              ? "border-rose-300 text-rose-700"
-                              : directionalTone === "up"
-                                ? "border-emerald-300 text-emerald-700"
-                                : "border-amber-300 text-amber-700")
-                            : "border-orange-300 text-orange-700"
-                        }`}
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => playCardAudio(card)}
+                        disabled={audioLoadingCardId === card.id}
+                        className={`rounded border bg-white px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                          audioPlayingCardId === card.id
+                            ? "border-indigo-300 text-indigo-700"
+                            : "border-slate-300 text-slate-700 hover:bg-slate-50"
+                        } ${audioLoadingCardId === card.id ? "opacity-60 cursor-not-allowed" : ""}`}
                       >
-                        {isDirectional
-                          ? (directionalTone === "down" ? "Warning Down" : directionalTone === "up" ? "Warning Up" : "Warning")
-                          : card.type === "attention" ? ui.needsAttention : ui.recommendation}
-                      </span>
-                    )}
+                        {audioLoadingCardId === card.id ? "Loading Audio" : audioPlayingCardId === card.id ? "Stop Audio" : "Read Ticket"}
+                      </button>
+                      {(card.type === "recommendation" || card.type === "attention" || isMajorWarning || card.type === "change_alert") && (
+                        <span
+                          className={`rounded-full border bg-white px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                            isDirectional
+                              ? (directionalTone === "down"
+                                ? "border-rose-300 text-rose-700"
+                                : directionalTone === "up"
+                                  ? "border-emerald-300 text-emerald-700"
+                                  : "border-amber-300 text-amber-700")
+                              : "border-orange-300 text-orange-700"
+                          }`}
+                        >
+                          {isDirectional
+                            ? (directionalTone === "down" ? "Warning Down" : directionalTone === "up" ? "Warning Up" : "Warning")
+                            : card.type === "attention" ? ui.needsAttention : ui.recommendation}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <ul className="mt-2 min-h-0 flex-1 overflow-y-auto list-disc pl-5 text-xs text-slate-700 space-y-1 custom-scrollbar">
                     {(card.bullets || []).map((b, idx) => {

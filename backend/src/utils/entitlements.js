@@ -18,6 +18,7 @@ export const DEFAULT_GROUP_ENTITLEMENTS = {
     dropbox: true,
     oneDrive: true,
     quickbooks: true,
+    dlp: true,
   },
 };
 

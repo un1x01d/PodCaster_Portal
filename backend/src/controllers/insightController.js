@@ -2,6 +2,7 @@ import { createHash } from "crypto";
 import { query } from "../config/db.js";
 import { isEnglishLocale, normalizeLocale, translateDashboardCards } from "../utils/dashboardLocalization.js";
 import { checkSheetAccess, hasReportSourceOwnerAccess, loadSheetPermissionSets } from "../utils/authorization.js";
+import { synthesizeChatAudioBuffer } from "./chatController.js";
 
 const INSIGHT_MAX_ROWS = Number.parseInt(process.env.INSIGHT_MAX_ROWS || "300000", 10);
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
@@ -24,10 +25,13 @@ const INSIGHT_TRANSLATION_SETTINGS_LOCAL_TTL_MS = Number.parseInt(
   process.env.INSIGHT_TRANSLATION_SETTINGS_LOCAL_TTL_MS || `${60 * 1000}`,
   10
 );
+const INSIGHT_AUDIO_CACHE_RETENTION_DAYS = Number.parseInt(process.env.INSIGHT_AUDIO_CACHE_RETENTION_DAYS || "90", 10);
+const INSIGHT_AUDIO_MAX_CHARS = Number.parseInt(process.env.INSIGHT_AUDIO_MAX_CHARS || "8000", 10);
 let INSIGHT_TRANSLATION_SETTINGS_LOCAL_CACHE = {
   loadedAt: 0,
   value: { ttlMs: DEFAULT_INSIGHT_TRANSLATION_CACHE_TTL_MS },
 };
+let INSIGHT_AUDIO_CACHE_SCHEMA_READY = false;
 
 function getInsightCacheEntry(cacheKey) {
   const found = INSIGHT_CACHE.get(cacheKey);
@@ -114,40 +118,6 @@ function clearInsightTranslationCacheByPrefix(prefix) {
       INSIGHT_TRANSLATION_CACHE.delete(key);
     }
   }
-}
-
-function normalizeLegacyInsightCards(cards) {
-  if (!Array.isArray(cards)) return [];
-  return cards.map((card) => {
-    if (!card || typeof card !== "object") return card;
-    const cardType = String(card.type || "");
-    if (cardType.startsWith("ai_")) {
-      const normalizedType = cardType === "ai_projection"
-        ? "projection"
-        : cardType === "ai_recommendation"
-          ? "recommendation"
-          : cardType.replace(/^ai_/, "") || "status";
-      return {
-        ...card,
-        id: card.id === "ins-ai-recommendation" ? "ins-recommendation" : card.id,
-        type: normalizedType,
-        title: String(card.title || "")
-          .replace(/^AI\s+/i, "")
-          .replace(/\bAI\s+projection\b/gi, "Trend projection")
-          .replace(/\bAI\s+recommendation(s)?\b/gi, "Recommendation$1"),
-      };
-    }
-    return card;
-  });
-}
-
-function hasLegacyAIArtifacts(cards) {
-  if (!Array.isArray(cards)) return false;
-  return cards.some((card) => {
-    const type = String(card?.type || "");
-    const title = String(card?.title || "");
-    return type.startsWith("ai_") || /\bAI\s+projection\b/i.test(title) || /\bAI\s+recommendation/i.test(title);
-  });
 }
 
 async function localizeInsightCards({ locale, cards, context, cacheKey, forceRefresh = false }) {
@@ -1368,14 +1338,9 @@ export async function getInsights(req, res) {
   }
   const cached = forceRefresh ? null : getInsightCacheEntry(cacheKey);
   if (cached) {
-    const rawCachedCards = cached.cards || [];
-    const normalizedCachedCards = normalizeLegacyInsightCards(rawCachedCards);
-    if (hasLegacyAIArtifacts(rawCachedCards)) {
-      clearInsightTranslationCacheByPrefix(`${cacheKey}::`);
-    }
     const localizedCards = await localizeInsightCards({
       locale,
-      cards: normalizedCachedCards,
+      cards: cached.cards || [],
       context,
       cacheKey,
       forceRefresh: false,
@@ -1403,7 +1368,7 @@ export async function getInsights(req, res) {
     sheetId,
     generatedAt: new Date().toISOString(),
     settings,
-    cards: normalizeLegacyInsightCards(generated.cards),
+    cards: generated.cards,
     available: {
       dateColumns: generated.detected?.dateCols || [],
       metricColumns: generated.detected?.numericCols || [],
@@ -1411,6 +1376,9 @@ export async function getInsights(req, res) {
     meta: {
       totalRows: loaded.rows.length,
       context,
+      revisionKey: cacheKey,
+      currentSourceVersion: loaded?.sourceVersion || null,
+      previousSourceVersion: previousRevision?.sourceVersion || null,
     },
   };
   setInsightCacheEntry(cacheKey, payload);
@@ -1425,6 +1393,103 @@ export async function getInsights(req, res) {
     ...payload,
     cards: translatedCards,
   });
+}
+
+function buildInsightNarrationText({ title, bullets }) {
+  const safeTitle = String(title || "").trim();
+  const safeBullets = Array.isArray(bullets)
+    ? bullets.map((line) => String(line || "").trim()).filter(Boolean)
+    : [];
+  const joinedBullets = safeBullets.join(". ");
+  return [safeTitle, joinedBullets].filter(Boolean).join(". ");
+}
+
+async function ensureInsightAudioCacheSchema() {
+  if (INSIGHT_AUDIO_CACHE_SCHEMA_READY) return;
+  await query(`
+    CREATE TABLE IF NOT EXISTS insight_audio_cache (
+      cache_key TEXT PRIMARY KEY,
+      sheet_id TEXT NOT NULL,
+      revision_key TEXT NOT NULL,
+      locale TEXT NOT NULL,
+      card_id TEXT NOT NULL,
+      text_hash TEXT NOT NULL,
+      audio_bytes BYTEA NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await query(`CREATE INDEX IF NOT EXISTS idx_insight_audio_cache_sheet_revision_locale ON insight_audio_cache(sheet_id, revision_key, locale);`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_insight_audio_cache_updated_at ON insight_audio_cache(updated_at DESC);`);
+  INSIGHT_AUDIO_CACHE_SCHEMA_READY = true;
+}
+
+export async function getInsightCardAudio(req, res) {
+  const sheetId = String(req.params.sheetId || "").trim();
+  const locale = normalizeLocale(req.body?.locale || "en");
+  const revisionKey = String(req.body?.revisionKey || "").trim();
+  const cardId = String(req.body?.cardId || "").trim();
+  const title = req.body?.title;
+  const bullets = req.body?.bullets;
+  if (!sheetId || !revisionKey || !cardId) {
+    return res.status(400).json({ error: "missing_params" });
+  }
+  await ensureInsightAudioCacheSchema();
+
+  const hasAccess = await checkSheetAccess(sheetId, req.user);
+  if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
+
+  const narrationText = buildInsightNarrationText({ title, bullets });
+  if (!narrationText) return res.status(400).json({ error: "missing_narration_text" });
+  if (narrationText.length > INSIGHT_AUDIO_MAX_CHARS) {
+    return res.status(413).json({ error: "text_too_large", maxChars: INSIGHT_AUDIO_MAX_CHARS });
+  }
+
+  const textHash = createHash("sha256").update(narrationText).digest("hex");
+  const cacheKey = createHash("sha256")
+    .update(`${sheetId}|${revisionKey}|${locale}|${cardId}|${textHash}`)
+    .digest("hex");
+
+  const cachedRows = await query(
+    `SELECT audio_bytes
+       FROM insight_audio_cache
+      WHERE cache_key = $1
+      LIMIT 1`,
+    [cacheKey]
+  );
+  const cachedBytes = cachedRows?.[0]?.audio_bytes;
+  if (cachedBytes) {
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("X-Insight-Audio-Cache", "hit");
+    return res.status(200).send(cachedBytes);
+  }
+
+  const audioBuffer = await synthesizeChatAudioBuffer({ text: narrationText, locale });
+  if (!audioBuffer?.length) {
+    return res.status(502).json({ error: "tts_empty_response" });
+  }
+
+  await query(
+    `INSERT INTO insight_audio_cache
+      (cache_key, sheet_id, revision_key, locale, card_id, text_hash, audio_bytes, created_at, updated_at)
+     VALUES
+      ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+     ON CONFLICT (cache_key)
+     DO UPDATE SET
+       audio_bytes = EXCLUDED.audio_bytes,
+       updated_at = CURRENT_TIMESTAMP`,
+    [cacheKey, sheetId, revisionKey, locale, cardId, textHash, audioBuffer]
+  );
+
+  await query(
+    `DELETE FROM insight_audio_cache
+      WHERE updated_at < (CURRENT_TIMESTAMP - ($1::text || ' days')::interval)`,
+    [String(Math.max(7, INSIGHT_AUDIO_CACHE_RETENTION_DAYS))]
+  ).catch(() => {});
+
+  res.setHeader("Content-Type", "audio/mpeg");
+  res.setHeader("X-Insight-Audio-Cache", "miss");
+  return res.status(200).send(audioBuffer);
 }
 
 export async function updateInsightSettings(req, res) {

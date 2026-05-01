@@ -7,10 +7,16 @@ import {
 import { auth } from "../middleware/auth.js";
 import { loginRateLimit, invitationAcceptRateLimit, invitationLookupRateLimit, twoFactorRateLimit } from "../middleware/rateLimit.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
+import { exchangeSamlCode, getSamlLoginUrl, getSamlMetadata, samlAcs } from "../controllers/samlController.js";
 
 const router = express.Router();
+const samlFormParser = express.urlencoded({ extended: false, limit: "1mb" });
 
 router.post("/login", loginRateLimit, asyncHandler(login));
+router.get("/saml/url", loginRateLimit, asyncHandler(getSamlLoginUrl));
+router.get("/saml/metadata", asyncHandler(getSamlMetadata));
+router.post("/saml/acs", samlFormParser, asyncHandler(samlAcs));
+router.post("/saml/exchange", loginRateLimit, asyncHandler(exchangeSamlCode));
 router.post("/logout", asyncHandler(logout));
 router.get("/invitations/:token", invitationLookupRateLimit, asyncHandler(getInvitationInfo));
 router.post("/invitations/accept", invitationAcceptRateLimit, asyncHandler(acceptInvitation));

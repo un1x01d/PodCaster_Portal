@@ -345,7 +345,7 @@ function SupportScreen() {
  * AuthScreen - Modern, high-fidelity login interface.
  * Matches the "Premium" workspace aesthetic with glassmorphism and coordinated gradients.
  */
-function AuthScreen({ email, setEmail, password, setPassword, onSubmit, onGoogleLogin, googleEnabled }) {
+function AuthScreen({ email, setEmail, password, setPassword, onSubmit, onGoogleLogin, onSamlLogin, googleEnabled }) {
   return (
     <div className="min-h-screen w-full flex items-center justify-center p-6 relative bg-[#fafafa] overflow-x-hidden">
       {/* Decorative background blobs - more vibrant for Auth */}
@@ -428,6 +428,18 @@ function AuthScreen({ email, setEmail, password, setPassword, onSubmit, onGoogle
               />
             </svg>
             Continue with Single Sign-On
+          </button>
+
+          <button
+            type="button"
+            onClick={onSamlLogin}
+            className="w-full flex items-center justify-center gap-2.5 bg-white border border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-800 rounded-md py-1.5 text-[10px] font-bold shadow-sm active:scale-[0.98] transition-all duration-300"
+          >
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 3l7 4v5c0 5-3.5 8-7 9-3.5-1-7-4-7-9V7l7-4z" />
+              <path d="M9 12l2 2 4-4" />
+            </svg>
+            Continue with SAML SSO
           </button>
         </form>
 
@@ -1119,6 +1131,28 @@ export default function App() {
     } catch (err) {
       console.error("google login url failed:", err);
       alert("Google login is not configured.");
+    }
+  };
+
+  const handleSamlLogin = async () => {
+    try {
+      const qp = new URLSearchParams(window.location.search);
+      const groupIdRaw = qp.get("groupId") || qp.get("customerGroupId") || "";
+      const groupId = Number.parseInt(groupIdRaw, 10);
+      if (!Number.isInteger(groupId) || groupId <= 0) {
+        alert("SAML requires a customer groupId in the URL.");
+        return;
+      }
+      const res = await axios.get(`${API}/auth/saml/url`, { params: { groupId } });
+      const url = String(res?.data?.url || "").trim();
+      if (!url) {
+        alert("SAML login is not configured.");
+        return;
+      }
+      window.location.href = url;
+    } catch (err) {
+      console.error("saml login url failed:", err);
+      alert(err?.response?.data?.error || "SAML login is not configured.");
     }
   };
 
@@ -1955,6 +1989,46 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     const googleCode = params.get("google_code");
     const googleError = params.get("google_error");
+    const samlCode = params.get("saml_code");
+    const samlError = params.get("saml_error");
+    if (samlCode) {
+      axios.post(`${API}/auth/saml/exchange`, { code: samlCode })
+        .then((resp) => {
+          const exchangedToken = String(resp?.data?.token || "").trim();
+          if (!exchangedToken) throw new Error("saml_exchange_missing_token");
+          localStorage.setItem("token", exchangedToken);
+          setToken(exchangedToken);
+        })
+        .catch(() => {
+          alert("SAML sign-in failed.");
+        });
+      params.delete("saml_code");
+      params.delete("saml_error");
+      const next = params.toString();
+      const nextUrl = `${window.location.pathname}${next ? `?${next}` : ""}${window.location.hash || ""}`;
+      window.history.replaceState({}, document.title, nextUrl);
+      return;
+    }
+    if (samlError) {
+      const msg = samlError === "admin_manual_login_required"
+        ? "Admin accounts must sign in with local credentials."
+        : samlError === "saml_sso_disabled"
+          ? "SAML SSO is disabled for this customer."
+          : samlError === "saml_group_resolution_failed"
+            ? "Unable to determine customer group for SAML sign-in. Ask your admin to include a group claim or use a group-scoped login link."
+          : samlError === "sso_user_not_provisioned"
+            ? "This account is not provisioned for customer SSO."
+            : samlError === "sso_group_membership_required"
+              ? "This account is not assigned to the requested customer."
+              : "SAML sign-in failed.";
+      params.delete("saml_code");
+      params.delete("saml_error");
+      const next = params.toString();
+      const nextUrl = `${window.location.pathname}${next ? `?${next}` : ""}${window.location.hash || ""}`;
+      window.history.replaceState({}, document.title, nextUrl);
+      alert(msg);
+      return;
+    }
     if (googleCode) {
       axios.post(`${API}/auth/google/exchange`, { code: googleCode })
         .then((resp) => {
@@ -2266,6 +2340,7 @@ export default function App() {
                       setPassword={setPassword}
                       onSubmit={handleLogin}
                       onGoogleLogin={handleGoogleLogin}
+                      onSamlLogin={handleSamlLogin}
                       googleEnabled={googleEnabled}
                     />
                   )
@@ -2356,6 +2431,7 @@ export default function App() {
                       setPassword={setPassword}
                       onSubmit={handleLogin}
                       onGoogleLogin={handleGoogleLogin}
+                      onSamlLogin={handleSamlLogin}
                       googleEnabled={googleEnabled}
                     />
                   )

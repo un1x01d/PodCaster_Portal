@@ -21,7 +21,7 @@ import googleRoutes from "./src/routes/googleRoutes.js";
 import dropboxRoutes from "./src/routes/dropboxRoutes.js";
 import oneDriveRoutes from "./src/routes/oneDriveRoutes.js";
 import { ensureCsrfCookie, csrfProtect } from "./src/middleware/csrf.js";
-import { recordHttpRequest } from "./src/utils/metrics.js";
+import { recordHttpRequest, renderPrometheusMetrics } from "./src/utils/metrics.js";
 import { cleanupOldInvitations } from "./src/utils/invitationLifecycle.js";
 import { startImportJobWorker, stopImportJobWorker, startReportSourceAutosyncWorker, stopReportSourceAutosyncWorker } from "./src/controllers/sheetController.js";
 
@@ -100,6 +100,19 @@ app.get("/readyz", async (_req, res) => {
     res.json({ ok: true });
   } catch {
     res.status(503).json({ ok: false, error: "db_unavailable" });
+  }
+});
+
+app.get("/metrics", async (_req, res) => {
+  try {
+    const rows = await dbQuery("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", ["metrics_exposure_settings"]);
+    const enabled = rows?.[0]?.value?.enabled === true;
+    if (!enabled) return res.status(404).send("Not Found");
+    res.setHeader("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
+    return res.status(200).send(renderPrometheusMetrics());
+  } catch (err) {
+    console.error("[metrics] failed to render", err?.message || err);
+    return res.status(500).send("internal_server_error");
   }
 });
 

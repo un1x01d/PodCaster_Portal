@@ -811,6 +811,21 @@ export async function initDb(targetPool = pool, options = {}) {
     );
   `);
   await db.query(`CREATE INDEX IF NOT EXISTS idx_import_job_payloads_expires_at ON import_job_payloads(expires_at);`);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS insight_audio_cache (
+      cache_key TEXT PRIMARY KEY,
+      sheet_id TEXT NOT NULL,
+      revision_key TEXT NOT NULL,
+      locale TEXT NOT NULL,
+      card_id TEXT NOT NULL,
+      text_hash TEXT NOT NULL,
+      audio_bytes BYTEA NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_insight_audio_cache_sheet_revision_locale ON insight_audio_cache(sheet_id, revision_key, locale);`);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_insight_audio_cache_updated_at ON insight_audio_cache(updated_at DESC);`);
 
   await db.query(`
     CREATE TABLE IF NOT EXISTS audit_logs (

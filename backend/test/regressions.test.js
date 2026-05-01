@@ -651,14 +651,16 @@ test("customer admin promotion requires explicit entitlement and frontend expose
   const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
   const controllerPath = path.join(repoRoot, "backend", "src", "controllers", "userController.js");
   const uiPath = path.join(repoRoot, "frontend", "src", "UserManagement.jsx");
+  const uiConfigPath = path.join(repoRoot, "frontend", "src", "components", "admin", "userManagementConfig.js");
   const controllerSource = fs.readFileSync(controllerPath, "utf8");
   const uiSource = fs.readFileSync(uiPath, "utf8");
+  const uiConfigSource = fs.readFileSync(uiConfigPath, "utf8");
 
   assert.match(controllerSource, /feature_not_enabled:manageGroupAdmins/);
   assert.match(controllerSource, /groupHasFeature\(group, "manageGroupAdmins"\)/);
-  assert.match(uiSource, /DEFAULT_GROUP_ENTITLEMENTS/);
-  assert.match(uiSource, /maxUsers/);
-  assert.match(uiSource, /manageGroupAdmins/);
+  assert.match(uiConfigSource, /DEFAULT_GROUP_ENTITLEMENTS/);
+  assert.match(uiConfigSource, /maxUsers/);
+  assert.match(uiConfigSource, /manageGroupAdmins/);
   assert.match(uiSource, /groupId: selectedGroupId/);
 });
 
@@ -706,6 +708,29 @@ test("system settings endpoints use platform admin helper consistently", async (
   assert.match(source, /if \(!isPlatformAdminUser\(req\.user\)\) return res\.status\(403\)\.json\(\{ error: "Forbidden" \}\);/);
 });
 
+test("DLP settings default to disabled and support column masking workflow", async () => {
+  const dlp = await import(`../src/utils/dlp.js?t=${Date.now()}_dlp_defaults`);
+  const normalized = dlp.normalizeDlpSettings({});
+  assert.equal(normalized.enabled, false);
+  assert.equal(normalized.maskDetectedColumns, false);
+
+  const sheets = {
+    Main: [
+      { Name: "Alice", SSN: "123-45-6789", Notes: "ok" },
+      { Name: "Bob", Card: "4111 1111 1111 1111", Notes: "ok" },
+    ],
+  };
+  const scan = dlp.scanRowsForDlp(sheets, { enabled: true, checkSsn: true, checkCreditCard: true });
+  assert.ok(Array.isArray(scan.findings));
+  assert.ok(scan.findings.length >= 2);
+  assert.deepEqual(new Set(scan.maskedColumns.Main || []), new Set(["SSN", "Card"]));
+
+  const masked = dlp.applyDlpColumnMasking(sheets, scan.maskedColumns);
+  assert.equal(masked.Main[0].SSN, "[REDACTED]");
+  assert.equal(masked.Main[1].Card, "[REDACTED]");
+  assert.equal(masked.Main[0].Name, "Alice");
+});
+
 test("autosync interval is configurable in system settings and read dynamically by the worker", async () => {
   const __filename = fileURLToPath(import.meta.url);
   const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
@@ -713,11 +738,13 @@ test("autosync interval is configurable in system settings and read dynamically 
   const userControllerPath = path.join(repoRoot, "backend", "src", "controllers", "userController.js");
   const sheetControllerPath = path.join(repoRoot, "backend", "src", "controllers", "sheetController.js");
   const uiPath = path.join(repoRoot, "frontend", "src", "UserManagement.jsx");
+  const integrationsPanelPath = path.join(repoRoot, "frontend", "src", "components", "admin", "IntegrationSettingsPanel.jsx");
 
   const userRoutesSource = fs.readFileSync(userRoutesPath, "utf8");
   const userControllerSource = fs.readFileSync(userControllerPath, "utf8");
   const sheetControllerSource = fs.readFileSync(sheetControllerPath, "utf8");
   const uiSource = fs.readFileSync(uiPath, "utf8");
+  const integrationsPanelSource = fs.readFileSync(integrationsPanelPath, "utf8");
 
   assert.match(userRoutesSource, /router\.get\("\/admin\/settings\/autosync-interval", asyncHandler\(getAutosyncPollIntervalSetting\)\)/);
   assert.match(userRoutesSource, /router\.patch\("\/admin\/settings\/autosync-interval", asyncHandler\(setAutosyncPollIntervalSetting\)\)/);
@@ -727,7 +754,7 @@ test("autosync interval is configurable in system settings and read dynamically 
   assert.match(sheetControllerSource, /async function loadAutosyncPollIntervalMs\(\)/);
   assert.match(sheetControllerSource, /const AUTOSYNC_POLL_SETTINGS_KEY = "autosync_poll_interval_settings";/);
   assert.match(sheetControllerSource, /loadAutosyncPollIntervalMs\(\)/);
-  assert.match(uiSource, /Autosync Check Interval/);
+  assert.match(integrationsPanelSource, /Autosync Check Interval/);
   assert.match(uiSource, /fetchAutosyncIntervalSetting/);
   assert.match(uiSource, /saveAutosyncIntervalSetting/);
 });
@@ -737,21 +764,30 @@ test("email ingest settings are exposed in system settings and linked to Google 
   const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
   const userRoutesPath = path.join(repoRoot, "backend", "src", "routes", "userRoutes.js");
   const userControllerPath = path.join(repoRoot, "backend", "src", "controllers", "userController.js");
-  const uiPath = path.join(repoRoot, "frontend", "src", "UserManagement.jsx");
+  const uiPath = path.join(
+    repoRoot,
+    "frontend",
+    "src",
+    "components",
+    "admin",
+    "IntegrationSettingsPanel.jsx"
+  );
 
   const userRoutesSource = fs.readFileSync(userRoutesPath, "utf8");
   const userControllerSource = fs.readFileSync(userControllerPath, "utf8");
   const uiSource = fs.readFileSync(uiPath, "utf8");
+  const integrationsPanelPath = path.join(repoRoot, "frontend", "src", "components", "admin", "IntegrationSettingsPanel.jsx");
+  const integrationsPanelSource = fs.readFileSync(integrationsPanelPath, "utf8");
 
   assert.match(userRoutesSource, /router\.get\("\/admin\/settings\/email-ingest", asyncHandler\(getEmailIngestSetting\)\)/);
   assert.match(userRoutesSource, /router\.patch\("\/admin\/settings\/email-ingest", asyncHandler\(setEmailIngestSetting\)\)/);
   assert.match(userControllerSource, /export async function getEmailIngestSetting\(req, res\)/);
   assert.match(userControllerSource, /export async function setEmailIngestSetting\(req, res\)/);
   assert.match(userControllerSource, /EMAIL_INGEST_SETTINGS_KEY = "email_ingest_settings"/);
-  assert.match(uiSource, /Email Ingest/);
-  assert.match(uiSource, /Add a domain or domain alias/);
-  assert.match(uiSource, /Set up Default routing for your organization/);
-  assert.match(uiSource, /Get misaddressed email in a catch-all mailbox/);
+  assert.match(integrationsPanelSource, /Email Ingest/);
+  assert.match(integrationsPanelSource, /Add a domain or domain alias/);
+  assert.match(integrationsPanelSource, /Set up Default routing for your organization/);
+  assert.match(integrationsPanelSource, /Get misaddressed email in a catch-all mailbox/);
 });
 
 test("email ingest allowlist is normalized and route wiring is public but CSRF-exempt", async () => {
@@ -788,12 +824,21 @@ test("storage options are exposed in system settings and wire connection tests f
   const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
   const userRoutesPath = path.join(repoRoot, "backend", "src", "routes", "userRoutes.js");
   const storageControllerPath = path.join(repoRoot, "backend", "src", "controllers", "storageController.js");
-  const uiPath = path.join(repoRoot, "frontend", "src", "UserManagement.jsx");
+  const uiPath = path.join(
+    repoRoot,
+    "frontend",
+    "src",
+    "components",
+    "admin",
+    "IntegrationSettingsPanel.jsx"
+  );
+  const uiConfigPath = path.join(repoRoot, "frontend", "src", "components", "admin", "userManagementConfig.js");
   const cardPath = path.join(repoRoot, "frontend", "src", "components", "common", "StorageOptionCard.jsx");
 
   const userRoutesSource = fs.readFileSync(userRoutesPath, "utf8");
   const storageControllerSource = fs.readFileSync(storageControllerPath, "utf8");
   const uiSource = fs.readFileSync(uiPath, "utf8");
+  const uiConfigSource = fs.readFileSync(uiConfigPath, "utf8");
   const cardSource = fs.readFileSync(cardPath, "utf8");
 
   assert.match(userRoutesSource, /router\.get\("\/admin\/settings\/sftp-storage", asyncHandler\(getSftpStorageSetting\)\)/);
@@ -813,10 +858,10 @@ test("storage options are exposed in system settings and wire connection tests f
   assert.match(storageControllerSource, /export async function getAzureBlobStorageSetting\(req, res\)/);
   assert.match(storageControllerSource, /export async function testAzureBlobStorageSetting\(req, res\)/);
   assert.match(uiSource, /Storage Options/);
-  assert.match(uiSource, /SCP \/ SFTP/);
-  assert.match(uiSource, /Google Cloud Storage/);
-  assert.match(uiSource, /Amazon S3/);
-  assert.match(uiSource, /Azure Blob Storage/);
+  assert.match(uiConfigSource, /SCP \/ SFTP/);
+  assert.match(uiConfigSource, /Google Cloud Storage/);
+  assert.match(uiConfigSource, /Amazon S3/);
+  assert.match(uiConfigSource, /Azure Blob Storage/);
   assert.match(cardSource, /export default function StorageOptionCard/);
 });
 

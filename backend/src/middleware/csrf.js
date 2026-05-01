@@ -9,6 +9,8 @@ const CSRF_EXEMPT_PATHS = new Set([
   "/auth/login",
   "/auth/logout",
   "/auth/google/exchange",
+  "/auth/saml/acs",
+  "/auth/saml/exchange",
   "/auth/invitations/accept",
   "/auth/2fa/verify",
   "/auth/2fa/sms/resend",

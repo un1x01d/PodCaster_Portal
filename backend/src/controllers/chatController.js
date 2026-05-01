@@ -2020,15 +2020,45 @@ function expandFinancialTextPhonetically(text = "", lang = "ru") {
 }
 
 export async function getChatAudio(req, res) {
-  let { text, locale } = req.body;
+  const { text, locale } = req.body;
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey || !text) return res.status(400).json({ error: "missing_params" });
-  if (String(text).length > CHAT_AUDIO_MAX_CHARS) {
-    return res.status(413).json({ error: "text_too_large", maxChars: CHAT_AUDIO_MAX_CHARS });
+
+  try {
+    const audioBuffer = await synthesizeChatAudioBuffer({ text, locale });
+    if (!audioBuffer || !audioBuffer.length) {
+      return res.status(502).json({ error: "tts_empty_response" });
+    }
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("Content-Length", String(audioBuffer.length));
+    return res.status(200).send(audioBuffer);
+  } catch (e) {
+    const errorCode = e?.code || "internal_server_error";
+    const status = errorCode === "text_too_large" ? 413 : errorCode === "tts_timeout" ? 504 : errorCode === "tts_upstream_error" ? 502 : 500;
+    const payload = { error: errorCode };
+    if (e?.message && errorCode === "tts_upstream_error") {
+      payload.message = String(e.message).slice(0, 300);
+    }
+    return res.status(status).json(payload);
+  }
+}
+
+export async function synthesizeChatAudioBuffer({ text, locale }) {
+  let speechText = text;
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey || !speechText) {
+    const err = new Error("missing_params");
+    err.code = "missing_params";
+    throw err;
+  }
+  if (String(speechText).length > CHAT_AUDIO_MAX_CHARS) {
+    const err = new Error("text_too_large");
+    err.code = "text_too_large";
+    throw err;
   }
 
   // Strip Markdown markers before TTS
-  text = text.replace(/\*/g, "");
+  speechText = String(speechText).replace(/\*/g, "");
 
   const ttsCfg = await loadChatTtsSettings();
   const lang = (locale || "en").split("-")[0].toLowerCase();
@@ -2039,7 +2069,7 @@ export async function getChatAudio(req, res) {
   const speedNum = Number(ttsCfg?.speed?.[lang] ?? ttsCfg?.speed?.default ?? 0.9);
   const speed = Number.isFinite(speedNum) && speedNum > 0 ? speedNum : 0.9;
   
-  let cleanedText = naturalizeNumbersForTTS(text, locale);
+  let cleanedText = naturalizeNumbersForTTS(speechText, locale);
   
   if (lang === "uk" || lang === "ru") {
       // Convert all remaining digits to Cyrillic words to force native accent
@@ -2063,29 +2093,17 @@ export async function getChatAudio(req, res) {
     });
     if (!response.ok) {
       const message = await response.text().catch(() => "");
-      return res.status(502).json({
-        error: "tts_upstream_error",
-        message: message.slice(0, 300) || `upstream_status_${response.status}`,
-      });
+      const err = new Error(message.slice(0, 300) || `upstream_status_${response.status}`);
+      err.code = "tts_upstream_error";
+      throw err;
     }
-    if (!response.body) {
-      return res.status(502).json({ error: "tts_empty_response" });
-    }
-
-    res.setHeader("Content-Type", "audio/mpeg");
-    res.setHeader("Transfer-Encoding", "chunked");
-    const reader = response.body.getReader();
-    function push() {
-        reader.read().then(({ done, value }) => {
-            if (done) { res.end(); return; }
-            res.write(Buffer.from(value));
-            push();
-        }).catch(err => { res.end(); });
-    }
-    push();
+    const audioArrayBuffer = await response.arrayBuffer();
+    return Buffer.from(audioArrayBuffer);
   } catch (e) {
-    const isAbort = e?.name === "AbortError";
-    res.status(isAbort ? 504 : 500).json({ error: isAbort ? "tts_timeout" : "internal_server_error" });
+    if (e?.code) throw e;
+    const err = new Error(e?.name === "AbortError" ? "tts_timeout" : "internal_server_error");
+    err.code = e?.name === "AbortError" ? "tts_timeout" : "internal_server_error";
+    throw err;
   } finally {
     clearTimeout(timeout);
   }
