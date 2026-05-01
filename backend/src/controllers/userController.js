@@ -151,6 +151,21 @@ async function assertGroupCanManageUsers(groupId) {
     return group;
 }
 
+async function assertGroupAllowsUserManagementForAnyActor(groupId) {
+    const group = await loadGroupForAdminAction(groupId);
+    if (!group) {
+        const err = new Error("group_not_found");
+        err.statusCode = 404;
+        throw err;
+    }
+    if (!groupHasFeature(group, "manageUsers")) {
+        const err = new Error("feature_not_enabled:manageUsers");
+        err.statusCode = 403;
+        throw err;
+    }
+    return group;
+}
+
 async function assertGroupsCanManageUsers(groupIds) {
     const ids = Array.from(new Set((groupIds || [])
         .map((groupId) => Number.parseInt(groupId, 10))
@@ -1253,7 +1268,7 @@ function normalizeSmtpConfigForSave(current, body) {
 }
 
 export async function getSmtpSetting(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
     const rows = await query("SELECT value FROM app_settings WHERE key = 'smtp_config' LIMIT 1", []);
     const cfg = decryptSmtpConfig(rows[0]?.value || {});
     res.json({
@@ -1269,7 +1284,7 @@ export async function getSmtpSetting(req, res) {
 }
 
 export async function setSmtpSetting(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
     const rows = await query("SELECT value FROM app_settings WHERE key = 'smtp_config' LIMIT 1", []);
     const current = decryptSmtpConfig(rows[0]?.value || {});
     const next = normalizeSmtpConfigForSave(current, req.body);
@@ -1294,13 +1309,13 @@ export async function setSmtpSetting(req, res) {
 }
 
 export async function getInviteEmailTemplateSetting(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
     const template = await loadInviteEmailTemplate();
     return res.json(template);
 }
 
 export async function setInviteEmailTemplateSetting(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
     const current = await loadInviteEmailTemplate();
     const next = normalizeInviteEmailTemplateForSave(req.body || {}, current);
     await query(
@@ -1320,7 +1335,7 @@ export async function setInviteEmailTemplateSetting(req, res) {
 }
 
 export async function previewInviteEmailTemplate(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
     const current = await loadInviteEmailTemplate();
     const template = normalizeInviteEmailTemplateForSave(req.body || {}, current);
     const sample = req.body && typeof req.body === "object" ? req.body : {};
@@ -1335,13 +1350,13 @@ export async function previewInviteEmailTemplate(req, res) {
 }
 
 export async function getCustomerInvitationPolicy(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
     const policy = await loadInvitationPolicy();
     return res.json(policy);
 }
 
 export async function setCustomerInvitationPolicy(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
     const policy = await saveInvitationPolicy(req.body || {});
     await writeAuditLog({
         req,
@@ -1788,6 +1803,11 @@ export async function updateGroupMembers(req, res) {
     }
     const { userIds } = req.body; // array
     if (!Array.isArray(userIds)) return res.status(400).json({ error: "invalid_format" });
+    try {
+        await assertGroupAllowsUserManagementForAnyActor(gid);
+    } catch (err) {
+        return res.status(err.statusCode || 403).json({ error: err.message });
+    }
     if (req.user.role !== "admin") {
         const group = await loadGroupForAdminAction(gid);
         const entitlements = normalizeGroupEntitlements(group?.entitlements || {});
@@ -1798,6 +1818,13 @@ export async function updateGroupMembers(req, res) {
     const previousUserIds = isTenantDbIsolationEnabled()
         ? (await query("SELECT user_id FROM user_groups WHERE group_id = $1", [gid])).map((r) => Number(r.user_id))
         : [];
+    const adminRows = await query("SELECT user_id FROM user_groups WHERE group_id = $1 AND is_admin = TRUE", [gid]);
+    const adminIds = new Set(adminRows.map((r) => Number(r.user_id)));
+    const nextSetPreview = new Set((userIds || []).map((id) => Number(id)));
+    const retainedAdmins = [...adminIds].filter((adminId) => nextSetPreview.has(adminId));
+    if (!retainedAdmins.length) {
+        return res.status(400).json({ error: "one_group_admin_required" });
+    }
 
     // H9: wrap in transaction to eliminate DELETE+INSERT race condition
     const client = await getClient();
@@ -1847,6 +1874,11 @@ export async function addUserToGroup(req, res) {
     const gid = parseInt(req.params.id, 10);
     const userId = Number.parseInt(req.body?.userId, 10);
     if (!Number.isInteger(gid) || !Number.isInteger(userId)) return res.status(400).json({ error: "invalid_group_or_user_id" });
+    try {
+        await assertGroupAllowsUserManagementForAnyActor(gid);
+    } catch (err) {
+        return res.status(err.statusCode || 403).json({ error: err.message });
+    }
     if (req.user.role !== "admin") {
         const adminGroups = await getAdminGroups(req.user.id);
         if (!adminGroups.includes(gid)) return res.status(403).json({ error: "Forbidden" });
@@ -1880,6 +1912,17 @@ export async function removeUserFromGroup(req, res) {
         }
     }
     const { userId } = req.params;
+    const membershipRows = await query(
+        "SELECT is_admin FROM user_groups WHERE group_id = $1 AND user_id = $2 LIMIT 1",
+        [gid, userId]
+    );
+    if (membershipRows.length && !!membershipRows[0].is_admin) {
+        const adminCountRows = await query("SELECT COUNT(*)::int AS c FROM user_groups WHERE group_id = $1 AND is_admin = TRUE", [gid]);
+        const adminCount = Number(adminCountRows?.[0]?.c || 0);
+        if (adminCount <= 1) {
+            return res.status(400).json({ error: "one_group_admin_required" });
+        }
+    }
     await query("DELETE FROM user_groups WHERE group_id=$1 AND user_id=$2", [gid, userId]);
     if (isTenantDbIsolationEnabled()) {
         await removeCustomerPrincipalFromTenant({ groupId: gid, userId }).catch((err) => {
@@ -1904,12 +1947,47 @@ export async function toggleGroupAdmin(req, res) {
             }
         }
 
-        await query(
-            "UPDATE user_groups SET is_admin = $1 WHERE group_id = $2 AND user_id = $3",
-            [!!isAdmin, gid, userId]
+        const numericGroupId = Number.parseInt(gid, 10);
+        const numericUserId = Number.parseInt(userId, 10);
+        if (!Number.isInteger(numericGroupId) || !Number.isInteger(numericUserId)) {
+            return res.status(400).json({ error: "invalid_group_or_user_id" });
+        }
+        const membership = await query(
+            "SELECT 1 FROM user_groups WHERE group_id = $1 AND user_id = $2 LIMIT 1",
+            [numericGroupId, numericUserId]
         );
+        if (!membership.length) return res.status(404).json({ error: "membership_not_found" });
+
+        if (!!isAdmin) {
+            const client = await getClient();
+            try {
+                await client.query("BEGIN");
+                await client.query("UPDATE user_groups SET is_admin = FALSE WHERE group_id = $1", [numericGroupId]);
+                await client.query("UPDATE user_groups SET is_admin = TRUE WHERE group_id = $1 AND user_id = $2", [numericGroupId, numericUserId]);
+                await client.query("COMMIT");
+            } catch (txErr) {
+                await client.query("ROLLBACK").catch(() => {});
+                throw txErr;
+            } finally {
+                client.release();
+            }
+        } else {
+            const currentRows = await query(
+                "SELECT is_admin FROM user_groups WHERE group_id = $1 AND user_id = $2 LIMIT 1",
+                [numericGroupId, numericUserId]
+            );
+            if (currentRows.length && !!currentRows[0].is_admin) {
+                const adminCountRows = await query("SELECT COUNT(*)::int AS c FROM user_groups WHERE group_id = $1 AND is_admin = TRUE", [numericGroupId]);
+                const adminCount = Number(adminCountRows?.[0]?.c || 0);
+                if (adminCount <= 1) return res.status(400).json({ error: "one_group_admin_required" });
+            }
+            await query(
+                "UPDATE user_groups SET is_admin = FALSE WHERE group_id = $1 AND user_id = $2",
+                [numericGroupId, numericUserId]
+            );
+        }
         if (isTenantDbIsolationEnabled()) {
-            await syncCustomerPrincipalToTenant({ groupId: gid, userId }).catch((err) => {
+            await syncCustomerPrincipalToTenant({ groupId: numericGroupId, userId: numericUserId }).catch((err) => {
                 console.error("[tenant-db] sync group admin flag failed:", err?.message || err);
             });
         }

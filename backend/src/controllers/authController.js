@@ -1,4 +1,4 @@
-import { query, getClient, isTenantDbIsolationEnabled, syncCustomerPrincipalToTenant } from "../config/db.js";
+import { query, getClient, isTenantDbIsolationEnabled, syncCustomerPrincipalToTenant, removeCustomerPrincipalFromTenant } from "../config/db.js";
 import { hashPassword, verifyPassword } from "../utils/security.js";
 import { clearAuthCookie, generateToken, setAuthCookie } from "../middleware/auth.js";
 import { writeAuditLog } from "../utils/auditLog.js";
@@ -345,6 +345,7 @@ export async function acceptInvitation(req, res) {
 
     const tokenHash = hashInviteToken(token);
     const client = await getClient();
+    let detachedGroupIds = [];
     try {
         await client.query("BEGIN");
         const inviteRes = await client.query(
@@ -399,8 +400,17 @@ export async function acceptInvitation(req, res) {
             userId = created.rows[0].id;
         }
 
+        const prevGroupsRes = await client.query(
+            "SELECT group_id FROM user_groups WHERE user_id = $1",
+            [userId]
+        );
+        detachedGroupIds = (prevGroupsRes.rows || [])
+            .map((row) => Number(row.group_id))
+            .filter((gid) => Number.isInteger(gid) && gid > 0 && gid !== Number(invite.group_id));
+
+        await client.query("DELETE FROM user_groups WHERE user_id = $1", [userId]);
         await client.query(
-            "INSERT INTO user_groups (group_id, user_id, is_admin) VALUES ($1, $2, FALSE) ON CONFLICT (user_id, group_id) DO NOTHING",
+            "INSERT INTO user_groups (group_id, user_id, is_admin) VALUES ($1, $2, FALSE)",
             [invite.group_id, userId]
         );
         await client.query(
@@ -412,6 +422,11 @@ export async function acceptInvitation(req, res) {
             await syncCustomerPrincipalToTenant({ groupId: invite.group_id, userId }).catch((err) => {
                 console.error("[tenant-db] sync invited principal failed:", err?.message || err);
             });
+            for (const oldGroupId of detachedGroupIds) {
+                await removeCustomerPrincipalFromTenant({ groupId: oldGroupId, userId }).catch((err) => {
+                    console.error("[tenant-db] remove detached invited principal failed:", err?.message || err);
+                });
+            }
         }
 
         const users = await query(

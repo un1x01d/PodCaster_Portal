@@ -204,6 +204,33 @@ export function useChatbotLogic({
     }
   }, [copy.chatResetMessage, sheetId, activeTab]);
 
+  const applyChatActions = useCallback((actions = {}, meta = null) => {
+    const allowUiActions = meta?.applyActions !== false;
+    if (!allowUiActions || !onApplyFilter) return { filters: [], reset_filters: false };
+
+    const filters = Array.isArray(actions.filters) ? actions.filters : [];
+    if (actions.reset_filters) {
+      onApplyFilter("RESET_ALL");
+    }
+    if (filters.length) {
+      filters.forEach((f) => {
+        if (!f?.column) return;
+        onApplyFilter(f.column, String(f.value ?? ""), f.operator || "contains");
+      });
+    }
+
+    if (onUpdateChart && actions.chart && actions.chart.valueColumn) {
+      onUpdateChart({
+        dateColumn: actions.chart.dateColumn || null,
+        valueColumn: actions.chart.valueColumn,
+        segmentBy: actions.chart.segmentBy || null,
+        aggregation: actions.chart.aggregation || "sum",
+      });
+    }
+
+    return { filters, reset_filters: !!actions.reset_filters };
+  }, [onApplyFilter, onUpdateChart]);
+
   const sendMessage = useCallback(async (rawMessage, meta = null) => {
     const q = String(rawMessage || "").trim();
     if (!q || !sheetId || isSending) return;
@@ -236,27 +263,7 @@ export function useChatbotLogic({
         : (copy.chatNoResponse || "I could not produce a response.");
 
       const actions = payload.actions || {};
-      const allowUiActions = meta?.applyActions === true;
-      const filters = allowUiActions && Array.isArray(actions.filters) ? actions.filters : [];
-
-      if (allowUiActions && onApplyFilter && actions.reset_filters) {
-        onApplyFilter("RESET_ALL");
-      }
-      if (allowUiActions && onApplyFilter && filters.length) {
-        filters.forEach((f) => {
-          if (!f?.column) return;
-          onApplyFilter(f.column, String(f.value ?? ""), f.operator || "contains");
-        });
-      }
-
-      if (allowUiActions && onUpdateChart && actions.chart && actions.chart.valueColumn) {
-        onUpdateChart({
-          dateColumn: actions.chart.dateColumn || null,
-          valueColumn: actions.chart.valueColumn,
-          segmentBy: actions.chart.segmentBy || null,
-          aggregation: actions.chart.aggregation || "sum",
-        });
-      }
+      const { filters } = applyChatActions(actions, meta);
 
       setMessages((prev) => [...prev, {
         type: "bot",
@@ -271,7 +278,7 @@ export function useChatbotLogic({
     } finally {
       setIsSending(false);
     }
-  }, [sheetId, activeTab, isSending, activeFilters, splitContext, activeViewScope, messages, onApplyFilter, onUpdateChart, locale, copy.appliedFilters, copy.chatRequestFailed, clearMessages]);
+  }, [sheetId, activeTab, isSending, activeFilters, splitContext, activeViewScope, messages, onApplyFilter, onUpdateChart, locale, copy.appliedFilters, copy.chatRequestFailed, clearMessages, applyChatActions]);
 
   const handleSend = useCallback(async () => {
     const q = input.trim();
@@ -314,6 +321,7 @@ export function useChatbotLogic({
             const answer = typeof result.answer === "string" && result.answer.trim()
               ? result.answer
               : "";
+            applyChatActions(result.actions || {}, meta);
             
             if (typeof window !== "undefined") {
               window.dispatchEvent(new CustomEvent("dashboard:chat-response", {

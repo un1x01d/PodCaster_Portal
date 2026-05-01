@@ -318,6 +318,14 @@ export default function DashboardBody(props) {
 
     const activePrimaryFields = primaryFields.length > 0 ? primaryFields : (displayHeaders || []);
     const activeSecondaryFields = secondaryFields.length > 0 ? secondaryFields : (secondaryHeaders || []);
+    const primaryFieldsMenuWidthCh = useMemo(() => {
+        const maxLen = (Array.isArray(displayHeaders) ? displayHeaders : []).reduce((m, h) => Math.max(m, String(h || "").length), 0);
+        return Math.min(24, Math.max(14, maxLen + 5));
+    }, [displayHeaders]);
+    const secondaryFieldsMenuWidthCh = useMemo(() => {
+        const maxLen = (Array.isArray(secondaryHeaders) ? secondaryHeaders : []).reduce((m, h) => Math.max(m, String(h || "").length), 0);
+        return Math.min(24, Math.max(14, maxLen + 5));
+    }, [secondaryHeaders]);
 
     // Reset fields when headers change
     useEffect(() => {
@@ -788,7 +796,6 @@ export default function DashboardBody(props) {
         const colCount = selectedPrimaryColumns.length;
         const suggestedName = `Selection ${rowCount}x${colCount}`;
         setPendingViewName(suggestedName);
-        setVisibleColumns(selectedPrimaryColumns);
         setSaveViewConfigOverride({
             columnFilters: filters || {},
             visibleColumns: selectedPrimaryColumns,
@@ -796,9 +803,8 @@ export default function DashboardBody(props) {
                 secondarySheetId: secondarySheetId || null,
                 secondaryTab: secondaryTab || null,
                 secondarySortConfig: secondarySortConfig || null,
-                secondaryAvailableColumns: activeSecondaryFields || [],
-                secondaryVisibleColumns: selectedSecondaryColumns.length > 0 ? selectedSecondaryColumns : (activeSecondaryFields || []),
                 secondaryColumnFilters: secondarySerializableFilters,
+                secondaryVisibleColumns: selectedSecondaryColumns,
             },
         });
         setShowColumnSelector(true);
@@ -809,12 +815,10 @@ export default function DashboardBody(props) {
         buildSecondarySelectionFilters,
         selectedSecondaryColumns,
         secondaryColumnFilters,
-        activeSecondaryFields,
         secondarySheetId,
         secondaryTab,
         secondarySortConfig,
         setPendingViewName,
-        setVisibleColumns,
         setSaveViewConfigOverride,
         setShowColumnSelector,
     ]);
@@ -1587,6 +1591,10 @@ export default function DashboardBody(props) {
                                     >
                                         Refresh Data
                                     </button>
+                                    <button className="left-menu-action left-menu-toggle-row" onClick={() => setInsightsOn((p) => !p)}>
+                                        <span>Insights</span>
+                                        <span className="left-menu-state">{insightsOn ? "ON" : "OFF"}</span>
+                                    </button>
 
                                     <div className="mt-2 border-t border-blue-800/30 pt-2 px-2">
                                         <button 
@@ -1597,47 +1605,6 @@ export default function DashboardBody(props) {
                                             <span>{comparisonOn ? 'ON' : 'OFF'}</span>
                                         </button>
 
-                                        {comparisonOn && (
-                                            <div className="mt-3 space-y-1.5 px-1 animate-in slide-in-from-left-2 duration-300">
-                                                <div className="flex items-center gap-2 opacity-70">
-                                                    <div className="w-1 h-1 rounded-full bg-blue-400"></div>
-                                                    <label className="text-[9px] text-white font-bold uppercase tracking-[0.1em]">Primary Fields</label>
-                                                </div>
-                                                <MultiSelect
-                                                    options={displayHeaders}
-                                                    value={primaryFields}
-                                                    onChange={setPrimaryFields}
-                                                    placeholder="Grab fields…"
-                                                    className="w-full"
-                                                    activeColor="blue"
-                                                />
-                                            </div>
-                                        )}
-
-                                        {comparisonOn && (
-                                            <div className="mt-4 space-y-1.5 px-0 animate-in slide-in-from-left-2 duration-300 border-t border-white/10 pt-3">
-                                                <div className="flex items-center gap-1.5 mb-1 px-3 opacity-70">
-                                                    <div className="w-0.5 h-2 bg-emerald-400"></div>
-                                                    <label className="text-[9px] text-white font-bold uppercase tracking-[0.1em]">Secondary Fields</label>
-                                                </div>
-                                                {secondarySheetId && (
-                                                    <div className="mt-2 px-2 space-y-1.5">
-                                                        <div className="flex items-center gap-2 opacity-70">
-                                                            <div className="w-1 h-1 rounded-full bg-emerald-400"></div>
-                                                            <label className="text-[9px] text-white font-bold uppercase tracking-[0.1em]">Columns</label>
-                                                        </div>
-                                                        <MultiSelect
-                                                            options={secondaryHeaders}
-                                                            value={secondaryFields}
-                                                            onChange={setSecondaryFields}
-                                                            placeholder="Grab fields…"
-                                                            className="w-full"
-                                                            activeColor="emerald"
-                                                        />
-                                                    </div>
-                                                )}
-                                            </div>
-                                        )}
                                     </div>
                                 </div>
                             )}
@@ -1645,15 +1612,13 @@ export default function DashboardBody(props) {
 
                         <div className="left-menu-group">
                             <button className="left-menu-section-toggle" onClick={() => toggleMenu("data")} aria-expanded={expandedMenus.data}>
-                                <span>Data</span>
+                                <span>Upload & Import</span>
                                 <span>{expandedMenus.data ? "▾" : "▸"}</span>
                             </button>
                             {expandedMenus.data && (
                                 <div className="left-menu-submenu">
                                     {canImportFromDrive && (
-                                        <details className="left-menu-disclosure">
-                                            <summary className="left-menu-summary">Upload & Import</summary>
-                                            <div className="left-menu-nested">
+                                        <div className="left-menu-nested">
                                                 {String(user?.role || "").toLowerCase() === "admin" && (
                                                     <>
                                                         <label className="left-menu-file-picker">
@@ -1774,26 +1739,14 @@ export default function DashboardBody(props) {
                                                     <span>Import from OneDrive</span>
                                                 </button>
                                             </div>
-                                        </details>
                                     )}
-
-                                    <details className="left-menu-disclosure">
-                                        <summary className="left-menu-summary">EBITDA Calculator</summary>
-                                        <div className="left-menu-nested">
-                                            <EbitdaMenu
-                                                embedded
-                                                headers={displayHeaders}
-                                                onCalculate={appendCalculatedColumn}
-                                            />
-                                        </div>
-                                    </details>
                                 </div>
                             )}
                         </div>
 
                         <div className="left-menu-group">
                             <button className="left-menu-section-toggle" onClick={() => toggleMenu("charts")} aria-expanded={expandedMenus.charts}>
-                                <span>Chart / Table Config</span>
+                                <span>Charts and Tools</span>
                                 <span>{expandedMenus.charts ? "▾" : "▸"}</span>
                             </button>
                             {expandedMenus.charts && (
@@ -1810,21 +1763,16 @@ export default function DashboardBody(props) {
                                         <span>Trends</span>
                                         <span className="left-menu-state">{trendsOn ? "ON" : "OFF"}</span>
                                     </button>
-                                </div>
-                            )}
-                        </div>
-
-                        <div className="left-menu-group">
-                            <button className="left-menu-section-toggle" onClick={() => toggleMenu("insights")} aria-expanded={expandedMenus.insights}>
-                                <span>Insights</span>
-                                <span>{expandedMenus.insights ? "▾" : "▸"}</span>
-                            </button>
-                            {expandedMenus.insights && (
-                                <div className="left-menu-submenu">
-                                    <button className="left-menu-action left-menu-toggle-row" onClick={() => setInsightsOn((p) => !p)}>
-                                        <span>Insight Feed Panel</span>
-                                        <span className="left-menu-state">{insightsOn ? "ON" : "OFF"}</span>
-                                    </button>
+                                    <details className="left-menu-disclosure">
+                                        <summary className="left-menu-summary">EBITDA Calculator</summary>
+                                        <div className="left-menu-nested">
+                                            <EbitdaMenu
+                                                embedded
+                                                headers={displayHeaders}
+                                                onCalculate={appendCalculatedColumn}
+                                            />
+                                        </div>
+                                    </details>
                                 </div>
                             )}
                         </div>
@@ -1843,26 +1791,6 @@ export default function DashboardBody(props) {
                             )}
                         </div>
 
-                        {canOpenAdminPage && (
-                            <div className="left-menu-group">
-                                <button className="left-menu-section-toggle" onClick={() => toggleMenu("admin")} aria-expanded={expandedMenus.admin}>
-                                    <span>Admin</span>
-                                    <span>{expandedMenus.admin ? "▾" : "▸"}</span>
-                                </button>
-                                {expandedMenus.admin && (
-                                    <div className="left-menu-submenu">
-                                        <button
-                                            className="left-menu-action"
-                                            onClick={() => {
-                                                navigate("/users");
-                                            }}
-                                        >
-                                            User / Customer / Permissions
-                                        </button>
-                                    </div>
-                                )}
-                            </div>
-                        )}
 
                     </div>
                 )}
@@ -2370,22 +2298,24 @@ export default function DashboardBody(props) {
                     >
                         <div className="sticky top-0 bg-slate-50/95 backdrop-blur border-b border-slate-200 z-30 px-3 py-2 shrink-0">
                             <div className="mb-1 text-[11px] font-bold text-slate-700">Primary Sheet</div>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5">
-                                <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-2">
-                                    <span className="text-[11px] font-bold text-slate-600">Sheet</span>
-                                    <div className="flex items-center gap-1.5 min-w-0">
-                                        <div className="relative w-full max-w-[420px] min-w-0" ref={primarySourcePickerRef}>
-                                            <button
-                                                type="button"
-                                                onClick={() => setPrimarySourcePickerOpen((v) => !v)}
-                                                className="w-full h-8 px-2.5 rounded-lg border border-slate-300 bg-white text-slate-900 text-[11px] font-bold shadow-sm hover:border-slate-400 transition-all flex items-center justify-between gap-2 overflow-hidden"
-                                                title={primaryPickerLabel}
-                                            >
-                                                <span className="truncate text-left">{trunc(primaryPickerLabel, 90)}</span>
-                                                <span className={`opacity-50 shrink-0 text-[10px] transition-transform ${primarySourcePickerOpen ? "rotate-180" : ""}`}>▼</span>
-                                            </button>
-                                            {primarySourcePickerOpen && (
-                                                <div className="absolute left-0 mt-1 w-[min(620px,calc(100vw-2rem))] rounded-xl border border-slate-200 bg-white shadow-2xl z-[80] p-2">
+                            <div className="flex flex-col gap-1">
+                                <div className="flex items-start justify-between gap-2">
+                                    <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                                        <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-2">
+                                            <span className="text-[11px] font-bold text-slate-600">Sheet</span>
+                                            <div className="flex items-center gap-1.5 min-w-0">
+                                                <div className="relative w-full max-w-[420px] min-w-0" ref={primarySourcePickerRef}>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setPrimarySourcePickerOpen((v) => !v)}
+                                                        className="w-full h-8 px-2.5 rounded-lg border border-slate-300 bg-white text-slate-900 text-[11px] font-bold shadow-sm hover:border-slate-400 transition-all flex items-center justify-between gap-2 overflow-hidden"
+                                                        title={primaryPickerLabel}
+                                                    >
+                                                        <span className="truncate text-left">{trunc(primaryPickerLabel, 90)}</span>
+                                                        <span className={`opacity-50 shrink-0 text-[10px] transition-transform ${primarySourcePickerOpen ? "rotate-180" : ""}`}>▼</span>
+                                                    </button>
+                                                    {primarySourcePickerOpen && (
+                                                        <div className="absolute left-0 mt-1 w-[min(620px,calc(100vw-2rem))] rounded-xl border border-slate-200 bg-white shadow-2xl z-[80] p-2">
                                                             <input
                                                                 autoFocus
                                                                 value={primarySourceQuery}
@@ -2505,98 +2435,116 @@ export default function DashboardBody(props) {
                                                                     );
                                                                 })}
                                                             </div>
+                                                        </div>
+                                                    )}
                                                 </div>
-                                            )}
-                                        </div>
-                                        {canManageViews && (
-                                            <div className="flex items-center gap-1.5 shrink-0">
-                                                <button
-                                                    type="button"
-                                                    className={`btn-premium px-2.5 py-1 text-[10px] font-bold rounded-md border-none ${selectionModeOn ? "bg-emerald-600 text-white hover:bg-emerald-700" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
-                                                    onClick={() => {
-                                                        setSelectionModeOn((v) => {
-                                                            const next = !v;
-                                                            if (!next) clearSelection();
-                                                            return next;
-                                                        });
-                                                    }}
-                                                >
-                                                    {selectionModeOn ? "Selection On" : "Selection Off"}
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    className="btn-premium bg-slate-100 text-slate-700 hover:bg-slate-200 px-2.5 py-1 text-[10px] font-bold rounded-md border-none"
-                                                    onClick={clearSelection}
-                                                >
-                                                    Clear
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    disabled={selectedPrimaryColumns.length === 0 || selectedPrimaryRowIndexes.length === 0}
-                                                    className={`btn-premium px-2.5 py-1 text-[10px] font-bold rounded-md border-none ${(selectedPrimaryColumns.length > 0 && selectedPrimaryRowIndexes.length > 0) ? "bg-emerald-600 text-white hover:bg-emerald-700" : "bg-slate-200 text-slate-500 cursor-not-allowed"}`}
-                                                    onClick={createLockedViewFromSelection}
-                                                >
-                                                    Create View From Selection
-                                                </button>
                                             </div>
-                                        )}
-                                    </div>
-                                </div>
-                                <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-2">
-                                    <span className="text-[11px] font-bold text-slate-600">Compare</span>
-                                    <div className="relative w-full max-w-[420px] min-w-0 primary-compare-picker">
-                                        <button
-                                            type="button"
-                                            onClick={() => setPrimaryComparePickerOpen((v) => !v)}
-                                            className="w-full h-8 px-2.5 rounded-lg border border-slate-300 bg-white text-slate-900 text-[11px] font-bold shadow-sm hover:border-slate-400 transition-all flex items-center justify-between gap-2 overflow-hidden"
-                                            title={primaryCompareLabel}
-                                        >
-                                            <span className="truncate text-left">{trunc(primaryCompareLabel, 90)}</span>
-                                            <span className={`opacity-50 shrink-0 text-[10px] transition-transform ${primaryComparePickerOpen ? "rotate-180" : ""}`}>▼</span>
-                                        </button>
-                                        {primaryComparePickerOpen && (
-                                            <div className="absolute left-0 mt-1 w-[min(620px,calc(100vw-2rem))] rounded-xl border border-slate-200 bg-white shadow-2xl z-[80] p-2">
+                                        </div>
+                                        <div className="grid grid-cols-[48px_minmax(0,1fr)] items-center gap-1">
+                                            <span className="text-[10px] font-bold text-slate-600">Compare</span>
+                                            <div className="relative w-full max-w-[170px] min-w-0 primary-compare-picker">
                                                 <button
                                                     type="button"
-                                                    onClick={() => {
-                                                        setPrimaryCompareSheetId("");
-                                                        setPrimaryComparePickerOpen(false);
-                                                    }}
-                                                    className={`w-full text-left px-3 py-2 rounded-lg text-[11px] font-bold ${!primaryCompareSheetId ? "bg-indigo-50 text-indigo-700" : "text-slate-700 hover:bg-slate-50"}`}
+                                                    onClick={() => setPrimaryComparePickerOpen((v) => !v)}
+                                                    className="w-full h-7 px-2 rounded-md border border-slate-300 bg-white text-slate-900 text-[10px] font-bold shadow-sm hover:border-slate-400 transition-all flex items-center justify-between gap-1 overflow-hidden"
+                                                    title={primaryCompareLabel}
                                                 >
-                                                    Off
+                                                    <span className="truncate text-left">{trunc(primaryCompareLabel, 48)}</span>
+                                                    <span className={`opacity-50 shrink-0 text-[9px] transition-transform ${primaryComparePickerOpen ? "rotate-180" : ""}`}>▼</span>
                                                 </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setPrimaryCompareExpanded((v) => !v)}
-                                                    className="w-full flex items-center justify-between gap-3 px-3 py-2 mt-1 rounded-lg hover:bg-slate-50 transition-colors"
-                                                >
-                                                    <span className="text-[11px] font-black text-slate-700">Revisions</span>
-                                                    <span className={`text-[10px] text-slate-400 transition-transform ${primaryCompareExpanded ? "rotate-180" : ""}`}>▼</span>
-                                                </button>
-                                                {primaryCompareExpanded && (
-                                                    <div className="max-h-56 overflow-auto custom-scrollbar space-y-1 mt-1">
-                                                        {primaryRevisionOptions.map((opt) => (
-                                                            <button
-                                                                key={`p-compare-${opt.value}`}
-                                                                type="button"
-                                                                disabled={!!opt.isCurrent}
-                                                                onClick={() => {
-                                                                    if (opt.isCurrent) return;
-                                                                    setPrimaryCompareSheetId(String(opt.value));
-                                                                    setPrimaryComparePickerOpen(false);
-                                                                }}
-                                                                className={`w-full text-left px-3 py-2 rounded-lg text-[11px] font-bold ${opt.isCurrent ? "text-slate-400 bg-slate-50 cursor-not-allowed" : (String(primaryCompareSheetId) === String(opt.value) ? "bg-indigo-50 text-indigo-700" : "text-slate-700 hover:bg-slate-50")}`}
-                                                            >
-                                                                {opt.label}{opt.isCurrent ? " (Current)" : ""}
-                                                            </button>
-                                                        ))}
+                                                {primaryComparePickerOpen && (
+                                                    <div className="absolute left-0 mt-1 w-[min(280px,calc(100vw-1rem))] rounded-xl border border-slate-200 bg-white shadow-2xl z-[80] p-2">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setPrimaryCompareSheetId("");
+                                                                setPrimaryComparePickerOpen(false);
+                                                            }}
+                                                            className={`w-full text-left px-2.5 py-1.5 rounded-lg text-[10px] font-bold ${!primaryCompareSheetId ? "bg-indigo-50 text-indigo-700" : "text-slate-700 hover:bg-slate-50"}`}
+                                                        >
+                                                            Off
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setPrimaryCompareExpanded((v) => !v)}
+                                                            className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 mt-1 rounded-lg hover:bg-slate-50 transition-colors"
+                                                        >
+                                                            <span className="text-[10px] font-black text-slate-700">Revisions</span>
+                                                            <span className={`text-[9px] text-slate-400 transition-transform ${primaryCompareExpanded ? "rotate-180" : ""}`}>▼</span>
+                                                        </button>
+                                                        {primaryCompareExpanded && (
+                                                            <div className="max-h-56 overflow-auto custom-scrollbar space-y-1 mt-1">
+                                                                {primaryRevisionOptions.map((opt) => (
+                                                                    <button
+                                                                        key={`p-compare-${opt.value}`}
+                                                                        type="button"
+                                                                        disabled={!!opt.isCurrent}
+                                                                        onClick={() => {
+                                                                            if (opt.isCurrent) return;
+                                                                            setPrimaryCompareSheetId(String(opt.value));
+                                                                            setPrimaryComparePickerOpen(false);
+                                                                        }}
+                                                                        className={`w-full text-left px-2.5 py-1.5 rounded-lg text-[10px] font-bold ${opt.isCurrent ? "text-slate-400 bg-slate-50 cursor-not-allowed" : (String(primaryCompareSheetId) === String(opt.value) ? "bg-indigo-50 text-indigo-700" : "text-slate-700 hover:bg-slate-50")}`}
+                                                                    >
+                                                                        {opt.label}{opt.isCurrent ? " (Current)" : ""}
+                                                                    </button>
+                                                                ))}
+                                                            </div>
+                                                        )}
                                                     </div>
                                                 )}
                                             </div>
-                                        )}
+                                        </div>
                                     </div>
+                                    {canManageViews && (
+                                        <div className="flex items-center justify-end gap-1.5 shrink-0">
+                                            <button
+                                                type="button"
+                                                className={`btn-premium px-2.5 py-1 text-[10px] font-bold rounded-md border-none ${selectionModeOn ? "bg-emerald-600 text-white hover:bg-emerald-700" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
+                                                onClick={() => {
+                                                    setSelectionModeOn((v) => {
+                                                        const next = !v;
+                                                        if (!next) clearSelection();
+                                                        return next;
+                                                    });
+                                                }}
+                                            >
+                                                {selectionModeOn ? "Selection On" : "Selection Off"}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="btn-premium bg-slate-100 text-slate-700 hover:bg-slate-200 px-2.5 py-1 text-[10px] font-bold rounded-md border-none"
+                                                onClick={clearSelection}
+                                            >
+                                                Clear
+                                            </button>
+                                            <button
+                                                type="button"
+                                                disabled={selectedPrimaryColumns.length === 0 || selectedPrimaryRowIndexes.length === 0}
+                                                className={`btn-premium px-2.5 py-1 text-[10px] font-bold rounded-md border-none ${(selectedPrimaryColumns.length > 0 && selectedPrimaryRowIndexes.length > 0) ? "bg-emerald-600 text-white hover:bg-emerald-700" : "bg-slate-200 text-slate-500 cursor-not-allowed"}`}
+                                                onClick={createLockedViewFromSelection}
+                                            >
+                                                Create View From Selection
+                                            </button>
+                                        </div>
+                                    )}
                                 </div>
+                                {comparisonOn && (
+                                    <div className="grid grid-cols-[48px_minmax(0,1fr)] items-center gap-1">
+                                        <span className="text-[10px] font-bold text-slate-600">Columns</span>
+                                        <div style={{ width: `${primaryFieldsMenuWidthCh}ch`, maxWidth: "100%" }}>
+                                            <MultiSelect
+                                                options={displayHeaders}
+                                                value={primaryFields}
+                                                onChange={setPrimaryFields}
+                                                placeholder="Select columns..."
+                                                className="w-full"
+                                                activeColor="blue"
+                                                dense
+                                            />
+                                        </div>
+                                    </div>
+                                )}
                                 {primaryCompareSheetId && primaryMissingColumns.length > 0 && (
                                     <div className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[10px] font-bold text-amber-800">
                                         Warning: Compared revision is missing {primaryMissingColumns.length} column(s): {primaryMissingColumns.join(", ")}
@@ -2652,6 +2600,7 @@ export default function DashboardBody(props) {
                                                                 e.stopPropagation();
                                                                 setOpenFilterCol((prev) => (prev === h ? null : h));
                                                             }}
+                                                            onMouseDown={(e) => e.stopPropagation()}
                                                         >
                                                             <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg>
                                                         </button>
@@ -2794,7 +2743,7 @@ export default function DashboardBody(props) {
                         >
                             <div className="sticky top-0 bg-slate-100/95 backdrop-blur border-b border-slate-200 z-30 px-3 py-2 shrink-0">
                                 <div className="mb-1 text-[11px] font-bold text-slate-700">Secondary Sheet</div>
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5">
+                                <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_170px_170px] gap-1">
                                     <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-2">
                                         <span className="text-[11px] font-bold text-slate-600">Sheet</span>
                                         <div className="relative w-full max-w-[420px] min-w-0" ref={secondarySourcePickerRef}>
@@ -2931,37 +2880,37 @@ export default function DashboardBody(props) {
                                             )}
                                         </div>
                                     </div>
-                                    <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-2">
-                                        <span className="text-[11px] font-bold text-slate-600">Compare</span>
-                                        <div className="relative w-full max-w-[420px] min-w-0 secondary-compare-picker">
+                                    <div className="grid grid-cols-[48px_minmax(0,1fr)] items-center gap-1">
+                                        <span className="text-[10px] font-bold text-slate-600">Compare</span>
+                                        <div className="relative w-full max-w-[170px] min-w-0 secondary-compare-picker">
                                             <button
                                                 type="button"
                                                 onClick={() => setSecondaryComparePickerOpen((v) => !v)}
-                                                className="w-full h-8 px-2.5 rounded-lg border border-slate-300 bg-white text-slate-900 text-[11px] font-bold shadow-sm hover:border-slate-400 transition-all flex items-center justify-between gap-2 overflow-hidden"
+                                                className="w-full h-7 px-2 rounded-md border border-slate-300 bg-white text-slate-900 text-[10px] font-bold shadow-sm hover:border-slate-400 transition-all flex items-center justify-between gap-1 overflow-hidden"
                                                 title={secondaryCompareLabel}
                                             >
-                                                <span className="truncate text-left">{trunc(secondaryCompareLabel, 90)}</span>
-                                                <span className={`opacity-50 shrink-0 text-[10px] transition-transform ${secondaryComparePickerOpen ? "rotate-180" : ""}`}>▼</span>
+                                                <span className="truncate text-left">{trunc(secondaryCompareLabel, 48)}</span>
+                                                <span className={`opacity-50 shrink-0 text-[9px] transition-transform ${secondaryComparePickerOpen ? "rotate-180" : ""}`}>▼</span>
                                             </button>
                                             {secondaryComparePickerOpen && (
-                                                <div className="absolute left-0 mt-1 w-[min(620px,calc(100vw-2rem))] rounded-xl border border-slate-200 bg-white shadow-2xl z-[80] p-2">
+                                                <div className="absolute left-0 mt-1 w-[min(280px,calc(100vw-1rem))] rounded-xl border border-slate-200 bg-white shadow-2xl z-[80] p-2">
                                                     <button
                                                         type="button"
                                                         onClick={() => {
                                                             setSecondaryCompareSheetId("");
                                                             setSecondaryComparePickerOpen(false);
                                                         }}
-                                                        className={`w-full text-left px-3 py-2 rounded-lg text-[11px] font-bold ${!secondaryCompareSheetId ? "bg-emerald-50 text-emerald-700" : "text-slate-700 hover:bg-slate-50"}`}
+                                                        className={`w-full text-left px-2.5 py-1.5 rounded-lg text-[10px] font-bold ${!secondaryCompareSheetId ? "bg-emerald-50 text-emerald-700" : "text-slate-700 hover:bg-slate-50"}`}
                                                     >
                                                         Off
                                                     </button>
                                                     <button
                                                         type="button"
                                                         onClick={() => setSecondaryCompareExpanded((v) => !v)}
-                                                        className="w-full flex items-center justify-between gap-3 px-3 py-2 mt-1 rounded-lg hover:bg-slate-50 transition-colors"
+                                                        className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 mt-1 rounded-lg hover:bg-slate-50 transition-colors"
                                                     >
-                                                        <span className="text-[11px] font-black text-slate-700">Revisions</span>
-                                                        <span className={`text-[10px] text-slate-400 transition-transform ${secondaryCompareExpanded ? "rotate-180" : ""}`}>▼</span>
+                                                        <span className="text-[10px] font-black text-slate-700">Revisions</span>
+                                                        <span className={`text-[9px] text-slate-400 transition-transform ${secondaryCompareExpanded ? "rotate-180" : ""}`}>▼</span>
                                                     </button>
                                                     {secondaryCompareExpanded && (
                                                         <div className="max-h-56 overflow-auto custom-scrollbar space-y-1 mt-1">
@@ -2975,7 +2924,7 @@ export default function DashboardBody(props) {
                                                                         setSecondaryCompareSheetId(String(opt.value));
                                                                         setSecondaryComparePickerOpen(false);
                                                                     }}
-                                                                    className={`w-full text-left px-3 py-2 rounded-lg text-[11px] font-bold ${opt.isCurrent ? "text-slate-400 bg-slate-50 cursor-not-allowed" : (String(secondaryCompareSheetId) === String(opt.value) ? "bg-emerald-50 text-emerald-700" : "text-slate-700 hover:bg-slate-50")}`}
+                                                                    className={`w-full text-left px-2.5 py-1.5 rounded-lg text-[10px] font-bold ${opt.isCurrent ? "text-slate-400 bg-slate-50 cursor-not-allowed" : (String(secondaryCompareSheetId) === String(opt.value) ? "bg-emerald-50 text-emerald-700" : "text-slate-700 hover:bg-slate-50")}`}
                                                                 >
                                                                     {opt.label}{opt.isCurrent ? " (Current)" : ""}
                                                                 </button>
@@ -2984,6 +2933,20 @@ export default function DashboardBody(props) {
                                                     )}
                                                 </div>
                                             )}
+                                        </div>
+                                    </div>
+                                    <div className="grid grid-cols-[48px_minmax(0,1fr)] items-center gap-1">
+                                        <span className="text-[10px] font-bold text-slate-600">Columns</span>
+                                        <div style={{ width: `${secondaryFieldsMenuWidthCh}ch`, maxWidth: "100%" }}>
+                                            <MultiSelect
+                                                options={secondaryHeaders}
+                                                value={secondaryFields}
+                                                onChange={setSecondaryFields}
+                                                placeholder="Select columns..."
+                                                className="w-full"
+                                                activeColor="emerald"
+                                                dense
+                                            />
                                         </div>
                                     </div>
                                     {secondaryCompareSheetId && secondaryMissingColumns.length > 0 && (
@@ -3035,6 +2998,7 @@ export default function DashboardBody(props) {
                                                                 e.stopPropagation();
                                                                 setOpenFilterCol((prev) => (prev === `sec_${h}` ? null : `sec_${h}`));
                                                             }}
+                                                            onMouseDown={(e) => e.stopPropagation()}
                                                         >
                                                             <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg>
                                                         </button>

@@ -8,9 +8,11 @@ export default function MultiSelect({
     placeholder = "Select...",
     className = "",
     disabled = false,
-    activeColor = "blue" // "blue" or "emerald"
+    activeColor = "blue", // "blue" or "emerald"
+    dense = false,
 }) {
     const [open, setOpen] = useState(false);
+    const [query, setQuery] = useState("");
     const containerRef = useRef(null);
     
     const colorClasses = activeColor === "emerald" 
@@ -39,9 +41,22 @@ export default function MultiSelect({
 
     const displayLabel = value.length === 0
         ? placeholder
+        : value.length === options.length && options.length > 0
+            ? "All"
         : value.length <= 2
             ? value.join(", ")
             : `${value.length} selected`;
+
+    const norm = (v) => String(v || "").toLowerCase();
+    const renderLabel = (v) => {
+        const s = String(v || "");
+        return s.length > 30 ? `${s.slice(0, 30)}...` : s;
+    };
+    const filteredOptions = (options || []).filter((opt) => {
+        const label = typeof opt === "object" ? opt.label : opt;
+        if (!query.trim()) return true;
+        return norm(label).includes(norm(query.trim()));
+    });
 
     return (
         <div className={`relative inline-block ${className}`} ref={containerRef}>
@@ -49,20 +64,28 @@ export default function MultiSelect({
                 type="button"
                 disabled={disabled}
                 onClick={() => !disabled && setOpen(!open)}
-                className={`flex items-center justify-between w-full border border-slate-300 bg-white px-2.5 py-1 rounded-md text-xs transition-colors shadow-sm h-8
+                className={`flex items-center justify-between w-full border border-slate-300 bg-white transition-colors shadow-sm ${dense ? "h-7 px-2 rounded-md text-[10px]" : "h-8 px-2.5 rounded-md text-xs"}
           ${disabled ? "bg-slate-50 text-slate-400 cursor-not-allowed" : "hover:border-slate-400 hover:bg-slate-50 focus:ring-2 focus:ring-slate-200"}
         `}
             >
-                <span className="truncate mr-2 font-bold text-slate-700">{displayLabel}</span>
-                <span className="text-slate-400 text-xs">▼</span>
+                <span className={`truncate mr-2 font-bold text-slate-700 ${dense ? "text-[10px]" : "text-xs"}`}>{displayLabel}</span>
+                <span className={`text-slate-400 ${dense ? "text-[9px]" : "text-xs"}`}>▼</span>
             </button>
 
             {open && (
-                <div className="absolute z-50 mt-1 w-full min-w-[160px] bg-white border border-slate-200 rounded-md shadow-xl max-h-56 overflow-y-auto p-1 ring-1 ring-black/5">
-                    {options.length === 0 ? (
+                <div className="absolute z-50 mt-1 w-full min-w-[140px] bg-white border border-slate-200 rounded-md shadow-xl max-h-56 overflow-y-auto p-1 ring-1 ring-black/5">
+                    <div className="sticky top-0 z-10 bg-white px-1 pb-1">
+                        <input
+                            value={query}
+                            onChange={(e) => setQuery(e.target.value)}
+                            placeholder="Search columns..."
+                            className={`w-full border border-slate-200 rounded px-2 focus:outline-none focus:ring-1 focus:ring-slate-300 ${dense ? "py-0.5 text-[10px] font-semibold text-slate-700" : "py-1 text-[11px] font-semibold text-slate-700"}`}
+                        />
+                    </div>
+                    {filteredOptions.length === 0 ? (
                         <div className="p-2 text-xs text-slate-400 italic text-center">No options</div>
                     ) : (
-                        options.map((opt) => {
+                        filteredOptions.map((opt) => {
                             const label = typeof opt === 'object' ? opt.label : opt;
                             const val = typeof opt === 'object' ? opt.value : opt;
                             const isSelected = value.includes(val);
@@ -71,7 +94,7 @@ export default function MultiSelect({
                                 <div
                                     key={val}
                                     onClick={() => toggleOption(val)}
-                                    className={`flex items-center gap-2 px-2 py-1 rounded-md cursor-pointer text-xs
+                                    className={`flex items-center gap-2 px-2 rounded-md cursor-pointer ${dense ? "py-0.5 text-[10px]" : "py-1 text-xs"}
                     ${isSelected ? `${activeBg} text-slate-900 font-bold` : "text-slate-700 hover:bg-slate-50"}
                   `}
                                 >
@@ -84,7 +107,7 @@ export default function MultiSelect({
                                             </svg>
                                         )}
                                     </div>
-                                    <span>{label}</span>
+                                    <span title={String(label || "")}>{renderLabel(label)}</span>
                                 </div>
                             );
                         })

@@ -93,7 +93,7 @@ function normalizeGroupEntitlements(value) {
 export default function UserManagement({ token, user, sheetId }) {
   const trunc = (s, n) => (s && s.length > n ? s.slice(0, n) + "..." : s);
   const [users, setUsers] = useState([]);
-  const [newUser, setNewUser] = useState({ firstName: "", lastName: "", company: "", email: "", password: "", role: "user" });
+  const [newUser, setNewUser] = useState({ firstName: "", lastName: "", company: "", email: "" });
   const [passwordResetModal, setPasswordResetModal] = useState({
     open: false,
     userId: null,
@@ -1221,38 +1221,24 @@ export default function UserManagement({ token, user, sheetId }) {
       alert("First name, last name, company, and email are required.");
       return;
     }
-    const isSuperAdminCreatingAdmin = user?.role === "admin" && String(newUser.role || "user") === "admin";
-    if (isSuperAdminCreatingAdmin && !String(newUser.password || "").trim()) {
-      alert("Password is required for admin account creation.");
-      return;
-    }
-    if (!isSuperAdminCreatingAdmin && !selectedGroupId) {
+    if (!inviteGroupId) {
       alert("Select a customer before inviting a customer user.");
       return;
     }
     try {
-      if (isSuperAdminCreatingAdmin) {
-        await axios.post(`${API}/users`, {
-          ...newUser,
-          role: "admin",
-        }, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-      } else {
-        await axios.post(`${API}/users/invitations`, {
-          firstName: newUser.firstName,
-          lastName: newUser.lastName,
-          company: newUser.company,
-          email: newUser.email,
-          groupId: Number(selectedGroupId),
-        }, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        alert("Invitation sent.");
-      }
-      setNewUser({ firstName: "", lastName: "", company: "", email: "", password: "", role: "user" });
+      await axios.post(`${API}/users/invitations`, {
+        firstName: newUser.firstName,
+        lastName: newUser.lastName,
+        company: newUser.company,
+        email: newUser.email,
+        groupId: Number(inviteGroupId),
+      }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      alert("Invitation sent.");
+      setNewUser({ firstName: "", lastName: "", company: "", email: "" });
       fetchUsers();
-      if (selectedGroupId) fetchPendingInvitations(selectedGroupId);
+      if (inviteGroupId) fetchPendingInvitations(inviteGroupId);
     } catch (e) {
       alert(e.response?.data?.error || "Failed to invite/create user");
     }
@@ -1774,6 +1760,11 @@ export default function UserManagement({ token, user, sheetId }) {
     () => (Array.isArray(groups) ? groups.find((g) => Number(g.id) === Number(selectedGroupId)) : null),
     [groups, selectedGroupId]
   );
+  const inviteGroupId = useMemo(() => {
+    if (Number.isInteger(Number(selectedGroupId)) && Number(selectedGroupId) > 0) return Number(selectedGroupId);
+    if (!isSuperAdmin && Array.isArray(groups) && groups.length === 1) return Number(groups[0].id);
+    return null;
+  }, [selectedGroupId, groups, isSuperAdmin]);
   const selectedGroupEntitlements = useMemo(
     () => normalizeGroupEntitlements(selectedGroup?.entitlements || {}),
     [selectedGroup]
@@ -1953,40 +1944,15 @@ export default function UserManagement({ token, user, sheetId }) {
             value={newUser.email}
             onChange={e => setNewUser({ ...newUser, email: e.target.value })}
           />
-          {user?.role === "admin" && newUser.role === "admin" && (
-            <input
-              className="input-premium"
-              placeholder="Password"
-              type="password"
-              value={newUser.password}
-              onChange={e => setNewUser({ ...newUser, password: e.target.value })}
-            />
-          )}
           <div className="flex items-center gap-3">
-            {user?.role === "admin" ? (
-              <select
-                className="input-premium py-2 max-w-[120px]"
-                value={newUser.role}
-                onChange={e => setNewUser({ ...newUser, role: e.target.value })}
-              >
-                <option value="user">User</option>
-                <option value="admin">Admin</option>
-              </select>
-            ) : (
-              <select
-                className="input-premium py-2 max-w-[180px]"
-                value={selectedGroupId || ""}
-                onChange={e => setSelectedGroupId(e.target.value ? Number(e.target.value) : null)}
-              >
-                <option value="">Select customer…</option>
-                {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
-              </select>
-            )}
+            <div className="min-w-[180px] text-[10px] font-semibold text-slate-500 truncate px-1">
+              {(Array.isArray(groups) && groups.find((g) => Number(g.id) === Number(inviteGroupId))?.name) || (isSuperAdmin ? "Select customer below" : "Customer")}
+            </div>
             <button
               className="btn-premium bg-slate-900 hover:bg-slate-800 text-white flex-1 py-2.5 shadow-sm"
               onClick={addUser}
             >
-              {user?.role === "admin" && newUser.role === "admin" ? "Add Admin User" : "Send Customer Invitation"}
+              Send Customer Invitation
             </button>
           </div>
         </div>

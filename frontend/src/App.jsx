@@ -673,17 +673,17 @@ export default function App() {
     // 1. Column Filters
     const activeCols = Object.keys(columnFilters);
     if (activeCols.length > 0) {
-      processed = processed.filter((row) => {
-        for (const col of activeCols) {
-          const allowed = columnFilters[col];
-          if (!allowed) continue;
+          processed = processed.filter((row) => {
+            for (const col of activeCols) {
+              const allowed = columnFilters[col];
+              if (!allowed) continue;
 
-          // Try exact match first, then fuzzy
-          let rowValue = row[col];
-          if (rowValue === undefined) {
-             const actualCol = headers.find(h => h && String(h).trim() === String(col).trim());
-             if (actualCol) rowValue = row[actualCol];
-          }
+              // Try exact match first, then fuzzy
+              let rowValue = row[col];
+              if (rowValue === undefined) {
+                const actualCol = headers.find(h => h && String(h).trim().toLowerCase() === String(col).trim().toLowerCase());
+                if (actualCol) rowValue = row[actualCol];
+              }
 
           const stringified = String(rowValue ?? "");
 
@@ -764,21 +764,32 @@ export default function App() {
     return negativeByParens ? -Math.abs(n) : n;
   };
 
+  const resolveHeaderName = React.useCallback((col) => {
+    const target = String(col || "").trim();
+    if (!target) return "";
+    const exact = headers.find((h) => String(h || "").trim() === target);
+    if (exact) return exact;
+    const normalized = target.toLowerCase();
+    return headers.find((h) => String(h || "").trim().toLowerCase() === normalized) || target;
+  }, [headers]);
+
   const applyContainsFilter = React.useCallback((col, val) => {
     if (col === "RESET_ALL") {
       setColumnFilters({});
       return;
     }
+    const resolvedCol = resolveHeaderName(col);
+    if (!resolvedCol) return;
     if (!val) {
       setColumnFilters((prev) => {
         const next = { ...prev };
-        delete next[col];
+        delete next[resolvedCol];
         return next;
       });
       return;
     }
-    setColumnFilters((prev) => ({ ...prev, [col]: { type: "contains", value: val } }));
-  }, []);
+    setColumnFilters((prev) => ({ ...prev, [resolvedCol]: { type: "contains", value: val } }));
+  }, [resolveHeaderName]);
 
   const applyChartConfig = React.useCallback((config) => {
     if (!config || !config.valueColumn) return;
@@ -2041,26 +2052,6 @@ export default function App() {
     setCondCol2("");
     setValueCol("");
   };
-  const secondaryColumnCandidates = useMemo(() => {
-    const fromHeaders = Array.isArray(secondaryHeaders) ? secondaryHeaders : [];
-    const fromOverride = Array.isArray(saveViewConfigOverride?.splitContext?.secondaryAvailableColumns)
-      ? saveViewConfigOverride.splitContext.secondaryAvailableColumns
-      : [];
-    const base = fromHeaders.length ? fromHeaders : fromOverride;
-    return Array.from(new Set((base || []).map((c) => String(c || "").trim()).filter(Boolean)));
-  }, [secondaryHeaders, saveViewConfigOverride]);
-
-  useEffect(() => {
-    if (!showColumnSelector) return;
-    const presetPrimary = Array.isArray(saveViewConfigOverride?.visibleColumns) ? saveViewConfigOverride.visibleColumns : [];
-    const presetSecondary = Array.isArray(saveViewConfigOverride?.splitContext?.secondaryVisibleColumns)
-      ? saveViewConfigOverride.splitContext.secondaryVisibleColumns
-      : [];
-    if (presetPrimary.length > 0) setVisibleColumns(presetPrimary);
-    if (presetSecondary.length > 0) setSecondaryVisibleColumns(presetSecondary);
-    else if (secondaryColumnCandidates.length) setSecondaryVisibleColumns(secondaryColumnCandidates);
-  }, [showColumnSelector, saveViewConfigOverride, secondaryColumnCandidates]);
-
   // Effect to load view config
   useEffect(() => {
     if (!selectedViewId) return;
@@ -2079,7 +2070,10 @@ export default function App() {
     }
 
     if (c.sortConfig) setSortConfig(c.sortConfig);
-    if (c.visibleColumns) setVisibleColumns(c.visibleColumns);
+    if (Array.isArray(c.visibleColumns)) setVisibleColumns(c.visibleColumns);
+    if (Array.isArray(c.splitContext?.secondaryVisibleColumns)) {
+      setSecondaryVisibleColumns(c.splitContext.secondaryVisibleColumns);
+    }
 
     if (c.pivotOn) {
       setPivotOn(true);
@@ -2358,7 +2352,6 @@ export default function App() {
                       views={views} setViews={setViews}
                       setPendingViewName={setPendingViewName}
                       setShowColumnSelector={setShowColumnSelector}
-                      setVisibleColumns={setVisibleColumns}
                       setSaveViewConfigOverride={setSaveViewConfigOverride}
                       sortedData={sortedData}
                       headers={headers}
@@ -2491,7 +2484,7 @@ export default function App() {
               <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
                 <div>
                   <h2 className="text-base font-semibold text-slate-900 tracking-tight">Configure View</h2>
-                  <p className="text-slate-500 text-[11px] mt-0.5">Select visible columns and scope.</p>
+                  <p className="text-slate-500 text-[11px] mt-0.5">Select scope and save the locked selection.</p>
                 </div>
                 <button 
                   onClick={() => setShowColumnSelector(false)}
@@ -2500,55 +2493,8 @@ export default function App() {
               </div>
               <div className="p-4 space-y-3 overflow-auto">
                 <p className="text-[11px] text-slate-600">
-                  Choose visible columns for this view. If none are selected, all columns remain visible.
+                  The selected columns or area are saved as the locked view selection.
                 </p>
-
-                <div className="rounded-md border border-slate-200 bg-slate-50 p-2.5">
-                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-600 mb-2">Primary Visible Columns</div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 max-h-44 overflow-auto pr-1 custom-scrollbar">
-                    {headers.map((h) => (
-                      <label key={h} className="flex items-center gap-1.5 px-2 py-1 rounded-md border border-slate-200 bg-white hover:bg-slate-50 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={visibleColumns.includes(h)}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setVisibleColumns([...visibleColumns, h]);
-                            } else {
-                              setVisibleColumns(visibleColumns.filter(col => col !== h));
-                            }
-                          }}
-                          className="w-3 h-3 rounded"
-                        />
-                        <span className="text-[10px] font-semibold text-slate-700 truncate">{h}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-                {(secondarySheetId || saveViewConfigOverride?.splitContext?.secondarySheetId) && secondaryColumnCandidates.length > 0 && (
-                  <div className="rounded-md border border-slate-200 bg-slate-50 p-2.5">
-                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-600 mb-2">Secondary Visible Columns</div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 max-h-40 overflow-auto pr-1 custom-scrollbar">
-                      {secondaryColumnCandidates.map((h) => (
-                        <label key={`sec-${h}`} className="flex items-center gap-1.5 px-2 py-1 rounded-md border border-slate-200 bg-white hover:bg-slate-50 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={secondaryVisibleColumns.includes(h)}
-                            onChange={(e) => {
-                              if (e.target.checked) {
-                                setSecondaryVisibleColumns([...secondaryVisibleColumns, h]);
-                              } else {
-                                setSecondaryVisibleColumns(secondaryVisibleColumns.filter(col => col !== h));
-                              }
-                            }}
-                            className="w-3 h-3 rounded"
-                          />
-                          <span className="text-[10px] font-semibold text-slate-700 truncate">{h}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                )}
 
                 <div className="space-y-2.5">
                   <div className="space-y-1">
@@ -2587,8 +2533,6 @@ export default function App() {
                     setShowColumnSelector(false);
                     setPendingViewName("");
                     setViewLevel("revision");
-                    setVisibleColumns([]);
-                    setSecondaryVisibleColumns([]);
                     setSaveViewConfigOverride(null);
                   }}
                 >
@@ -2599,7 +2543,6 @@ export default function App() {
                   onClick={async () => {
                     try {
                       const effectiveColumnFilters = saveViewConfigOverride?.columnFilters || columnFilters;
-                      const effectiveVisibleColumns = saveViewConfigOverride?.visibleColumns || visibleColumns;
                       const serializableColumnFilters = {};
                       for (const key in effectiveColumnFilters) {
                         serializableColumnFilters[key] = Array.from(effectiveColumnFilters[key]);
@@ -2607,16 +2550,18 @@ export default function App() {
                       const config = {
                         columnFilters: serializableColumnFilters,
                         sortConfig,
+                        visibleColumns: Array.isArray(saveViewConfigOverride?.visibleColumns)
+                          ? saveViewConfigOverride.visibleColumns
+                          : visibleColumns,
                         splitContext: {
                           secondarySheetId: saveViewConfigOverride?.splitContext?.secondarySheetId ?? (secondarySheetId || null),
                           secondaryTab: saveViewConfigOverride?.splitContext?.secondaryTab ?? (secondaryTab || null),
                           secondarySortConfig: saveViewConfigOverride?.splitContext?.secondarySortConfig ?? (secondarySortConfig || null),
-                          secondaryVisibleColumns: secondaryVisibleColumns.length > 0
-                            ? secondaryVisibleColumns
-                            : (saveViewConfigOverride?.splitContext?.secondaryVisibleColumns || []),
                           secondaryColumnFilters: saveViewConfigOverride?.splitContext?.secondaryColumnFilters || {},
+                          secondaryVisibleColumns: Array.isArray(saveViewConfigOverride?.splitContext?.secondaryVisibleColumns)
+                            ? saveViewConfigOverride.splitContext.secondaryVisibleColumns
+                            : secondaryVisibleColumns,
                         },
-                        visibleColumns: effectiveVisibleColumns.length > 0 ? effectiveVisibleColumns : [],
                         pivotOn,
                         pivotRowKey,
                         pivotColKey,
@@ -2644,8 +2589,6 @@ export default function App() {
                       setShowColumnSelector(false);
                       setPendingViewName("");
                       setViewLevel("revision");
-                      setVisibleColumns([]);
-                      setSecondaryVisibleColumns([]);
                       setSaveViewConfigOverride(null);
                       alert("View saved successfully!");
                     } catch (e) {

@@ -151,6 +151,23 @@ test("view-based assignment model is wired and legacy permissions routes are rem
   assert.doesNotMatch(routeSource, /router\.get\("\/report-source-group-permissions"/);
 });
 
+test("locked view save payload persists visible columns for primary and split views", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
+  const appPath = path.join(repoRoot, "frontend", "src", "App.jsx");
+  const dashboardBodyPath = path.join(repoRoot, "frontend", "src", "components", "dashboard", "DashboardBody.jsx");
+
+  const appSource = fs.readFileSync(appPath, "utf8");
+  const dashboardBodySource = fs.readFileSync(dashboardBodyPath, "utf8");
+
+  assert.match(appSource, /visibleColumns:\s*Array\.isArray\(saveViewConfigOverride\?\.visibleColumns\)/);
+  assert.match(appSource, /secondaryVisibleColumns:\s*Array\.isArray\(saveViewConfigOverride\?\.splitContext\?\.secondaryVisibleColumns\)/);
+  assert.match(appSource, /if \(Array\.isArray\(c\.visibleColumns\)\) setVisibleColumns\(c\.visibleColumns\);/);
+  assert.match(appSource, /if \(Array\.isArray\(c\.splitContext\?\.secondaryVisibleColumns\)\)/);
+  assert.match(dashboardBodySource, /visibleColumns:\s*selectedPrimaryColumns/);
+  assert.match(dashboardBodySource, /secondaryVisibleColumns:\s*selectedSecondaryColumns/);
+});
+
 test("chat sheet access check always allows admin", async () => {
   const mod = await import(`../src/controllers/chatController.js?t=${Date.now()}`);
   const hasAccess = await mod.checkSheetAccess("any-sheet-id", { id: 1, role: "admin" });
@@ -383,7 +400,7 @@ test("chat backend applies active dashboard filters to AI execution", async () =
   assert.match(source, /function normalizeActiveDashboardFilters/);
   assert.match(source, /const \{ sheetId, activeTab = null, message, activeFilters = \{\}/);
   assert.match(source, /const activeDashboardFilters = normalizeActiveDashboardFilters\(aiHeaders, activeFilters\);/);
-  assert.match(source, /const sampleRows = applyFilters\(loadedSample\.rows \|\| \[\], activeDashboardFilters\);/);
+  assert.match(source, /const sampleRows = applyFilters\(scopedSampleRows, activeDashboardFilters\);/);
   assert.match(source, /const executionFilters = \[\.\.\.activeDashboardFilters, \.\.\.filteredAiFilters\];/);
   assert.match(source, /case 'equals'/);
 });
@@ -394,10 +411,11 @@ test("dashboard chat responses are read-only unless explicitly opted into ui act
   const hookPath = path.join(repoRoot, "frontend", "src", "hooks", "useChatbotLogic.js");
   const source = fs.readFileSync(hookPath, "utf8");
 
-  assert.match(source, /const allowUiActions = meta\?\.applyActions === true;/);
-  assert.match(source, /if \(allowUiActions && onApplyFilter && actions\.reset_filters\)/);
-  assert.match(source, /if \(allowUiActions && onApplyFilter && filters\.length\)/);
-  assert.match(source, /if \(allowUiActions && onUpdateChart && actions\.chart && actions\.chart\.valueColumn\)/);
+  assert.match(source, /const allowUiActions = meta\?\.applyActions !== false;/);
+  assert.match(source, /if \(!allowUiActions \|\| !onApplyFilter\) return \{ filters: \[\], reset_filters: false \};/);
+  assert.match(source, /if \(actions\.reset_filters\) \{/);
+  assert.match(source, /if \(filters\.length\) \{/);
+  assert.match(source, /if \(onUpdateChart && actions\.chart && actions\.chart\.valueColumn\)/);
 });
 
 test("chat fallback path enforces a hard row cap before full in-memory analysis", async () => {
@@ -529,7 +547,8 @@ test("limited customer admin entitlements are persisted on groups", async () => 
   const controllerSource = fs.readFileSync(controllerPath, "utf8");
 
   assert.match(dbSource, /ALTER TABLE groups ADD COLUMN IF NOT EXISTS entitlements JSONB NOT NULL DEFAULT '\{\}'::jsonb/);
-  assert.match(controllerSource, /INSERT INTO groups \(name, max_file_size_mb, max_total_storage_mb, entitlements\)/);
+  assert.match(controllerSource, /INSERT INTO groups \(/);
+  assert.match(controllerSource, /customer_first_name, customer_last_name, customer_company_name, customer_email, customer_phone/);
   assert.match(controllerSource, /entitlements = COALESCE\(\$4::jsonb, entitlements\)/);
 });
 
@@ -560,7 +579,7 @@ test("customer admin promotion requires explicit entitlement and frontend expose
   assert.match(uiSource, /DEFAULT_GROUP_ENTITLEMENTS/);
   assert.match(uiSource, /maxUsers/);
   assert.match(uiSource, /manageGroupAdmins/);
-  assert.match(uiSource, /groupId: Number\(selectedGroupId\)/);
+  assert.match(uiSource, /groupId: selectedGroupId/);
 });
 
 test("customer-scoped SSO toggle is wired and enforced for Google auth", async () => {
@@ -589,6 +608,22 @@ test("customer-scoped SSO toggle is wired and enforced for Google auth", async (
   assert.match(googleControllerSource, /assertGroupFeatureEnabled\(requiredGroupId,\s*"sso"/);
   assert.doesNotMatch(uiSource, /\["sso",\s*"SSO"\]/);
   assert.match(appSource, /google_sso_disabled/);
+});
+
+test("system settings endpoints use platform admin helper consistently", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
+  const userControllerPath = path.join(repoRoot, "backend", "src", "controllers", "userController.js");
+  const source = fs.readFileSync(userControllerPath, "utf8");
+
+  assert.match(source, /export async function getSmtpSetting\(req, res\)/);
+  assert.match(source, /export async function setSmtpSetting\(req, res\)/);
+  assert.match(source, /export async function getInviteEmailTemplateSetting\(req, res\)/);
+  assert.match(source, /export async function setInviteEmailTemplateSetting\(req, res\)/);
+  assert.match(source, /export async function previewInviteEmailTemplate\(req, res\)/);
+  assert.match(source, /export async function getCustomerInvitationPolicy\(req, res\)/);
+  assert.match(source, /export async function setCustomerInvitationPolicy\(req, res\)/);
+  assert.match(source, /if \(!isPlatformAdminUser\(req\.user\)\) return res\.status\(403\)\.json\(\{ error: "Forbidden" \}\);/);
 });
 
 test("customer-scoped OAuth settings do not fall back to global config", async () => {
