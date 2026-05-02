@@ -22,7 +22,7 @@ import {
 } from "../controllers/sheetController.js";
 import { auth } from "../middleware/auth.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
-import { uploadRateLimit } from "../middleware/rateLimit.js";
+import { uploadRateLimit, expensiveTenantRateLimit } from "../middleware/rateLimit.js";
 
 import { fileURLToPath } from "url";
 
@@ -57,7 +57,7 @@ const upload = multer({
 // All routes here are protected
 router.use(auth);
 
-router.post("/upload", uploadRateLimit, upload.single("file"), asyncHandler(uploadSheet));
+router.post("/upload", uploadRateLimit, expensiveTenantRateLimit, upload.single("file"), asyncHandler(uploadSheet));
 router.get("/sheets/active", asyncHandler(getActiveSheet));
 router.get("/my-sheets", asyncHandler(listMySheets));
 router.get("/sheets/all", asyncHandler(listAllSheets)); // For admin
@@ -66,8 +66,8 @@ router.patch("/report-sources/:id/autosync", asyncHandler(updateReportSourceAuto
 router.get("/report-sources/:id/imports", asyncHandler(getReportSourceImports));
 router.get("/import-jobs", asyncHandler(listImportJobs));
 router.get("/import-jobs/:id", asyncHandler(getImportJob));
-router.post("/report-source-imports/:id/publish", asyncHandler(publishReportSourceImport));
-router.post("/report-source-imports/:id/reject", asyncHandler(rejectReportSourceImport));
+router.post("/report-source-imports/:id/publish", expensiveTenantRateLimit, asyncHandler(publishReportSourceImport));
+router.post("/report-source-imports/:id/reject", expensiveTenantRateLimit, asyncHandler(rejectReportSourceImport));
 router.get("/sheets/:id", asyncHandler(getSheetDetails));
 router.patch("/sheets/:id", asyncHandler(updateSheetDetails));
 router.get("/sheets/:id/tabs", asyncHandler(getSheetTabs));

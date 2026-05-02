@@ -61,11 +61,7 @@ export const STORAGE_PROVIDER_DEFS = [
     title: "SCP / SFTP",
     logoUrl: INTEGRATION_LOGOS.sftp,
     apiBase: "sftp-storage",
-    summary: (state) => (
-      state.form.enabled
-        ? `${state.form.host || "No host"}${state.form.port ? `:${state.form.port}` : ""}${state.form.username ? ` as ${state.form.username}` : ""}`
-        : "Disabled"
-    ),
+    summary: () => "",
     helpLinks: [
       { href: "https://www.openssh.com/manual.html", label: "OpenSSH / SFTP usage guide" },
     ],
@@ -123,7 +119,7 @@ export const STORAGE_PROVIDER_DEFS = [
     summary: (state) => (
       state.form.enabled
         ? `${state.form.bucket || "No bucket"}${state.form.projectId ? ` • ${state.form.projectId}` : ""}`
-        : "Disabled"
+        : ""
     ),
     helpLinks: [
       { href: "https://cloud.google.com/storage/docs/authentication", label: "Google Cloud Storage authentication" },
@@ -155,7 +151,7 @@ export const STORAGE_PROVIDER_DEFS = [
     summary: (state) => (
       state.form.enabled
         ? `${state.form.bucket || "No bucket"}${state.form.region ? ` • ${state.form.region}` : ""}`
-        : "Disabled"
+        : ""
     ),
     helpLinks: [
       { href: "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html", label: "AWS access key guidance" },
@@ -187,7 +183,7 @@ export const STORAGE_PROVIDER_DEFS = [
     summary: (state) => (
       state.form.enabled
         ? `${state.form.accountName || "No account"}${state.form.container ? ` • ${state.form.container}` : ""}`
-        : "Disabled"
+        : ""
     ),
     helpLinks: [
       { href: "https://learn.microsoft.com/en-us/azure/storage/blobs/storage-quickstart-blobs-portal", label: "Azure Blob Storage quickstart" },

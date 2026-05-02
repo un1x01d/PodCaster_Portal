@@ -545,7 +545,6 @@ export default function App() {
   const [gcsStorageEnabled, setGcsStorageEnabled] = useState(true);
   const [s3StorageEnabled, setS3StorageEnabled] = useState(true);
   const [azureBlobStorageEnabled, setAzureBlobStorageEnabled] = useState(true);
-  const [metricsExposureEnabled, setMetricsExposureEnabled] = useState(true);
   const dashboardI18n = useDashboardI18n({ enabled: !!user });
 
   const [sheetId, setSheetId] = useState(() => localStorage.getItem("sheetId") || null);
@@ -2110,7 +2109,6 @@ export default function App() {
     if (!token) {
       setAuthChecking(false);
       setUser(null);
-      setMetricsExposureEnabled(true);
       return;
     }
     setAuthChecking(true);
@@ -2137,16 +2135,6 @@ export default function App() {
         if (user) console.error("Fetch files failed", e);
       });
     refreshReportSources();
-  }, [token]);
-
-  useEffect(() => {
-    if (!token) {
-      setMetricsExposureEnabled(true);
-      return;
-    }
-    axios.get(`${API}/users/me/metrics-exposure`, { headers: { Authorization: `Bearer ${token}` } })
-      .then((res) => setMetricsExposureEnabled(res?.data?.enabled !== false))
-      .catch(() => setMetricsExposureEnabled(true));
   }, [token]);
 
   // Helpers
@@ -2360,7 +2348,6 @@ export default function App() {
                     pivotOn={pivotOn}
                     twoOn={twoOn}
                     trendsOn={trendsOn}
-                    metricsExposureEnabled={metricsExposureEnabled}
                     locale={dashboardI18n.locale}
                     copy={dashboardI18n.copy}
                     insightSection={sheetId ? (

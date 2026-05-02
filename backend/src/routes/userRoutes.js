@@ -21,6 +21,8 @@ import {
     getInsightTranslationCacheSetting, setInsightTranslationCacheSetting,
     getDlpSetting, setDlpSetting,
     getMetricsExposureSetting, setMetricsExposureSetting, getMyMetricsExposureSetting,
+    getTwoFactorTotpSetting, setTwoFactorTotpSetting,
+    getSmsOtpSetting, setSmsOtpSetting,
     getAutosyncPollIntervalSetting, setAutosyncPollIntervalSetting,
     getEmailIngestSetting, setEmailIngestSetting,
     getUserGroups,
@@ -92,6 +94,10 @@ router.get("/admin/settings/dlp", asyncHandler(getDlpSetting));
 router.patch("/admin/settings/dlp", asyncHandler(setDlpSetting));
 router.get("/admin/settings/metrics-exposure", asyncHandler(getMetricsExposureSetting));
 router.patch("/admin/settings/metrics-exposure", asyncHandler(setMetricsExposureSetting));
+router.get("/admin/settings/two-factor-totp", asyncHandler(getTwoFactorTotpSetting));
+router.patch("/admin/settings/two-factor-totp", asyncHandler(setTwoFactorTotpSetting));
+router.get("/admin/settings/sms-otp", asyncHandler(getSmsOtpSetting));
+router.patch("/admin/settings/sms-otp", asyncHandler(setSmsOtpSetting));
 router.get("/admin/settings/autosync-interval", asyncHandler(getAutosyncPollIntervalSetting));
 router.patch("/admin/settings/autosync-interval", asyncHandler(setAutosyncPollIntervalSetting));
 router.get("/admin/settings/email-ingest", asyncHandler(getEmailIngestSetting));

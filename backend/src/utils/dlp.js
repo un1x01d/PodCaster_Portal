@@ -1,10 +1,17 @@
+import isEmail from "validator/lib/isEmail.js";
+import isIBAN from "validator/lib/isIBAN.js";
+import { findPhoneNumbersInText } from "libphonenumber-js";
+import validCreditCard from "card-validator";
+
 export const DLP_SETTINGS_KEY = "dlp_settings";
 
 const DEFAULT_DLP_SETTINGS = {
-    enabled: false,
     mode: "block",
     checkSsn: true,
     checkCreditCard: true,
+    checkEmail: true,
+    checkPhone: true,
+    checkIban: true,
     maskDetectedColumns: false,
     maxCellsScanned: 50000,
     maxFindings: 50,
@@ -20,31 +27,16 @@ export function normalizeDlpSettings(raw = {}) {
     const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
     const mode = String(source.mode || DEFAULT_DLP_SETTINGS.mode).trim().toLowerCase();
     return {
-        enabled: source.enabled === undefined ? DEFAULT_DLP_SETTINGS.enabled : source.enabled !== false,
-        mode: mode === "warn" || mode === "log" || mode === "block" ? mode : DEFAULT_DLP_SETTINGS.mode,
+        mode: mode === "warn" || mode === "block" ? mode : DEFAULT_DLP_SETTINGS.mode,
         checkSsn: source.checkSsn !== false,
         checkCreditCard: source.checkCreditCard !== false,
+        checkEmail: source.checkEmail !== false,
+        checkPhone: source.checkPhone !== false,
+        checkIban: source.checkIban !== false,
         maskDetectedColumns: source.maskDetectedColumns === true,
         maxCellsScanned: normalizePositiveInt(source.maxCellsScanned, DEFAULT_DLP_SETTINGS.maxCellsScanned, 1000, 500000),
         maxFindings: normalizePositiveInt(source.maxFindings, DEFAULT_DLP_SETTINGS.maxFindings, 1, 1000),
     };
-}
-
-function luhnValid(candidate) {
-    const digits = String(candidate || "").replace(/\D+/g, "");
-    if (digits.length < 13 || digits.length > 19) return false;
-    let sum = 0;
-    let shouldDouble = false;
-    for (let i = digits.length - 1; i >= 0; i -= 1) {
-        let d = Number.parseInt(digits[i], 10);
-        if (shouldDouble) {
-            d *= 2;
-            if (d > 9) d -= 9;
-        }
-        sum += d;
-        shouldDouble = !shouldDouble;
-    }
-    return sum % 10 === 0;
 }
 
 function pushFinding(findings, finding, maxFindings) {
@@ -59,6 +51,8 @@ export function scanRowsForDlp(sheets, settings) {
     let scannedCells = 0;
     const ssnPattern = /\b\d{3}-\d{2}-\d{4}\b/g;
     const cardLikePattern = /\b(?:\d[ -]?){13,19}\b/g;
+    const emailPattern = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
+    const ibanPattern = /\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b/gi;
 
     for (const [sheetName, rows] of Object.entries(sheets || {})) {
         if (!Array.isArray(rows)) continue;
@@ -88,11 +82,59 @@ export function scanRowsForDlp(sheets, settings) {
                 if (cfg.checkCreditCard) {
                     const candidates = value.match(cardLikePattern) || [];
                     for (const token of candidates) {
-                        if (luhnValid(token)) {
+                        if (validCreditCard.number(token).isValid) {
                             maskedColumns[sheetName] = maskedColumns[sheetName] || new Set();
                             maskedColumns[sheetName].add(columnName);
                             pushFinding(findings, {
                                 type: "credit_card",
+                                sheet: sheetName,
+                                row: rowIndex + 1,
+                                column: columnName,
+                                sample: token,
+                            }, cfg.maxFindings);
+                            break;
+                        }
+                    }
+                }
+                if (cfg.checkEmail) {
+                    const candidates = value.match(emailPattern) || [];
+                    for (const token of candidates) {
+                        if (isEmail(token)) {
+                            maskedColumns[sheetName] = maskedColumns[sheetName] || new Set();
+                            maskedColumns[sheetName].add(columnName);
+                            pushFinding(findings, {
+                                type: "email",
+                                sheet: sheetName,
+                                row: rowIndex + 1,
+                                column: columnName,
+                                sample: token,
+                            }, cfg.maxFindings);
+                            break;
+                        }
+                    }
+                }
+                if (cfg.checkPhone) {
+                    const phoneMatches = findPhoneNumbersInText(value, "US");
+                    if (phoneMatches.length > 0) {
+                        maskedColumns[sheetName] = maskedColumns[sheetName] || new Set();
+                        maskedColumns[sheetName].add(columnName);
+                        pushFinding(findings, {
+                            type: "phone",
+                            sheet: sheetName,
+                            row: rowIndex + 1,
+                            column: columnName,
+                            sample: phoneMatches[0].number.number,
+                        }, cfg.maxFindings);
+                    }
+                }
+                if (cfg.checkIban) {
+                    const candidates = value.match(ibanPattern) || [];
+                    for (const token of candidates) {
+                        if (isIBAN(token)) {
+                            maskedColumns[sheetName] = maskedColumns[sheetName] || new Set();
+                            maskedColumns[sheetName].add(columnName);
+                            pushFinding(findings, {
+                                type: "iban",
                                 sheet: sheetName,
                                 row: rowIndex + 1,
                                 column: columnName,

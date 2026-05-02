@@ -141,6 +141,12 @@ app.use((err, req, res, next) => {
   if (err?.code === "LIMIT_FILE_SIZE") {
     return res.status(413).json({ error: "file_too_large", maxMB: 100 });
   }
+  if (Number.isInteger(err?.statusCode) && err.statusCode >= 400 && err.statusCode < 600) {
+    return res.status(err.statusCode).json({
+      error: String(err?.message || "request_error"),
+      details: err?.details || undefined,
+    });
+  }
   const isDev = process.env.NODE_ENV !== "production";
   res.status(500).json({
     error: "internal_server_error",

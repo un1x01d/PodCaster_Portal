@@ -15,6 +15,7 @@ import { normalizeGroupEntitlements, groupHasFeature } from "../utils/entitlemen
 import { sendInvitationEmail, loadInviteEmailTemplate, normalizeInviteEmailTemplateForSave, renderInviteTemplate } from "../utils/smtpMailer.js";
 import { loadInvitationPolicy, saveInvitationPolicy, computeInvitationExpiryDate } from "../utils/invitationLifecycle.js";
 import { DLP_SETTINGS_KEY, normalizeDlpSettings } from "../utils/dlp.js";
+import { normalize2faDigits, normalize2faPeriod } from "../utils/twoFactor.js";
 import { randomBytes, createHash } from "crypto";
 
 const EXPOSE_TEMP_PASSWORDS = process.env.EXPOSE_TEMP_PASSWORDS
@@ -31,6 +32,8 @@ const AUTOSYNC_POLL_INTERVAL_SETTINGS_KEY = "autosync_poll_interval_settings";
 const METRICS_EXPOSURE_SETTINGS_KEY = "metrics_exposure_settings";
 const EMAIL_INGEST_SETTINGS_KEY = "email_ingest_settings";
 const EMAIL_INGEST_ALLOWLIST_KEY = "email_ingest_allowlist";
+const TWO_FACTOR_TOTP_SETTINGS_KEY = "two_factor_totp_settings";
+const SMS_OTP_CONFIG_KEY = "sms_otp_config";
 const RAW_INSIGHT_TRANSLATION_CACHE_TTL_MS = Number.parseInt(
     process.env.INSIGHT_TRANSLATION_CACHE_TTL_MS || `${60 * 60 * 1000}`,
     10
@@ -38,6 +41,9 @@ const RAW_INSIGHT_TRANSLATION_CACHE_TTL_MS = Number.parseInt(
 const DEFAULT_INSIGHT_TRANSLATION_CACHE_TTL_MINUTES = Number.isFinite(RAW_INSIGHT_TRANSLATION_CACHE_TTL_MS)
     ? Math.max(1, Math.round(RAW_INSIGHT_TRANSLATION_CACHE_TTL_MS / (60 * 1000)))
     : 60;
+const DEFAULT_TOTP_ISSUER = String(process.env.TWO_FACTOR_TOTP_ISSUER || "Data Insights Portal").trim() || "Data Insights Portal";
+const DEFAULT_TOTP_DIGITS = normalize2faDigits(process.env.TWO_FACTOR_TOTP_DIGITS || 6, 6);
+const DEFAULT_TOTP_PERIOD = normalize2faPeriod(process.env.TWO_FACTOR_TOTP_PERIOD || 30, 30);
 
 function normalizeRole(value, fallback = "user") {
     const normalized = String(value || fallback).trim().toLowerCase();
@@ -293,7 +299,7 @@ export async function listUsers(req, res) {
         }
     } catch (e) {
         console.error("listUsers error:", e);
-        res.status(500).json({ error: "internal_error" });
+        res.status(500).json({ error: "user_create_failed", details: { message: String(e?.message || "user_create_failed") } });
     }
 }
 
@@ -371,7 +377,7 @@ export async function createUser(req, res) {
         res.json(payload);
     } catch (e) {
         if (String(e).includes("unique constraint")) return res.status(400).json({ error: "Email exists" });
-        res.status(500).json({ error: "failed" });
+        res.status(500).json({ error: "users_list_failed", details: { message: String(e?.message || "users_list_failed") } });
     }
 }
 
@@ -734,7 +740,7 @@ export async function updateUser(req, res) {
             return res.status(400).json({ error: "Email exists" });
         }
         console.error("updateUser error:", e);
-        res.status(500).json({ error: "internal_server_error" });
+        res.status(500).json({ error: "user_update_failed", details: { message: String(e?.message || "user_update_failed") } });
     }
 }
 
@@ -784,7 +790,7 @@ export async function deleteUser(req, res) {
         res.json({ success: true });
     } catch (e) {
         console.error("deleteUser error:", e);
-        res.status(500).json({ error: "internal_error" });
+        res.status(500).json({ error: "user_delete_failed", details: { message: String(e?.message || "user_delete_failed") } });
     }
 }
 
@@ -812,6 +818,7 @@ export async function getGoogleIntegrationSetting(req, res) {
 
 export async function setGoogleIntegrationSetting(req, res) {
     try {
+        assertAllowedKeys(req.body || {}, ["enabled", "groupId"]);
         const scope = await resolveScopedGroupForIntegrationSettings(req);
         const enabled = !!req.body?.enabled;
         const key = appSettingKeyForGroup("google_integration", scope.groupId);
@@ -1059,6 +1066,7 @@ export async function getGoogleOauthSetting(req, res) {
 
 export async function setGoogleOauthSetting(req, res) {
     try {
+        assertAllowedKeys(req.body || {}, ["clientId", "clientSecret", "redirectUri", "frontendUrl", "groupId"]);
         const scope = await resolveScopedGroupForIntegrationSettings(req);
         const key = appSettingKeyForGroup("google_oauth", scope.groupId);
         const currentRaw = await getAppSettingValueWithScopedFallback("google_oauth", scope.groupId);
@@ -1101,6 +1109,7 @@ export async function getDropboxIntegrationSetting(req, res) {
 
 export async function setDropboxIntegrationSetting(req, res) {
     try {
+        assertAllowedKeys(req.body || {}, ["enabled", "groupId"]);
         const scope = await resolveScopedGroupForIntegrationSettings(req);
         const enabled = !!req.body?.enabled;
         const key = appSettingKeyForGroup("dropbox_integration", scope.groupId);
@@ -1143,6 +1152,7 @@ export async function getDropboxOauthSetting(req, res) {
 
 export async function setDropboxOauthSetting(req, res) {
     try {
+        assertAllowedKeys(req.body || {}, ["clientId", "clientSecret", "redirectUri", "frontendUrl", "groupId"]);
         const scope = await resolveScopedGroupForIntegrationSettings(req);
         const key = appSettingKeyForGroup("dropbox_oauth", scope.groupId);
         const currentRaw = await getAppSettingValueWithScopedFallback("dropbox_oauth", scope.groupId);
@@ -1196,6 +1206,7 @@ export async function getQuickbooksIntegrationSetting(req, res) {
 
 export async function setQuickbooksIntegrationSetting(req, res) {
     try {
+        assertAllowedKeys(req.body || {}, ["enabled", "groupId"]);
         const scope = await resolveScopedGroupForIntegrationSettings(req);
         const enabled = !!req.body?.enabled;
         const key = appSettingKeyForGroup("quickbooks_integration", scope.groupId);
@@ -1214,6 +1225,7 @@ export async function setQuickbooksIntegrationSetting(req, res) {
 
 export async function setOneDriveIntegrationSetting(req, res) {
     try {
+        assertAllowedKeys(req.body || {}, ["enabled", "groupId"]);
         const scope = await resolveScopedGroupForIntegrationSettings(req);
         const enabled = !!req.body?.enabled;
         const key = appSettingKeyForGroup("onedrive_integration", scope.groupId);
@@ -1256,6 +1268,7 @@ export async function getOneDriveOauthSetting(req, res) {
 
 export async function setOneDriveOauthSetting(req, res) {
     try {
+        assertAllowedKeys(req.body || {}, ["clientId", "clientSecret", "redirectUri", "frontendUrl", "groupId"]);
         const scope = await resolveScopedGroupForIntegrationSettings(req);
         const key = appSettingKeyForGroup("onedrive_oauth", scope.groupId);
         const currentRaw = await getAppSettingValueWithScopedFallback("onedrive_oauth", scope.groupId);
@@ -1317,6 +1330,7 @@ export async function getQuickbooksOauthSetting(req, res) {
 
 export async function setQuickbooksOauthSetting(req, res) {
     try {
+        assertAllowedKeys(req.body || {}, ["clientId", "clientSecret", "redirectUri", "frontendUrl", "environment", "companyId", "selectedDataTypes", "groupId"]);
         const scope = await resolveScopedGroupForIntegrationSettings(req);
         const key = appSettingKeyForGroup("quickbooks_oauth", scope.groupId);
         const currentRaw = await getAppSettingValueWithScopedFallback("quickbooks_oauth", scope.groupId);
@@ -1463,6 +1477,7 @@ export async function getSamlSsoSetting(req, res) {
 
 export async function setSamlSsoSetting(req, res) {
     try {
+        assertAllowedKeys(req.body || {}, ["idpSsoUrl", "idpEntityId", "spEntityId", "acsUrl", "nameIdFormat", "x509Certificate", "defaultRelayState", "groupId"]);
         const scope = await resolveScopedGroupForIntegrationSettings(req);
         const key = appSettingKeyForGroup("saml_sso", scope.groupId);
         const currentRaw = await getAppSettingValueWithScopedFallback("saml_sso", scope.groupId);
@@ -1555,6 +1570,7 @@ export async function getSmtpSetting(req, res) {
 
 export async function setSmtpSetting(req, res) {
     if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    assertAllowedKeys(req.body || {}, ["host", "port", "secure", "username", "password", "fromEmail", "fromName"]);
     const rows = await query("SELECT value FROM app_settings WHERE key = 'smtp_config' LIMIT 1", []);
     const current = decryptSmtpConfig(rows[0]?.value || {});
     const next = normalizeSmtpConfigForSave(current, req.body);
@@ -1586,6 +1602,7 @@ export async function getInviteEmailTemplateSetting(req, res) {
 
 export async function setInviteEmailTemplateSetting(req, res) {
     if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    assertAllowedKeys(req.body || {}, ["subject", "html", "text", "logoUrl"]);
     const current = await loadInviteEmailTemplate();
     const next = normalizeInviteEmailTemplateForSave(req.body || {}, current);
     await query(
@@ -1646,9 +1663,60 @@ function normalizeInsightTranslationCacheSettings(raw = {}) {
     };
 }
 
+function assertAllowedKeys(raw, allowedKeys = []) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+        const err = new Error("invalid_settings_payload");
+        err.statusCode = 400;
+        throw err;
+    }
+    const allowed = new Set(allowedKeys);
+    const unknown = Object.keys(raw).filter((k) => !allowed.has(k));
+    if (unknown.length) {
+        const err = new Error("unknown_settings_keys");
+        err.statusCode = 400;
+        err.details = { unknown };
+        throw err;
+    }
+}
+
 function normalizeMetricsExposureSettings(raw = {}) {
     return {
         enabled: raw?.enabled === true,
+    };
+}
+
+function normalizeTwoFactorTotpSettings(raw = {}) {
+    return {
+        issuer: String(raw?.issuer || DEFAULT_TOTP_ISSUER).trim() || DEFAULT_TOTP_ISSUER,
+        digits: normalize2faDigits(raw?.digits ?? DEFAULT_TOTP_DIGITS, DEFAULT_TOTP_DIGITS),
+        period: normalize2faPeriod(raw?.period ?? DEFAULT_TOTP_PERIOD, DEFAULT_TOTP_PERIOD),
+    };
+}
+
+function normalizeSmsOtpSettings(raw = {}) {
+    const cfg = raw && typeof raw === "object" ? raw : {};
+    const incomingToken = String(cfg?.authToken || "").trim();
+    return {
+        provider: "twilio",
+        enabled: cfg?.enabled !== false,
+        accountSid: String(cfg?.accountSid || "").trim(),
+        authToken: incomingToken && incomingToken !== "***" ? encryptSettingValue(incomingToken) : String(cfg?.authToken || "").trim(),
+        fromNumber: String(cfg?.fromNumber || "").trim(),
+        messagingServiceSid: String(cfg?.messagingServiceSid || "").trim(),
+    };
+}
+
+function serializeSmsOtpSettingsForRead(raw = {}) {
+    const cfg = raw && typeof raw === "object" ? raw : {};
+    const decrypted = decryptSettingValue(String(cfg?.authToken || "")).trim();
+    return {
+        provider: "twilio",
+        enabled: cfg?.enabled !== false,
+        accountSid: String(cfg?.accountSid || "").trim(),
+        authToken: decrypted ? "***" : "",
+        hasAuthToken: !!decrypted,
+        fromNumber: String(cfg?.fromNumber || "").trim(),
+        messagingServiceSid: String(cfg?.messagingServiceSid || "").trim(),
     };
 }
 
@@ -1712,6 +1780,7 @@ export async function getInsightTranslationCacheSetting(req, res) {
 
 export async function setInsightTranslationCacheSetting(req, res) {
     if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    assertAllowedKeys(req.body || {}, ["ttlMinutes"]);
     const next = normalizeInsightTranslationCacheSettings(req.body || {});
     await query(
         `INSERT INTO app_settings (key, value, updated_at)
@@ -1737,6 +1806,80 @@ export async function getMetricsExposureSetting(req, res) {
     return res.json(current);
 }
 
+export async function getTwoFactorTotpSetting(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [TWO_FACTOR_TOTP_SETTINGS_KEY]);
+    const current = normalizeTwoFactorTotpSettings(rows?.[0]?.value || {});
+    return res.json(current);
+}
+
+export async function setTwoFactorTotpSetting(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    assertAllowedKeys(req.body || {}, ["issuer", "digits", "period"]);
+    const next = normalizeTwoFactorTotpSettings(req.body || {});
+    await query(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+         ON CONFLICT (key)
+         DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+        [TWO_FACTOR_TOTP_SETTINGS_KEY, JSON.stringify(next)]
+    );
+    await writeAuditLog({
+        req,
+        action: "two_factor_totp.settings_updated",
+        resourceType: "app_settings",
+        resourceId: TWO_FACTOR_TOTP_SETTINGS_KEY,
+        metadata: next,
+    });
+    return res.json({ success: true, ...next });
+}
+
+export async function getSmsOtpSetting(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [SMS_OTP_CONFIG_KEY]);
+    const current = serializeSmsOtpSettingsForRead(rows?.[0]?.value || {});
+    return res.json(current);
+}
+
+export async function setSmsOtpSetting(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    assertAllowedKeys(req.body || {}, ["provider", "enabled", "accountSid", "authToken", "fromNumber", "messagingServiceSid"]);
+    const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [SMS_OTP_CONFIG_KEY]);
+    const currentRaw = rows?.[0]?.value && typeof rows[0].value === "object" ? rows[0].value : {};
+    const merged = {
+        ...currentRaw,
+        provider: "twilio",
+        enabled: req.body?.enabled === undefined ? currentRaw?.enabled !== false : req.body.enabled !== false,
+        accountSid: typeof req.body?.accountSid === "string" ? req.body.accountSid : currentRaw?.accountSid,
+        authToken: typeof req.body?.authToken === "string" ? req.body.authToken : currentRaw?.authToken,
+        fromNumber: typeof req.body?.fromNumber === "string" ? req.body.fromNumber : currentRaw?.fromNumber,
+        messagingServiceSid: typeof req.body?.messagingServiceSid === "string" ? req.body.messagingServiceSid : currentRaw?.messagingServiceSid,
+    };
+    const next = normalizeSmsOtpSettings(merged);
+    await query(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+         ON CONFLICT (key)
+         DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+        [SMS_OTP_CONFIG_KEY, JSON.stringify(next)]
+    );
+    await writeAuditLog({
+        req,
+        action: "sms_otp.settings_updated",
+        resourceType: "app_settings",
+        resourceId: SMS_OTP_CONFIG_KEY,
+        metadata: {
+            provider: "twilio",
+            enabled: next.enabled !== false,
+            accountSid: String(next.accountSid || ""),
+            hasAuthToken: !!decryptSettingValue(String(next.authToken || "")).trim(),
+            fromNumber: String(next.fromNumber || ""),
+            messagingServiceSid: String(next.messagingServiceSid || ""),
+        },
+    });
+    return res.json({ success: true, ...serializeSmsOtpSettingsForRead(next) });
+}
+
 export async function getDlpSetting(req, res) {
     if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
     const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [DLP_SETTINGS_KEY]);
@@ -1746,6 +1889,7 @@ export async function getDlpSetting(req, res) {
 
 export async function setDlpSetting(req, res) {
     if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    assertAllowedKeys(req.body || {}, ["mode", "checkSsn", "checkCreditCard", "checkEmail", "checkPhone", "checkIban", "maskDetectedColumns", "maxCellsScanned", "maxFindings"]);
     const next = normalizeDlpSettings(req.body || {});
     await query(
         `INSERT INTO app_settings (key, value, updated_at)
@@ -1766,6 +1910,7 @@ export async function setDlpSetting(req, res) {
 
 export async function setMetricsExposureSetting(req, res) {
     if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    assertAllowedKeys(req.body || {}, ["enabled"]);
     const next = normalizeMetricsExposureSettings(req.body || {});
     await query(
         `INSERT INTO app_settings (key, value, updated_at)
@@ -1793,6 +1938,7 @@ export async function getAutosyncPollIntervalSetting(req, res) {
 
 export async function setAutosyncPollIntervalSetting(req, res) {
     if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    assertAllowedKeys(req.body || {}, ["intervalMinutes", "pollMinutes", "minutes"]);
     const next = normalizeAutosyncPollIntervalSettings(req.body || {});
     await query(
         `INSERT INTO app_settings (key, value, updated_at)
@@ -1828,6 +1974,7 @@ export async function getEmailIngestSetting(req, res) {
 
 export async function setEmailIngestSetting(req, res) {
     const scope = await resolveScopedGroupForIntegrationSettings(req);
+    assertAllowedKeys(req.body || {}, ["enabled", "provider", "inboundDomain", "emailDomain", "routeMailbox", "mailbox", "addressPrefix", "customerAddressPrefix", "addressMode", "customerAddressMode", "routingMode", "routeMode", "requireApprovedSenders", "notes", "allowedSenderDomains", "allowedSenderDomainsCsv"]);
     const next = normalizeEmailIngestSettings(req.body || {});
     const allowedSenderDomains = normalizeEmailIngestSenderAllowlist(req.body || {});
     if (isPlatformAdminUser(req.user)) {
@@ -1886,6 +2033,7 @@ export async function getSsoSetting(req, res) {
 
 export async function setSsoSetting(req, res) {
     try {
+        assertAllowedKeys(req.body || {}, ["enabled", "groupId"]);
         const scope = await resolveScopedGroupForIntegrationSettings(req);
         if (!Number.isInteger(scope.groupId) || scope.groupId <= 0) {
             return res.status(400).json({ error: "group_id_required" });
@@ -2189,7 +2337,7 @@ export async function deleteGroup(req, res) {
     } catch (e) {
         await client.query("ROLLBACK");
         console.error("deleteGroup error:", e);
-        res.status(500).json({ error: "internal_error" });
+        res.status(500).json({ error: "group_create_failed", details: { message: String(e?.message || "group_create_failed") } });
     } finally {
         client.release();
     }
@@ -2423,7 +2571,7 @@ export async function toggleGroupAdmin(req, res) {
         res.json({ success: true });
     } catch (e) {
         console.error("toggleGroupAdmin error:", e);
-        res.status(500).json({ error: "internal_error" });
+        res.status(500).json({ error: "add_user_to_group_failed", details: { message: String(e?.message || "add_user_to_group_failed") } });
     }
 }
 

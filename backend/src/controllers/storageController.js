@@ -52,9 +52,16 @@ async function getSettingValueWithGlobalFallback(baseKey, groupId) {
   return globalRows[0]?.value || null;
 }
 
-async function loadScopedStorageSetting(req, baseKey) {
+async function loadScopedStorageSetting(req, baseKey, options = {}) {
   const scope = await resolveScopedGroupForIntegrationSettings(req);
-  const value = await getSettingValueWithGlobalFallback(baseKey, scope.groupId);
+  const useGlobalFallback = options?.globalFallback !== false;
+  const value = useGlobalFallback
+    ? await getSettingValueWithGlobalFallback(baseKey, scope.groupId)
+    : await (async () => {
+        const scopedKey = appSettingKeyForGroup(baseKey, scope.groupId);
+        const scopedRows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [scopedKey]);
+        return scopedRows.length ? (scopedRows[0]?.value || null) : null;
+      })();
   return { scope, value: value || {} };
 }
 
@@ -119,6 +126,22 @@ function buildStorageConfig(current, body, fields) {
     next[field.name] = incoming === undefined ? trimString(current?.[field.name], field.defaultValue || "") : trimString(incoming, field.defaultValue || "");
   }
   return next;
+}
+
+function assertAllowedStorageKeys(body, fields = []) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    const err = new Error("invalid_settings_payload");
+    err.statusCode = 400;
+    throw err;
+  }
+  const allowed = new Set(["groupId", ...fields.map((f) => f.name)]);
+  const unknown = Object.keys(body).filter((k) => !allowed.has(k));
+  if (unknown.length) {
+    const err = new Error("unknown_settings_keys");
+    err.statusCode = 400;
+    err.details = { unknown };
+    throw err;
+  }
 }
 
 function awsHexSha256(value) {
@@ -543,7 +566,7 @@ async function testStorageProbe(res, probeResult, scope) {
 
 export async function getSftpStorageSetting(req, res) {
   try {
-    const { scope, value } = await loadScopedStorageSetting(req, "sftp_storage");
+    const { scope, value } = await loadScopedStorageSetting(req, "sftp_storage", { globalFallback: false });
     return respondStorageSetting(res, scope, value, SFTP_FIELDS);
   } catch (err) {
     return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
@@ -552,7 +575,8 @@ export async function getSftpStorageSetting(req, res) {
 
 export async function setSftpStorageSetting(req, res) {
   try {
-    const { scope, value } = await loadScopedStorageSetting(req, "sftp_storage");
+    assertAllowedStorageKeys(req.body || {}, SFTP_FIELDS);
+    const { scope, value } = await loadScopedStorageSetting(req, "sftp_storage", { globalFallback: false });
     const next = buildStorageConfig(value, req.body || {}, SFTP_FIELDS);
     await saveScopedStorageSetting("sftp_storage", scope.groupId, next);
     return respondStorageSetting(res, scope, next, SFTP_FIELDS);
@@ -563,7 +587,7 @@ export async function setSftpStorageSetting(req, res) {
 
 export async function testSftpStorageSetting(req, res) {
   try {
-    const { scope, value } = await loadScopedStorageSetting(req, "sftp_storage");
+    const { scope, value } = await loadScopedStorageSetting(req, "sftp_storage", { globalFallback: false });
     const probeResult = await testSftpConnection(value);
     return testStorageProbe(res, probeResult, scope);
   } catch (err) {
@@ -582,6 +606,7 @@ export async function getGcsStorageSetting(req, res) {
 
 export async function setGcsStorageSetting(req, res) {
   try {
+    assertAllowedStorageKeys(req.body || {}, GCS_FIELDS);
     const { scope, value } = await loadScopedStorageSetting(req, "gcs_storage");
     const next = buildStorageConfig(value, req.body || {}, GCS_FIELDS);
     await saveScopedStorageSetting("gcs_storage", scope.groupId, next);
@@ -612,6 +637,7 @@ export async function getS3StorageSetting(req, res) {
 
 export async function setS3StorageSetting(req, res) {
   try {
+    assertAllowedStorageKeys(req.body || {}, S3_FIELDS);
     const { scope, value } = await loadScopedStorageSetting(req, "s3_storage");
     const next = buildStorageConfig(value, req.body || {}, S3_FIELDS);
     await saveScopedStorageSetting("s3_storage", scope.groupId, next);
@@ -642,6 +668,7 @@ export async function getAzureBlobStorageSetting(req, res) {
 
 export async function setAzureBlobStorageSetting(req, res) {
   try {
+    assertAllowedStorageKeys(req.body || {}, AZURE_FIELDS);
     const { scope, value } = await loadScopedStorageSetting(req, "azure_blob_storage");
     const next = buildStorageConfig(value, req.body || {}, AZURE_FIELDS);
     await saveScopedStorageSetting("azure_blob_storage", scope.groupId, next);
@@ -764,7 +791,7 @@ export async function importStorageProviderFile(req, res) {
     if (err?.statusCode === 413 || msg.includes("provider_file_too_large")) {
       return res.status(413).json({ error: "file_too_large", maxMB: Math.floor((err.maxBytes || 0) / (1024 * 1024)) || Math.floor(100 * 1024 * 1024 / (1024 * 1024)) });
     }
-    return res.status(500).json({ error: "storage_import_failed" });
+    return res.status(500).json({ error: "storage_import_failed", details: { message: String(err?.message || "storage_import_failed") } });
   } finally {
     if (tmpPath) {
       try { await fs.promises.rm(tmpPath, { force: true }); } catch {}

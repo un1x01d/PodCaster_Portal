@@ -708,10 +708,10 @@ test("system settings endpoints use platform admin helper consistently", async (
   assert.match(source, /if \(!isPlatformAdminUser\(req\.user\)\) return res\.status\(403\)\.json\(\{ error: "Forbidden" \}\);/);
 });
 
-test("DLP settings default to disabled and support column masking workflow", async () => {
+test("DLP settings default to feature-based rules and support column masking workflow", async () => {
   const dlp = await import(`../src/utils/dlp.js?t=${Date.now()}_dlp_defaults`);
   const normalized = dlp.normalizeDlpSettings({});
-  assert.equal(normalized.enabled, false);
+  assert.equal(normalized.mode, "block");
   assert.equal(normalized.maskDetectedColumns, false);
 
   const sheets = {
@@ -863,6 +863,53 @@ test("storage options are exposed in system settings and wire connection tests f
   assert.match(uiConfigSource, /Amazon S3/);
   assert.match(uiConfigSource, /Azure Blob Storage/);
   assert.match(cardSource, /export default function StorageOptionCard/);
+});
+
+test("admin settings reject unknown payload keys with structured error code", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const userControllerPath = path.join(__dirname, "..", "src", "controllers", "userController.js");
+  const storageControllerPath = path.join(__dirname, "..", "src", "controllers", "storageController.js");
+  const userSource = fs.readFileSync(userControllerPath, "utf8");
+  const storageSource = fs.readFileSync(storageControllerPath, "utf8");
+
+  assert.match(userSource, /function assertAllowedKeys\(raw, allowedKeys = \[\]\)/);
+  assert.match(userSource, /new Error\("unknown_settings_keys"\)/);
+  assert.match(storageSource, /function assertAllowedStorageKeys\(body, fields = \[\]\)/);
+  assert.match(storageSource, /new Error\("unknown_settings_keys"\)/);
+});
+
+test("import publish\\/reject handlers are idempotent for repeated state transitions", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const sheetControllerPath = path.join(__dirname, "..", "src", "controllers", "sheetController.js");
+  const source = fs.readFileSync(sheetControllerPath, "utf8");
+
+  assert.match(source, /if \(record\.status === "published"\) \{[\s\S]*idempotent: true/);
+  assert.match(source, /if \(record\.status === "rejected"\) \{[\s\S]*idempotent: true/);
+});
+
+test("metrics endpoint is exposure-gated and returns Prometheus text only when enabled", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const serverPath = path.join(__dirname, "..", "..", "backend", "server.js");
+  const source = fs.readFileSync(serverPath, "utf8");
+
+  assert.match(source, /app\.get\("\/metrics", async/);
+  assert.match(source, /metrics_exposure_settings/);
+  assert.match(source, /if \(!enabled\) return res\.status\(404\)\.send\("Not Found"\)/);
+  assert.match(source, /Content-Type", "text\/plain; version=0\.0\.4; charset=utf-8/);
+});
+
+test("DLP flow supports warn\\/block decision and mandatory audit logging", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const sheetControllerPath = path.join(__dirname, "..", "src", "controllers", "sheetController.js");
+  const source = fs.readFileSync(sheetControllerPath, "utf8");
+
+  assert.match(source, /action: "dlp\.findings_detected"/);
+  assert.match(source, /if \(scan\.findings\.length > 0 && dlp\.mode === "block"\)/);
+  assert.match(source, /applyDlpColumnMasking/);
 });
 
 test("customer-scoped OAuth settings do not fall back to global config", async () => {

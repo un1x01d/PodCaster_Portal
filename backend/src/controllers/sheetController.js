@@ -51,10 +51,29 @@ const IMPORT_JOB_LEASE_MS = Math.max(10000, Number.parseInt(process.env.IMPORT_J
 const IMPORT_JOB_POLL_MS = Math.max(500, Number.parseInt(process.env.IMPORT_JOB_POLL_MS || "2000", 10) || 2000);
 const IMPORT_JOB_MAX_CLAIMS_PER_TICK = Math.max(1, Number.parseInt(process.env.IMPORT_JOB_MAX_CLAIMS_PER_TICK || "1", 10) || 1);
 const IMPORT_JOB_PAYLOAD_TTL_HOURS = Math.max(1, Number.parseInt(process.env.IMPORT_JOB_PAYLOAD_TTL_HOURS || "24", 10) || 24);
+const IMPORT_WORKER_ADVISORY_LOCK_KEY = Number.parseInt(process.env.IMPORT_WORKER_ADVISORY_LOCK_KEY || "814001", 10);
+const AUTOSYNC_WORKER_ADVISORY_LOCK_KEY = Number.parseInt(process.env.AUTOSYNC_WORKER_ADVISORY_LOCK_KEY || "814002", 10);
 
 let importWorkerTimer = null;
 let importWorkerRunning = false;
 let importWorkerOwnerId = null;
+
+async function tryAdvisoryLock(lockKey) {
+    try {
+        const rows = await query("SELECT pg_try_advisory_lock($1)::boolean AS locked", [lockKey]);
+        return rows?.[0]?.locked === true;
+    } catch {
+        return false;
+    }
+}
+
+async function releaseAdvisoryLock(lockKey) {
+    try {
+        await query("SELECT pg_advisory_unlock($1)", [lockKey]);
+    } catch {
+        // no-op
+    }
+}
 
 function normalizeSheetCellValue(value) {
     if (value instanceof Date && !Number.isNaN(value.getTime())) {
@@ -877,23 +896,39 @@ async function executeImportFromParsedWorkbook({
             const group = groupRes.rows?.[0];
             if (group && groupHasFeature(group, "dlp")) {
                 const dlp = await loadDlpSettings(client);
-                if (dlp.enabled) {
-                    const scan = scanRowsForDlp(sheets, dlp);
-                    if (dlp.maskDetectedColumns && scan.findings.length > 0) {
-                        sheets = applyDlpColumnMasking(sheets, scan.maskedColumns);
-                    }
-                    if (scan.findings.length > 0 && dlp.mode === "block") {
-                        const err = toImportError("dlp_blocked", 403, "Import blocked by DLP policy.");
-                        err.details = {
+                const scan = scanRowsForDlp(sheets, dlp);
+                if (scan.findings.length > 0) {
+                    await writeAuditLog({
+                        req: { id: null, user, ip: null, headers: {} },
+                        actorUserId: user?.id || null,
+                        action: "dlp.findings_detected",
+                        resourceType: "report_source",
+                        resourceId: reportSource?.id || null,
+                        metadata: {
                             groupId,
+                            mode: dlp.mode,
                             findingsCount: scan.findings.length,
                             scannedCells: scan.scannedCells,
                             capped: scan.capped,
                             maskedColumns: scan.maskedColumns || {},
                             findings: scan.findings,
-                        };
-                        throw err;
-                    }
+                        },
+                    });
+                }
+                if (dlp.maskDetectedColumns && scan.findings.length > 0) {
+                    sheets = applyDlpColumnMasking(sheets, scan.maskedColumns);
+                }
+                if (scan.findings.length > 0 && dlp.mode === "block") {
+                    const err = toImportError("dlp_blocked", 403, "Import blocked by DLP policy.");
+                    err.details = {
+                        groupId,
+                        findingsCount: scan.findings.length,
+                        scannedCells: scan.scannedCells,
+                        capped: scan.capped,
+                        maskedColumns: scan.maskedColumns || {},
+                        findings: scan.findings,
+                    };
+                    throw err;
                 }
             }
         }
@@ -1362,6 +1397,8 @@ export function startImportJobWorker() {
         if (importWorkerRunning) return;
         importWorkerRunning = true;
         try {
+            const locked = await tryAdvisoryLock(IMPORT_WORKER_ADVISORY_LOCK_KEY);
+            if (!locked) return;
             await processImportJobsForCurrentDb(importWorkerOwnerId);
             await forEachActiveTenantPool(async (tenant) => {
                 await processImportJobsForCurrentDb(`${importWorkerOwnerId}:${tenant.db_name}`);
@@ -1369,6 +1406,7 @@ export function startImportJobWorker() {
         } catch (err) {
             console.error("[import_worker] tick failed:", err?.message || err);
         } finally {
+            await releaseAdvisoryLock(IMPORT_WORKER_ADVISORY_LOCK_KEY);
             importWorkerRunning = false;
         }
     }, IMPORT_JOB_POLL_MS);
@@ -1637,6 +1675,8 @@ async function runReportSourceAutosyncWorkerTick() {
     }
     autosyncWorkerRunning = true;
     try {
+        const locked = await tryAdvisoryLock(AUTOSYNC_WORKER_ADVISORY_LOCK_KEY);
+        if (!locked) return;
         await processAutosyncSourcesForCurrentDb(autosyncWorkerOwnerId);
         await forEachActiveTenantPool(async (tenant) => {
             await processAutosyncSourcesForCurrentDb(`${autosyncWorkerOwnerId}:${tenant.db_name}`);
@@ -1644,6 +1684,7 @@ async function runReportSourceAutosyncWorkerTick() {
     } catch (err) {
         console.error("[autosync_worker] tick failed:", err?.message || err);
     } finally {
+        await releaseAdvisoryLock(AUTOSYNC_WORKER_ADVISORY_LOCK_KEY);
         autosyncWorkerRunning = false;
         await scheduleNextAutosyncWorkerTick();
     }
@@ -1833,7 +1874,7 @@ export async function uploadSheet(req, res) {
             if (e.details && typeof e.details === "object") Object.assign(body, e.details);
             return res.status(e.statusCode).json(body);
         }
-        return res.status(500).json({ error: "upload_failed", message: e.message || "An unexpected error occurred during upload." });
+        return res.status(500).json({ error: "upload_failed", details: { message: e.message || "upload_failed" } });
     } finally {
         if (filePath) {
             fs.unlink(filePath, () => {});
@@ -2003,7 +2044,7 @@ export async function ingestEmailAttachment(req, res) {
             if (e.details && typeof e.details === "object") Object.assign(body, e.details);
             return res.status(e.statusCode).json(body);
         }
-        return res.status(500).json({ error: "email_ingest_failed", message: e.message || "An unexpected error occurred during email ingest." });
+        return res.status(500).json({ error: "email_ingest_failed", details: { message: e.message || "email_ingest_failed" } });
     }
 }
 
@@ -2076,7 +2117,10 @@ export async function getUniqueValues(req, res) {
         res.json(values);
     } catch (e) {
         console.error("Get unique values failed:", e);
-        res.status(500).json({ error: "failed" });
+        res.status(500).json({
+            error: "sheet_unique_values_failed",
+            details: { message: String(e?.message || "sheet_unique_values_failed") },
+        });
     }
 }
 
@@ -2457,6 +2501,17 @@ export async function publishReportSourceImport(req, res) {
             await client.query("ROLLBACK");
             return res.status(409).json({ error: "import_rejected" });
         }
+        if (record.status === "published") {
+            await client.query("ROLLBACK");
+            return res.json({
+                success: true,
+                idempotent: true,
+                import_id: importId,
+                report_source_id: record.report_source_id,
+                sheet_id: record.sheet_id,
+                status: "published",
+            });
+        }
 
         await client.query("UPDATE sheets SET active = TRUE WHERE id = $1", [record.sheet_id]);
         await client.query(
@@ -2558,6 +2613,17 @@ export async function rejectReportSourceImport(req, res) {
             await client.query("ROLLBACK");
             return res.status(409).json({ error: "published_import_cannot_be_rejected" });
         }
+        if (record.status === "rejected") {
+            await client.query("ROLLBACK");
+            return res.json({
+                success: true,
+                idempotent: true,
+                import_id: importId,
+                report_source_id: record.report_source_id,
+                sheet_id: record.sheet_id,
+                status: "rejected",
+            });
+        }
 
         await client.query(
             `UPDATE report_source_imports
@@ -2656,7 +2722,10 @@ export async function getSheetTabs(req, res) {
         res.json({ tabs });
     } catch (e) {
         console.error("get tabs failed:", e);
-        res.status(500).json({ error: "failed" });
+        res.status(500).json({
+            error: "sheet_tabs_failed",
+            details: { message: String(e?.message || "sheet_tabs_failed") },
+        });
     }
 }
 
@@ -2863,7 +2932,10 @@ export async function getSheetData(req, res) {
         res.json(rows);
     } catch (e) {
         console.error("Get sheet data failed:", e);
-        res.status(500).json({ error: "failed" });
+        res.status(500).json({
+            error: "sheet_data_fetch_failed",
+            details: { message: String(e?.message || "sheet_data_fetch_failed") },
+        });
     }
 }
 

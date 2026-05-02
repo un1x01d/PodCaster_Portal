@@ -175,10 +175,12 @@ export default function UserManagement({ token, user, sheetId }) {
   const [insightTranslationCache, setInsightTranslationCache] = useState({ ttlMinutes: 60 });
   const [insightTranslationCacheSaving, setInsightTranslationCacheSaving] = useState(false);
   const [dlpSettings, setDlpSettings] = useState({
-    enabled: false,
     mode: "block",
     checkSsn: true,
     checkCreditCard: true,
+    checkEmail: true,
+    checkPhone: true,
+    checkIban: true,
     maskDetectedColumns: false,
     configured: false,
   });
@@ -189,6 +191,23 @@ export default function UserManagement({ token, user, sheetId }) {
   const [metricsExposureSaving, setMetricsExposureSaving] = useState(false);
   const [autosyncInterval, setAutosyncInterval] = useState({ intervalMinutes: 5 });
   const [autosyncIntervalSaving, setAutosyncIntervalSaving] = useState(false);
+  const [twoFactorTotpSettings, setTwoFactorTotpSettings] = useState({
+    issuer: "",
+    digits: 6,
+    period: 30,
+  });
+  const [twoFactorTotpSaving, setTwoFactorTotpSaving] = useState(false);
+  const [smsOtpSettings, setSmsOtpSettings] = useState({
+    provider: "twilio",
+    enabled: true,
+    accountSid: "",
+    authToken: "",
+    hasAuthToken: false,
+    fromNumber: "",
+    messagingServiceSid: "",
+  });
+  const [smsOtpSaving, setSmsOtpSaving] = useState(false);
+  const [twoFactorSettingsOpen, setTwoFactorSettingsOpen] = useState(false);
   const metricsUrl = useMemo(() => `${String(API || "").replace(/\/+$/, "")}/metrics`, []);
   const [emailIngestConfig, setEmailIngestConfig] = useState({
     enabled: true,
@@ -226,7 +245,15 @@ export default function UserManagement({ token, user, sheetId }) {
   const [customerFormOpen, setCustomerFormOpen] = useState(false);
   const [customerFormMode, setCustomerFormMode] = useState("create");
   const [editingCustomerId, setEditingCustomerId] = useState(null);
-  const [selectedGroupId, setSelectedGroupId] = useState(null);
+  const [selectedGroupId, setSelectedGroupId] = useState(() => {
+    try {
+      const raw = localStorage.getItem("admin:selectedGroupId");
+      const parsed = Number.parseInt(String(raw || ""), 10);
+      return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+    } catch {
+      return null;
+    }
+  });
   const [groupMembers, setGroupMembers] = useState([]);
   const [groupAddUserId, setGroupAddUserId] = useState("");
   const [groupSettingsDraft, setGroupSettingsDraft] = useState(null);
@@ -346,7 +373,13 @@ export default function UserManagement({ token, user, sheetId }) {
 
   const fetchStorageSetting = async (provider) => {
     if (!canManageIntegrations) return;
-    if (!isSuperAdmin && !storageScopeParams.groupId && !emailIngestScopeParams.groupId && !selectedGroupId) return;
+    if (!storageScopeParams.groupId) {
+      updateStorageProvider(provider.key, (current) => ({
+        ...createStorageProviderState(provider),
+        open: !!current?.open,
+      }));
+      return;
+    }
     try {
       const res = await axios.get(`${API}/admin/settings/${provider.apiBase}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -393,7 +426,7 @@ export default function UserManagement({ token, user, sheetId }) {
     if (!canManageIntegrations) return;
     const current = storageSettings[provider.key];
     if (!current || current.saving) return;
-    if (!isSuperAdmin && !storageScopeParams.groupId && !selectedGroupId && !emailIngestScopeParams.groupId) {
+    if (!storageScopeParams.groupId) {
       alert("Select a customer first.");
       return;
     }
@@ -448,7 +481,7 @@ export default function UserManagement({ token, user, sheetId }) {
     if (!canManageIntegrations) return;
     const current = storageSettings[provider.key];
     if (!current || current.testing) return;
-    if (!isSuperAdmin && !storageScopeParams.groupId && !selectedGroupId && !emailIngestScopeParams.groupId) {
+    if (!storageScopeParams.groupId) {
       alert("Select a customer first.");
       return;
     }
@@ -1192,10 +1225,12 @@ export default function UserManagement({ token, user, sheetId }) {
       });
       const data = res?.data || {};
       setDlpSettings({
-        enabled: data.enabled !== false,
         mode: data.mode || "block",
         checkSsn: data.checkSsn !== false,
         checkCreditCard: data.checkCreditCard !== false,
+        checkEmail: data.checkEmail !== false,
+        checkPhone: data.checkPhone !== false,
+        checkIban: data.checkIban !== false,
         maskDetectedColumns: data.maskDetectedColumns === true,
         configured: data.configured === true,
       });
@@ -1229,6 +1264,46 @@ export default function UserManagement({ token, user, sheetId }) {
       });
     } catch (e) {
       console.error("fetchAutosyncIntervalSetting failed", e);
+    }
+  };
+
+  const fetchTwoFactorTotpSetting = async () => {
+    if (!isSuperAdmin || !token) return;
+    try {
+      const res = await axios.get(`${API}/admin/settings/two-factor-totp`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || {};
+      setTwoFactorTotpSettings({
+        issuer: String(data.issuer || ""),
+        digits: Number(data.digits || 6),
+        period: Number(data.period || 30),
+      });
+    } catch (e) {
+      if (e?.response?.status === 401) return;
+      console.error("fetchTwoFactorTotpSetting failed", e);
+    }
+  };
+
+  const fetchSmsOtpSetting = async () => {
+    if (!isSuperAdmin || !token) return;
+    try {
+      const res = await axios.get(`${API}/admin/settings/sms-otp`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || {};
+      setSmsOtpSettings({
+        provider: "twilio",
+        enabled: data.enabled !== false,
+        accountSid: String(data.accountSid || ""),
+        authToken: "",
+        hasAuthToken: data.hasAuthToken === true,
+        fromNumber: String(data.fromNumber || ""),
+        messagingServiceSid: String(data.messagingServiceSid || ""),
+      });
+    } catch (e) {
+      if (e?.response?.status === 401) return;
+      console.error("fetchSmsOtpSetting failed", e);
     }
   };
 
@@ -1300,10 +1375,12 @@ export default function UserManagement({ token, user, sheetId }) {
     setDlpSettingsSaving(true);
     try {
       const payload = {
-        enabled: dlpSettings.enabled !== false,
-        mode: ["block", "warn", "log"].includes(dlpSettings.mode) ? dlpSettings.mode : "block",
+        mode: ["block", "warn"].includes(dlpSettings.mode) ? dlpSettings.mode : "block",
         checkSsn: dlpSettings.checkSsn !== false,
         checkCreditCard: dlpSettings.checkCreditCard !== false,
+        checkEmail: dlpSettings.checkEmail !== false,
+        checkPhone: dlpSettings.checkPhone !== false,
+        checkIban: dlpSettings.checkIban !== false,
         maskDetectedColumns: dlpSettings.maskDetectedColumns === true,
       };
       const res = await axios.patch(`${API}/admin/settings/dlp`, payload, {
@@ -1311,10 +1388,12 @@ export default function UserManagement({ token, user, sheetId }) {
       });
       const data = res?.data || payload;
       setDlpSettings({
-        enabled: data.enabled !== false,
         mode: data.mode || "block",
         checkSsn: data.checkSsn !== false,
         checkCreditCard: data.checkCreditCard !== false,
+        checkEmail: data.checkEmail !== false,
+        checkPhone: data.checkPhone !== false,
+        checkIban: data.checkIban !== false,
         maskDetectedColumns: data.maskDetectedColumns === true,
         configured: true,
       });
@@ -1344,6 +1423,65 @@ export default function UserManagement({ token, user, sheetId }) {
       alert(e.response?.data?.error || "Failed to save autosync interval settings");
     } finally {
       setAutosyncIntervalSaving(false);
+    }
+  };
+
+  const saveTwoFactorTotpSetting = async () => {
+    if (!isSuperAdmin || twoFactorTotpSaving) return;
+    setTwoFactorTotpSaving(true);
+    try {
+      const payload = {
+        issuer: String(twoFactorTotpSettings.issuer || "").trim(),
+        digits: Number.parseInt(String(twoFactorTotpSettings.digits || "").trim(), 10) || 6,
+        period: Number.parseInt(String(twoFactorTotpSettings.period || "").trim(), 10) || 30,
+      };
+      const res = await axios.patch(`${API}/admin/settings/two-factor-totp`, payload, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setTwoFactorTotpSettings({
+        issuer: String(res?.data?.issuer || payload.issuer),
+        digits: Number(res?.data?.digits || payload.digits),
+        period: Number(res?.data?.period || payload.period),
+      });
+      alert("2FA TOTP settings saved");
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to save 2FA TOTP settings");
+    } finally {
+      setTwoFactorTotpSaving(false);
+    }
+  };
+
+  const saveSmsOtpSetting = async () => {
+    if (!isSuperAdmin || smsOtpSaving) return;
+    setSmsOtpSaving(true);
+    try {
+      const payload = {
+        provider: "twilio",
+        enabled: smsOtpSettings.enabled !== false,
+        accountSid: String(smsOtpSettings.accountSid || "").trim(),
+        authToken: String(smsOtpSettings.authToken || "").trim() || "***",
+        fromNumber: String(smsOtpSettings.fromNumber || "").trim(),
+        messagingServiceSid: String(smsOtpSettings.messagingServiceSid || "").trim(),
+      };
+      const res = await axios.patch(`${API}/admin/settings/sms-otp`, payload, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || {};
+      setSmsOtpSettings((prev) => ({
+        ...prev,
+        provider: "twilio",
+        enabled: data.enabled !== false,
+        accountSid: String(data.accountSid || payload.accountSid),
+        authToken: "",
+        hasAuthToken: data.hasAuthToken === true,
+        fromNumber: String(data.fromNumber || payload.fromNumber),
+        messagingServiceSid: String(data.messagingServiceSid || payload.messagingServiceSid),
+      }));
+      alert("2FA SMS settings saved");
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to save 2FA SMS settings");
+    } finally {
+      setSmsOtpSaving(false);
     }
   };
 
@@ -1601,6 +1739,18 @@ export default function UserManagement({ token, user, sheetId }) {
   }, [token]);
 
   useEffect(() => {
+    try {
+      if (Number.isInteger(Number(selectedGroupId)) && Number(selectedGroupId) > 0) {
+        localStorage.setItem("admin:selectedGroupId", String(selectedGroupId));
+      } else {
+        localStorage.removeItem("admin:selectedGroupId");
+      }
+    } catch {
+      // Ignore storage persistence errors in restricted browser contexts.
+    }
+  }, [selectedGroupId]);
+
+  useEffect(() => {
     if (!token || !canManageIntegrations) return;
     fetchGoogleOauthSetting();
     fetchDropboxOauthSetting();
@@ -1617,6 +1767,12 @@ export default function UserManagement({ token, user, sheetId }) {
     fetchAutosyncIntervalSetting();
   }, [token, canManageIntegrations, selectedGroupId, groups, isSuperAdmin]);
 
+  useEffect(() => {
+    if (!token || !isSuperAdmin || !twoFactorSettingsOpen) return;
+    fetchTwoFactorTotpSetting();
+    fetchSmsOtpSetting();
+  }, [token, isSuperAdmin, twoFactorSettingsOpen]);
+
 
 
   const fetchAllViews = async () => {
@@ -1632,10 +1788,19 @@ export default function UserManagement({ token, user, sheetId }) {
 
   const fetchUserViews = async (userId) => {
     if (!userId) return;
-    const res = await axios.get(`${API}/views/user-permissions/${userId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    setUserViews(new Set((res.data || []).map((v) => v.id)));
+    try {
+      const res = await axios.get(`${API}/views/user-permissions/${userId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setUserViews(new Set((res.data || []).map((v) => v.id)));
+    } catch (e) {
+      if (e?.response?.status === 401) {
+        setUserViews(new Set());
+        return;
+      }
+      console.error("fetchUserViews failed", e);
+      setUserViews(new Set());
+    }
   };
 
   const toggleUserViewPerm = async (viewId) => {
@@ -1679,7 +1844,7 @@ export default function UserManagement({ token, user, sheetId }) {
       fetchUserViews(selectedUserId);
     } catch (e) {
       console.error("syncUserAssignedViews failed", e);
-      throw e;
+      return;
     }
   };
 
@@ -2892,6 +3057,110 @@ export default function UserManagement({ token, user, sheetId }) {
             </div>
             <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
               <div className="flex items-center justify-between gap-2">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">2FA Configuration</div>
+                <button
+                  type="button"
+                  className="text-[10px] font-semibold text-slate-600 hover:text-slate-900"
+                  onClick={() => setTwoFactorSettingsOpen((prev) => !prev)}
+                >
+                  {twoFactorSettingsOpen ? "Collapse" : "Expand"}
+                </button>
+              </div>
+              {twoFactorSettingsOpen && (
+                <>
+                  <div className="rounded-md border border-slate-200 bg-slate-50 p-2 space-y-2">
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">TOTP</div>
+                    <div className="text-[10px] text-slate-500">
+                      Set the two TOTP values used by authenticator apps:
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Code Digits</label>
+                        <input
+                          className="input-premium py-1.5 text-[11px] font-semibold"
+                          type="number"
+                          min="6"
+                          max="8"
+                          placeholder="6"
+                          value={twoFactorTotpSettings.digits}
+                          onChange={(e) => setTwoFactorTotpSettings((prev) => ({ ...prev, digits: e.target.value }))}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Period (Seconds)</label>
+                        <input
+                          className="input-premium py-1.5 text-[11px] font-semibold"
+                          type="number"
+                          min="15"
+                          max="120"
+                          placeholder="30"
+                          value={twoFactorTotpSettings.period}
+                          onChange={(e) => setTwoFactorTotpSettings((prev) => ({ ...prev, period: e.target.value }))}
+                        />
+                      </div>
+                    </div>
+                    <div className="text-[10px] text-slate-500">
+                      Issuer is used as the app label: <span className="font-semibold text-slate-700">{twoFactorTotpSettings.issuer || "Data Insights Portal"}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={saveTwoFactorTotpSetting}
+                      disabled={twoFactorTotpSaving}
+                      className={`btn-premium bg-slate-800 text-white w-full py-1.5 text-[11px] ${twoFactorTotpSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                    >
+                      {twoFactorTotpSaving ? "Saving..." : "Save TOTP Settings"}
+                    </button>
+                  </div>
+                  <div className="rounded-md border border-slate-200 bg-slate-50 p-2 space-y-2">
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">SMS OTP (Twilio)</div>
+                    <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={smsOtpSettings.enabled !== false}
+                        onChange={(e) => setSmsOtpSettings((prev) => ({ ...prev, enabled: e.target.checked }))}
+                      />
+                      Enabled
+                    </label>
+                    <input
+                      className="input-premium py-1.5 text-[11px] font-semibold"
+                      placeholder="Twilio Account SID"
+                      value={smsOtpSettings.accountSid}
+                      onChange={(e) => setSmsOtpSettings((prev) => ({ ...prev, accountSid: e.target.value }))}
+                    />
+                    <input
+                      type="password"
+                      className="input-premium py-1.5 text-[11px] font-semibold"
+                      placeholder={smsOtpSettings.hasAuthToken ? "***" : "Twilio Auth Token"}
+                      value={smsOtpSettings.authToken}
+                      onChange={(e) => setSmsOtpSettings((prev) => ({ ...prev, authToken: e.target.value }))}
+                      autoComplete="new-password"
+                    />
+                    <input
+                      className="input-premium py-1.5 text-[11px] font-semibold"
+                      placeholder="From Number (+15551234567)"
+                      value={smsOtpSettings.fromNumber}
+                      onChange={(e) => setSmsOtpSettings((prev) => ({ ...prev, fromNumber: e.target.value }))}
+                    />
+                    <input
+                      className="input-premium py-1.5 text-[11px] font-semibold"
+                      placeholder="Messaging Service SID (optional)"
+                      value={smsOtpSettings.messagingServiceSid}
+                      onChange={(e) => setSmsOtpSettings((prev) => ({ ...prev, messagingServiceSid: e.target.value }))}
+                    />
+                    <button
+                      type="button"
+                      onClick={saveSmsOtpSetting}
+                      disabled={smsOtpSaving}
+                      className={`btn-premium bg-slate-800 text-white w-full py-1.5 text-[11px] ${smsOtpSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                    >
+                      {smsOtpSaving ? "Saving..." : "Save SMS OTP Settings"}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
                 <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Metrics Exposure</div>
                 <button
                   type="button"
@@ -2926,12 +3195,8 @@ export default function UserManagement({ token, user, sheetId }) {
               </div>
               {dlpSettingsOpen && (
                 <>
-                  <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700">
-                    <input type="checkbox" checked={dlpSettings.enabled !== false} onChange={(e) => setDlpSettings((prev) => ({ ...prev, enabled: e.target.checked }))} />
-                    Enable DLP globally
-                  </label>
                   <div className="grid grid-cols-3 gap-2">
-                    {["block", "warn", "log"].map((mode) => (
+                    {["block", "warn"].map((mode) => (
                       <label key={mode} className="inline-flex items-center gap-2 text-[10px] font-semibold text-slate-700 border border-slate-200 rounded-md px-2 py-1">
                         <input
                           type="radio"
@@ -2951,6 +3216,18 @@ export default function UserManagement({ token, user, sheetId }) {
                     <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700">
                       <input type="checkbox" checked={dlpSettings.checkCreditCard !== false} onChange={(e) => setDlpSettings((prev) => ({ ...prev, checkCreditCard: e.target.checked }))} />
                       Detect Credit Cards
+                    </label>
+                    <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+                      <input type="checkbox" checked={dlpSettings.checkEmail !== false} onChange={(e) => setDlpSettings((prev) => ({ ...prev, checkEmail: e.target.checked }))} />
+                      Detect Email
+                    </label>
+                    <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+                      <input type="checkbox" checked={dlpSettings.checkPhone !== false} onChange={(e) => setDlpSettings((prev) => ({ ...prev, checkPhone: e.target.checked }))} />
+                      Detect Phone
+                    </label>
+                    <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+                      <input type="checkbox" checked={dlpSettings.checkIban !== false} onChange={(e) => setDlpSettings((prev) => ({ ...prev, checkIban: e.target.checked }))} />
+                      Detect IBAN
                     </label>
                     <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 col-span-2">
                       <input type="checkbox" checked={dlpSettings.maskDetectedColumns === true} onChange={(e) => setDlpSettings((prev) => ({ ...prev, maskDetectedColumns: e.target.checked }))} />

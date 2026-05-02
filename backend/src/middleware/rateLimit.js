@@ -9,6 +9,7 @@ const twoFactorBuckets = new Map();
 const oauthPublicBuckets = new Map();
 const oauthExchangeBuckets = new Map();
 const uploadBuckets = new Map();
+const expensiveTenantBuckets = new Map();
 
 const MAX_ATTEMPTS = Number.parseInt(process.env.LOGIN_RATE_LIMIT_MAX || "10", 10);
 const WINDOW_MS = Number.parseInt(process.env.LOGIN_RATE_LIMIT_WINDOW_MS || `${15 * 60 * 1000}`, 10);
@@ -38,6 +39,9 @@ const OAUTH_EXCHANGE_MAX_BUCKETS = Number.parseInt(process.env.OAUTH_EXCHANGE_RA
 const UPLOAD_MAX_ATTEMPTS = Number.parseInt(process.env.UPLOAD_RATE_LIMIT_MAX || "5", 10);
 const UPLOAD_WINDOW_MS = Number.parseInt(process.env.UPLOAD_RATE_LIMIT_WINDOW_MS || `${15 * 60 * 1000}`, 10);
 const UPLOAD_MAX_BUCKETS = Number.parseInt(process.env.UPLOAD_RATE_LIMIT_MAX_BUCKETS || "10000", 10);
+const EXPENSIVE_TENANT_MAX_ATTEMPTS = Number.parseInt(process.env.EXPENSIVE_TENANT_RATE_LIMIT_MAX || "120", 10);
+const EXPENSIVE_TENANT_WINDOW_MS = Number.parseInt(process.env.EXPENSIVE_TENANT_RATE_LIMIT_WINDOW_MS || `${60 * 1000}`, 10);
+const EXPENSIVE_TENANT_MAX_BUCKETS = Number.parseInt(process.env.EXPENSIVE_TENANT_RATE_LIMIT_MAX_BUCKETS || "50000", 10);
 let lastPruneAt = 0;
 const DISTRIBUTED_RATE_LIMIT = String(
   process.env.RATE_LIMIT_DISTRIBUTED ?? (process.env.NODE_ENV === "production" ? "1" : "0")
@@ -72,6 +76,9 @@ function pruneExpiredBuckets(now) {
   }
   for (const [key, value] of uploadBuckets.entries()) {
     if (now > value.expiresAt) uploadBuckets.delete(key);
+  }
+  for (const [key, value] of expensiveTenantBuckets.entries()) {
+    if (now > value.expiresAt) expensiveTenantBuckets.delete(key);
   }
 }
 
@@ -130,6 +137,18 @@ function uploadKeyFromReq(req) {
   const ip = req.ip || req.connection?.remoteAddress || "unknown";
   const userId = req.user?.id ? String(req.user.id) : "anon";
   return `${ip}:${userId}`;
+}
+
+function expensiveTenantKeyFromReq(req) {
+  const route = String(req.route?.path || req.path || "").trim();
+  const groupId = String(
+    req.user?.customer_group_id
+    || req.user?.group_id
+    || req.query?.groupId
+    || req.body?.groupId
+    || "global"
+  ).trim();
+  return `${groupId}:${route}`;
 }
 
 function runBucketRateLimit({ map, key, now, maxAttempts, windowMs, maxBuckets, res, errorCode }) {
@@ -339,6 +358,22 @@ export function uploadRateLimit(req, res, next) {
     maxBuckets: UPLOAD_MAX_BUCKETS,
     res,
     errorCode: "too_many_upload_attempts",
+  });
+}
+
+export function expensiveTenantRateLimit(req, res, next) {
+  const key = expensiveTenantKeyFromReq(req);
+  const now = Date.now();
+  return runRateLimitMiddleware(req, res, next, {
+    scope: "expensive_tenant",
+    map: expensiveTenantBuckets,
+    key,
+    now,
+    maxAttempts: EXPENSIVE_TENANT_MAX_ATTEMPTS,
+    windowMs: EXPENSIVE_TENANT_WINDOW_MS,
+    maxBuckets: EXPENSIVE_TENANT_MAX_BUCKETS,
+    res,
+    errorCode: "too_many_expensive_requests",
   });
 }
 

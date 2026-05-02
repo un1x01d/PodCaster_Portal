@@ -486,7 +486,6 @@ export default function DashboardHome({
   pivotOn,
   twoOn,
   trendsOn,
-  metricsExposureEnabled = true,
   chatSection = null,
   insightSection = null,
   locale,
@@ -2047,7 +2046,6 @@ export default function DashboardHome({
         </div>
 
         <div className={`mt-6 grid grid-cols-1 ${chatSection ? "2xl:grid-cols-[minmax(0,1fr)_22rem]" : ""} gap-3`}>
-          {metricsExposureEnabled ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
             {orderedCardsWithOverrides.map((card) => {
               const isEditingCard = card.id === "pinnedMetrics" ? queryOpen : !!kpiEditorOpen[card.id];
@@ -2485,11 +2483,6 @@ export default function DashboardHome({
               );
             })}
           </div>
-          ) : (
-            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-[11px] font-semibold text-amber-800">
-              Metrics exposure is disabled by Super Admin.
-            </div>
-          )}
         {chatSection && (
           <div className="rounded-md border border-slate-200 bg-white p-2 shadow-sm h-[360px] max-h-[42vh] overflow-hidden">
             <div className="h-full min-h-0">{chatSection}</div>

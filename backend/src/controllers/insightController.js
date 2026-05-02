@@ -32,6 +32,7 @@ let INSIGHT_TRANSLATION_SETTINGS_LOCAL_CACHE = {
   value: { ttlMs: DEFAULT_INSIGHT_TRANSLATION_CACHE_TTL_MS },
 };
 let INSIGHT_AUDIO_CACHE_SCHEMA_READY = false;
+let INSIGHT_TRANSLATION_CACHE_SCHEMA_READY = false;
 
 function getInsightCacheEntry(cacheKey) {
   const found = INSIGHT_CACHE.get(cacheKey);
@@ -120,21 +121,95 @@ function clearInsightTranslationCacheByPrefix(prefix) {
   }
 }
 
-async function localizeInsightCards({ locale, cards, context, cacheKey, forceRefresh = false }) {
+async function ensureInsightTranslationCacheSchema() {
+  if (INSIGHT_TRANSLATION_CACHE_SCHEMA_READY) return;
+  await query(`
+    CREATE TABLE IF NOT EXISTS insight_translation_cache (
+      cache_key TEXT PRIMARY KEY,
+      sheet_id TEXT NOT NULL,
+      revision_key TEXT NOT NULL,
+      locale TEXT NOT NULL,
+      context TEXT NOT NULL,
+      cards_json JSONB NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await query(
+    `CREATE INDEX IF NOT EXISTS idx_insight_translation_cache_sheet_revision_locale
+       ON insight_translation_cache(sheet_id, revision_key, locale);`
+  );
+  await query(
+    `CREATE INDEX IF NOT EXISTS idx_insight_translation_cache_updated_at
+       ON insight_translation_cache(updated_at DESC);`
+  );
+  INSIGHT_TRANSLATION_CACHE_SCHEMA_READY = true;
+}
+
+async function getInsightTranslationCacheEntryDb({ translationCacheKey, ttlMs }) {
+  const cutoff = new Date(Date.now() - clampInsightTranslationCacheTtlMs(ttlMs)).toISOString();
+  const rows = await query(
+    `SELECT cards_json
+       FROM insight_translation_cache
+      WHERE cache_key = $1
+        AND updated_at >= $2
+      LIMIT 1`,
+    [translationCacheKey, cutoff]
+  );
+  const cards = rows?.[0]?.cards_json;
+  return Array.isArray(cards) ? cards : null;
+}
+
+async function setInsightTranslationCacheEntryDb({ translationCacheKey, sheetId, cacheKey, locale, context, cards }) {
+  await query(
+    `INSERT INTO insight_translation_cache
+      (cache_key, sheet_id, revision_key, locale, context, cards_json, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+     ON CONFLICT (cache_key)
+     DO UPDATE SET
+       cards_json = EXCLUDED.cards_json,
+       updated_at = CURRENT_TIMESTAMP`,
+    [translationCacheKey, String(sheetId), String(cacheKey), String(locale), String(context || "dashboard"), JSON.stringify(Array.isArray(cards) ? cards : [])]
+  );
+}
+
+async function clearInsightTranslationCacheByPrefixDb(prefix) {
+  await ensureInsightTranslationCacheSchema();
+  await query("DELETE FROM insight_translation_cache WHERE cache_key LIKE $1", [`${prefix}%`]);
+}
+
+async function localizeInsightCards({ sheetId, locale, cards, context, cacheKey, forceRefresh = false }) {
   if (isEnglishLocale(locale)) return cards;
   const normalizedLocale = normalizeLocale(locale);
   const translationCacheKey = makeInsightTranslationCacheKey({ cacheKey, locale: normalizedLocale, context });
+  const settings = await loadInsightTranslationCacheSettings();
+  await ensureInsightTranslationCacheSchema();
   if (!forceRefresh) {
     const cached = getInsightTranslationCacheEntry(translationCacheKey);
     if (cached) return cached;
+    const persisted = await getInsightTranslationCacheEntryDb({
+      translationCacheKey,
+      ttlMs: settings.ttlMs,
+    });
+    if (persisted) {
+      setInsightTranslationCacheEntry(translationCacheKey, persisted, settings.ttlMs);
+      return persisted;
+    }
   }
   const translatedCards = await translateDashboardCards({
     locale: normalizedLocale,
     cards: cards || [],
     context: "insight-cards",
   });
-  const settings = await loadInsightTranslationCacheSettings();
   setInsightTranslationCacheEntry(translationCacheKey, translatedCards, settings.ttlMs);
+  await setInsightTranslationCacheEntryDb({
+    translationCacheKey,
+    sheetId,
+    cacheKey,
+    locale: normalizedLocale,
+    context,
+    cards: translatedCards,
+  });
   return translatedCards;
 }
 
@@ -1335,10 +1410,12 @@ export async function getInsights(req, res) {
   });
   if (forceRefresh) {
     clearInsightTranslationCacheByPrefix(`${cacheKey}::`);
+    await clearInsightTranslationCacheByPrefixDb(`${cacheKey}::`);
   }
   const cached = forceRefresh ? null : getInsightCacheEntry(cacheKey);
   if (cached) {
     const localizedCards = await localizeInsightCards({
+      sheetId,
       locale,
       cards: cached.cards || [],
       context,
@@ -1383,6 +1460,7 @@ export async function getInsights(req, res) {
   };
   setInsightCacheEntry(cacheKey, payload);
   const translatedCards = await localizeInsightCards({
+    sheetId,
     locale,
     cards: payload.cards || [],
     context,
