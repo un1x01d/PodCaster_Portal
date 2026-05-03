@@ -1,7 +1,7 @@
 import { query } from "../config/db.js";
 import { normalizeGroupEntitlements, groupHasFeature } from "./entitlements.js";
 
-const OPENAI_INPUT_COST_PER_1M = Number.parseFloat(process.env.OPENAI_INPUT_COST_PER_1M || "0.10");
+const OPENAI_INPUT_COST_PER_1M = Number.parseFloat(process.env.OPENAI_INPUT_COST_PER_1M || "0.05");
 const OPENAI_OUTPUT_COST_PER_1M = Number.parseFloat(process.env.OPENAI_OUTPUT_COST_PER_1M || "0.40");
 
 function currentPeriodMonth(date = new Date()) {

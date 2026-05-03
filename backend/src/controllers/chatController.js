@@ -5,6 +5,7 @@ import { checkSheetAccess, hasReportSourceOwnerAccess, isPlatformAdminUser, load
 import { estimateOpenAiCostUsd, recordAiUsage, reserveAiQueryForSheet } from "../utils/aiQuota.js";
 import { loadAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
 import { groupHasFeature } from "../utils/entitlements.js";
+import { buildChatCompletionRequestBody, extractOpenAiAssistantText, getOpenAiResponseDiagnostics, minCompletionTokensForModel } from "../utils/openAiCompat.js";
 export { checkSheetAccess } from "../utils/authorization.js";
 
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
@@ -1025,7 +1026,7 @@ async function computeDeterministicAnswer(operation, rows, targetColumn, groupBy
       if (val !== null) yearlySums[year] = (yearlySums[year] || 0) + val;
     });
 
-    const years = Object.keys(yearlySums).map(Number).sort((a, b) => a - b);
+    const years = dropImplicitTrailingPartialYear(Object.keys(yearlySums), queryText);
     if (years.length >= 2) {
       let comparisonText = "";
       if (locale.startsWith("uk")) {
@@ -1061,15 +1062,15 @@ async function computeDeterministicAnswer(operation, rows, targetColumn, groupBy
       if (locale.startsWith("uk")) {
         comparisonText += `\n**Підсумок:**\n`;
         comparisonText += `• Середньорічне зростання: ${avgGrowth >= 0 ? "+" : ""}${avgGrowth.toFixed(2)}%\n`;
-        comparisonText += `• Кращий рік: ${bestYear.year} (${avgGrowth >= 0 ? "+" : ""}${bestYear.change_percent.toFixed(2)}% зростання)`;
+        comparisonText += `• Кращий рік: ${bestYear.year} (${bestYear.change_percent >= 0 ? "+" : ""}${bestYear.change_percent.toFixed(2)}% зростання)`;
       } else if (locale.startsWith("ru")) {
         comparisonText += `\n**Итог:**\n`;
         comparisonText += `• Среднегодовой рост: ${avgGrowth >= 0 ? "+" : ""}${avgGrowth.toFixed(2)}%\n`;
-        comparisonText += `• Лучший год: ${bestYear.year} (${avgGrowth >= 0 ? "+" : ""}${bestYear.change_percent.toFixed(2)}% роста)`;
+        comparisonText += `• Лучший год: ${bestYear.year} (${bestYear.change_percent >= 0 ? "+" : ""}${bestYear.change_percent.toFixed(2)}% роста)`;
       } else {
         comparisonText += `\n**Summary:**\n`;
         comparisonText += `• Average Annual Growth: ${avgGrowth >= 0 ? "+" : ""}${avgGrowth.toFixed(2)}%\n`;
-        comparisonText += `• Best Performing Year: ${bestYear.year} (${avgGrowth >= 0 ? "+" : ""}${bestYear.change_percent.toFixed(2)}% growth)`;
+        comparisonText += `• Best Performing Year: ${bestYear.year} (${bestYear.change_percent >= 0 ? "+" : ""}${bestYear.change_percent.toFixed(2)}% growth)`;
       }
 
       return { answer: comparisonText.trim(), previewRows };
@@ -1289,6 +1290,35 @@ function projectRowsToHeaders(rows = [], headers = []) {
   });
 }
 
+function extractExplicitYears(text = "") {
+  return new Set(
+    String(text || "")
+      .match(/\b(19\d{2}|20\d{2}|21\d{2}|2200)\b/g)
+      ?.map((year) => Number(year)) || []
+  );
+}
+
+function shouldIncludeTrailingPartialYear(queryText = "", year = null, now = new Date()) {
+  const numericYear = Number(year);
+  if (!Number.isInteger(numericYear)) return false;
+  if (extractExplicitYears(queryText).has(numericYear)) return true;
+  return /\b(current|this|latest|partial|ytd|year\s*to\s*date|year-to-date)\s+year\b|\bytd\b|поточн(ий|ого)\s+р(і|о)к|текущ(ий|его)\s+год|останн(ій|ього)\s+р(і|о)к|последн(ий|его)\s+год/i.test(String(queryText || ""));
+}
+
+function dropImplicitTrailingPartialYear(years = [], queryText = "", now = new Date()) {
+  const sortedYears = (Array.isArray(years) ? years : [])
+    .map((year) => Number(year))
+    .filter((year) => Number.isInteger(year))
+    .sort((a, b) => a - b);
+  if (sortedYears.length < 2) return sortedYears;
+  const latestYear = sortedYears[sortedYears.length - 1];
+  const currentYear = now.getFullYear();
+  if (latestYear >= currentYear && !shouldIncludeTrailingPartialYear(queryText, latestYear, now)) {
+    return sortedYears.slice(0, -1);
+  }
+  return sortedYears;
+}
+
 function cleanAITechnicalNoise(text = "") {
   let out = String(text || "");
   // Remove technical sheet references only if they match exactly (e.g., Sheet1, Sheet2.00)
@@ -1302,8 +1332,16 @@ function cleanAITechnicalNoise(text = "") {
   return out.replace(/\s{2,}/g, " ").replace(/\s\./g, ".").trim();
 }
 
+function normalizeChatMarkdownText(answer = "") {
+  return String(answer || "")
+    .replace(/\\r?\\n/g, "\n")
+    .replace(/\s+\*\*([^*\n:]{1,80}):\*\*/g, "\n$1:")
+    .replace(/\*\*([^*\n]+)\*\*/g, "$1")
+    .replace(/\s+•\s+/g, "\n• ");
+}
+
 function formatAnswerWithBullets(answer = "") {
-  const text = typeof answer === "string" ? answer.trim() : "";
+  const text = typeof answer === "string" ? normalizeChatMarkdownText(answer).trim() : "";
   if (!text) return "";
   // Do not auto-bullet plain numeric prose with decimals; it can split values like 34.91 into 34 + 91.
   if (!text.includes("\n") && /\d\.\d/.test(text)) return text;
@@ -1406,6 +1444,13 @@ function stripApproximationWords(answer = "") {
     .trim();
 }
 
+function isClarificationOrApologyAnswer(answer = "") {
+  const text = String(answer || "").toLowerCase();
+  return /(^|\b)(i apologize|sorry|please confirm|please clarify|which metric|what metric|cannot answer|can't answer|do not have a clear|no clear requested metric)\b/i.test(text)
+    || /(будь ласка,\s*підтверд|яку метрик|немає чітк|вибач|уточніть|підтвердіть)/i.test(text)
+    || /(пожалуйста,\s*подтверд|какую метрик|нет четк|извин|уточните|подтвердите)/i.test(text);
+}
+
 function looksLikeDateHeader(header = "") {
   return /date|time|day|month|year|period|quarter/i.test(String(header));
 }
@@ -1466,9 +1511,10 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
   const temperature = Number(runtime?.openaiTemperature);
   const safeTemperature = Number.isFinite(temperature) ? Math.max(0, Math.min(2, temperature)) : 0.1;
   const runtimeMaxOutput = Number(runtime?.openaiMaxOutputTokens);
-  const effectiveMaxTokens = Number.isFinite(runtimeMaxOutput)
+  const configuredMaxTokens = Number.isFinite(runtimeMaxOutput)
     ? Math.min(Math.max(32, runtimeMaxOutput), Math.max(32, Number(maxOutputTokens || 800)))
     : Number(maxOutputTokens || 800);
+  const effectiveMaxTokens = minCompletionTokensForModel(model, configuredMaxTokens, 800, 768);
   const inputCostPer1M = Number(runtime?.openaiInputCostPer1M);
   const outputCostPer1M = Number(runtime?.openaiOutputCostPer1M);
   const promptRows = sanitizePromptRows(sampleRows);
@@ -1485,8 +1531,9 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
     "Autonomous Self-Teaching: If a user query is vague, missing a metric, or you 'do not know' the question (e.g., 'What's the biggest?'):",
     " 1. Discovery: Scan 'available_columns' and 'sample_rows' for the most significant numeric column (the 'Primary Metric') and the most descriptive text column (the 'Primary Dimension').",
     " 2. Deduction: Assume the user is asking for the Top N or Sum of that Primary Metric grouped by that Primary Dimension.",
-    " 3. Explanation: In your 'answer', briefly state: 'I assumed you were asking about [Metric] by [Dimension] based on the data structure.'",
-    " 4. Never Fail: Do not ask for clarification if a reasonable business assumption can be made from the data DNA.",
+    " 3. Populate operation, target_column, group_by, and limit for that assumed analysis.",
+    " 4. Answer with the result framing directly; do not apologize, do not ask the user to confirm a metric, and do not announce what you are about to answer.",
+    " 5. Never Fail: Do not ask for clarification if a reasonable business assumption can be made from the data DNA.",
     "User Input: You may receive queries in ANY language (English, Russian, Ukrainian, Spanish, etc.).",
     "Conversational Context: Use the 'conversation_history' to understand follow-up questions. If a user asks 'what about 2022?', use previous context to know they mean 'Total Revenue' or whatever was previously discussed.",
     "Internal Mapping: Regardless of the query language, map the user's concepts to the 'available_columns'.",
@@ -1495,6 +1542,7 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
     "Column matching rule: In that case set operation='none' and answer with a clear 'cannot find a close matching column' message in output_locale.",
     "Return ONLY valid JSON.",
     "Language: Always provide 'answer' in the requested output_locale, regardless of the user's message language.",
+    "Single-language rule: The answer must be entirely in output_locale. Do not start with English phrases like 'I apologize' when output_locale is not English.",
     "Internal Logic: Map user terms to available_columns for operations, but keep final explanation in output_locale.",
     "Date handling: Always output dates as MM-DD-YYYY.",
     "Date handling: Never include time values or timezone references.",
@@ -1557,21 +1605,21 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  const isReasoningModel = model.startsWith("o");
   const startedAt = Date.now();
 
   let resp;
   try {
+    const requestBody = buildChatCompletionRequestBody({
+      model,
+      maxCompletionTokens: effectiveMaxTokens,
+      responseFormat: { type: "json_object" },
+      temperature: safeTemperature,
+      messages: [{ role: "system", content: system }, { role: "user", content: JSON.stringify(userPrompt) }],
+    });
     resp = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model,
-        temperature: isReasoningModel ? 1 : safeTemperature,
-        max_tokens: effectiveMaxTokens,
-        response_format: { type: "json_object" },
-        messages: [{ role: "system", content: system }, { role: "user", content: JSON.stringify(userPrompt) }]
-      }),
+      body: JSON.stringify(requestBody),
       signal: controller.signal,
     });
   } finally {
@@ -1586,11 +1634,16 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
   const promptTokens = Number(usage.prompt_tokens || 0);
   const completionTokens = Number(usage.completion_tokens || 0);
   const totalTokens = Number(usage.total_tokens || (promptTokens + completionTokens) || 0);
-  const content = json?.choices?.[0]?.message?.content;
-  if (!content || typeof content !== "string") {
-    throw new Error("openai_invalid_response");
+  const content = extractOpenAiAssistantText(json);
+  if (!content) {
+    throw new Error(`openai_invalid_response:${getOpenAiResponseDiagnostics(json)}`);
   }
-  const parsed = JSON.parse(content);
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    throw new Error(`openai_invalid_json_response:${content.slice(0, 240)}`);
+  }
   const validated = validateAiResponseSchemaStrict(parsed);
   const estimatedCostUsd = estimateOpenAiCostUsd(promptTokens, completionTokens, {
     inputPer1M: inputCostPer1M,
@@ -2124,11 +2177,14 @@ export async function synthesizeChatAudioBuffer({ text, locale, runtime = null }
 
   const ttsCfg = await loadChatTtsSettings();
   const lang = (locale || "en").split("-")[0].toLowerCase();
-  const voice = String(ttsCfg?.voices?.[lang] || ttsCfg?.voices?.default || "nova");
+  const runtimeVoice = String(runtime?.chatAudioTtsVoice || "").trim();
+  const runtimeModelEn = String(runtime?.chatAudioTtsModelEn || "").trim();
+  const runtimeModelDefault = String(runtime?.chatAudioTtsModelDefault || "").trim();
+  const voice = String(runtimeVoice || ttsCfg?.voices?.[lang] || ttsCfg?.voices?.default || "nova");
   const model = String(lang === "en"
-    ? (ttsCfg?.models?.en || "tts-1")
-    : (ttsCfg?.models?.[lang] || ttsCfg?.models?.default || "tts-1-hd"));
-  const speedNum = Number(ttsCfg?.speed?.[lang] ?? ttsCfg?.speed?.default ?? 0.9);
+    ? (runtimeModelEn || ttsCfg?.models?.en || "tts-1")
+    : (runtimeModelDefault || ttsCfg?.models?.[lang] || ttsCfg?.models?.default || "tts-1"));
+  const speedNum = Number(runtime?.chatAudioTtsSpeed ?? ttsCfg?.speed?.[lang] ?? ttsCfg?.speed?.default ?? 0.9);
   const speed = Number.isFinite(speedNum) && speedNum > 0 ? speedNum : 0.9;
   
   let cleanedText = naturalizeNumbersForTTS(speechText, locale);
@@ -2313,6 +2369,7 @@ export async function chatQuery(req, res) {
     let resolvedTarget = await resolveColumn(aiHeaders, ai?.target_column, sampleRows);
     let resolvedGroupBy = await resolveColumn(aiHeaders, ai?.group_by, sampleRows);
     const msgLower = String(message || "").toLowerCase();
+    const aiClarifiedInsteadOfAnswering = isClarificationOrApologyAnswer(ai?.answer);
     const asksProductRanking = /\b(top|highest|best|selling|sold|product|products)\b/.test(msgLower)
       || /топ|продаж|продукт|товар/i.test(msgLower);
     if (asksProductRanking) {
@@ -2325,6 +2382,25 @@ export async function chatQuery(req, res) {
       }
     }
 
+    if (resolvedOperation === "none" || aiClarifiedInsteadOfAnswering) {
+      const inferredTarget = inferLikelyMetricColumn(aiHeaders, sampleRows, message, [ai?.target_column]);
+      const inferredGroupBy = inferredTarget
+        ? inferLikelyDimensionColumn(aiHeaders, sampleRows, [inferredTarget])
+        : null;
+      const inferredOperation = inferAggregateOperationFromMessage(message, ai) || (inferredTarget && inferredGroupBy ? "top_n" : (inferredTarget ? "sum" : "count"));
+      resolvedOperation = inferredOperation;
+      if (!resolvedTarget && inferredTarget) resolvedTarget = inferredTarget;
+      if (!resolvedGroupBy && inferredGroupBy && ["top_n", "sum", "avg", "max", "min"].includes(resolvedOperation)) {
+        resolvedGroupBy = inferredGroupBy;
+      }
+      if (!Number.isFinite(Number(ai?.limit)) && resolvedOperation === "top_n") {
+        ai.limit = 5;
+      }
+      if (aiClarifiedInsteadOfAnswering) {
+        ai.answer = "";
+      }
+    }
+
     const opNeedsTarget = new Set(["sum", "avg", "max", "min", "top_n"]);
     if (opNeedsTarget.has(resolvedOperation) && !resolvedTarget) {
       const notFoundText = isEnglishLocale(locale)
@@ -2332,9 +2408,9 @@ export async function chatQuery(req, res) {
         : (
           (await translateDashboardItems({
             locale,
-            items: [{ key: "not_found", value: "I can't find a close matching column for this metric in the current data." }],
+            items: [{ key: "not_found", text: "I can't find a close matching column for this metric in the current data." }],
             context: "chat-answer",
-          }))?.not_found
+          }))?.find((item) => item.key === "not_found")?.text
           || "I can't find a close matching column for this metric in the current data."
         );
       return res.json({
@@ -2400,7 +2476,7 @@ export async function chatQuery(req, res) {
         });
     }
 
-    const numericOps = new Set(["count", "sum", "avg", "max", "min", "top_n"]);
+    const numericOps = new Set(["count", "sum", "avg", "max", "min", "top_n", "year_over_year"]);
     let exec = null;
     let chart = (["chart", "plot", "trend"].includes(ai?.operation) && ai?.chart) ? {
       dateColumn: await resolveColumn(aiHeaders, ai.chart.date_column, sampleRows),
@@ -2498,10 +2574,10 @@ export async function chatQuery(req, res) {
     if (!isEnglishLocale(locale) && answer) {
       const translated = await translateDashboardItems({
         locale,
-        items: [{ key: "chat_answer", value: String(answer) }],
+        items: [{ key: "chat_answer", text: String(answer) }],
         context: "chat-answer",
       });
-      const translatedText = translated?.chat_answer;
+      const translatedText = translated?.find((item) => item.key === "chat_answer")?.text;
       if (typeof translatedText === "string" && translatedText.trim()) {
         answer = translatedText.trim();
       }

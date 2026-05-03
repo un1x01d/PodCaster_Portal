@@ -1,4 +1,5 @@
 import { loadAiRuntimeSettings } from "./aiRuntimeSettings.js";
+import { buildChatCompletionRequestBody, extractOpenAiAssistantText, minCompletionTokensForModel } from "./openAiCompat.js";
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
 const OPENAI_MODEL = process.env.OPENAI_MODEL;
 if (!OPENAI_MODEL) throw new Error("OPENAI_MODEL is required");
@@ -163,9 +164,11 @@ async function callOpenAITranslation({ locale, items, context }) {
   if (inFlight) return inFlight.then((result) => result.map((item) => ({ ...item })));
 
   const runtime = await loadAiRuntimeSettings(null);
-  const model = String(runtime?.openaiModel || OPENAI_MODEL);
+  const model = String(runtime?.translationOpenaiModel || runtime?.openaiModel || OPENAI_MODEL);
   const baseUrl = String(runtime?.openaiBaseUrl || OPENAI_BASE_URL).replace(/\/+$/, "");
   const timeoutMs = Number(runtime?.openaiTimeoutMs || OPENAI_TIMEOUT_MS);
+  const temperature = Number(runtime?.translationTemperature);
+  const maxOutputTokens = Number(runtime?.translationMaxOutputTokens);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const promise = (async () => {
@@ -203,6 +206,24 @@ async function callOpenAITranslation({ locale, items, context }) {
       },
     };
 
+    const requestBody = buildChatCompletionRequestBody({
+      model,
+      maxCompletionTokens: minCompletionTokensForModel(model, maxOutputTokens, 512, 512),
+      responseFormat: { type: "json_object" },
+      temperature: Number.isFinite(temperature) ? temperature : 0,
+      messages: [
+        {
+          role: "system",
+          content: [
+            "You are a precise translation engine for dashboard UI copy.",
+            "Return only JSON.",
+            "Preserve all provided tokens, placeholders, and values exactly.",
+          ].join(" "),
+        },
+        { role: "user", content: JSON.stringify(payload) },
+      ],
+    });
+
     const resp = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
       signal: controller.signal,
@@ -210,22 +231,7 @@ async function callOpenAITranslation({ locale, items, context }) {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        model,
-        temperature: 0,
-        response_format: { type: "json_object" },
-        messages: [
-          {
-            role: "system",
-            content: [
-              "You are a precise translation engine for dashboard UI copy.",
-              "Return only JSON.",
-              "Preserve all provided tokens, placeholders, and values exactly.",
-            ].join(" "),
-          },
-          { role: "user", content: JSON.stringify(payload) },
-        ],
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     if (!resp.ok) {
@@ -234,7 +240,7 @@ async function callOpenAITranslation({ locale, items, context }) {
     }
 
     const json = await resp.json();
-    const content = json?.choices?.[0]?.message?.content || "{}";
+    const content = extractOpenAiAssistantText(json) || "{}";
     const parsed = JSON.parse(content);
     const translated = new Map(
       Array.isArray(parsed?.translations)

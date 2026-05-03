@@ -4,6 +4,7 @@ import { isEnglishLocale, normalizeLocale, translateDashboardCards } from "../ut
 import { checkSheetAccess, hasReportSourceOwnerAccess, loadSheetPermissionSets } from "../utils/authorization.js";
 import { synthesizeChatAudioBuffer } from "./chatController.js";
 import { loadAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
+import { buildChatCompletionRequestBody, extractOpenAiAssistantText, minCompletionTokensForModel } from "../utils/openAiCompat.js";
 
 const INSIGHT_MAX_ROWS = Number.parseInt(process.env.INSIGHT_MAX_ROWS || "300000", 10);
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
@@ -180,22 +181,29 @@ async function clearInsightTranslationCacheByPrefixDb(prefix) {
   await query("DELETE FROM insight_translation_cache WHERE cache_key LIKE $1", [`${prefix}%`]);
 }
 
+function insightCardTextSignature(cards = []) {
+  return JSON.stringify((Array.isArray(cards) ? cards : []).map((card) => ({
+    title: String(card?.title || ""),
+    bullets: (Array.isArray(card?.bullets) ? card.bullets : []).map((bullet) => String(bullet || "")),
+  })));
+}
+
 async function localizeInsightCards({ sheetId, locale, cards, context, cacheKey, forceRefresh = false }) {
-  if (isEnglishLocale(locale)) return cards;
+  if (isEnglishLocale(locale)) return { cards, localized: false, locale: normalizeLocale(locale), source: "english" };
   const normalizedLocale = normalizeLocale(locale);
   const translationCacheKey = makeInsightTranslationCacheKey({ cacheKey, locale: normalizedLocale, context });
   const settings = await loadInsightTranslationCacheSettings();
   await ensureInsightTranslationCacheSchema();
   if (!forceRefresh) {
     const cached = getInsightTranslationCacheEntry(translationCacheKey);
-    if (cached) return cached;
+    if (cached) return { cards: cached, localized: true, locale: normalizedLocale, source: "memory-cache" };
     const persisted = await getInsightTranslationCacheEntryDb({
       translationCacheKey,
       ttlMs: settings.ttlMs,
     });
     if (persisted) {
       setInsightTranslationCacheEntry(translationCacheKey, persisted, settings.ttlMs);
-      return persisted;
+      return { cards: persisted, localized: true, locale: normalizedLocale, source: "db-cache" };
     }
   }
   const translatedCards = await translateDashboardCards({
@@ -203,6 +211,10 @@ async function localizeInsightCards({ sheetId, locale, cards, context, cacheKey,
     cards: cards || [],
     context: "insight-cards",
   });
+  const localized = insightCardTextSignature(cards || []) !== insightCardTextSignature(translatedCards);
+  if (!localized) {
+    return { cards: cards || [], localized: false, locale: normalizedLocale, source: "untranslated" };
+  }
   setInsightTranslationCacheEntry(translationCacheKey, translatedCards, settings.ttlMs);
   await setInsightTranslationCacheEntryDb({
     translationCacheKey,
@@ -212,7 +224,7 @@ async function localizeInsightCards({ sheetId, locale, cards, context, cacheKey,
     context,
     cards: translatedCards,
   });
-  return translatedCards;
+  return { cards: translatedCards, localized: true, locale: normalizedLocale, source: "openai" };
 }
 
 function parseNum(v) {
@@ -395,29 +407,33 @@ async function callInsightRag({ metricCol, dateCol, categoryCol, series, categor
   const timeoutMs = Number(runtime?.openaiTimeoutMs || OPENAI_TIMEOUT_MS);
   const temperature = Number(runtime?.openaiTemperature);
   const safeTemperature = Number.isFinite(temperature) ? Math.max(0, Math.min(2, temperature)) : 0.1;
+  const runtimeMaxOutput = Number(runtime?.openaiMaxOutputTokens);
+  const maxCompletionTokens = minCompletionTokensForModel(model, runtimeMaxOutput, 800, 768);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    const requestBody = buildChatCompletionRequestBody({
+      model,
+      temperature: safeTemperature,
+      maxCompletionTokens,
+      responseFormat: { type: "json_schema", json_schema: schema },
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+    });
     const resp = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        model,
-        temperature: safeTemperature,
-        response_format: { type: "json_schema", json_schema: schema },
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-      }),
+      body: JSON.stringify(requestBody),
       signal: controller.signal,
     });
     if (!resp.ok) return null;
     const json = await resp.json();
-    const raw = json?.choices?.[0]?.message?.content;
+    const raw = extractOpenAiAssistantText(json);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed?.forecast_periods) || !Array.isArray(parsed?.recommendations)) return null;
@@ -1435,7 +1451,7 @@ export async function getInsights(req, res) {
   }
   const cached = forceRefresh ? null : getInsightCacheEntry(cacheKey);
   if (cached) {
-    const localizedCards = await localizeInsightCards({
+    const localization = await localizeInsightCards({
       sheetId,
       locale,
       cards: cached.cards || [],
@@ -1445,7 +1461,13 @@ export async function getInsights(req, res) {
     });
     return res.json({
       ...cached,
-      cards: localizedCards,
+      cards: localization.cards,
+      meta: {
+        ...(cached.meta || {}),
+        locale: localization.locale,
+        localized: localization.localized,
+        localizationSource: localization.source,
+      },
     });
   }
 
@@ -1480,7 +1502,7 @@ export async function getInsights(req, res) {
     },
   };
   setInsightCacheEntry(cacheKey, payload);
-  const translatedCards = await localizeInsightCards({
+  const localization = await localizeInsightCards({
     sheetId,
     locale,
     cards: payload.cards || [],
@@ -1490,7 +1512,13 @@ export async function getInsights(req, res) {
   });
   return res.json({
     ...payload,
-    cards: translatedCards,
+    cards: localization.cards,
+    meta: {
+      ...(payload.meta || {}),
+      locale: localization.locale,
+      localized: localization.localized,
+      localizationSource: localization.source,
+    },
   });
 }
 

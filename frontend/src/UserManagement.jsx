@@ -105,10 +105,15 @@ const BUNDLE_AI_LIMITS = {
   growth: { maxAiQueriesPerMonth: 10000, aiMonthlyBudgetUsd: 150 },
   enterprise: { maxAiQueriesPerMonth: 50000, aiMonthlyBudgetUsd: 1000 },
 };
+const BUNDLE_DEFAULT_CAPACITY_LIMITS = {
+  core: { maxUsers: 10, maxReportSources: 3 },
+  growth: { maxUsers: 50, maxReportSources: 15 },
+  enterprise: { maxUsers: 250, maxReportSources: 100 },
+};
 const BUNDLE_AI_PRICING = {
-  core: { openaiModel: "gpt-4.1-nano", openaiInputCostPer1M: 0.10, openaiOutputCostPer1M: 0.40 },
-  growth: { openaiModel: "gpt-4.1-mini", openaiInputCostPer1M: 0.40, openaiOutputCostPer1M: 1.60 },
-  enterprise: { openaiModel: "gpt-4.1", openaiInputCostPer1M: 2.00, openaiOutputCostPer1M: 8.00 },
+  core: { openaiModel: "gpt-5-nano", openaiInputCostPer1M: 0.05, openaiOutputCostPer1M: 0.40 },
+  growth: { openaiModel: "gpt-5-nano", openaiInputCostPer1M: 0.05, openaiOutputCostPer1M: 0.40 },
+  enterprise: { openaiModel: "gpt-5-nano", openaiInputCostPer1M: 0.05, openaiOutputCostPer1M: 0.40 },
 };
 const AI_RUNTIME_PRESETS = {
   micro: {
@@ -121,16 +126,23 @@ const AI_RUNTIME_PRESETS = {
     dashboardTranslateMaxItems: 20,
     dashboardTranslateMaxCharsPerItem: 125,
     llmMaxOutputTokens: 100,
-    openaiModel: "gpt-4.1-nano",
+    openaiModel: "gpt-5-nano",
     openaiBaseUrl: "https://api.openai.com/v1",
     openaiTimeoutMs: 15000,
     openaiTemperature: 0.1,
-    openaiMaxOutputTokens: 100,
-    openaiInputCostPer1M: 0.10,
+    openaiMaxOutputTokens: 768,
+    openaiInputCostPer1M: 0.05,
     openaiOutputCostPer1M: 0.40,
+    translationOpenaiModel: "gpt-5-nano",
+    translationTemperature: 0,
+    translationMaxOutputTokens: 512,
     insightAiMaxSeriesPoints: 6,
     insightAiMaxPromptChars: 4000,
     chatAudioMaxChars: 3000,
+    chatAudioTtsModelEn: "tts-1",
+    chatAudioTtsModelDefault: "tts-1",
+    chatAudioTtsVoice: "nova",
+    chatAudioTtsSpeed: 0.85,
   },
   tiny: {
     aiRuntimePreset: "tiny",
@@ -142,16 +154,23 @@ const AI_RUNTIME_PRESETS = {
     dashboardTranslateMaxItems: 40,
     dashboardTranslateMaxCharsPerItem: 250,
     llmMaxOutputTokens: 200,
-    openaiModel: "gpt-4.1-nano",
+    openaiModel: "gpt-5-nano",
     openaiBaseUrl: "https://api.openai.com/v1",
     openaiTimeoutMs: 30000,
     openaiTemperature: 0.1,
-    openaiMaxOutputTokens: 200,
-    openaiInputCostPer1M: 0.10,
+    openaiMaxOutputTokens: 896,
+    openaiInputCostPer1M: 0.05,
     openaiOutputCostPer1M: 0.40,
+    translationOpenaiModel: "gpt-5-nano",
+    translationTemperature: 0,
+    translationMaxOutputTokens: 576,
     insightAiMaxSeriesPoints: 12,
     insightAiMaxPromptChars: 8000,
     chatAudioMaxChars: 6000,
+    chatAudioTtsModelEn: "tts-1",
+    chatAudioTtsModelDefault: "tts-1",
+    chatAudioTtsVoice: "nova",
+    chatAudioTtsSpeed: 0.9,
   },
   low: {
     aiRuntimePreset: "low",
@@ -163,16 +182,23 @@ const AI_RUNTIME_PRESETS = {
     dashboardTranslateMaxItems: 80,
     dashboardTranslateMaxCharsPerItem: 250,
     llmMaxOutputTokens: 400,
-    openaiModel: "gpt-4.1-nano",
+    openaiModel: "gpt-5-nano",
     openaiBaseUrl: "https://api.openai.com/v1",
     openaiTimeoutMs: 30000,
     openaiTemperature: 0.1,
-    openaiMaxOutputTokens: 400,
-    openaiInputCostPer1M: 0.10,
+    openaiMaxOutputTokens: 1024,
+    openaiInputCostPer1M: 0.05,
     openaiOutputCostPer1M: 0.40,
+    translationOpenaiModel: "gpt-5-nano",
+    translationTemperature: 0,
+    translationMaxOutputTokens: 640,
     insightAiMaxSeriesPoints: 12,
     insightAiMaxPromptChars: 8000,
     chatAudioMaxChars: 6000,
+    chatAudioTtsModelEn: "tts-1",
+    chatAudioTtsModelDefault: "tts-1",
+    chatAudioTtsVoice: "nova",
+    chatAudioTtsSpeed: 0.95,
   },
   mid: {
     aiRuntimePreset: "mid",
@@ -184,16 +210,23 @@ const AI_RUNTIME_PRESETS = {
     dashboardTranslateMaxItems: 200,
     dashboardTranslateMaxCharsPerItem: 500,
     llmMaxOutputTokens: 800,
-    openaiModel: "gpt-4.1-nano",
+    openaiModel: "gpt-5-nano",
     openaiBaseUrl: "https://api.openai.com/v1",
     openaiTimeoutMs: 60000,
     openaiTemperature: 0.1,
-    openaiMaxOutputTokens: 800,
-    openaiInputCostPer1M: 0.10,
+    openaiMaxOutputTokens: 1280,
+    openaiInputCostPer1M: 0.05,
     openaiOutputCostPer1M: 0.40,
+    translationOpenaiModel: "gpt-5-nano",
+    translationTemperature: 0,
+    translationMaxOutputTokens: 704,
     insightAiMaxSeriesPoints: 18,
     insightAiMaxPromptChars: 12000,
     chatAudioMaxChars: 8000,
+    chatAudioTtsModelEn: "tts-1",
+    chatAudioTtsModelDefault: "tts-1",
+    chatAudioTtsVoice: "nova",
+    chatAudioTtsSpeed: 1.0,
   },
   high: {
     aiRuntimePreset: "high",
@@ -205,16 +238,23 @@ const AI_RUNTIME_PRESETS = {
     dashboardTranslateMaxItems: 400,
     dashboardTranslateMaxCharsPerItem: 1000,
     llmMaxOutputTokens: 1600,
-    openaiModel: "gpt-4.1-nano",
+    openaiModel: "gpt-5-nano",
     openaiBaseUrl: "https://api.openai.com/v1",
     openaiTimeoutMs: 120000,
     openaiTemperature: 0.1,
     openaiMaxOutputTokens: 1600,
-    openaiInputCostPer1M: 0.10,
+    openaiInputCostPer1M: 0.05,
     openaiOutputCostPer1M: 0.40,
+    translationOpenaiModel: "gpt-5-nano",
+    translationTemperature: 0,
+    translationMaxOutputTokens: 768,
     insightAiMaxSeriesPoints: 32,
     insightAiMaxPromptChars: 24000,
     chatAudioMaxChars: 12000,
+    chatAudioTtsModelEn: "tts-1",
+    chatAudioTtsModelDefault: "tts-1",
+    chatAudioTtsVoice: "nova",
+    chatAudioTtsSpeed: 1.05,
   },
 };
 function loadTemplates() {
@@ -491,6 +531,22 @@ export default function UserManagement({ token, user, sheetId }) {
         const existing = source[key] && typeof source[key] === "object" && !Array.isArray(source[key]) ? source[key] : null;
         const defaults = BUNDLE_DEFAULT_FEATURES[key] || {};
         return [key, { ...normalizedBase, ...defaults, ...(existing || {}) }];
+      })
+    );
+  };
+
+  const ensureBundleCapacityLimits = (bundleCapacityLimits, fallbackLimits = {}) => {
+    const source = bundleCapacityLimits && typeof bundleCapacityLimits === "object" && !Array.isArray(bundleCapacityLimits)
+      ? bundleCapacityLimits
+      : {};
+    return Object.fromEntries(
+      BUNDLE_KEYS.map((key) => {
+        const existing = source[key] && typeof source[key] === "object" && !Array.isArray(source[key]) ? source[key] : {};
+        const defaults = BUNDLE_DEFAULT_CAPACITY_LIMITS[key] || {};
+        return [key, {
+          maxUsers: existing.maxUsers ?? fallbackLimits.maxUsers ?? defaults.maxUsers ?? "",
+          maxReportSources: existing.maxReportSources ?? fallbackLimits.maxReportSources ?? defaults.maxReportSources ?? "",
+        }];
       })
     );
   };
@@ -1543,9 +1599,16 @@ export default function UserManagement({ token, user, sheetId }) {
         openaiMaxOutputTokens: Number(data.openaiMaxOutputTokens || AI_RUNTIME_PRESETS.mid.openaiMaxOutputTokens),
         openaiInputCostPer1M: Number(data.openaiInputCostPer1M || AI_RUNTIME_PRESETS.mid.openaiInputCostPer1M),
         openaiOutputCostPer1M: Number(data.openaiOutputCostPer1M || AI_RUNTIME_PRESETS.mid.openaiOutputCostPer1M),
+        translationOpenaiModel: String(data.translationOpenaiModel || AI_RUNTIME_PRESETS.mid.translationOpenaiModel),
+        translationTemperature: Number(data.translationTemperature ?? AI_RUNTIME_PRESETS.mid.translationTemperature),
+        translationMaxOutputTokens: Number(data.translationMaxOutputTokens || AI_RUNTIME_PRESETS.mid.translationMaxOutputTokens),
         insightAiMaxSeriesPoints: Number(data.insightAiMaxSeriesPoints || AI_RUNTIME_PRESETS.mid.insightAiMaxSeriesPoints),
         insightAiMaxPromptChars: Number(data.insightAiMaxPromptChars || AI_RUNTIME_PRESETS.mid.insightAiMaxPromptChars),
         chatAudioMaxChars: Number(data.chatAudioMaxChars || AI_RUNTIME_PRESETS.mid.chatAudioMaxChars),
+        chatAudioTtsModelEn: String(data.chatAudioTtsModelEn || AI_RUNTIME_PRESETS.mid.chatAudioTtsModelEn),
+        chatAudioTtsModelDefault: String(data.chatAudioTtsModelDefault || AI_RUNTIME_PRESETS.mid.chatAudioTtsModelDefault),
+        chatAudioTtsVoice: String(data.chatAudioTtsVoice || AI_RUNTIME_PRESETS.mid.chatAudioTtsVoice),
+        chatAudioTtsSpeed: Number(data.chatAudioTtsSpeed ?? AI_RUNTIME_PRESETS.mid.chatAudioTtsSpeed),
       });
     } catch (e) {
       console.error("fetchAiRuntimeSetting failed", e);
@@ -1762,9 +1825,16 @@ export default function UserManagement({ token, user, sheetId }) {
             openaiMaxOutputTokens: Number.parseInt(String(aiRuntimeSettings.openaiMaxOutputTokens || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.openaiMaxOutputTokens,
             openaiInputCostPer1M: Number.parseFloat(String(aiRuntimeSettings.openaiInputCostPer1M || "").trim()) || AI_RUNTIME_PRESETS.mid.openaiInputCostPer1M,
             openaiOutputCostPer1M: Number.parseFloat(String(aiRuntimeSettings.openaiOutputCostPer1M || "").trim()) || AI_RUNTIME_PRESETS.mid.openaiOutputCostPer1M,
+            translationOpenaiModel: String(aiRuntimeSettings.translationOpenaiModel || "").trim() || AI_RUNTIME_PRESETS.mid.translationOpenaiModel,
+            translationTemperature: Number.parseFloat(String(aiRuntimeSettings.translationTemperature || "").trim()) || 0,
+            translationMaxOutputTokens: Number.parseInt(String(aiRuntimeSettings.translationMaxOutputTokens || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.translationMaxOutputTokens,
             insightAiMaxSeriesPoints: Number.parseInt(String(aiRuntimeSettings.insightAiMaxSeriesPoints || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.insightAiMaxSeriesPoints,
             insightAiMaxPromptChars: Number.parseInt(String(aiRuntimeSettings.insightAiMaxPromptChars || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.insightAiMaxPromptChars,
             chatAudioMaxChars: Number.parseInt(String(aiRuntimeSettings.chatAudioMaxChars || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.chatAudioMaxChars,
+            chatAudioTtsModelEn: String(aiRuntimeSettings.chatAudioTtsModelEn || "").trim() || AI_RUNTIME_PRESETS.mid.chatAudioTtsModelEn,
+            chatAudioTtsModelDefault: String(aiRuntimeSettings.chatAudioTtsModelDefault || "").trim() || AI_RUNTIME_PRESETS.mid.chatAudioTtsModelDefault,
+            chatAudioTtsVoice: String(aiRuntimeSettings.chatAudioTtsVoice || "").trim() || AI_RUNTIME_PRESETS.mid.chatAudioTtsVoice,
+            chatAudioTtsSpeed: Number.parseFloat(String(aiRuntimeSettings.chatAudioTtsSpeed || "").trim()) || AI_RUNTIME_PRESETS.mid.chatAudioTtsSpeed,
           };
       const res = await axios.patch(`${API}/admin/settings/ai-runtime`, next, {
         headers: { Authorization: `Bearer ${token}` },
@@ -1787,9 +1857,16 @@ export default function UserManagement({ token, user, sheetId }) {
         openaiMaxOutputTokens: Number(data.openaiMaxOutputTokens || next.openaiMaxOutputTokens),
         openaiInputCostPer1M: Number(data.openaiInputCostPer1M || next.openaiInputCostPer1M),
         openaiOutputCostPer1M: Number(data.openaiOutputCostPer1M || next.openaiOutputCostPer1M),
+        translationOpenaiModel: String(data.translationOpenaiModel || next.translationOpenaiModel),
+        translationTemperature: Number(data.translationTemperature ?? next.translationTemperature),
+        translationMaxOutputTokens: Number(data.translationMaxOutputTokens || next.translationMaxOutputTokens),
         insightAiMaxSeriesPoints: Number(data.insightAiMaxSeriesPoints || next.insightAiMaxSeriesPoints),
         insightAiMaxPromptChars: Number(data.insightAiMaxPromptChars || next.insightAiMaxPromptChars),
         chatAudioMaxChars: Number(data.chatAudioMaxChars || next.chatAudioMaxChars),
+        chatAudioTtsModelEn: String(data.chatAudioTtsModelEn || next.chatAudioTtsModelEn),
+        chatAudioTtsModelDefault: String(data.chatAudioTtsModelDefault || next.chatAudioTtsModelDefault),
+        chatAudioTtsVoice: String(data.chatAudioTtsVoice || next.chatAudioTtsVoice),
+        chatAudioTtsSpeed: Number(data.chatAudioTtsSpeed ?? next.chatAudioTtsSpeed),
       });
       setAiRuntimeSaved(true);
       setTimeout(() => setAiRuntimeSaved(false), 1800);
@@ -2904,16 +2981,25 @@ export default function UserManagement({ token, user, sheetId }) {
       : "";
     const bundleFeatureSets = ensureBundleFeatureSets(ent.bundleFeatureSets, ent.features || {});
     const activeFeatures = bundleTier ? (bundleFeatureSets[bundleTier] || ent.features || {}) : (ent.features || {});
+    const bundleCapacityLimits = ensureBundleCapacityLimits(ent.bundleCapacityLimits, {
+      maxUsers: ent.maxUsers ?? "",
+      maxReportSources: ent.maxReportSources ?? "",
+    });
+    const activeCapacityLimits = bundleTier ? (bundleCapacityLimits[bundleTier] || {}) : {
+      maxUsers: ent.maxUsers ?? "",
+      maxReportSources: ent.maxReportSources ?? "",
+    };
     setGroupSettingsDraft({
       maxFileSizeMb: String(selectedGroup.max_file_size_mb || 100),
       maxTotalStorageMb: String(selectedGroup.max_total_storage_mb || 10240),
-      maxUsers: ent.maxUsers ?? "",
-      maxReportSources: ent.maxReportSources ?? "",
+      maxUsers: activeCapacityLimits.maxUsers ?? "",
+      maxReportSources: activeCapacityLimits.maxReportSources ?? "",
       maxAiQueriesPerMonth: ent.maxAiQueriesPerMonth ?? "",
       aiMonthlyBudgetUsd: ent.aiMonthlyBudgetUsd ?? "",
       maxImportParseMemoryMb: ent.maxImportParseMemoryMb ?? "",
       bundleTier,
       bundleFeatureSets,
+      bundleCapacityLimits,
       features: { ...activeFeatures },
     });
     setSelectedProductBundle(bundleTier);
@@ -2934,6 +3020,7 @@ export default function UserManagement({ token, user, sheetId }) {
         maxImportParseMemoryMb: "",
         bundleTier: "",
         bundleFeatureSets: {},
+        bundleCapacityLimits: {},
         features: {},
       };
       return {
@@ -2942,6 +3029,10 @@ export default function UserManagement({ token, user, sheetId }) {
         bundleFeatureSets: {
           ...(current.bundleFeatureSets || {}),
           ...(patch.bundleFeatureSets || {}),
+        },
+        bundleCapacityLimits: {
+          ...(current.bundleCapacityLimits || {}),
+          ...(patch.bundleCapacityLimits || {}),
         },
         features: {
           ...(current.features || {}),
@@ -3468,6 +3559,7 @@ export default function UserManagement({ token, user, sheetId }) {
                               };
                               const targetFeatures = { ...(nextSets[bundle.key] || currentFeatures) };
                               const aiLimits = BUNDLE_AI_LIMITS[bundle.key] || {};
+                              const capacityLimits = BUNDLE_CAPACITY_LIMITS[bundle.key] || {};
                               const aiPricing = BUNDLE_AI_PRICING[bundle.key] || {};
                               setAiRuntimeSettings((prevRuntime) => ({
                                 ...prevRuntime,
@@ -3480,6 +3572,8 @@ export default function UserManagement({ token, user, sheetId }) {
                                 bundleTier: bundle.key,
                                 bundleFeatureSets: nextSets,
                                 features: targetFeatures,
+                                maxUsers: capacityLimits.maxUsers ?? current.maxUsers ?? "",
+                                maxReportSources: capacityLimits.maxReportSources ?? current.maxReportSources ?? "",
                                 maxAiQueriesPerMonth: aiLimits.maxAiQueriesPerMonth ?? current.maxAiQueriesPerMonth ?? "",
                                 aiMonthlyBudgetUsd: aiLimits.aiMonthlyBudgetUsd ?? current.aiMonthlyBudgetUsd ?? "",
                               };
@@ -3489,6 +3583,9 @@ export default function UserManagement({ token, user, sheetId }) {
                         >
                           <div className="text-[10px] font-semibold uppercase tracking-wide">{bundle.label}</div>
                           <div className={`text-[10px] ${selectedProductBundle === bundle.key ? "text-slate-200" : "text-slate-500"}`}>{bundle.description}</div>
+                          <div className={`mt-1 text-[10px] font-semibold ${selectedProductBundle === bundle.key ? "text-slate-100" : "text-slate-600"}`}>
+                            {BUNDLE_CAPACITY_LIMITS[bundle.key]?.maxUsers ?? "Unlimited"} users / {BUNDLE_CAPACITY_LIMITS[bundle.key]?.maxReportSources ?? "Unlimited"} sources
+                          </div>
                         </button>
                       ))}
                     </div>

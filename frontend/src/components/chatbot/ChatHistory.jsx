@@ -22,6 +22,9 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
     };
     const formatMessageForDisplay = (text = "") => {
         let out = String(text || "");
+        out = out.replace(/\\r?\\n/g, "\n");
+        out = out.replace(/\s+\*\*([^*\n:]{1,80}):\*\*/g, "\n$1:");
+        out = out.replace(/\*\*([^*\n]+)\*\*/g, "$1");
         // Turn inline dash lists into real bullet lines:
         // "... shows: - A - B - C" -> "... shows:\n- A\n- B\n- C"
         out = out.replace(/([:])\s+-\s+/g, "$1\n- ");
@@ -610,8 +613,10 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
                 const isSpeaking = speakingIndex === i;
                 return (
                     <div key={i} className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'} mb-1`}>
-                        <div className={`max-w-[90%] rounded-xl px-2.5 py-1.5 text-[11px] leading-snug shadow-sm group relative transition-all break-words overflow-wrap-anywhere ${
-                            msg.type === 'user' ? 'bg-blue-600 text-white rounded-tr-sm' : `bg-white text-slate-600 border border-slate-200 rounded-tl-sm pr-8 ${isSpeaking ? 'bg-indigo-50/30' : ''}`
+                        <div className={`rounded-xl px-2.5 py-1.5 text-[11px] leading-snug shadow-sm group relative transition-all break-words overflow-wrap-anywhere ${
+                            msg.type === 'user'
+                              ? 'max-w-[88%] bg-blue-600 text-white rounded-tr-sm'
+                              : `w-full max-w-none bg-white text-slate-600 border border-slate-200 rounded-tl-sm pr-8 ${isSpeaking ? 'bg-indigo-50/30' : ''}`
                         }`}>
                             {msg.type === 'bot' && chatAudioEnabled && (
                                 <button 

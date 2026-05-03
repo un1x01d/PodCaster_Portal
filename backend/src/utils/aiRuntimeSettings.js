@@ -12,16 +12,23 @@ const DEFAULTS = {
   dashboardTranslateMaxItems: 200,
   dashboardTranslateMaxCharsPerItem: 500,
   llmMaxOutputTokens: 800,
-  openaiModel: String(process.env.OPENAI_MODEL || "gpt-4.1-nano"),
+  openaiModel: String(process.env.OPENAI_MODEL || "gpt-5-nano"),
   openaiBaseUrl: String(process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, ""),
   openaiTimeoutMs: Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10) || 60000,
   openaiTemperature: Number.parseFloat(process.env.OPENAI_TEMPERATURE || "0.1") || 0.1,
   openaiMaxOutputTokens: Number.parseInt(process.env.OPENAI_MAX_OUTPUT_TOKENS || "900", 10) || 900,
-  openaiInputCostPer1M: Number.parseFloat(process.env.OPENAI_INPUT_COST_PER_1M || "0.10") || 0.10,
+  openaiInputCostPer1M: Number.parseFloat(process.env.OPENAI_INPUT_COST_PER_1M || "0.05") || 0.05,
   openaiOutputCostPer1M: Number.parseFloat(process.env.OPENAI_OUTPUT_COST_PER_1M || "0.40") || 0.40,
+  translationOpenaiModel: String(process.env.OPENAI_TRANSLATION_MODEL || "gpt-5-nano"),
+  translationTemperature: Number.parseFloat(process.env.OPENAI_TRANSLATION_TEMPERATURE || "0") || 0,
+  translationMaxOutputTokens: Number.parseInt(process.env.OPENAI_TRANSLATION_MAX_OUTPUT_TOKENS || "512", 10) || 512,
   insightAiMaxSeriesPoints: Number.parseInt(process.env.INSIGHT_AI_MAX_SERIES_POINTS || "18", 10) || 18,
   insightAiMaxPromptChars: Number.parseInt(process.env.INSIGHT_AI_MAX_PROMPT_CHARS || "12000", 10) || 12000,
   chatAudioMaxChars: Number.parseInt(process.env.CHAT_AUDIO_MAX_CHARS || "8000", 10) || 8000,
+  chatAudioTtsModelEn: String(process.env.OPENAI_TTS_MODEL_EN || "tts-1"),
+  chatAudioTtsModelDefault: String(process.env.OPENAI_TTS_MODEL_DEFAULT || "tts-1"),
+  chatAudioTtsVoice: String(process.env.OPENAI_TTS_VOICE || "nova"),
+  chatAudioTtsSpeed: Number.parseFloat(process.env.OPENAI_TTS_SPEED || "0.9") || 0.9,
 };
 
 function toBool(v, fallback) {
@@ -74,9 +81,16 @@ export function normalizeAiRuntimeSettings(raw = {}) {
     openaiMaxOutputTokens: toInt(cfg.openaiMaxOutputTokens, DEFAULTS.openaiMaxOutputTokens, 32, 4096),
     openaiInputCostPer1M: toFloat(cfg.openaiInputCostPer1M, DEFAULTS.openaiInputCostPer1M, 0, 1000),
     openaiOutputCostPer1M: toFloat(cfg.openaiOutputCostPer1M, DEFAULTS.openaiOutputCostPer1M, 0, 1000),
+    translationOpenaiModel: toModel(cfg.translationOpenaiModel, DEFAULTS.translationOpenaiModel),
+    translationTemperature: toFloat(cfg.translationTemperature, DEFAULTS.translationTemperature, 0, 2),
+    translationMaxOutputTokens: toInt(cfg.translationMaxOutputTokens, DEFAULTS.translationMaxOutputTokens, 32, 4096),
     insightAiMaxSeriesPoints: toInt(cfg.insightAiMaxSeriesPoints, DEFAULTS.insightAiMaxSeriesPoints, 4, 200),
     insightAiMaxPromptChars: toInt(cfg.insightAiMaxPromptChars, DEFAULTS.insightAiMaxPromptChars, 1000, 200000),
     chatAudioMaxChars: toInt(cfg.chatAudioMaxChars, DEFAULTS.chatAudioMaxChars, 1000, 100000),
+    chatAudioTtsModelEn: toModel(cfg.chatAudioTtsModelEn, DEFAULTS.chatAudioTtsModelEn),
+    chatAudioTtsModelDefault: toModel(cfg.chatAudioTtsModelDefault, DEFAULTS.chatAudioTtsModelDefault),
+    chatAudioTtsVoice: toModel(cfg.chatAudioTtsVoice, DEFAULTS.chatAudioTtsVoice),
+    chatAudioTtsSpeed: toFloat(cfg.chatAudioTtsSpeed, DEFAULTS.chatAudioTtsSpeed, 0.25, 4),
   };
 }
 

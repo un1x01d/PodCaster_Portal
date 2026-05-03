@@ -133,7 +133,7 @@ export default function IntegrationSettingsPanel(props) {
                   <button type="button" onClick={() => applyAiRuntimePreset("high")} disabled={aiRuntimeSaving} className={`px-2 py-1 rounded border text-[10px] font-semibold ${aiRuntimeSettings.aiRuntimePreset === "high" ? "bg-emerald-600 border-emerald-600 text-white" : "border-slate-300 text-slate-700 hover:bg-slate-100"} ${aiRuntimeSaving ? "opacity-60 cursor-not-allowed" : ""}`}>High</button>
                 </div>
               )}
-              <button type="button" className="text-[10px] font-semibold text-slate-600 hover:text-slate-900" onClick={() => setIntegrationOpen((prev) => ({ ...prev, aiRuntime: !prev.aiRuntime }))}>
+              <button type="button" className="text-[12px] font-bold text-slate-900 hover:text-slate-900" onClick={() => setIntegrationOpen((prev) => ({ ...prev, aiRuntime: !prev.aiRuntime }))}>
                 {integrationOpen.aiRuntime ? "Collapse" : "Expand"}
               </button>
             </div>
@@ -141,27 +141,28 @@ export default function IntegrationSettingsPanel(props) {
           {integrationOpen.aiRuntime && (
           <>
           <div className="flex flex-col gap-1">
-            <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+            <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 px-2 py-1 rounded-md border border-slate-200">
               <input type="checkbox" checked={aiRuntimeSettings.chatEnabled !== false} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, chatEnabled: e.target.checked }))} />
               <span>Chat AI Enabled</span>
             </label>
-            <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+            <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 px-2 py-1 rounded-md border border-slate-200">
               <input type="checkbox" checked={aiRuntimeSettings.chatAudioEnabled === true} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, chatAudioEnabled: e.target.checked }))} />
               <span>Chat Audio AI Enabled</span>
             </label>
-            <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+            <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 px-2 py-1 rounded-md border border-slate-200">
               <input type="checkbox" checked={aiRuntimeSettings.dashboardTranslationEnabled === true} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, dashboardTranslationEnabled: e.target.checked }))} />
               <span>Dashboard Translation AI Enabled</span>
             </label>
           </div>
           <div className="grid grid-cols-2 gap-2">
-            <div className="col-span-2 text-[11px] font-semibold text-slate-700">Model</div>
-            <select className="input-premium py-1.5 text-[11px] font-semibold col-span-2" value={aiRuntimeSettings.openaiModel || "gpt-4.1-nano"} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, openaiModel: e.target.value }))}>
+            <div className="col-span-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Model</div>
+            <select className="input-premium py-1.5 text-[11px] font-semibold col-span-2" value={aiRuntimeSettings.openaiModel || "gpt-5-nano"} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, openaiModel: e.target.value }))}>
+              <option value="gpt-5-nano">gpt-5-nano</option>
               <option value="gpt-4.1-nano">gpt-4.1-nano</option>
               <option value="gpt-4.1-mini">gpt-4.1-mini</option>
               <option value="gpt-4.1">gpt-4.1</option>
             </select>
-            <div className="col-span-2 text-[11px] font-semibold text-slate-700">Pricing Profile</div>
+            <div className="col-span-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Pricing Profile</div>
             <select
               className="input-premium py-1.5 text-[11px] font-semibold col-span-2"
               value={`${Number(aiRuntimeSettings.openaiInputCostPer1M || 0).toFixed(4)}|${Number(aiRuntimeSettings.openaiOutputCostPer1M || 0).toFixed(4)}`}
@@ -174,34 +175,61 @@ export default function IntegrationSettingsPanel(props) {
                 }));
               }}
             >
+              <option value="0.0500|0.4000">Pricing: GPT-5 nano</option>
               <option value="0.1000|0.4000">Pricing: GPT-4.1 nano</option>
               <option value="0.4000|1.6000">Pricing: GPT-4.1 mini</option>
               <option value="2.0000|8.0000">Pricing: GPT-4.1</option>
             </select>
-            <div className="text-[11px] font-semibold text-slate-700">OpenAI Timeout (ms)</div>
-            <div className="text-[11px] font-semibold text-slate-700">OpenAI Temperature</div>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">OpenAI Timeout (ms)</div>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">OpenAI Temperature</div>
             <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="1000" max="300000" placeholder="OpenAI Timeout (ms)" value={aiRuntimeSettings.openaiTimeoutMs} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, openaiTimeoutMs: e.target.value }))} />
             <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="0" max="2" step="0.1" placeholder="OpenAI Temperature" value={aiRuntimeSettings.openaiTemperature} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, openaiTemperature: e.target.value }))} />
-            <div className="col-span-2 text-[11px] font-semibold text-slate-700">OpenAI Base URL</div>
+            <div className="col-span-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">OpenAI Base URL</div>
             <input className="input-premium py-1.5 text-[11px] font-semibold col-span-2" placeholder="OpenAI Base URL" value={aiRuntimeSettings.openaiBaseUrl || ""} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, openaiBaseUrl: e.target.value }))} />
-            <div className="text-[11px] font-semibold text-slate-700">OpenAI Max Output Tokens</div>
-            <div className="text-[11px] font-semibold text-slate-700">Insight Max Series Points</div>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">OpenAI Max Output Tokens</div>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Insight Max Series Points</div>
             <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="32" max="4096" placeholder="OpenAI Max Output Tokens" value={aiRuntimeSettings.openaiMaxOutputTokens} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, openaiMaxOutputTokens: e.target.value }))} />
             <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="4" max="200" placeholder="Insight Max Series Points" value={aiRuntimeSettings.insightAiMaxSeriesPoints} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, insightAiMaxSeriesPoints: e.target.value }))} />
-            <div className="text-[11px] font-semibold text-slate-700">Insight Max Prompt Chars</div>
-            <div className="text-[11px] font-semibold text-slate-700">Chat Audio Max Chars</div>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Insight Max Prompt Chars</div>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Chat Audio Max Chars</div>
             <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="1000" max="200000" placeholder="Insight Max Prompt Chars" value={aiRuntimeSettings.insightAiMaxPromptChars} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, insightAiMaxPromptChars: e.target.value }))} />
             <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="1000" max="100000" placeholder="Chat Audio Max Chars" value={aiRuntimeSettings.chatAudioMaxChars} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, chatAudioMaxChars: e.target.value }))} />
-            <div className="text-[11px] font-semibold text-slate-700">Input Cost / 1M Tokens (USD)</div>
-            <div className="text-[11px] font-semibold text-slate-700">Output Cost / 1M Tokens (USD)</div>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Input Cost / 1M Tokens (USD)</div>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Output Cost / 1M Tokens (USD)</div>
             <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="0" max="1000" step="0.0001" placeholder="Input Cost / 1M Tokens (USD)" value={aiRuntimeSettings.openaiInputCostPer1M} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, openaiInputCostPer1M: e.target.value }))} />
             <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="0" max="1000" step="0.0001" placeholder="Output Cost / 1M Tokens (USD)" value={aiRuntimeSettings.openaiOutputCostPer1M} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, openaiOutputCostPer1M: e.target.value }))} />
+            <div className="col-span-2 mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Translation Model</div>
+            <select className="input-premium py-1.5 text-[11px] font-semibold col-span-2" value={aiRuntimeSettings.translationOpenaiModel || "gpt-5-nano"} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, translationOpenaiModel: e.target.value }))}>
+              <option value="gpt-5-nano">gpt-5-nano</option>
+              <option value="gpt-4.1-nano">gpt-4.1-nano</option>
+              <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+              <option value="gpt-4.1">gpt-4.1</option>
+            </select>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Translation Temperature</div>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Translation Max Output Tokens</div>
+            <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="0" max="2" step="0.1" placeholder="Translation Temperature" value={aiRuntimeSettings.translationTemperature} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, translationTemperature: e.target.value }))} />
+            <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="32" max="4096" placeholder="Translation Max Output Tokens" value={aiRuntimeSettings.translationMaxOutputTokens} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, translationMaxOutputTokens: e.target.value }))} />
+            <div className="col-span-2 mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Text-To-Voice Models</div>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">TTS Model (English)</div>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">TTS Model (Default)</div>
+            <select className="input-premium py-1.5 text-[11px] font-semibold" value={aiRuntimeSettings.chatAudioTtsModelEn || "tts-1"} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, chatAudioTtsModelEn: e.target.value }))}>
+              <option value="tts-1">tts-1</option>
+              <option value="tts-1-hd">tts-1-hd</option>
+            </select>
+            <select className="input-premium py-1.5 text-[11px] font-semibold" value={aiRuntimeSettings.chatAudioTtsModelDefault || "tts-1"} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, chatAudioTtsModelDefault: e.target.value }))}>
+              <option value="tts-1">tts-1</option>
+              <option value="tts-1-hd">tts-1-hd</option>
+            </select>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">TTS Voice</div>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">TTS Speed</div>
+            <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="nova" value={aiRuntimeSettings.chatAudioTtsVoice || "nova"} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, chatAudioTtsVoice: e.target.value }))} />
+            <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="0.25" max="4" step="0.05" placeholder="0.9" value={aiRuntimeSettings.chatAudioTtsSpeed} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, chatAudioTtsSpeed: e.target.value }))} />
           </div>
           <button
             type="button"
             onClick={() => saveAiRuntimeSetting(null)}
             disabled={aiRuntimeSaving}
-            className={`btn-premium text-white w-full py-1.5 text-[11px] ${aiRuntimeSaved ? "bg-emerald-600 hover:bg-emerald-600" : "bg-slate-800"} ${aiRuntimeSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+            className={`btn-premium text-white w-full py-2 ${aiRuntimeSaved ? "bg-emerald-600 hover:bg-emerald-600" : "bg-slate-800"} ${aiRuntimeSaving ? "opacity-60 cursor-not-allowed" : ""}`}
           >
             {aiRuntimeSaving ? "Saving..." : aiRuntimeSaved ? "Saved" : "Save AI Runtime Settings"}
           </button>
@@ -218,7 +246,7 @@ export default function IntegrationSettingsPanel(props) {
                 type="button"
                 onClick={() => fetchAiUsageSummary(aiUsagePeriodMonth)}
                 disabled={aiUsageLoading}
-                className={`btn-premium bg-slate-800 text-white px-3 py-1.5 text-[11px] ${aiUsageLoading ? "opacity-60 cursor-not-allowed" : ""}`}
+                className={`btn-premium bg-slate-800 text-white px-3 py-2 ${aiUsageLoading ? "opacity-60 cursor-not-allowed" : ""}`}
               >
                 {aiUsageLoading ? "Loading..." : "Refresh"}
               </button>

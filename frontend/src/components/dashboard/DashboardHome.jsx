@@ -2045,7 +2045,7 @@ export default function DashboardHome({
           </div>
         </div>
 
-        <div className={`mt-6 grid grid-cols-1 ${chatSection ? "2xl:grid-cols-[minmax(0,1fr)_22rem]" : ""} gap-3`}>
+        <div className={`mt-6 grid grid-cols-1 ${chatSection ? "2xl:grid-cols-[minmax(0,1fr)_36rem]" : ""} gap-3`}>
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
             {orderedCardsWithOverrides.map((card) => {
               const isEditingCard = card.id === "pinnedMetrics" ? queryOpen : !!kpiEditorOpen[card.id];
@@ -2102,8 +2102,8 @@ export default function DashboardHome({
                 }}
                 className={`rounded-md border border-slate-200 bg-white shadow-sm ${
                   card.id === "pinnedMetrics"
-                    ? (queryOpen ? "p-2.5" : "h-[160px] p-2.5 overflow-hidden")
-                    : (kpiEditorOpen[card.id] ? "p-3" : "h-[160px] p-3 overflow-hidden")
+                    ? (queryOpen ? "p-2.5" : "h-[132px] p-2.5 overflow-hidden")
+                    : (kpiEditorOpen[card.id] ? "p-3" : "h-[132px] p-2.5 overflow-hidden")
                 } ${!isEditingCard ? "cursor-grab active:cursor-grabbing" : "cursor-default"} ${dragCardId === card.id ? "opacity-70 ring-2 ring-blue-300" : ""} ${dropCardId === card.id ? "ring-2 ring-slate-300" : ""}`}
                 >
                 {card.id === "pinnedMetrics" ? (
@@ -2426,11 +2426,11 @@ export default function DashboardHome({
                     {kpiDateRangeText}
                   </div>
                 )}
-                <div className="mt-1 text-[1.35rem] font-semibold text-slate-900">
+                <div className="mt-0.5 text-[1.18rem] font-semibold text-slate-900">
                   {typeof card.value === "number" ? formatMoneyIfLarge(card.value, locale) : metricValue(card.value, locale)}
                 </div>
                 {card.sparkline?.length > 1 ? (
-                  <div className="mt-1.5 h-11">
+                  <div className="mt-1 h-9">
                     <ResponsiveContainer width="100%" height="100%">
                       <AreaChart data={card.sparkline}>
                       <Tooltip
@@ -2476,7 +2476,7 @@ export default function DashboardHome({
                       </AreaChart>
                     </ResponsiveContainer>
                   </div>
-                ) : <div className="mt-1.5 h-11" />}
+                ) : <div className="mt-1 h-9" />}
                   </>
                 )}
                 </div>
@@ -2484,7 +2484,7 @@ export default function DashboardHome({
             })}
           </div>
         {chatSection && (
-          <div className="rounded-md border border-slate-200 bg-white p-2 shadow-sm h-[360px] max-h-[42vh] overflow-hidden">
+          <div className="rounded-md border border-slate-200 bg-white p-2 shadow-sm h-[276px] max-h-[42vh] overflow-hidden">
             <div className="h-full min-h-0">{chatSection}</div>
           </div>
         )}

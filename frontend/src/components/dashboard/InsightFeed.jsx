@@ -58,7 +58,7 @@ function Sparkline({ graph, cardType, locale, copy, direction = null }) {
     return /^\d{4}-\d{2}$/.test(text) || /^\d{4}-\d{2}-\d{2}$/.test(text);
   };
   const usesDateAxis = labels.some((label) => isDateLabel(label));
-  const xAxisTitle = cardType === "driver_breakdown" && !usesDateAxis ? "Drivers" : copy.period;
+  const xAxisTitle = cardType === "driver_breakdown" && !usesDateAxis ? (copy.drivers || "Drivers") : copy.period;
   const coords = clean.map((v, i) => {
     const x = padLeft + i * stepX;
     const y = yFor(v);
@@ -259,6 +259,8 @@ export default function InsightFeed({
   const [saving, setSaving] = React.useState(false);
   const autoChartKeyRef = React.useRef("");
   const previousSheetIdRef = React.useRef(null);
+  const previousLocaleRef = React.useRef(locale || "en");
+  const requestSeqRef = React.useRef(0);
   const renderDriverChangesBullet = React.useCallback((text, key) => {
     const line = String(text || "");
     const isDriverLine = line.startsWith("Drivers gained: ") || line.startsWith("Drivers lost: ");
@@ -348,17 +350,21 @@ export default function InsightFeed({
       setError("");
       return;
     }
+    const requestSeq = requestSeqRef.current + 1;
+    requestSeqRef.current = requestSeq;
     setLoading(true);
     setError("");
     try {
       const res = await api.get(`/insights/${sheetId}`, { params: { context, locale, forceRefresh: forceRefresh ? "1" : undefined } });
+      if (requestSeq !== requestSeqRef.current) return;
       setCards(Array.isArray(res?.data?.cards) ? res.data.cards : []);
       setSettings(res?.data?.settings || null);
       setAvailable(res?.data?.available || { dateColumns: [], metricColumns: [] });
     } catch (e) {
+      if (requestSeq !== requestSeqRef.current) return;
       setError(getInsightErrorMessage(e));
     } finally {
-      setLoading(false);
+      if (requestSeq === requestSeqRef.current) setLoading(false);
     }
   }, [sheetId, context, locale, getInsightErrorMessage]);
 
@@ -367,7 +373,11 @@ export default function InsightFeed({
     const currentSheetId = sheetId || null;
     const switchedSheet = prevSheetId !== null && currentSheetId !== null && String(prevSheetId) !== String(currentSheetId);
     previousSheetIdRef.current = currentSheetId;
-    if (switchedSheet) {
+    const prevLocale = previousLocaleRef.current || "en";
+    const currentLocale = locale || "en";
+    const switchedLocale = String(prevLocale).toLowerCase() !== String(currentLocale).toLowerCase();
+    previousLocaleRef.current = currentLocale;
+    if (switchedSheet || switchedLocale) {
       loadInsights({ forceRefresh: true });
       return;
     }
@@ -594,7 +604,7 @@ export default function InsightFeed({
                           }`}
                         >
                           {isDirectional
-                            ? (directionalTone === "down" ? "Warning Down" : directionalTone === "up" ? "Warning Up" : "Warning")
+                            ? (directionalTone === "down" ? (ui.warningDown || "Warning Down") : directionalTone === "up" ? (ui.warningUp || "Warning Up") : (ui.warning || "Warning"))
                             : card.type === "attention" ? ui.needsAttention : ui.recommendation}
                         </span>
                       )}

@@ -37,7 +37,7 @@ export default function SpreadsheetChatbot({
         onUpdateChart, onSwitchSheet, myFiles, activeFilename, activeTab, splitContext, activeViewScope, locale, copy: ui,
     });
 
-    const [chatSize, setChatSize] = useState({ width: 300, height: 420 });
+    const [chatSize, setChatSize] = useState({ width: 480, height: 420 });
     const isResizing = useRef(null);
 
     useEffect(() => {
@@ -51,7 +51,7 @@ export default function SpreadsheetChatbot({
                 }
                 if (isResizing.current === 'width' || isResizing.current === 'both') {
                     let newWidth = window.innerWidth - e.clientX - 24;
-                    next.width = Math.max(280, Math.min(newWidth, window.innerWidth - 100));
+                    next.width = Math.max(420, Math.min(newWidth, window.innerWidth - 100));
                 }
                 return next;
             });

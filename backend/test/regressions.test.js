@@ -255,6 +255,60 @@ test("chat AI response is strict-schema validated and metrics are logged", async
   assert.match(source, /estimated_cost_usd/);
 });
 
+test("chat answers translate with text items and suppress clarification fallbacks", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const controllerPath = path.join(__dirname, "..", "src", "controllers", "chatController.js");
+  const source = fs.readFileSync(controllerPath, "utf8");
+
+  assert.match(source, /function isClarificationOrApologyAnswer/);
+  assert.match(source, /aiClarifiedInsteadOfAnswering/);
+  assert.match(source, /inferLikelyMetricColumn\(aiHeaders, sampleRows, message/);
+  assert.match(source, /items: \[\{ key: "chat_answer", text: String\(answer\) \}\]/);
+  assert.match(source, /translated\?\.find\(\(item\) => item\.key === "chat_answer"\)\?\.text/);
+});
+
+test("chat deterministic YoY answers override AI prose and keep bullets stacked", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const controllerPath = path.join(__dirname, "..", "src", "controllers", "chatController.js");
+  const source = fs.readFileSync(controllerPath, "utf8");
+
+  assert.match(source, /const numericOps = new Set\(\["count", "sum", "avg", "max", "min", "top_n", "year_over_year"\]\)/);
+  assert.match(source, /replace\(\/\\s\+•\\s\+\/g, "\\n• "\)/);
+  assert.match(source, /function normalizeChatMarkdownText/);
+  assert.match(source, /replace\(\/\\s\+\\\*\\\*\(\[\^\*\\n:\]\{1,80\}\):\\\*\\\*\/g, "\\n\$1:"\)/);
+  assert.match(source, /replace\(\/\\\*\\\*\(\[\^\*\\n\]\+\)\\\*\\\*\/g, "\$1"\)/);
+  assert.match(source, /bestYear\.change_percent >= 0/);
+  assert.match(source, /function dropImplicitTrailingPartialYear/);
+  assert.match(source, /shouldIncludeTrailingPartialYear\(queryText, latestYear/);
+  assert.match(source, /replace\(\/\\\\r\?\\\\n\/g, "\\n"\)/);
+});
+
+test("insight feed locale changes force fresh translation and avoid caching unchanged cards", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const insightPath = path.join(__dirname, "..", "src", "controllers", "insightController.js");
+  const feedPath = path.join(__dirname, "..", "..", "frontend", "src", "components", "dashboard", "InsightFeed.jsx");
+  const copyPath = path.join(__dirname, "..", "..", "frontend", "src", "hooks", "useDashboardI18n.js");
+  const insightSource = fs.readFileSync(insightPath, "utf8");
+  const feedSource = fs.readFileSync(feedPath, "utf8");
+  const copySource = fs.readFileSync(copyPath, "utf8");
+
+  assert.match(insightSource, /function insightCardTextSignature/);
+  assert.match(insightSource, /localized = insightCardTextSignature\(cards \|\| \[\]\) !== insightCardTextSignature\(translatedCards\)/);
+  assert.match(insightSource, /source: "untranslated"/);
+  assert.match(insightSource, /localizationSource: localization\.source/);
+  assert.match(feedSource, /previousLocaleRef/);
+  assert.match(feedSource, /requestSeqRef/);
+  assert.match(feedSource, /switchedSheet \|\| switchedLocale/);
+  assert.match(feedSource, /loadInsights\(\{ forceRefresh: true \}\)/);
+  assert.match(feedSource, /ui\.warningDown/);
+  assert.match(feedSource, /copy\.drivers/);
+  assert.match(copySource, /warningDown: "Warning Down"/);
+  assert.match(copySource, /drivers: "Drivers"/);
+});
+
 test("customer AI query quota is entitlement backed and enforced before chat AI calls", async () => {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
@@ -278,8 +332,8 @@ test("customer AI query quota is entitlement backed and enforced before chat AI 
   assert.match(chatSource, /recordAiUsage\(\{/);
   assert.match(uiSource, /AI Queries \/ Month/);
   assert.match(uiSource, /AI Budget \/ Month \(\$\)/);
-  assert.match(env, /OPENAI_INPUT_COST_PER_1M=0\.40/);
-  assert.match(env, /OPENAI_OUTPUT_COST_PER_1M=1\.60/);
+  assert.match(env, /OPENAI_INPUT_COST_PER_1M=0\.05/);
+  assert.match(env, /OPENAI_OUTPUT_COST_PER_1M=0\.40/);
 });
 
 test("unique values endpoint applies row filters before distinct sampling", async () => {
@@ -660,6 +714,21 @@ test("customer admin promotion requires explicit entitlement and frontend expose
   assert.match(uiConfigSource, /maxUsers/);
   assert.match(uiConfigSource, /manageGroupAdmins/);
   assert.match(uiSource, /groupId: selectedGroupId/);
+});
+
+test("customer product bundles include user and source limits", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
+  const uiPath = path.join(repoRoot, "frontend", "src", "UserManagement.jsx");
+  const uiSource = fs.readFileSync(uiPath, "utf8");
+
+  assert.match(uiSource, /const BUNDLE_CAPACITY_LIMITS = \{/);
+  assert.match(uiSource, /core: \{ maxUsers: 10, maxReportSources: 3 \}/);
+  assert.match(uiSource, /growth: \{ maxUsers: 50, maxReportSources: 15 \}/);
+  assert.match(uiSource, /enterprise: \{ maxUsers: 250, maxReportSources: 100 \}/);
+  assert.match(uiSource, /const capacityLimits = BUNDLE_CAPACITY_LIMITS\[bundle\.key\] \|\| \{\}/);
+  assert.match(uiSource, /maxUsers: capacityLimits\.maxUsers \?\? current\.maxUsers \?\? ""/);
+  assert.match(uiSource, /maxReportSources: capacityLimits\.maxReportSources \?\? current\.maxReportSources \?\? ""/);
 });
 
 test("customer-scoped SSO toggle is wired and enforced for Google auth", async () => {
