@@ -453,6 +453,41 @@ function inferAggregateBucketFromMessage(message = "", ai = {}) {
   return null;
 }
 
+function isDateRelatedQuestion(message = "") {
+  const msg = String(message || "").toLowerCase();
+  if (!msg.trim()) return false;
+  return /\b(yoy|year over year|year-over-year|annual|yearly|last year|previous year|this year|current year|ytd|year\s*to\s*date|trend|over time|timeline|time series|by year|by month|by quarter|per year|per month|per quarter|monthly|quarterly|weekly|daily|date|dates|period|periods|month|months|quarter|quarters|week|weeks|day|days|year|years|q[1-4]|mom|m\/m|qoq|q\/q)\b|год к году|г\/г|р\/р|рік до року|річн|прошл(ый|ого)\s+год|минул(ий|ого)\s+рік|поточн(ий|ого)\s+рік|текущ(ий|его)\s+год|рік|год|місяц|месяц|квартал|дата|період|период|тиждень|недел/i.test(msg);
+}
+
+function isTemporalHeaderName(header = "") {
+  const s = String(header || "").trim().toLowerCase().replace(/[_-]+/g, " ");
+  if (!s) return false;
+  return /\b(date|timestamp|time|period|calendar|fiscal|fy|year|month|week|day|quarter|qtr|дата|період|период|рік|год|місяць|месяц|тиждень|неделя|день|квартал)\b/i.test(s);
+}
+
+function sheetHasTemporalColumn(headers = [], sampleRows = [], semanticProfile = null) {
+  const headerList = Array.isArray(headers) ? headers : [];
+  if (!headerList.length) return false;
+  if (headerList.some(isTemporalHeaderName)) return true;
+  const profileDateColumn = resolveProfileDateColumn(semanticProfile, []);
+  if (profileDateColumn && headerList.includes(profileDateColumn) && isTemporalHeaderName(profileDateColumn)) return true;
+  return false;
+}
+
+function noDateColumnAnswer(locale = "en") {
+  const normalized = normalizeLocale(locale || "en");
+  if (normalized === "uk") {
+    return "Я не можу відповідати на питання про дати, роки, місяці, тижні, квартали або тренди, бо в цьому аркуші немає колонки дати, року, місяця, тижня, кварталу, дня або періоду.";
+  }
+  if (normalized === "ru") {
+    return "Я не могу отвечать на вопросы о датах, годах, месяцах, неделях, кварталах или трендах, потому что в этом листе нет колонки даты, года, месяца, недели, квартала, дня или периода.";
+  }
+  if (normalized === "es") {
+    return "No puedo responder preguntas sobre fechas, años, meses, semanas, trimestres o tendencias porque esta hoja no tiene una columna de fecha, año, mes, semana, trimestre, día o periodo.";
+  }
+  return "I can't answer date-related questions because this sheet does not have a date, year, month, week, quarter, day, or period column.";
+}
+
 function inferAggregateOperationFromMessage(message = "", ai = {}) {
   const msg = String(message || "").toLowerCase();
   const op = String(ai?.operation || "").toLowerCase();
@@ -2342,11 +2377,6 @@ export async function chatQuery(req, res) {
     if (rows?.[0] && !groupHasFeature(rows[0], "chatAi")) return res.status(403).json({ error: "feature_not_enabled:chatAi" });
   }
   let aiReservation = null;
-  try {
-    aiReservation = await reserveAiQueryForSheet({ sheetId, user: req.user, kind: "chat_query" });
-  } catch (err) {
-    return res.status(err.statusCode || 429).json({ error: err.message, ...(err.details || {}) });
-  }
   const boundedConversationHistory = Array.isArray(conversationHistory)
     ? conversationHistory.slice(-Math.max(1, Number(runtime.chatHistoryWindowMessages || 8)))
     : [];
@@ -2367,6 +2397,26 @@ export async function chatQuery(req, res) {
   const sampleRows = applyFilters(scopedSampleRows, activeDashboardFilters);
   const tabNames = Array.isArray(loadedSample.tabs) ? loadedSample.tabs : [];
   const semanticProfile = restrictSemanticProfileToHeaders(loadedSample.semanticProfile, aiHeaders, scopedSampleRows);
+  if (isDateRelatedQuestion(message) && !sheetHasTemporalColumn(aiHeaders, scopedSampleRows, semanticProfile)) {
+    const answer = noDateColumnAnswer(locale);
+    return res.json({
+      answer,
+      actions: { reset_filters: false, filters: [], chart: null },
+      preview_rows: [],
+      meta: {
+        operation: "none",
+        locale,
+        dateRelatedBlocked: true,
+        reason: "missing_temporal_column",
+      },
+    });
+  }
+
+  try {
+    aiReservation = await reserveAiQueryForSheet({ sheetId, user: req.user, kind: "chat_query" });
+  } catch (err) {
+    return res.status(err.statusCode || 429).json({ error: err.message, ...(err.details || {}) });
+  }
   
   // PERF-01: Build Workspace Schema for Cross-Sheet Intelligence
   const workspaceRes = await query(

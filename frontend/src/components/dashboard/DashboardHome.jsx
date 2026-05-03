@@ -2102,7 +2102,7 @@ export default function DashboardHome({
                 }}
                 className={`rounded-md border border-slate-200 bg-white shadow-sm ${
                   card.id === "pinnedMetrics"
-                    ? (queryOpen ? "p-2.5" : "h-[132px] p-2.5 overflow-hidden")
+                    ? (queryOpen ? "p-2.5" : "min-h-[156px] p-2.5")
                     : (kpiEditorOpen[card.id] ? "p-3" : "h-[132px] p-2.5 overflow-hidden")
                 } ${!isEditingCard ? "cursor-grab active:cursor-grabbing" : "cursor-default"} ${dragCardId === card.id ? "opacity-70 ring-2 ring-blue-300" : ""} ${dropCardId === card.id ? "ring-2 ring-slate-300" : ""}`}
                 >
@@ -2141,7 +2141,6 @@ export default function DashboardHome({
                         ))}
                       </div>
                     </div>
-                    {!queryOpen && <div className="mt-2 h-12" />}
                     {canEditTickets && queryOpen && (
                       <>
                         <div className="mt-2 rounded-md border border-slate-200 bg-slate-50/70 p-1.5 space-y-1.5">

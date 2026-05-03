@@ -255,6 +255,24 @@ test("chat AI response is strict-schema validated and metrics are logged", async
   assert.match(source, /estimated_cost_usd/);
 });
 
+test("chat blocks date-related questions unless a temporal header exists", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const controllerPath = path.join(__dirname, "..", "src", "controllers", "chatController.js");
+  const source = fs.readFileSync(controllerPath, "utf8");
+  const chatQueryBody = source.slice(source.indexOf("export async function chatQuery"));
+
+  assert.match(source, /function isDateRelatedQuestion\(message = ""\)/);
+  assert.match(source, /function isTemporalHeaderName\(header = ""\)/);
+  assert.match(source, /replace\(\/\[_-\]\+\/g, " "\)/);
+  assert.match(source, /date\|timestamp\|time\|period\|calendar\|fiscal\|fy\|year\|month\|week\|day\|quarter\|qtr/);
+  assert.match(source, /function sheetHasTemporalColumn\(headers = \[\], sampleRows = \[\], semanticProfile = null\)/);
+  assert.match(source, /dateRelatedBlocked: true/);
+  assert.match(source, /reason: "missing_temporal_column"/);
+  assert.ok(chatQueryBody.indexOf("isDateRelatedQuestion(message)") < chatQueryBody.indexOf("reserveAiQueryForSheet({ sheetId"));
+  assert.ok(chatQueryBody.indexOf("sheetHasTemporalColumn(aiHeaders, scopedSampleRows, semanticProfile)") < chatQueryBody.indexOf("callOpenAI({"));
+});
+
 test("chat answers translate with text items and suppress clarification fallbacks", async () => {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
@@ -989,6 +1007,10 @@ test("business type detection is runtime configurable and confirmed per sheet", 
   assert.match(classifierSource, /sourceKindEnabled\(runtime, sourceKind\)/);
   assert.match(classifierSource, /responseFormat: \{ type: "json_object" \}/);
   assert.match(classifierSource, /isBusinessData/);
+  assert.match(classifierSource, /Prefer a specific sheet\/business type over a broad domain/);
+  assert.match(classifierSource, /Advertising Performance/);
+  assert.match(classifierSource, /Sales Performance/);
+  assert.match(classifierSource, /Lead Generation Performance/);
   assert.match(dbSource, /ALTER TABLE sheets ADD COLUMN IF NOT EXISTS business_classification JSONB NOT NULL DEFAULT '\{\}'::jsonb/);
   assert.match(dbSource, /ALTER TABLE sheets ADD COLUMN IF NOT EXISTS business_classification_status TEXT NOT NULL DEFAULT 'none'/);
   assert.doesNotMatch(dbSource, /ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS business_classification JSONB/);
@@ -1013,14 +1035,41 @@ test("business type detection is runtime configurable and confirmed per sheet", 
   assert.doesNotMatch(appSource, /setFolderFiles/);
   assert.match(dashboardBodySource, /const getLabelOptionsForSource = React\.useCallback/);
   assert.match(dashboardBodySource, /reportSourceImports\?\.\[String\(sourceId\)\]/);
+  assert.match(dashboardBodySource, /CREATE_NEW_LABEL_VALUE/);
+  assert.match(dashboardBodySource, /label: "Create new label"/);
   assert.match(dashboardBodySource, /selectedReportSourceId && labelOptions\.length > 0/);
   assert.doesNotMatch(dashboardBodySource, /labelOptions\.length > 1/);
   assert.match(storageImportPickerSource, /selectedReportSourceId && labelOptions\.length > 0/);
-  assert.doesNotMatch(storageImportPickerSource, /__NEW__/);
+  assert.match(storageImportPickerSource, /CREATE_NEW_LABEL_VALUE/);
   assert.match(uiSource, /Business Type Detection Enabled/);
   assert.match(uiSource, /businessClassificationModel/);
   assert.match(uiSource, /businessClassificationApplyEmailIngest/);
   assert.match(env, /OPENAI_BUSINESS_CLASSIFICATION_MODEL=gpt-5-nano/);
+});
+
+test("business type detection refines generic marketing labels for ad and sales sheets", async () => {
+  const mod = await import(`../src/utils/businessClassification.js?t=${Date.now()}_marketing_refine`);
+  const refineBusinessType = mod.__businessClassificationTestHooks?.refineBusinessType;
+  assert.equal(typeof refineBusinessType, "function");
+
+  assert.equal(
+    refineBusinessType("Marketing Performance", {
+      headers: ["Campaign", "Ad Spend", "Impressions", "Clicks", "CTR", "ROAS"],
+    }),
+    "Advertising Performance"
+  );
+  assert.equal(
+    refineBusinessType("Marketing Performance", {
+      headers: ["Lead Source", "MQL", "SQL", "CPL", "Form Fills"],
+    }),
+    "Lead Generation Performance"
+  );
+  assert.equal(
+    refineBusinessType("Marketing Analytics", {
+      headers: ["Campaign", "Ad Spend", "Revenue", "Orders", "Conversion Rate"],
+    }),
+    "Advertising and Sales Performance"
+  );
 });
 
 test("sheet semantic profiles are generated, stored, learned, and used by chat", async () => {

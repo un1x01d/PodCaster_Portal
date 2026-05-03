@@ -2,6 +2,8 @@ import React from "react";
 import SearchableSelect from "./SearchableSelect";
 import SourceProviderIcon from "./SourceProviderIcon";
 
+const CREATE_NEW_LABEL_VALUE = "__CREATE_NEW_LABEL__";
+
 export default function StorageImportPicker({
   open = false,
   title = "",
@@ -105,8 +107,13 @@ export default function StorageImportPicker({
           {selectedReportSourceId && labelOptions.length > 0 && (
             <SearchableSelect
               options={labelOptions}
-              value={fileLabel}
+              value={isNewLabel ? CREATE_NEW_LABEL_VALUE : fileLabel}
               onChange={(e) => {
+                if (e.target.value === CREATE_NEW_LABEL_VALUE) {
+                  onChangeIsNewLabel(true);
+                  onChangeFileLabel("");
+                  return;
+                }
                 onChangeIsNewLabel(false);
                 onChangeFileLabel(e.target.value);
               }}
@@ -115,7 +122,7 @@ export default function StorageImportPicker({
               panelWidth="100%"
             />
           )}
-          {(!selectedReportSourceId || labelOptions.length === 0) && (
+          {(!selectedReportSourceId || isNewLabel || labelOptions.length === 0) && (
             <input
               type="text"
               value={fileLabel}

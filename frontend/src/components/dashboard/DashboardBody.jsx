@@ -19,6 +19,8 @@ import { DASHBOARD_COPY_EN } from "../../hooks/useDashboardI18n";
 
 import { renderMaybeDate, formatSmart } from "../../utils/formatting";
 
+const CREATE_NEW_LABEL_VALUE = "__CREATE_NEW_LABEL__";
+
 export default function DashboardBody(props) {
     const navigate = useNavigate();
     const {
@@ -1484,7 +1486,10 @@ export default function DashboardBody(props) {
             seen.add(key);
             labels.push(label);
         });
-        return labels.map((label) => ({ value: label, label }));
+        return [
+            { value: CREATE_NEW_LABEL_VALUE, label: "Create new label" },
+            ...labels.map((label) => ({ value: label, label })),
+        ];
     }, [reportSourceImports]);
 
     const labelOptions = React.useMemo(() => {
@@ -1494,10 +1499,12 @@ export default function DashboardBody(props) {
     useEffect(() => {
         if (selectedReportSourceId) {
             if (labelOptions.length > 0) {
-                if (!fileLabel || !labelOptions.some(o => o.value === fileLabel)) {
-                    const firstVal = labelOptions[0].value;
+                if (isNewLabel) return;
+                const existingOptions = labelOptions.filter((o) => o.value !== CREATE_NEW_LABEL_VALUE);
+                if (!fileLabel || !existingOptions.some(o => o.value === fileLabel)) {
+                    const firstVal = existingOptions[0]?.value || "";
                     setFileLabel(firstVal);
-                    setIsNewLabel(false);
+                    setIsNewLabel(!firstVal);
                 }
             } else {
                 setIsNewLabel(true);
@@ -1982,8 +1989,13 @@ export default function DashboardBody(props) {
                                                         {selectedReportSourceId && labelOptions.length > 0 && (
                                                             <SearchableSelect
                                                                 options={labelOptions}
-                                                                value={fileLabel}
+                                                                value={isNewLabel ? CREATE_NEW_LABEL_VALUE : fileLabel}
                                                                 onChange={(e) => {
+                                                                    if (e.target.value === CREATE_NEW_LABEL_VALUE) {
+                                                                        setIsNewLabel(true);
+                                                                        setFileLabel("");
+                                                                        return;
+                                                                    }
                                                                     setIsNewLabel(false);
                                                                     setFileLabel(e.target.value);
                                                                 }}
@@ -1994,7 +2006,7 @@ export default function DashboardBody(props) {
                                                             />
                                                         )}
 
-                                                        {(!selectedReportSourceId || labelOptions.length === 0) && (
+                                                        {(!selectedReportSourceId || isNewLabel || labelOptions.length === 0) && (
                                                             <input
                                                                 type="text"
                                                                 value={fileLabel}
@@ -2242,8 +2254,13 @@ export default function DashboardBody(props) {
                             {selectedReportSourceId && labelOptions.length > 0 && (
                                 <SearchableSelect
                                     options={labelOptions}
-                                    value={fileLabel}
+                                    value={isNewLabel ? CREATE_NEW_LABEL_VALUE : fileLabel}
                                     onChange={(e) => {
+                                        if (e.target.value === CREATE_NEW_LABEL_VALUE) {
+                                            setIsNewLabel(true);
+                                            setFileLabel("");
+                                            return;
+                                        }
                                         setIsNewLabel(false);
                                         setFileLabel(e.target.value);
                                     }}
@@ -2252,7 +2269,7 @@ export default function DashboardBody(props) {
                                     panelWidth="100%"
                                 />
                             )}
-                            {(!selectedReportSourceId || labelOptions.length === 0) && (
+                            {(!selectedReportSourceId || isNewLabel || labelOptions.length === 0) && (
                                 <input
                                     type="text"
                                     value={fileLabel}
@@ -2391,8 +2408,13 @@ export default function DashboardBody(props) {
                             {selectedReportSourceId && labelOptions.length > 0 && (
                                 <SearchableSelect
                                     options={labelOptions}
-                                    value={fileLabel}
+                                    value={isNewLabel ? CREATE_NEW_LABEL_VALUE : fileLabel}
                                     onChange={(e) => {
+                                        if (e.target.value === CREATE_NEW_LABEL_VALUE) {
+                                            setIsNewLabel(true);
+                                            setFileLabel("");
+                                            return;
+                                        }
                                         setIsNewLabel(false);
                                         setFileLabel(e.target.value);
                                     }}
@@ -2401,7 +2423,7 @@ export default function DashboardBody(props) {
                                     panelWidth="100%"
                                 />
                             )}
-                            {(!selectedReportSourceId || labelOptions.length === 0) && (
+                            {(!selectedReportSourceId || isNewLabel || labelOptions.length === 0) && (
                                 <input
                                     type="text"
                                     value={fileLabel}
@@ -2539,8 +2561,13 @@ export default function DashboardBody(props) {
                             {selectedReportSourceId && labelOptions.length > 0 && (
                                 <SearchableSelect
                                     options={labelOptions}
-                                    value={fileLabel}
+                                    value={isNewLabel ? CREATE_NEW_LABEL_VALUE : fileLabel}
                                     onChange={(e) => {
+                                        if (e.target.value === CREATE_NEW_LABEL_VALUE) {
+                                            setIsNewLabel(true);
+                                            setFileLabel("");
+                                            return;
+                                        }
                                         setIsNewLabel(false);
                                         setFileLabel(e.target.value);
                                     }}
@@ -2549,7 +2576,7 @@ export default function DashboardBody(props) {
                                     panelWidth="100%"
                                 />
                             )}
-                            {(!selectedReportSourceId || labelOptions.length === 0) && (
+                            {(!selectedReportSourceId || isNewLabel || labelOptions.length === 0) && (
                                 <input
                                     type="text"
                                     value={fileLabel}
@@ -2622,7 +2649,8 @@ export default function DashboardBody(props) {
                 onChangeReportSourceId={(e) => {
                     const nextId = e.target.value;
                     const nextLabels = getLabelOptionsForSource(nextId);
-                    setStoragePicker("sftp_storage", { selectedReportSourceId: nextId, fileLabel: nextLabels[0]?.value || "", isNewLabel: nextLabels.length === 0 });
+                    const firstExisting = nextLabels.find((option) => option.value !== CREATE_NEW_LABEL_VALUE)?.value || "";
+                    setStoragePicker("sftp_storage", { selectedReportSourceId: nextId, fileLabel: firstExisting, isNewLabel: !firstExisting });
                 }}
                 labelOptions={getLabelOptionsForSource(storagePickers.sftp_storage.selectedReportSourceId)}
                 fileLabel={storagePickers.sftp_storage.fileLabel}
@@ -2650,7 +2678,8 @@ export default function DashboardBody(props) {
                 onChangeReportSourceId={(e) => {
                     const nextId = e.target.value;
                     const nextLabels = getLabelOptionsForSource(nextId);
-                    setStoragePicker("gcs_storage", { selectedReportSourceId: nextId, fileLabel: nextLabels[0]?.value || "", isNewLabel: nextLabels.length === 0 });
+                    const firstExisting = nextLabels.find((option) => option.value !== CREATE_NEW_LABEL_VALUE)?.value || "";
+                    setStoragePicker("gcs_storage", { selectedReportSourceId: nextId, fileLabel: firstExisting, isNewLabel: !firstExisting });
                 }}
                 labelOptions={getLabelOptionsForSource(storagePickers.gcs_storage.selectedReportSourceId)}
                 fileLabel={storagePickers.gcs_storage.fileLabel}
@@ -2678,7 +2707,8 @@ export default function DashboardBody(props) {
                 onChangeReportSourceId={(e) => {
                     const nextId = e.target.value;
                     const nextLabels = getLabelOptionsForSource(nextId);
-                    setStoragePicker("s3_storage", { selectedReportSourceId: nextId, fileLabel: nextLabels[0]?.value || "", isNewLabel: nextLabels.length === 0 });
+                    const firstExisting = nextLabels.find((option) => option.value !== CREATE_NEW_LABEL_VALUE)?.value || "";
+                    setStoragePicker("s3_storage", { selectedReportSourceId: nextId, fileLabel: firstExisting, isNewLabel: !firstExisting });
                 }}
                 labelOptions={getLabelOptionsForSource(storagePickers.s3_storage.selectedReportSourceId)}
                 fileLabel={storagePickers.s3_storage.fileLabel}
@@ -2706,7 +2736,8 @@ export default function DashboardBody(props) {
                 onChangeReportSourceId={(e) => {
                     const nextId = e.target.value;
                     const nextLabels = getLabelOptionsForSource(nextId);
-                    setStoragePicker("azure_blob_storage", { selectedReportSourceId: nextId, fileLabel: nextLabels[0]?.value || "", isNewLabel: nextLabels.length === 0 });
+                    const firstExisting = nextLabels.find((option) => option.value !== CREATE_NEW_LABEL_VALUE)?.value || "";
+                    setStoragePicker("azure_blob_storage", { selectedReportSourceId: nextId, fileLabel: firstExisting, isNewLabel: !firstExisting });
                 }}
                 labelOptions={getLabelOptionsForSource(storagePickers.azure_blob_storage.selectedReportSourceId)}
                 fileLabel={storagePickers.azure_blob_storage.fileLabel}

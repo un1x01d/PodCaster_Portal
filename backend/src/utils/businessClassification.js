@@ -1,4 +1,3 @@
-import { isAiGloballyDisabled, loadAiRuntimeSettings } from "./aiRuntimeSettings.js";
 import {
   buildChatCompletionRequestBody,
   extractOpenAiAssistantText,
@@ -7,6 +6,15 @@ import {
 } from "./openAiCompat.js";
 
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
+
+async function loadRuntimeSettingsForClassification(groupId = null) {
+  const mod = await import("./aiRuntimeSettings.js");
+  const runtime = await mod.loadAiRuntimeSettings(groupId || null);
+  return {
+    runtime,
+    globallyDisabled: mod.isAiGloballyDisabled(runtime),
+  };
+}
 
 function trimText(value, max = 80) {
   const text = String(value ?? "").replace(/\s+/g, " ").trim();
@@ -19,6 +27,37 @@ function normalizeStringArray(value, maxItems = 20, maxChars = 80) {
       .map((item) => trimText(item, maxChars))
       .filter(Boolean)
   )).slice(0, maxItems);
+}
+
+function contextTerms({ sourceName = "", fileName = "", sheetNames = [], headers = [], sampleRows = [] } = {}) {
+  const parts = [sourceName, fileName]
+    .concat(Array.isArray(sheetNames) ? sheetNames : [])
+    .concat(Array.isArray(headers) ? headers : []);
+  (Array.isArray(sampleRows) ? sampleRows : []).slice(0, 10).forEach((row) => {
+    Object.values(row || {}).slice(0, 20).forEach((value) => parts.push(value));
+  });
+  return parts.map((value) => String(value ?? "").toLowerCase()).join(" ");
+}
+
+function refineBusinessType(rawType = "", context = {}) {
+  const current = trimText(rawType, 120);
+  const text = contextTerms(context);
+  if (!text) return current;
+
+  const genericMarketing = !current || /\b(marketing|marketing performance|performance marketing|business|operations?|operational|analytics?|report|spreadsheet|dashboard)\b/i.test(current);
+  const advertisingSignal = /\b(advertis(e|ing|ement|ements)|ads?|ad\s*group|campaign|creative|impressions?|clicks?|ctr|cpc|cpm|cpa|roas|return\s+on\s+ad\s+spend|media\s+spend|paid\s+search|paid\s+social|facebook\s+ads?|google\s+ads?|meta\s+ads?|tiktok\s+ads?|linkedin\s+ads?)\b/i.test(text);
+  const salesSignal = /\b(sales?|revenue|orders?|deals?|opportunit(y|ies)|pipeline|conversion|conversions|bookings?|arr|mrr|quota|win\s*rate|close\s*rate|customer\s+acquisition)\b/i.test(text);
+  const leadGenSignal = /\b(leads?|mql|sql|cpl|lead\s+source|form\s+fills?|inquiries|prospects?)\b/i.test(text);
+
+  if (genericMarketing) {
+    if (advertisingSignal && salesSignal) return "Advertising and Sales Performance";
+    if (advertisingSignal && leadGenSignal) return "Advertising and Lead Generation Performance";
+    if (advertisingSignal) return "Advertising Performance";
+    if (salesSignal) return "Sales Performance";
+    if (leadGenSignal) return "Lead Generation Performance";
+  }
+
+  return current;
 }
 
 function sourceKindEnabled(runtime, sourceKind) {
@@ -68,12 +107,13 @@ function clampPromptPayload(payload, maxChars) {
   };
 }
 
-function normalizeClassificationResult(raw, model, sourceKind) {
+function normalizeClassificationResult(raw, model, sourceKind, context = {}) {
   const src = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   const confidence = Number(src.confidence);
+  const businessType = refineBusinessType(src.businessType || src.business_type || "", context);
   return {
     isBusinessData: src.isBusinessData === true,
-    businessType: trimText(src.businessType || src.business_type || "", 120),
+    businessType,
     industry: trimText(src.industry || "", 80),
     confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0,
     signals: normalizeStringArray(src.signals, 8, 100),
@@ -94,8 +134,8 @@ export async function classifySheetBusinessContext({
   sourceKind = "manual_upload",
   groupId = null,
 } = {}) {
-  const runtime = await loadAiRuntimeSettings(groupId || null).catch(() => null);
-  if (isAiGloballyDisabled(runtime)) return null;
+  const { runtime, globallyDisabled } = await loadRuntimeSettingsForClassification(groupId || null).catch(() => ({ runtime: null, globallyDisabled: false }));
+  if (globallyDisabled) return null;
   if (!runtime?.businessClassificationEnabled) return null;
   if (!sourceKindEnabled(runtime, sourceKind)) return null;
   const apiKey = process.env.OPENAI_API_KEY;
@@ -126,7 +166,10 @@ export async function classifySheetBusinessContext({
     "Use only the provided sheet names, headers, and bounded sample rows.",
     "Return only valid JSON matching the requested schema.",
     "If the data is not clearly business/operational, set isBusinessData=false and confidence below 0.5.",
-    "Do not infer a company identity or regulated status. Classify broad domain only.",
+    "Do not infer a company identity or regulated status.",
+    "Prefer a specific sheet/business type over a broad domain when headers support it.",
+    "For marketing datasets, distinguish advertising performance, sales performance, lead generation performance, campaign performance, ecommerce sales performance, and marketing analytics when the headers indicate those meanings.",
+    "Examples: ad spend/impressions/clicks/CTR/CPC/ROAS => Advertising Performance; leads/MQL/SQL/CPL => Lead Generation Performance; orders/revenue/deals/pipeline/conversion => Sales Performance.",
   ].join(" ");
 
   const controller = new AbortController();
@@ -165,5 +208,15 @@ export async function classifySheetBusinessContext({
   } catch {
     throw new Error(`business_classification_invalid_json:${content.slice(0, 240)}`);
   }
-  return normalizeClassificationResult(parsed, model, sourceKind);
+  return normalizeClassificationResult(parsed, model, sourceKind, {
+    sourceName,
+    fileName,
+    sheetNames,
+    headers,
+    sampleRows,
+  });
 }
+
+export const __businessClassificationTestHooks = {
+  refineBusinessType,
+};
