@@ -102,25 +102,20 @@ export default function StorageImportPicker({
             className="w-full border border-slate-300 rounded-md text-xs"
             panelWidth="100%"
           />
-          {selectedReportSourceId && labelOptions.length > 1 && (
+          {selectedReportSourceId && labelOptions.length > 0 && (
             <SearchableSelect
               options={labelOptions}
-              value={isNewLabel ? "__NEW__" : fileLabel}
+              value={fileLabel}
               onChange={(e) => {
-                if (e.target.value === "__NEW__") {
-                  onChangeIsNewLabel(true);
-                  onChangeFileLabel("");
-                } else {
-                  onChangeIsNewLabel(false);
-                  onChangeFileLabel(e.target.value);
-                }
+                onChangeIsNewLabel(false);
+                onChangeFileLabel(e.target.value);
               }}
               placeholder={selectLabelPlaceholder}
               className="w-full border border-slate-300 rounded-md text-xs"
               panelWidth="100%"
             />
           )}
-          {(!selectedReportSourceId || isNewLabel || labelOptions.length <= 1) && (
+          {(!selectedReportSourceId || labelOptions.length === 0) && (
             <input
               type="text"
               value={fileLabel}

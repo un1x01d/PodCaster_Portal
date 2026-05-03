@@ -18,6 +18,8 @@ import {
     getImportJob,
     publishReportSourceImport,
     rejectReportSourceImport,
+    confirmSheetBusinessClassification,
+    updateSheetSemanticProfile,
     deleteSheet
 } from "../controllers/sheetController.js";
 import { auth } from "../middleware/auth.js";
@@ -69,6 +71,8 @@ router.get("/import-jobs/:id", asyncHandler(getImportJob));
 router.post("/report-source-imports/:id/publish", expensiveTenantRateLimit, asyncHandler(publishReportSourceImport));
 router.post("/report-source-imports/:id/reject", expensiveTenantRateLimit, asyncHandler(rejectReportSourceImport));
 router.get("/sheets/:id", asyncHandler(getSheetDetails));
+router.patch("/sheets/:id/business-classification", asyncHandler(confirmSheetBusinessClassification));
+router.patch("/sheets/:id/semantic-profile", asyncHandler(updateSheetSemanticProfile));
 router.patch("/sheets/:id", asyncHandler(updateSheetDetails));
 router.get("/sheets/:id/tabs", asyncHandler(getSheetTabs));
 router.get("/sheets/:id/data", asyncHandler(getSheetData));

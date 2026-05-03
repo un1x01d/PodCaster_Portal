@@ -4,13 +4,23 @@ const AI_RUNTIME_SETTINGS_KEY = "ai_runtime_settings";
 
 const DEFAULTS = {
   aiRuntimePreset: "mid",
-  chatEnabled: true,
+  globalAiDisabled: false,
+  chatEnabled: false,
   chatAudioEnabled: false,
   dashboardTranslationEnabled: false,
+  businessClassificationEnabled: false,
+  insightAiEnabled: false,
   chatMaxInputChars: 12000,
   chatHistoryWindowMessages: 8,
   dashboardTranslateMaxItems: 200,
   dashboardTranslateMaxCharsPerItem: 500,
+  businessClassificationModel: String(process.env.OPENAI_BUSINESS_CLASSIFICATION_MODEL || process.env.OPENAI_MODEL || "gpt-5-nano"),
+  businessClassificationApplyUploads: true,
+  businessClassificationApplyEmailIngest: true,
+  businessClassificationApplyAutosync: true,
+  businessClassificationMaxSampleRows: 20,
+  businessClassificationMaxPromptChars: 12000,
+  businessClassificationMaxOutputTokens: 512,
   llmMaxOutputTokens: 800,
   openaiModel: String(process.env.OPENAI_MODEL || "gpt-5-nano"),
   openaiBaseUrl: String(process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, ""),
@@ -66,13 +76,23 @@ export function normalizeAiRuntimeSettings(raw = {}) {
   const cfg = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   return {
     aiRuntimePreset: toPreset(cfg.aiRuntimePreset, DEFAULTS.aiRuntimePreset),
+    globalAiDisabled: toBool(cfg.globalAiDisabled, DEFAULTS.globalAiDisabled),
     chatEnabled: toBool(cfg.chatEnabled, DEFAULTS.chatEnabled),
     chatAudioEnabled: toBool(cfg.chatAudioEnabled, DEFAULTS.chatAudioEnabled),
     dashboardTranslationEnabled: toBool(cfg.dashboardTranslationEnabled, DEFAULTS.dashboardTranslationEnabled),
+    businessClassificationEnabled: toBool(cfg.businessClassificationEnabled, DEFAULTS.businessClassificationEnabled),
+    insightAiEnabled: toBool(cfg.insightAiEnabled, DEFAULTS.insightAiEnabled),
     chatMaxInputChars: toInt(cfg.chatMaxInputChars, DEFAULTS.chatMaxInputChars, 500, 200000),
     chatHistoryWindowMessages: toInt(cfg.chatHistoryWindowMessages, DEFAULTS.chatHistoryWindowMessages, 1, 40),
     dashboardTranslateMaxItems: toInt(cfg.dashboardTranslateMaxItems, DEFAULTS.dashboardTranslateMaxItems, 1, 2000),
     dashboardTranslateMaxCharsPerItem: toInt(cfg.dashboardTranslateMaxCharsPerItem, DEFAULTS.dashboardTranslateMaxCharsPerItem, 10, 10000),
+    businessClassificationModel: toModel(cfg.businessClassificationModel, DEFAULTS.businessClassificationModel),
+    businessClassificationApplyUploads: toBool(cfg.businessClassificationApplyUploads, DEFAULTS.businessClassificationApplyUploads),
+    businessClassificationApplyEmailIngest: toBool(cfg.businessClassificationApplyEmailIngest, DEFAULTS.businessClassificationApplyEmailIngest),
+    businessClassificationApplyAutosync: toBool(cfg.businessClassificationApplyAutosync, DEFAULTS.businessClassificationApplyAutosync),
+    businessClassificationMaxSampleRows: toInt(cfg.businessClassificationMaxSampleRows, DEFAULTS.businessClassificationMaxSampleRows, 0, 100),
+    businessClassificationMaxPromptChars: toInt(cfg.businessClassificationMaxPromptChars, DEFAULTS.businessClassificationMaxPromptChars, 1000, 50000),
+    businessClassificationMaxOutputTokens: toInt(cfg.businessClassificationMaxOutputTokens, DEFAULTS.businessClassificationMaxOutputTokens, 128, 2048),
     llmMaxOutputTokens: toInt(cfg.llmMaxOutputTokens, DEFAULTS.llmMaxOutputTokens, 32, 4096),
     openaiModel: toModel(cfg.openaiModel, DEFAULTS.openaiModel),
     openaiBaseUrl: toBaseUrl(cfg.openaiBaseUrl, DEFAULTS.openaiBaseUrl),
@@ -92,6 +112,10 @@ export function normalizeAiRuntimeSettings(raw = {}) {
     chatAudioTtsVoice: toModel(cfg.chatAudioTtsVoice, DEFAULTS.chatAudioTtsVoice),
     chatAudioTtsSpeed: toFloat(cfg.chatAudioTtsSpeed, DEFAULTS.chatAudioTtsSpeed, 0.25, 4),
   };
+}
+
+export function isAiGloballyDisabled(runtime = {}) {
+  return runtime?.globalAiDisabled === true;
 }
 
 function scopedKey(groupId) {

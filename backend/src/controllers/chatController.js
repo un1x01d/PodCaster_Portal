@@ -2,10 +2,16 @@ import { createHash } from "crypto";
 import { query } from "../config/db.js";
 import { isEnglishLocale, normalizeLocale, translateDashboardItems } from "../utils/dashboardLocalization.js";
 import { checkSheetAccess, hasReportSourceOwnerAccess, isPlatformAdminUser, loadSheetPermissionSets } from "../utils/authorization.js";
-import { estimateOpenAiCostUsd, recordAiUsage, reserveAiQueryForSheet } from "../utils/aiQuota.js";
-import { loadAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
+import { estimateOpenAiCostUsd, recordAiUsage, reserveAiQueryForSheet, resolveAiGroupIdForSheet } from "../utils/aiQuota.js";
+import { isAiGloballyDisabled, loadAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
 import { groupHasFeature } from "../utils/entitlements.js";
 import { buildChatCompletionRequestBody, extractOpenAiAssistantText, getOpenAiResponseDiagnostics, minCompletionTokensForModel } from "../utils/openAiCompat.js";
+import {
+  buildSheetSemanticProfile,
+  resolveProfileDateColumn,
+  resolveProfileDimension,
+  resolveProfileMetric,
+} from "../utils/sheetSemanticProfile.js";
 export { checkSheetAccess } from "../utils/authorization.js";
 
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
@@ -455,20 +461,34 @@ function inferAggregateOperationFromMessage(message = "", ai = {}) {
   }
   if (/\b(how many|count|number of|total rows|row count|records? (?:are|were)|entries?)\b/i.test(msg)) return "count";
   if (/\b(average|mean|per (?:day|week|month|year|customer|user|order|transaction))\b/i.test(msg)) return "avg";
-  if (/\b(top|highest|largest|biggest|best|most|leading|drivers?|rank(?:ing)?|bottom|lowest|least|smallest)\b/i.test(msg)) return "top_n";
+  if (/\b(top|highest|largest|biggest|best|most|leading|drivers?|drives|rank(?:ing)?|bottom|lowest|least|smallest)\b/i.test(msg)) return "top_n";
   if (/\b(yoy|year over year|year-over-year|annual growth|yearly growth|last year|previous year|trend|over time|timeline|monthly|quarterly)\b/i.test(msg)) return "year_over_year";
   if (/\b(total|sum|combined|overall|revenue|sales|income|cost|expense|spend|profit|amount|balance|cash|budget|fees?|taxes?|orders?|payments?)\b/i.test(msg)) return "sum";
   return null;
 }
 
+function isDriverRankingQuery(message = "") {
+  const msg = String(message || "").toLowerCase();
+  const rankingIntent = /\b(top|highest|largest|biggest|best|most|leading|rank(?:ing)?|drivers?|drives|contributors?|sources?)\b/i.test(msg);
+  const valueIntent = /\b(revenue|sales|income|profit|amount|value|brought|generated|drove|bring|earnings?)\b/i.test(msg);
+  return rankingIntent && valueIntent;
+}
+
 function inferLikelyMetricColumn(headers = [], sampleRows = [], message = "", candidates = []) {
   const headerList = Array.isArray(headers) ? headers : [];
   const sampleList = Array.isArray(sampleRows) ? sampleRows : [];
+  const isUsableMetricColumn = (header) => {
+    const name = String(header || "").toLowerCase();
+    const samples = sampleList.slice(0, 20).map((row) => row?.[header]).filter((v) => v !== null && v !== undefined && String(v).trim() !== "");
+    const numericHits = samples.filter((v) => toNum(v) !== null).length;
+    const metricName = /\b(revenue|sales|income|profit|amount|total|cost|expense|spend|margin|balance|cash|budget|fee|tax|payment|order|qty|quantity|units?)\b/i.test(name);
+    return metricName || numericHits >= Math.max(1, Math.ceil(samples.length / 3));
+  };
   for (const candidate of (Array.isArray(candidates) ? candidates : []).map((c) => String(c || "").trim()).filter(Boolean)) {
     const exact = headerList.find((h) => String(h).trim().toLowerCase() === candidate.toLowerCase());
-    if (exact) return exact;
+    if (exact && isUsableMetricColumn(exact)) return exact;
     const loose = headerList.find((h) => String(h).trim().toLowerCase().includes(candidate.toLowerCase()));
-    if (loose) return loose;
+    if (loose && isUsableMetricColumn(loose)) return loose;
   }
 
   const msg = String(message || "").toLowerCase();
@@ -720,6 +740,7 @@ export async function computeLargeDatasetAggregateFallback({
   rowFiltersList = [],
   tabName = null,
   locale = "en",
+  semanticProfile = null,
 }) {
   const directFilters = Array.isArray(activeFilters) ? activeFilters : [];
   const hasAdHocFilters = directFilters.length > 0 || (Array.isArray(rowFiltersList) && rowFiltersList.length > 0);
@@ -748,7 +769,14 @@ export async function computeLargeDatasetAggregateFallback({
     targetColumn,
     ai?.target_column,
   ]);
-  const dateColumn = periodInfo?.column || await inferLikelyDateColumn(headers, sampleRows, [
+  const profileDateColumn = resolveProfileDateColumn(semanticProfile, [
+    ai?.chart?.date_column,
+    groupBy,
+    ai?.group_by,
+    targetColumn,
+    ai?.target_column,
+  ]);
+  const dateColumn = periodInfo?.column || profileDateColumn || await inferLikelyDateColumn(headers, sampleRows, [
     ai?.chart?.date_column,
     groupBy,
     ai?.group_by,
@@ -757,8 +785,10 @@ export async function computeLargeDatasetAggregateFallback({
   ]);
   const periodMode = periodInfo?.mode || "date";
   const metricColumn = await resolveColumn(headers, targetColumn || ai?.target_column || ai?.chart?.value_column, sampleRows)
+    || resolveProfileMetric(semanticProfile, message, [targetColumn, ai?.target_column, ai?.chart?.value_column])
     || inferLikelyMetricColumn(headers, sampleRows, message, [targetColumn, ai?.target_column, ai?.chart?.value_column]);
   const dimensionColumn = await resolveColumn(headers, groupBy || ai?.group_by, sampleRows)
+    || resolveProfileDimension(semanticProfile, message, [metricColumn, dateColumn])
     || inferLikelyDimensionColumn(headers, sampleRows, [metricColumn, dateColumn]);
 
   const allowedColumnSet = Array.isArray(headers) && headers.length ? new Set(headers.map((h) => String(h))) : null;
@@ -1340,9 +1370,29 @@ function normalizeChatMarkdownText(answer = "") {
     .replace(/\s+•\s+/g, "\n• ");
 }
 
+function formatDenseYoYComparisonBullets(text = "") {
+  const raw = String(text || "").trim();
+  if (!raw || raw.includes("\n")) return null;
+  const looksLikeYoY = /\b(yoy|year[-\s]?over[-\s]?year|год к году|г\/г|р\/р|рік до року|річн)/i.test(raw);
+  const hasDenseComparisons = raw.includes(";") || ((raw.match(/\b\d{4}\s+vs\s+\d{4}\b/gi) || []).length >= 2);
+  if (!looksLikeYoY || !hasDenseComparisons) return null;
+  const formatted = raw
+    .replace(/:\s+(?=\d{4}\s+(?:год|рік|year)\b)/gi, ":\n• ")
+    .replace(/;\s+(?=\d{4}\s+(?:год|рік|year)\b)/gi, "\n• ")
+    .replace(/\.\s+(?=(?:YoY|Year[-\s]?over[-\s]?year|Год к году|Рост|Зростання|Ріст)[^:]{0,60}:)/gi, "\n")
+    .replace(/:\s+(?=\d{4}\s+vs\s+\d{4}\b)/gi, ":\n• ")
+    .replace(/,\s+(?=\d{4}\s+vs\s+\d{4}\b)/gi, "\n• ")
+    .replace(/\.\s+(?=(?:Данные|Дані|Data)\b)/g, "\n• ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return formatted.includes("\n• ") ? formatted : null;
+}
+
 function formatAnswerWithBullets(answer = "") {
   const text = typeof answer === "string" ? normalizeChatMarkdownText(answer).trim() : "";
   if (!text) return "";
+  const denseYoYBullets = formatDenseYoYComparisonBullets(text);
+  if (denseYoYBullets) return denseYoYBullets;
   // Do not auto-bullet plain numeric prose with decimals; it can split values like 34.91 into 34 + 91.
   if (!text.includes("\n") && /\d\.\d/.test(text)) return text;
   const normalizedExistingBullets = text
@@ -1500,6 +1550,46 @@ function buildDateFormatHints(headers = [], rows = []) {
     });
   });
   return hints;
+}
+
+function restrictSemanticProfileToHeaders(profile, headers, sampleRows = []) {
+  const allowed = new Set((Array.isArray(headers) ? headers : []).map((h) => String(h)));
+  const hasStoredProfile = profile && typeof profile === "object" && !Array.isArray(profile) && Array.isArray(profile.columns);
+  const base = hasStoredProfile ? profile : buildSheetSemanticProfile({ headers, sampleRows });
+  const keepColumn = (value) => {
+    const text = String(value || "").trim();
+    return text && allowed.has(text) ? text : null;
+  };
+  const defaults = base?.defaults && typeof base.defaults === "object" ? base.defaults : {};
+  const metricColumns = {};
+  Object.entries(defaults.metricColumns || {}).forEach(([meaning, column]) => {
+    const safeColumn = keepColumn(column);
+    if (safeColumn) metricColumns[meaning] = safeColumn;
+  });
+  return {
+    ...base,
+    defaults: {
+      ...defaults,
+      metricColumns,
+      dateColumn: keepColumn(defaults.dateColumn),
+      driverDimensionColumn: keepColumn(defaults.driverDimensionColumn),
+      dimensions: Array.isArray(defaults.dimensions) ? defaults.dimensions.map(keepColumn).filter(Boolean) : [],
+      metrics: Array.isArray(defaults.metrics) ? defaults.metrics.map(keepColumn).filter(Boolean) : [],
+    },
+    columns: (Array.isArray(base.columns) ? base.columns : []).filter((col) => keepColumn(col?.name)),
+  };
+}
+
+function compactSemanticProfileForPrompt(profile) {
+  return {
+    defaults: profile?.defaults || {},
+    columns: (Array.isArray(profile?.columns) ? profile.columns : []).map((col) => ({
+      name: col.name,
+      roles: col.roles || [],
+      meanings: col.meanings || [],
+      confidence: col.confidence,
+    })),
+  };
 }
 
 async function callOpenAI({ message, schemaProfile, sampleRows, headers, conversationHistory, locale, dateFormatHints, maxOutputTokens = 800, runtime = null }) {
@@ -2124,19 +2214,23 @@ export async function getChatAudio(req, res) {
   if (sheetId) {
     const hasAccess = await checkSheetAccess(sheetId, req.user);
     if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
+    const runtimeGroupId = await resolveAiGroupIdForSheet({ sheetId, user: req.user });
+    runtime = await loadAiRuntimeSettings(runtimeGroupId || null);
+    if (isAiGloballyDisabled(runtime)) return res.status(403).json({ error: "global_ai_disabled" });
+    if (!runtime.chatAudioEnabled) return res.status(403).json({ error: "chat_audio_disabled" });
+    if (runtimeGroupId) {
+      const rows = await query("SELECT id, entitlements FROM groups WHERE id = $1 LIMIT 1", [runtimeGroupId]);
+      if (rows?.[0] && !groupHasFeature(rows[0], "chatAudioAi")) return res.status(403).json({ error: "feature_not_enabled:chatAudioAi" });
+    }
     try {
       aiReservation = await reserveAiQueryForSheet({ sheetId, user: req.user, kind: "chat_audio" });
     } catch (err) {
       return res.status(err.statusCode || 429).json({ error: err.message, ...(err.details || {}) });
     }
-    runtime = await loadAiRuntimeSettings(aiReservation?.groupId || null);
-    if (!runtime.chatAudioEnabled) return res.status(403).json({ error: "chat_audio_disabled" });
-    if (aiReservation?.groupId) {
-      const rows = await query("SELECT id, entitlements FROM groups WHERE id = $1 LIMIT 1", [aiReservation.groupId]);
-      if (rows?.[0] && !groupHasFeature(rows[0], "chatAudioAi")) return res.status(403).json({ error: "feature_not_enabled:chatAudioAi" });
-    }
   }
   if (!runtime) runtime = await loadAiRuntimeSettings(null);
+  if (isAiGloballyDisabled(runtime)) return res.status(403).json({ error: "global_ai_disabled" });
+  if (!runtime.chatAudioEnabled) return res.status(403).json({ error: "chat_audio_disabled" });
 
   try {
     const audioBuffer = await synthesizeChatAudioBuffer({ text, locale, runtime });
@@ -2148,7 +2242,7 @@ export async function getChatAudio(req, res) {
     return res.status(200).send(audioBuffer);
   } catch (e) {
     const errorCode = e?.code || "internal_server_error";
-    const status = errorCode === "text_too_large" ? 413 : errorCode === "tts_timeout" ? 504 : errorCode === "tts_upstream_error" ? 502 : 500;
+    const status = errorCode === "global_ai_disabled" ? 403 : errorCode === "text_too_large" ? 413 : errorCode === "tts_timeout" ? 504 : errorCode === "tts_upstream_error" ? 502 : 500;
     const payload = { error: errorCode };
     if (e?.message && errorCode === "tts_upstream_error") {
       payload.message = String(e.message).slice(0, 300);
@@ -2163,6 +2257,11 @@ export async function synthesizeChatAudioBuffer({ text, locale, runtime = null }
   if (!apiKey || !speechText) {
     const err = new Error("missing_params");
     err.code = "missing_params";
+    throw err;
+  }
+  if (isAiGloballyDisabled(runtime)) {
+    const err = new Error("global_ai_disabled");
+    err.code = "global_ai_disabled";
     throw err;
   }
   const maxChars = Number(runtime?.chatAudioMaxChars || CHAT_AUDIO_MAX_CHARS);
@@ -2234,17 +2333,19 @@ export async function chatQuery(req, res) {
   const locale = normalizeLocale(rawLocale || "en");
   const hasAccess = await checkSheetAccess(sheetId, req.user);
   if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
+  const runtimeGroupId = await resolveAiGroupIdForSheet({ sheetId, user: req.user });
+  const runtime = await loadAiRuntimeSettings(runtimeGroupId || null);
+  if (isAiGloballyDisabled(runtime)) return res.status(403).json({ error: "global_ai_disabled" });
+  if (!runtime.chatEnabled) return res.status(403).json({ error: "chat_disabled" });
+  if (runtimeGroupId) {
+    const rows = await query("SELECT id, entitlements FROM groups WHERE id = $1 LIMIT 1", [runtimeGroupId]);
+    if (rows?.[0] && !groupHasFeature(rows[0], "chatAi")) return res.status(403).json({ error: "feature_not_enabled:chatAi" });
+  }
   let aiReservation = null;
   try {
     aiReservation = await reserveAiQueryForSheet({ sheetId, user: req.user, kind: "chat_query" });
   } catch (err) {
     return res.status(err.statusCode || 429).json({ error: err.message, ...(err.details || {}) });
-  }
-  const runtime = await loadAiRuntimeSettings(aiReservation?.groupId || null);
-  if (!runtime.chatEnabled) return res.status(403).json({ error: "chat_disabled" });
-  if (aiReservation?.groupId) {
-    const rows = await query("SELECT id, entitlements FROM groups WHERE id = $1 LIMIT 1", [aiReservation.groupId]);
-    if (rows?.[0] && !groupHasFeature(rows[0], "chatAi")) return res.status(403).json({ error: "feature_not_enabled:chatAi" });
   }
   const boundedConversationHistory = Array.isArray(conversationHistory)
     ? conversationHistory.slice(-Math.max(1, Number(runtime.chatHistoryWindowMessages || 8)))
@@ -2265,6 +2366,7 @@ export async function chatQuery(req, res) {
   const scopedSampleRows = projectRowsToHeaders(loadedSample.rows || [], aiHeaders);
   const sampleRows = applyFilters(scopedSampleRows, activeDashboardFilters);
   const tabNames = Array.isArray(loadedSample.tabs) ? loadedSample.tabs : [];
+  const semanticProfile = restrictSemanticProfileToHeaders(loadedSample.semanticProfile, aiHeaders, scopedSampleRows);
   
   // PERF-01: Build Workspace Schema for Cross-Sheet Intelligence
   const workspaceRes = await query(
@@ -2335,6 +2437,7 @@ export async function chatQuery(req, res) {
           available_files: availableFiles,
           active_filters: activeDashboardFilters,
           split_context: parsedSplitContext,
+          semantic_profile: compactSemanticProfileForPrompt(semanticProfile),
       },
       maxOutputTokens: Number(runtime.llmMaxOutputTokens || 800),
       runtime,
@@ -2369,6 +2472,18 @@ export async function chatQuery(req, res) {
     let resolvedTarget = await resolveColumn(aiHeaders, ai?.target_column, sampleRows);
     let resolvedGroupBy = await resolveColumn(aiHeaders, ai?.group_by, sampleRows);
     const msgLower = String(message || "").toLowerCase();
+    const profileMetric = resolveProfileMetric(semanticProfile, message, [ai?.target_column, ai?.chart?.value_column]);
+    const profileDimension = resolveProfileDimension(semanticProfile, message, [profileMetric, resolvedTarget]);
+    const profileDateColumn = resolveProfileDateColumn(semanticProfile, [ai?.chart?.date_column, ai?.group_by]);
+    if (!resolvedTarget && profileMetric && aiHeaders.includes(profileMetric)) {
+      resolvedTarget = profileMetric;
+    }
+    if (!resolvedGroupBy && resolvedOperation === "year_over_year" && profileDateColumn && aiHeaders.includes(profileDateColumn)) {
+      resolvedGroupBy = profileDateColumn;
+    }
+    if (!resolvedGroupBy && resolvedOperation !== "year_over_year" && profileDimension && aiHeaders.includes(profileDimension)) {
+      resolvedGroupBy = profileDimension;
+    }
     const aiClarifiedInsteadOfAnswering = isClarificationOrApologyAnswer(ai?.answer);
     const asksProductRanking = /\b(top|highest|best|selling|sold|product|products)\b/.test(msgLower)
       || /топ|продаж|продукт|товар/i.test(msgLower);
@@ -2381,11 +2496,28 @@ export async function chatQuery(req, res) {
         }
       }
     }
+    const asksDriverRanking = isDriverRankingQuery(message);
+    if (asksDriverRanking) {
+      if (resolvedOperation === "none" || resolvedOperation === "sum" || resolvedOperation === "filter") {
+        resolvedOperation = "top_n";
+      }
+      if (!resolvedTarget) {
+        resolvedTarget = profileMetric
+          || inferLikelyMetricColumn(aiHeaders, sampleRows, message, [ai?.target_column, ai?.chart?.value_column]);
+      }
+      if (!resolvedGroupBy || String(resolvedGroupBy).toLowerCase() === String(resolvedTarget || "").toLowerCase()) {
+        resolvedGroupBy = resolveProfileDimension(semanticProfile, message, [resolvedTarget, ai?.target_column, ai?.chart?.value_column])
+          || inferLikelyDimensionColumn(aiHeaders, sampleRows, [resolvedTarget, ai?.target_column, ai?.chart?.value_column]);
+      }
+      if (!Number.isFinite(Number(ai?.limit))) {
+        ai.limit = 5;
+      }
+    }
 
     if (resolvedOperation === "none" || aiClarifiedInsteadOfAnswering) {
-      const inferredTarget = inferLikelyMetricColumn(aiHeaders, sampleRows, message, [ai?.target_column]);
+      const inferredTarget = profileMetric || inferLikelyMetricColumn(aiHeaders, sampleRows, message, [ai?.target_column]);
       const inferredGroupBy = inferredTarget
-        ? inferLikelyDimensionColumn(aiHeaders, sampleRows, [inferredTarget])
+        ? (resolveProfileDimension(semanticProfile, message, [inferredTarget]) || inferLikelyDimensionColumn(aiHeaders, sampleRows, [inferredTarget]))
         : null;
       const inferredOperation = inferAggregateOperationFromMessage(message, ai) || (inferredTarget && inferredGroupBy ? "top_n" : (inferredTarget ? "sum" : "count"));
       resolvedOperation = inferredOperation;
@@ -2399,6 +2531,15 @@ export async function chatQuery(req, res) {
       if (aiClarifiedInsteadOfAnswering) {
         ai.answer = "";
       }
+    }
+    if (resolvedOperation === "top_n" && (!resolvedTarget || !resolvedGroupBy)) {
+      const inferredTarget = resolvedTarget || profileMetric || inferLikelyMetricColumn(aiHeaders, sampleRows, message, [ai?.target_column, ai?.chart?.value_column]);
+      const inferredGroupBy = resolvedGroupBy || (inferredTarget
+        ? (resolveProfileDimension(semanticProfile, message, [inferredTarget, ai?.target_column, ai?.chart?.value_column]) || inferLikelyDimensionColumn(aiHeaders, sampleRows, [inferredTarget, ai?.target_column, ai?.chart?.value_column]))
+        : null);
+      if (!resolvedTarget && inferredTarget) resolvedTarget = inferredTarget;
+      if (!resolvedGroupBy && inferredGroupBy) resolvedGroupBy = inferredGroupBy;
+      if (!Number.isFinite(Number(ai?.limit))) ai.limit = 5;
     }
 
     const opNeedsTarget = new Set(["sum", "avg", "max", "min", "top_n"]);
@@ -2521,6 +2662,7 @@ export async function chatQuery(req, res) {
             rowFiltersList: loadedSample?.rowFiltersList || [],
             tabName: selectedTab,
             locale,
+            semanticProfile,
           });
           if (fallback) {
             exec = {
@@ -2609,7 +2751,7 @@ export async function chatQuery(req, res) {
 }
 
 async function loadAccessibleRows(sheetId, user, activeTab = null, rowLimit = null) {
-  const sheetRes = await query("SELECT headers, tabs, tab_name FROM sheets WHERE id = $1", [sheetId]);
+  const sheetRes = await query("SELECT headers, tabs, tab_name, semantic_profile FROM sheets WHERE id = $1", [sheetId]);
   if (!sheetRes.length) return { headers: [], tabs: [], rows: [], rowFiltersList: [], forbidden: true };
   const sheet = sheetRes[0];
 
@@ -2676,6 +2818,7 @@ async function loadAccessibleRows(sheetId, user, activeTab = null, rowLimit = nu
       rows: [],
       rowFiltersList,
       allowedColumns: headers,
+      semanticProfile: sheet.semantic_profile || {},
       tooLarge: true,
       forbidden: false,
     };
@@ -2691,6 +2834,7 @@ async function loadAccessibleRows(sheetId, user, activeTab = null, rowLimit = nu
     rows: rows.map(r => ({ ...(r.row_data || {}), __tab_name: r.tab_name })),
     rowFiltersList,
     allowedColumns: headers,
+    semanticProfile: sheet.semantic_profile || {},
     forbidden: false,
   };
 }

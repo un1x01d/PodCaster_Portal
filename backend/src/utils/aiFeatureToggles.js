@@ -5,7 +5,7 @@ export const AI_FEATURE_TOGGLES_SETTINGS_KEY = "ai_feature_toggles_settings";
 
 export function normalizeAiFeatureToggles(raw = {}) {
   return {
-    chatEnabled: raw?.chatEnabled !== false,
+    chatEnabled: raw?.chatEnabled === true,
     dashboardTranslationEnabled: raw?.dashboardTranslationEnabled === true,
     chatAudioEnabled: raw?.chatAudioEnabled === true,
   };

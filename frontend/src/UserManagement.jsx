@@ -1,5 +1,5 @@
 // UserManagement.jsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import CustomerFormModal from "./components/admin/CustomerFormModal.jsx";
 import PasswordResetModal from "./components/admin/PasswordResetModal.jsx";
@@ -115,12 +115,37 @@ const BUNDLE_AI_PRICING = {
   growth: { openaiModel: "gpt-5-nano", openaiInputCostPer1M: 0.05, openaiOutputCostPer1M: 0.40 },
   enterprise: { openaiModel: "gpt-5-nano", openaiInputCostPer1M: 0.05, openaiOutputCostPer1M: 0.40 },
 };
+const AI_MODEL_PRICING = {
+  "gpt-5-nano": { openaiInputCostPer1M: 0.05, openaiOutputCostPer1M: 0.40 },
+  "gpt-4.1-nano": { openaiInputCostPer1M: 0.10, openaiOutputCostPer1M: 0.40 },
+  "gpt-4.1-mini": { openaiInputCostPer1M: 0.40, openaiOutputCostPer1M: 1.60 },
+  "gpt-4.1": { openaiInputCostPer1M: 2.00, openaiOutputCostPer1M: 8.00 },
+};
+function getAiModelPricing(model) {
+  return AI_MODEL_PRICING[String(model || "").trim()] || AI_MODEL_PRICING["gpt-5-nano"];
+}
+const BUSINESS_CLASSIFICATION_RUNTIME_DEFAULTS = {
+  businessClassificationEnabled: false,
+  businessClassificationModel: "gpt-5-nano",
+  businessClassificationApplyUploads: true,
+  businessClassificationApplyEmailIngest: true,
+  businessClassificationApplyAutosync: true,
+  businessClassificationMaxSampleRows: 20,
+  businessClassificationMaxPromptChars: 12000,
+  businessClassificationMaxOutputTokens: 512,
+};
+const AI_FEATURE_RUNTIME_DEFAULTS = {
+  globalAiDisabled: false,
+  chatEnabled: false,
+  chatAudioEnabled: false,
+  dashboardTranslationEnabled: false,
+  insightAiEnabled: false,
+};
 const AI_RUNTIME_PRESETS = {
   micro: {
     aiRuntimePreset: "micro",
-    chatEnabled: true,
-    chatAudioEnabled: false,
-    dashboardTranslationEnabled: false,
+    ...AI_FEATURE_RUNTIME_DEFAULTS,
+    ...BUSINESS_CLASSIFICATION_RUNTIME_DEFAULTS,
     chatMaxInputChars: 1500,
     chatHistoryWindowMessages: 1,
     dashboardTranslateMaxItems: 20,
@@ -146,9 +171,8 @@ const AI_RUNTIME_PRESETS = {
   },
   tiny: {
     aiRuntimePreset: "tiny",
-    chatEnabled: true,
-    chatAudioEnabled: false,
-    dashboardTranslationEnabled: false,
+    ...AI_FEATURE_RUNTIME_DEFAULTS,
+    ...BUSINESS_CLASSIFICATION_RUNTIME_DEFAULTS,
     chatMaxInputChars: 3000,
     chatHistoryWindowMessages: 2,
     dashboardTranslateMaxItems: 40,
@@ -174,9 +198,8 @@ const AI_RUNTIME_PRESETS = {
   },
   low: {
     aiRuntimePreset: "low",
-    chatEnabled: true,
-    chatAudioEnabled: false,
-    dashboardTranslationEnabled: false,
+    ...AI_FEATURE_RUNTIME_DEFAULTS,
+    ...BUSINESS_CLASSIFICATION_RUNTIME_DEFAULTS,
     chatMaxInputChars: 6000,
     chatHistoryWindowMessages: 4,
     dashboardTranslateMaxItems: 80,
@@ -202,9 +225,8 @@ const AI_RUNTIME_PRESETS = {
   },
   mid: {
     aiRuntimePreset: "mid",
-    chatEnabled: true,
-    chatAudioEnabled: true,
-    dashboardTranslationEnabled: true,
+    ...AI_FEATURE_RUNTIME_DEFAULTS,
+    ...BUSINESS_CLASSIFICATION_RUNTIME_DEFAULTS,
     chatMaxInputChars: 12000,
     chatHistoryWindowMessages: 8,
     dashboardTranslateMaxItems: 200,
@@ -230,9 +252,8 @@ const AI_RUNTIME_PRESETS = {
   },
   high: {
     aiRuntimePreset: "high",
-    chatEnabled: true,
-    chatAudioEnabled: true,
-    dashboardTranslationEnabled: true,
+    ...AI_FEATURE_RUNTIME_DEFAULTS,
+    ...BUSINESS_CLASSIFICATION_RUNTIME_DEFAULTS,
     chatMaxInputChars: 24000,
     chatHistoryWindowMessages: 16,
     dashboardTranslateMaxItems: 400,
@@ -439,9 +460,21 @@ export default function UserManagement({ token, user, sheetId }) {
   const [autosyncInterval, setAutosyncInterval] = useState({ intervalMinutes: 5 });
   const [autosyncIntervalSaving, setAutosyncIntervalSaving] = useState(false);
   const [autosyncIntervalSaved, setAutosyncIntervalSaved] = useState(false);
-  const [aiRuntimeSettings, setAiRuntimeSettings] = useState({ ...AI_RUNTIME_PRESETS.mid });
+  const [aiRuntimeSettings, setAiRuntimeSettingsState] = useState({ ...AI_RUNTIME_PRESETS.mid });
+  const aiRuntimeSettingsRef = useRef(aiRuntimeSettings);
+  const setAiRuntimeSettings = useCallback((updater) => {
+    setAiRuntimeSettingsState((prev) => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      aiRuntimeSettingsRef.current = next;
+      return next;
+    });
+  }, []);
   const [aiRuntimeSaving, setAiRuntimeSaving] = useState(false);
   const [aiRuntimeSaved, setAiRuntimeSaved] = useState(false);
+  const aiRuntimeRequestSeqRef = useRef(0);
+  useEffect(() => {
+    aiRuntimeSettingsRef.current = aiRuntimeSettings;
+  }, [aiRuntimeSettings]);
   const [aiUsagePeriodMonth, setAiUsagePeriodMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const [aiUsageSummary, setAiUsageSummary] = useState({ periodMonth: "", totals: null, groups: [] });
   const [aiUsageLoading, setAiUsageLoading] = useState(false);
@@ -1577,28 +1610,43 @@ export default function UserManagement({ token, user, sheetId }) {
   };
   const fetchAiRuntimeSetting = async () => {
     if (!isSuperAdmin) return;
+    const requestSeq = ++aiRuntimeRequestSeqRef.current;
     try {
       const res = await axios.get(`${API}/admin/settings/ai-runtime`, {
         headers: { Authorization: `Bearer ${token}` },
+        params: integrationScopeParams,
       });
+      if (requestSeq !== aiRuntimeRequestSeqRef.current) return;
       const data = res?.data || {};
+      const openaiModel = String(data.openaiModel || AI_RUNTIME_PRESETS.mid.openaiModel);
+      const modelPricing = getAiModelPricing(openaiModel);
       setAiRuntimeSettings({
         aiRuntimePreset: String(data.aiRuntimePreset || AI_RUNTIME_PRESETS.mid.aiRuntimePreset),
-        chatEnabled: data.chatEnabled !== false,
+        globalAiDisabled: data.globalAiDisabled === true,
+        chatEnabled: data.chatEnabled === true,
         chatAudioEnabled: data.chatAudioEnabled === true,
         dashboardTranslationEnabled: data.dashboardTranslationEnabled === true,
+        insightAiEnabled: data.insightAiEnabled === true,
+        businessClassificationEnabled: data.businessClassificationEnabled === true,
+        businessClassificationModel: String(data.businessClassificationModel || AI_RUNTIME_PRESETS.mid.businessClassificationModel),
+        businessClassificationApplyUploads: data.businessClassificationApplyUploads !== false,
+        businessClassificationApplyEmailIngest: data.businessClassificationApplyEmailIngest !== false,
+        businessClassificationApplyAutosync: data.businessClassificationApplyAutosync !== false,
+        businessClassificationMaxSampleRows: Number(data.businessClassificationMaxSampleRows || AI_RUNTIME_PRESETS.mid.businessClassificationMaxSampleRows),
+        businessClassificationMaxPromptChars: Number(data.businessClassificationMaxPromptChars || AI_RUNTIME_PRESETS.mid.businessClassificationMaxPromptChars),
+        businessClassificationMaxOutputTokens: Number(data.businessClassificationMaxOutputTokens || AI_RUNTIME_PRESETS.mid.businessClassificationMaxOutputTokens),
         chatMaxInputChars: Number(data.chatMaxInputChars || AI_RUNTIME_PRESETS.mid.chatMaxInputChars),
         chatHistoryWindowMessages: Number(data.chatHistoryWindowMessages || AI_RUNTIME_PRESETS.mid.chatHistoryWindowMessages),
         dashboardTranslateMaxItems: Number(data.dashboardTranslateMaxItems || AI_RUNTIME_PRESETS.mid.dashboardTranslateMaxItems),
         dashboardTranslateMaxCharsPerItem: Number(data.dashboardTranslateMaxCharsPerItem || AI_RUNTIME_PRESETS.mid.dashboardTranslateMaxCharsPerItem),
         llmMaxOutputTokens: Number(data.llmMaxOutputTokens || AI_RUNTIME_PRESETS.mid.llmMaxOutputTokens),
-        openaiModel: String(data.openaiModel || AI_RUNTIME_PRESETS.mid.openaiModel),
+        openaiModel,
         openaiBaseUrl: String(data.openaiBaseUrl || AI_RUNTIME_PRESETS.mid.openaiBaseUrl),
         openaiTimeoutMs: Number(data.openaiTimeoutMs || AI_RUNTIME_PRESETS.mid.openaiTimeoutMs),
         openaiTemperature: Number(data.openaiTemperature || AI_RUNTIME_PRESETS.mid.openaiTemperature),
         openaiMaxOutputTokens: Number(data.openaiMaxOutputTokens || AI_RUNTIME_PRESETS.mid.openaiMaxOutputTokens),
-        openaiInputCostPer1M: Number(data.openaiInputCostPer1M || AI_RUNTIME_PRESETS.mid.openaiInputCostPer1M),
-        openaiOutputCostPer1M: Number(data.openaiOutputCostPer1M || AI_RUNTIME_PRESETS.mid.openaiOutputCostPer1M),
+        openaiInputCostPer1M: modelPricing.openaiInputCostPer1M,
+        openaiOutputCostPer1M: modelPricing.openaiOutputCostPer1M,
         translationOpenaiModel: String(data.translationOpenaiModel || AI_RUNTIME_PRESETS.mid.translationOpenaiModel),
         translationTemperature: Number(data.translationTemperature ?? AI_RUNTIME_PRESETS.mid.translationTemperature),
         translationMaxOutputTokens: Number(data.translationMaxOutputTokens || AI_RUNTIME_PRESETS.mid.translationMaxOutputTokens),
@@ -1628,6 +1676,9 @@ export default function UserManagement({ token, user, sheetId }) {
       setAiUsageSummary({
         periodMonth: String(data.periodMonth || month),
         totals: data.totals || null,
+        source: String(data.source || ""),
+        openAi: data.openAi || null,
+        appLocal: data.appLocal || null,
         groups: Array.isArray(data.groups) ? data.groups : [],
       });
     } catch (e) {
@@ -1803,60 +1854,90 @@ export default function UserManagement({ token, user, sheetId }) {
   };
   const saveAiRuntimeSetting = async (preset = null) => {
     if (!isSuperAdmin || aiRuntimeSaving) return;
+    const requestSeq = ++aiRuntimeRequestSeqRef.current;
     setAiRuntimeSaving(true);
     setAiRuntimeSaved(false);
     try {
+      const runtimeDraft = aiRuntimeSettingsRef.current || aiRuntimeSettings || {};
+      const selectedOpenAiModel = String(runtimeDraft.openaiModel || "").trim() || AI_RUNTIME_PRESETS.mid.openaiModel;
+      const selectedModelPricing = getAiModelPricing(selectedOpenAiModel);
       const next = preset && AI_RUNTIME_PRESETS[preset]
         ? { ...AI_RUNTIME_PRESETS[preset] }
         : {
-            chatEnabled: aiRuntimeSettings.chatEnabled !== false,
-            aiRuntimePreset: String(aiRuntimeSettings.aiRuntimePreset || preset || "mid").toLowerCase(),
-            chatAudioEnabled: aiRuntimeSettings.chatAudioEnabled === true,
-            dashboardTranslationEnabled: aiRuntimeSettings.dashboardTranslationEnabled === true,
-            chatMaxInputChars: Number.parseInt(String(aiRuntimeSettings.chatMaxInputChars || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.chatMaxInputChars,
-            chatHistoryWindowMessages: Number.parseInt(String(aiRuntimeSettings.chatHistoryWindowMessages || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.chatHistoryWindowMessages,
-            dashboardTranslateMaxItems: Number.parseInt(String(aiRuntimeSettings.dashboardTranslateMaxItems || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.dashboardTranslateMaxItems,
-            dashboardTranslateMaxCharsPerItem: Number.parseInt(String(aiRuntimeSettings.dashboardTranslateMaxCharsPerItem || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.dashboardTranslateMaxCharsPerItem,
-            llmMaxOutputTokens: Number.parseInt(String(aiRuntimeSettings.llmMaxOutputTokens || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.llmMaxOutputTokens,
-            openaiModel: String(aiRuntimeSettings.openaiModel || "").trim() || AI_RUNTIME_PRESETS.mid.openaiModel,
-            openaiBaseUrl: String(aiRuntimeSettings.openaiBaseUrl || "").trim() || AI_RUNTIME_PRESETS.mid.openaiBaseUrl,
-            openaiTimeoutMs: Number.parseInt(String(aiRuntimeSettings.openaiTimeoutMs || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.openaiTimeoutMs,
-            openaiTemperature: Number.parseFloat(String(aiRuntimeSettings.openaiTemperature || "").trim()) || AI_RUNTIME_PRESETS.mid.openaiTemperature,
-            openaiMaxOutputTokens: Number.parseInt(String(aiRuntimeSettings.openaiMaxOutputTokens || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.openaiMaxOutputTokens,
-            openaiInputCostPer1M: Number.parseFloat(String(aiRuntimeSettings.openaiInputCostPer1M || "").trim()) || AI_RUNTIME_PRESETS.mid.openaiInputCostPer1M,
-            openaiOutputCostPer1M: Number.parseFloat(String(aiRuntimeSettings.openaiOutputCostPer1M || "").trim()) || AI_RUNTIME_PRESETS.mid.openaiOutputCostPer1M,
-            translationOpenaiModel: String(aiRuntimeSettings.translationOpenaiModel || "").trim() || AI_RUNTIME_PRESETS.mid.translationOpenaiModel,
-            translationTemperature: Number.parseFloat(String(aiRuntimeSettings.translationTemperature || "").trim()) || 0,
-            translationMaxOutputTokens: Number.parseInt(String(aiRuntimeSettings.translationMaxOutputTokens || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.translationMaxOutputTokens,
-            insightAiMaxSeriesPoints: Number.parseInt(String(aiRuntimeSettings.insightAiMaxSeriesPoints || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.insightAiMaxSeriesPoints,
-            insightAiMaxPromptChars: Number.parseInt(String(aiRuntimeSettings.insightAiMaxPromptChars || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.insightAiMaxPromptChars,
-            chatAudioMaxChars: Number.parseInt(String(aiRuntimeSettings.chatAudioMaxChars || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.chatAudioMaxChars,
-            chatAudioTtsModelEn: String(aiRuntimeSettings.chatAudioTtsModelEn || "").trim() || AI_RUNTIME_PRESETS.mid.chatAudioTtsModelEn,
-            chatAudioTtsModelDefault: String(aiRuntimeSettings.chatAudioTtsModelDefault || "").trim() || AI_RUNTIME_PRESETS.mid.chatAudioTtsModelDefault,
-            chatAudioTtsVoice: String(aiRuntimeSettings.chatAudioTtsVoice || "").trim() || AI_RUNTIME_PRESETS.mid.chatAudioTtsVoice,
-            chatAudioTtsSpeed: Number.parseFloat(String(aiRuntimeSettings.chatAudioTtsSpeed || "").trim()) || AI_RUNTIME_PRESETS.mid.chatAudioTtsSpeed,
+            chatEnabled: runtimeDraft.chatEnabled === true,
+            aiRuntimePreset: String(runtimeDraft.aiRuntimePreset || preset || "mid").toLowerCase(),
+            globalAiDisabled: runtimeDraft.globalAiDisabled === true,
+            chatAudioEnabled: runtimeDraft.chatAudioEnabled === true,
+            dashboardTranslationEnabled: runtimeDraft.dashboardTranslationEnabled === true,
+            insightAiEnabled: runtimeDraft.insightAiEnabled === true,
+            businessClassificationEnabled: runtimeDraft.businessClassificationEnabled === true,
+            businessClassificationModel: String(runtimeDraft.businessClassificationModel || "").trim() || AI_RUNTIME_PRESETS.mid.businessClassificationModel,
+            businessClassificationApplyUploads: runtimeDraft.businessClassificationApplyUploads !== false,
+            businessClassificationApplyEmailIngest: runtimeDraft.businessClassificationApplyEmailIngest !== false,
+            businessClassificationApplyAutosync: runtimeDraft.businessClassificationApplyAutosync !== false,
+            businessClassificationMaxSampleRows: Number.parseInt(String(runtimeDraft.businessClassificationMaxSampleRows || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.businessClassificationMaxSampleRows,
+            businessClassificationMaxPromptChars: Number.parseInt(String(runtimeDraft.businessClassificationMaxPromptChars || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.businessClassificationMaxPromptChars,
+            businessClassificationMaxOutputTokens: Number.parseInt(String(runtimeDraft.businessClassificationMaxOutputTokens || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.businessClassificationMaxOutputTokens,
+            chatMaxInputChars: Number.parseInt(String(runtimeDraft.chatMaxInputChars || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.chatMaxInputChars,
+            chatHistoryWindowMessages: Number.parseInt(String(runtimeDraft.chatHistoryWindowMessages || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.chatHistoryWindowMessages,
+            dashboardTranslateMaxItems: Number.parseInt(String(runtimeDraft.dashboardTranslateMaxItems || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.dashboardTranslateMaxItems,
+            dashboardTranslateMaxCharsPerItem: Number.parseInt(String(runtimeDraft.dashboardTranslateMaxCharsPerItem || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.dashboardTranslateMaxCharsPerItem,
+            llmMaxOutputTokens: Number.parseInt(String(runtimeDraft.llmMaxOutputTokens || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.llmMaxOutputTokens,
+            openaiModel: selectedOpenAiModel,
+            openaiBaseUrl: String(runtimeDraft.openaiBaseUrl || "").trim() || AI_RUNTIME_PRESETS.mid.openaiBaseUrl,
+            openaiTimeoutMs: Number.parseInt(String(runtimeDraft.openaiTimeoutMs || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.openaiTimeoutMs,
+            openaiTemperature: Number.parseFloat(String(runtimeDraft.openaiTemperature || "").trim()) || AI_RUNTIME_PRESETS.mid.openaiTemperature,
+            openaiMaxOutputTokens: Number.parseInt(String(runtimeDraft.openaiMaxOutputTokens || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.openaiMaxOutputTokens,
+            openaiInputCostPer1M: selectedModelPricing.openaiInputCostPer1M,
+            openaiOutputCostPer1M: selectedModelPricing.openaiOutputCostPer1M,
+            translationOpenaiModel: String(runtimeDraft.translationOpenaiModel || "").trim() || AI_RUNTIME_PRESETS.mid.translationOpenaiModel,
+            translationTemperature: Number.parseFloat(String(runtimeDraft.translationTemperature || "").trim()) || 0,
+            translationMaxOutputTokens: Number.parseInt(String(runtimeDraft.translationMaxOutputTokens || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.translationMaxOutputTokens,
+            insightAiMaxSeriesPoints: Number.parseInt(String(runtimeDraft.insightAiMaxSeriesPoints || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.insightAiMaxSeriesPoints,
+            insightAiMaxPromptChars: Number.parseInt(String(runtimeDraft.insightAiMaxPromptChars || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.insightAiMaxPromptChars,
+            chatAudioMaxChars: Number.parseInt(String(runtimeDraft.chatAudioMaxChars || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.chatAudioMaxChars,
+            chatAudioTtsModelEn: String(runtimeDraft.chatAudioTtsModelEn || "").trim() || AI_RUNTIME_PRESETS.mid.chatAudioTtsModelEn,
+            chatAudioTtsModelDefault: String(runtimeDraft.chatAudioTtsModelDefault || "").trim() || AI_RUNTIME_PRESETS.mid.chatAudioTtsModelDefault,
+            chatAudioTtsVoice: String(runtimeDraft.chatAudioTtsVoice || "").trim() || AI_RUNTIME_PRESETS.mid.chatAudioTtsVoice,
+            chatAudioTtsSpeed: Number.parseFloat(String(runtimeDraft.chatAudioTtsSpeed || "").trim()) || AI_RUNTIME_PRESETS.mid.chatAudioTtsSpeed,
           };
-      const res = await axios.patch(`${API}/admin/settings/ai-runtime`, next, {
+      const savedPricingForModel = getAiModelPricing(next.openaiModel);
+      next.openaiInputCostPer1M = savedPricingForModel.openaiInputCostPer1M;
+      next.openaiOutputCostPer1M = savedPricingForModel.openaiOutputCostPer1M;
+      const res = await axios.patch(`${API}/admin/settings/ai-runtime`, { ...next, ...integrationScopeParams }, {
         headers: { Authorization: `Bearer ${token}` },
       });
+      if (requestSeq !== aiRuntimeRequestSeqRef.current) return;
       const data = res?.data || next;
+      const savedOpenAiModel = String(data.openaiModel || next.openaiModel);
+      const savedModelPricing = getAiModelPricing(savedOpenAiModel);
       setAiRuntimeSettings({
         aiRuntimePreset: String(data.aiRuntimePreset || next.aiRuntimePreset || "mid"),
-        chatEnabled: data.chatEnabled !== false,
+        globalAiDisabled: data.globalAiDisabled === true,
+        chatEnabled: data.chatEnabled === true,
         chatAudioEnabled: data.chatAudioEnabled === true,
         dashboardTranslationEnabled: data.dashboardTranslationEnabled === true,
+        insightAiEnabled: data.insightAiEnabled === true,
+        businessClassificationEnabled: data.businessClassificationEnabled === true,
+        businessClassificationModel: String(data.businessClassificationModel || next.businessClassificationModel),
+        businessClassificationApplyUploads: data.businessClassificationApplyUploads !== false,
+        businessClassificationApplyEmailIngest: data.businessClassificationApplyEmailIngest !== false,
+        businessClassificationApplyAutosync: data.businessClassificationApplyAutosync !== false,
+        businessClassificationMaxSampleRows: Number(data.businessClassificationMaxSampleRows || next.businessClassificationMaxSampleRows),
+        businessClassificationMaxPromptChars: Number(data.businessClassificationMaxPromptChars || next.businessClassificationMaxPromptChars),
+        businessClassificationMaxOutputTokens: Number(data.businessClassificationMaxOutputTokens || next.businessClassificationMaxOutputTokens),
         chatMaxInputChars: Number(data.chatMaxInputChars || next.chatMaxInputChars),
         chatHistoryWindowMessages: Number(data.chatHistoryWindowMessages || next.chatHistoryWindowMessages),
         dashboardTranslateMaxItems: Number(data.dashboardTranslateMaxItems || next.dashboardTranslateMaxItems),
         dashboardTranslateMaxCharsPerItem: Number(data.dashboardTranslateMaxCharsPerItem || next.dashboardTranslateMaxCharsPerItem),
         llmMaxOutputTokens: Number(data.llmMaxOutputTokens || next.llmMaxOutputTokens),
-        openaiModel: String(data.openaiModel || next.openaiModel),
+        openaiModel: savedOpenAiModel,
         openaiBaseUrl: String(data.openaiBaseUrl || next.openaiBaseUrl),
         openaiTimeoutMs: Number(data.openaiTimeoutMs || next.openaiTimeoutMs),
         openaiTemperature: Number(data.openaiTemperature || next.openaiTemperature),
         openaiMaxOutputTokens: Number(data.openaiMaxOutputTokens || next.openaiMaxOutputTokens),
-        openaiInputCostPer1M: Number(data.openaiInputCostPer1M || next.openaiInputCostPer1M),
-        openaiOutputCostPer1M: Number(data.openaiOutputCostPer1M || next.openaiOutputCostPer1M),
+        openaiInputCostPer1M: savedModelPricing.openaiInputCostPer1M,
+        openaiOutputCostPer1M: savedModelPricing.openaiOutputCostPer1M,
         translationOpenaiModel: String(data.translationOpenaiModel || next.translationOpenaiModel),
         translationTemperature: Number(data.translationTemperature ?? next.translationTemperature),
         translationMaxOutputTokens: Number(data.translationMaxOutputTokens || next.translationMaxOutputTokens),
@@ -3049,20 +3130,30 @@ export default function UserManagement({ token, user, sheetId }) {
     try {
       const maxFileSizeMb = Number.parseInt(String(groupSettingsDraft.maxFileSizeMb || "").trim(), 10);
       const maxTotalStorageMb = Number.parseInt(String(groupSettingsDraft.maxTotalStorageMb || "").trim(), 10);
+      const draftBundleTier = BUNDLE_KEYS.includes(String(groupSettingsDraft.bundleTier || "").toLowerCase())
+        ? String(groupSettingsDraft.bundleTier || "").toLowerCase()
+        : "";
+      const bundleCapacityLimits = ensureBundleCapacityLimits(groupSettingsDraft.bundleCapacityLimits, {
+        maxUsers: groupSettingsDraft.maxUsers ?? "",
+        maxReportSources: groupSettingsDraft.maxReportSources ?? "",
+      });
+      const activeCapacityLimits = draftBundleTier ? (bundleCapacityLimits[draftBundleTier] || {}) : {
+        maxUsers: groupSettingsDraft.maxUsers ?? "",
+        maxReportSources: groupSettingsDraft.maxReportSources ?? "",
+      };
       const entitlements = normalizeGroupEntitlements({
         ...selectedGroupEntitlements,
-        maxUsers: groupSettingsDraft.maxUsers === "" ? null : Number(groupSettingsDraft.maxUsers),
-        maxReportSources: groupSettingsDraft.maxReportSources === "" ? null : Number(groupSettingsDraft.maxReportSources),
+        maxUsers: activeCapacityLimits.maxUsers === "" ? null : Number(activeCapacityLimits.maxUsers),
+        maxReportSources: activeCapacityLimits.maxReportSources === "" ? null : Number(activeCapacityLimits.maxReportSources),
         maxAiQueriesPerMonth: groupSettingsDraft.maxAiQueriesPerMonth === "" ? null : Number(groupSettingsDraft.maxAiQueriesPerMonth),
         aiMonthlyBudgetUsd: groupSettingsDraft.aiMonthlyBudgetUsd === "" ? null : Number(groupSettingsDraft.aiMonthlyBudgetUsd),
         maxImportParseMemoryMb: groupSettingsDraft.maxImportParseMemoryMb === "" ? null : Number(groupSettingsDraft.maxImportParseMemoryMb),
-        bundleTier: BUNDLE_KEYS.includes(String(groupSettingsDraft.bundleTier || "").toLowerCase())
-          ? String(groupSettingsDraft.bundleTier || "").toLowerCase()
-          : null,
+        bundleTier: draftBundleTier || null,
         bundleFeatureSets: ensureBundleFeatureSets(
           groupSettingsDraft.bundleFeatureSets,
           groupSettingsDraft.features || {}
         ),
+        bundleCapacityLimits,
         features: { ...(groupSettingsDraft.features || {}) },
       });
       const saveRes = await axios.patch(`${API}/groups/${selectedGroupId}`, {
@@ -3081,6 +3172,14 @@ export default function UserManagement({ token, user, sheetId }) {
         savedEntitlements.bundleFeatureSets,
         savedEntitlements.features || {}
       );
+      const savedBundleCapacityLimits = ensureBundleCapacityLimits(savedEntitlements.bundleCapacityLimits, {
+        maxUsers: savedEntitlements.maxUsers ?? "",
+        maxReportSources: savedEntitlements.maxReportSources ?? "",
+      });
+      const savedActiveCapacityLimits = savedBundleTier ? (savedBundleCapacityLimits[savedBundleTier] || {}) : {
+        maxUsers: savedEntitlements.maxUsers ?? "",
+        maxReportSources: savedEntitlements.maxReportSources ?? "",
+      };
       const savedActiveFeatures = savedBundleTier
         ? (savedBundleFeatureSets[savedBundleTier] || savedEntitlements.features || {})
         : (savedEntitlements.features || {});
@@ -3097,13 +3196,14 @@ export default function UserManagement({ token, user, sheetId }) {
         ...prev,
         maxFileSizeMb: String(savedGroup?.max_file_size_mb || (Number.isInteger(maxFileSizeMb) && maxFileSizeMb > 0 ? maxFileSizeMb : 100)),
         maxTotalStorageMb: String(savedGroup?.max_total_storage_mb || (Number.isInteger(maxTotalStorageMb) && maxTotalStorageMb > 0 ? maxTotalStorageMb : 10240)),
-        maxUsers: savedEntitlements.maxUsers ?? "",
-        maxReportSources: savedEntitlements.maxReportSources ?? "",
+        maxUsers: savedActiveCapacityLimits.maxUsers ?? "",
+        maxReportSources: savedActiveCapacityLimits.maxReportSources ?? "",
         maxAiQueriesPerMonth: savedEntitlements.maxAiQueriesPerMonth ?? "",
         aiMonthlyBudgetUsd: savedEntitlements.aiMonthlyBudgetUsd ?? "",
         maxImportParseMemoryMb: savedEntitlements.maxImportParseMemoryMb ?? "",
         bundleTier: savedBundleTier,
         bundleFeatureSets: savedBundleFeatureSets,
+        bundleCapacityLimits: savedBundleCapacityLimits,
         features: { ...savedActiveFeatures },
       } : prev);
       setSelectedProductBundle(savedBundleTier);
@@ -3497,22 +3597,6 @@ export default function UserManagement({ token, user, sheetId }) {
                     value={groupSettingsDraft?.maxTotalStorageMb ?? ""}
                     onChange={(e) => updateGroupSettingsDraft({ maxTotalStorageMb: e.target.value })}
                   />
-                  <label className="text-[10px] font-semibold text-slate-500">Max Users</label>
-                  <input
-                    type="number"
-                    className="input-premium py-1.5"
-                    value={groupSettingsDraft?.maxUsers ?? ""}
-                    placeholder="Unlimited"
-                    onChange={(e) => updateGroupSettingsDraft({ maxUsers: e.target.value })}
-                  />
-                  <label className="text-[10px] font-semibold text-slate-500">Max Sources</label>
-                  <input
-                    type="number"
-                    className="input-premium py-1.5"
-                    value={groupSettingsDraft?.maxReportSources ?? ""}
-                    placeholder="Unlimited"
-                    onChange={(e) => updateGroupSettingsDraft({ maxReportSources: e.target.value })}
-                  />
                   <label className="text-[10px] font-semibold text-slate-500">AI Queries / Month</label>
                   <input
                     type="number"
@@ -3553,13 +3637,22 @@ export default function UserManagement({ token, user, sheetId }) {
                               const current = prev || {};
                               const currentFeatures = { ...(current.features || {}) };
                               const currentSets = ensureBundleFeatureSets(current.bundleFeatureSets, currentFeatures);
+                              const currentCapacity = {
+                                maxUsers: current.maxUsers ?? "",
+                                maxReportSources: current.maxReportSources ?? "",
+                              };
+                              const currentCapacitySets = ensureBundleCapacityLimits(current.bundleCapacityLimits, currentCapacity);
                               const nextSets = {
                                 ...currentSets,
                                 ...(current.bundleTier ? { [current.bundleTier]: { ...currentFeatures } } : {}),
                               };
+                              const nextCapacitySets = {
+                                ...currentCapacitySets,
+                                ...(current.bundleTier ? { [current.bundleTier]: { ...currentCapacity } } : {}),
+                              };
                               const targetFeatures = { ...(nextSets[bundle.key] || currentFeatures) };
                               const aiLimits = BUNDLE_AI_LIMITS[bundle.key] || {};
-                              const capacityLimits = BUNDLE_CAPACITY_LIMITS[bundle.key] || {};
+                              const targetCapacity = nextCapacitySets[bundle.key] || currentCapacity;
                               const aiPricing = BUNDLE_AI_PRICING[bundle.key] || {};
                               setAiRuntimeSettings((prevRuntime) => ({
                                 ...prevRuntime,
@@ -3571,9 +3664,10 @@ export default function UserManagement({ token, user, sheetId }) {
                                 ...current,
                                 bundleTier: bundle.key,
                                 bundleFeatureSets: nextSets,
+                                bundleCapacityLimits: nextCapacitySets,
                                 features: targetFeatures,
-                                maxUsers: capacityLimits.maxUsers ?? current.maxUsers ?? "",
-                                maxReportSources: capacityLimits.maxReportSources ?? current.maxReportSources ?? "",
+                                maxUsers: targetCapacity.maxUsers ?? "",
+                                maxReportSources: targetCapacity.maxReportSources ?? "",
                                 maxAiQueriesPerMonth: aiLimits.maxAiQueriesPerMonth ?? current.maxAiQueriesPerMonth ?? "",
                                 aiMonthlyBudgetUsd: aiLimits.aiMonthlyBudgetUsd ?? current.aiMonthlyBudgetUsd ?? "",
                               };
@@ -3583,12 +3677,76 @@ export default function UserManagement({ token, user, sheetId }) {
                         >
                           <div className="text-[10px] font-semibold uppercase tracking-wide">{bundle.label}</div>
                           <div className={`text-[10px] ${selectedProductBundle === bundle.key ? "text-slate-200" : "text-slate-500"}`}>{bundle.description}</div>
-                          <div className={`mt-1 text-[10px] font-semibold ${selectedProductBundle === bundle.key ? "text-slate-100" : "text-slate-600"}`}>
-                            {BUNDLE_CAPACITY_LIMITS[bundle.key]?.maxUsers ?? "Unlimited"} users / {BUNDLE_CAPACITY_LIMITS[bundle.key]?.maxReportSources ?? "Unlimited"} sources
-                          </div>
                         </button>
                       ))}
                     </div>
+                    {selectedProductBundle && (
+                      <div className="mb-3 rounded-md border border-slate-200 bg-slate-50 p-2">
+                        <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                          {PRODUCT_BUNDLES.find((bundle) => bundle.key === selectedProductBundle)?.label || "Bundle"} Limits
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <label className="text-[10px] font-semibold text-slate-500">
+                            Max Users
+                            <input
+                              type="number"
+                              className="input-premium mt-1 py-1.5"
+                              value={groupSettingsDraft?.maxUsers ?? ""}
+                              placeholder="Unlimited"
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                setGroupSettingsDirty(true);
+                                setGroupSettingsDraft((prev) => {
+                                  const current = prev || {};
+                                  const bundleTier = String(current.bundleTier || selectedProductBundle || "");
+                                  const currentCapacity = {
+                                    maxUsers: value,
+                                    maxReportSources: current.maxReportSources ?? "",
+                                  };
+                                  return {
+                                    ...current,
+                                    maxUsers: value,
+                                    bundleCapacityLimits: {
+                                      ...(current.bundleCapacityLimits || {}),
+                                      ...(BUNDLE_KEYS.includes(bundleTier) ? { [bundleTier]: currentCapacity } : {}),
+                                    },
+                                  };
+                                });
+                              }}
+                            />
+                          </label>
+                          <label className="text-[10px] font-semibold text-slate-500">
+                            Max Sources
+                            <input
+                              type="number"
+                              className="input-premium mt-1 py-1.5"
+                              value={groupSettingsDraft?.maxReportSources ?? ""}
+                              placeholder="Unlimited"
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                setGroupSettingsDirty(true);
+                                setGroupSettingsDraft((prev) => {
+                                  const current = prev || {};
+                                  const bundleTier = String(current.bundleTier || selectedProductBundle || "");
+                                  const currentCapacity = {
+                                    maxUsers: current.maxUsers ?? "",
+                                    maxReportSources: value,
+                                  };
+                                  return {
+                                    ...current,
+                                    maxReportSources: value,
+                                    bundleCapacityLimits: {
+                                      ...(current.bundleCapacityLimits || {}),
+                                      ...(BUNDLE_KEYS.includes(bundleTier) ? { [bundleTier]: currentCapacity } : {}),
+                                    },
+                                  };
+                                });
+                              }}
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    )}
                     <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-2">Customer Features</div>
                     <div className="grid grid-cols-2 gap-1.5">
                       {CUSTOMER_FEATURE_OPTIONS.map(([key, label]) => (

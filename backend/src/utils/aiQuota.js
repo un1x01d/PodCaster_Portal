@@ -63,6 +63,10 @@ async function resolveCustomerGroupForSheet(sheetId, user) {
   return rows?.[0]?.group_id || null;
 }
 
+export async function resolveAiGroupIdForSheet({ sheetId, user } = {}) {
+  return resolveCustomerGroupForSheet(sheetId, user);
+}
+
 async function loadCustomerQuota(groupId) {
   if (!groupId) return null;
   const rows = await query("SELECT id, name, entitlements FROM groups WHERE id = $1", [groupId]);

@@ -21,6 +21,8 @@ export default function PivotOverlay({
     pivotRows,
     pivotHeaders
 }) {
+    const pivotValueLabel = pivotAgg === "count" ? "Count" : (pivotValKey || "Value");
+
     return (
         <div className="p-4 bg-slate-50 border-y border-slate-200/70">
             <div className="flex flex-col gap-4">
@@ -101,9 +103,9 @@ export default function PivotOverlay({
                                         interval={0}
                                         tick={{ fontSize: 11, fill: '#6b7280' }}
                                     />
-                                    <YAxis tickFormatter={(val) => formatSmart(val, pivotValKey || "Value")} width={80} tick={{ fontSize: 11 }} />
+                                    <YAxis tickFormatter={(val) => formatSmart(val, pivotValueLabel)} width={80} tick={{ fontSize: 11 }} />
                                     <Tooltip content={<TrendTooltip />} cursor={{ fill: '#f1f5f9' }} />
-                                    <Bar dataKey="value" fill="#8884d8">
+                                    <Bar dataKey="value" name={pivotValueLabel} fill="#8884d8">
                                         {pieData.map((entry, index) => (
                                             <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
                                         ))}
@@ -136,7 +138,7 @@ export default function PivotOverlay({
                                             {pivotHeaders.map((h, j) => (
                                                 <td key={j} className={`p-3 whitespace-nowrap ${j > 0 ? 'text-right font-mono text-blue-700' : 'font-medium text-gray-800'}`}>
                                                     {typeof row[h] === 'number'
-                                                        ? formatSmart(row[h], h)
+                                                        ? formatSmart(row[h], j > 0 ? pivotValueLabel : h)
                                                         : (row[h] || '-')}
                                                 </td>
                                             ))}

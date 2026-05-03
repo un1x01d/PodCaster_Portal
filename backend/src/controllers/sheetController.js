@@ -18,6 +18,8 @@ import { normalizeGroupEntitlements, groupHasFeature } from "../utils/entitlemen
 import { downloadProviderAutosyncFile, fetchProviderAutosyncMetadata } from "../utils/providerAutosync.js";
 import { ensureReportSourcesSchema } from "../config/db.js";
 import { DLP_SETTINGS_KEY, normalizeDlpSettings, scanRowsForDlp, applyDlpColumnMasking } from "../utils/dlp.js";
+import { classifySheetBusinessContext } from "../utils/businessClassification.js";
+import { buildSheetSemanticProfile, loadSemanticProfileRules, mergeSheetSemanticProfileLearning } from "../utils/sheetSemanticProfile.js";
 import {
     getAppSettingValueWithScopedFallback,
     normalizeEmailIngestSenderAllowlist,
@@ -255,6 +257,8 @@ async function resolveOrCreateEmailReportSource(client, { groupId, recipientAddr
         };
     }
 
+    await assertReportSourceLimitAvailable(client, groupId);
+
     const inserted = await client.query(
         `INSERT INTO report_sources
             (name, created_by, is_inferred, sync_enabled, sync_provider, sync_source_ref, sync_group_id, sync_display_name, sync_file_label, sync_remote_marker, sync_last_attempted_marker, sync_last_synced_at, sync_updated_at, updated_at)
@@ -437,7 +441,52 @@ async function canWriteToReportSource(client, user, reportSourceId) {
     return res.rows.length > 0;
 }
 
-async function resolveReportSourceForUpload(client, { reportSourceId, reportSourceName, user }) {
+function buildReportSourceLimitError(entitlements, currentReportSources) {
+    const err = new Error("group_report_source_limit_exceeded");
+    err.statusCode = 403;
+    err.details = {
+        maxReportSources: entitlements.maxReportSources,
+        currentReportSources,
+    };
+    return err;
+}
+
+async function assertReportSourceLimitAvailable(client, groupId) {
+    const parsedGroupId = Number.parseInt(groupId, 10);
+    if (!Number.isInteger(parsedGroupId) || parsedGroupId <= 0) return;
+
+    const groupRes = await client.query(
+        "SELECT id, entitlements FROM groups WHERE id = $1 LIMIT 1 FOR UPDATE",
+        [parsedGroupId]
+    );
+    const group = groupRes.rows?.[0];
+    if (!group) return;
+
+    const entitlements = normalizeGroupEntitlements(group.entitlements || {});
+    if (!Number.isInteger(entitlements.maxReportSources) || entitlements.maxReportSources <= 0) return;
+
+    const countRes = await client.query(
+        `SELECT COUNT(DISTINCT rs.id)::int AS c
+           FROM report_sources rs
+          WHERE rs.is_inferred IS NOT TRUE
+            AND (
+              rs.sync_group_id = $1
+              OR EXISTS (
+                SELECT 1
+                  FROM user_groups ug
+                 WHERE ug.group_id = $1
+                   AND ug.user_id = rs.created_by
+              )
+            )`,
+        [parsedGroupId]
+    );
+    const currentReportSources = Number(countRes.rows?.[0]?.c || 0);
+    if (currentReportSources >= entitlements.maxReportSources) {
+        throw buildReportSourceLimitError(entitlements, currentReportSources);
+    }
+}
+
+async function resolveReportSourceForUpload(client, { reportSourceId, reportSourceName, user, autosyncConfig = null }) {
     const sourceId = Number.parseInt(reportSourceId, 10);
     if (Number.isInteger(sourceId) && sourceId > 0) {
         const source = await client.query(
@@ -475,6 +524,11 @@ async function resolveReportSourceForUpload(client, { reportSourceId, reportSour
         err.statusCode = 400;
         throw err;
     }
+    const targetGroupId = autosyncConfig?.enabled && autosyncConfig?.groupId
+        ? autosyncConfig.groupId
+        : resolveImportGroupId(user, null);
+    await assertReportSourceLimitAvailable(client, targetGroupId);
+
     const inserted = await client.query(
         `INSERT INTO report_sources (name, created_by, is_inferred, updated_at)
          VALUES ($1, $2, FALSE, CURRENT_TIMESTAMP)
@@ -884,6 +938,114 @@ async function parseWorkbookBufferOrThrow(fileBuffer, options = {}) {
     }
 }
 
+async function classifyAndPersistBusinessContext({
+    reportSource,
+    sheetId,
+    groupId,
+    sourceKind,
+    sourceName,
+    fileName,
+    sheetNames,
+    headers,
+    sampleRows,
+}) {
+    if (!sheetId) return null;
+    try {
+        const classification = await classifySheetBusinessContext({
+            sourceName: sourceName || reportSource?.name,
+            fileName,
+            sheetNames,
+            headers,
+            sampleRows,
+            sourceKind,
+            groupId,
+        });
+        if (!classification) return null;
+        const storedClassification = {
+            ...classification,
+            status: "pending",
+            sheetId,
+        };
+        await query(
+            `UPDATE sheets
+                SET business_classification = $2::jsonb,
+                    business_classification_model = $3,
+                    business_classification_status = 'pending',
+                    business_classification_updated_at = CURRENT_TIMESTAMP
+              WHERE id = $1`,
+            [sheetId, JSON.stringify(storedClassification), classification.model || null]
+        );
+        return storedClassification;
+    } catch (err) {
+        console.warn("[business_classification] skipped:", err?.message || err);
+        return null;
+    }
+}
+
+async function carryForwardBusinessClassificationIfPrompted({
+    reportSourceId,
+    sheetId,
+    fileLabel,
+}) {
+    const sourceId = Number.parseInt(reportSourceId, 10);
+    const label = String(fileLabel || "").trim();
+    if (!Number.isInteger(sourceId) || sourceId <= 0 || !sheetId || !label) return null;
+
+    const priorRows = await query(
+        `SELECT s.id AS sheet_id,
+                s.business_classification,
+                s.business_classification_status,
+                s.business_classification_model,
+                rsi.import_version
+           FROM report_source_imports rsi
+           JOIN sheets s ON s.id = rsi.sheet_id
+          WHERE rsi.report_source_id = $1
+            AND rsi.file_label = $2
+            AND rsi.sheet_id <> $3
+            AND COALESCE(s.business_classification_status, 'none') <> 'none'
+            AND s.business_classification <> '{}'::jsonb
+          ORDER BY rsi.import_version DESC, rsi.created_at DESC
+          LIMIT 1`,
+        [sourceId, label, sheetId]
+    );
+    if (!priorRows.length) return null;
+
+    const prior = priorRows[0];
+    const current = prior.business_classification && typeof prior.business_classification === "object"
+        ? prior.business_classification
+        : {};
+    if (!Object.keys(current).length) return null;
+
+    const priorStatus = String(prior.business_classification_status || current.status || "").toLowerCase();
+    const status = priorStatus === "confirmed" || priorStatus === "rejected"
+        ? priorStatus
+        : "already_prompted";
+    const next = {
+        ...current,
+        status,
+        sheetId,
+        inheritedFromSheetId: prior.sheet_id,
+        inheritedFromVersion: Number(prior.import_version || 0) || null,
+        promptSuppressed: true,
+        inheritedAt: new Date().toISOString(),
+    };
+
+    await query(
+        `UPDATE sheets
+            SET business_classification = $2::jsonb,
+                business_classification_model = $3,
+                business_classification_status = $4,
+                business_classification_updated_at = CURRENT_TIMESTAMP,
+                business_classification_confirmed_at = CASE
+                    WHEN $4 IN ('confirmed', 'rejected') THEN CURRENT_TIMESTAMP
+                    ELSE business_classification_confirmed_at
+                END
+          WHERE id = $1`,
+        [sheetId, JSON.stringify(next), prior.business_classification_model || current.model || null, status]
+    );
+    return next;
+}
+
 async function executeImportFromParsedWorkbook({
     parsedResult,
     approvalRequired,
@@ -897,6 +1059,7 @@ async function executeImportFromParsedWorkbook({
     enforceOwnership = true,
     autosyncConfig = null,
     fileSizeBytes = 0,
+    classificationSourceKind = "manual_upload",
 }) {
     const { sheetNames, sheets: parsedSheets, cleanup } = parsedResult || {};
     let sheets = parsedSheets;
@@ -924,6 +1087,7 @@ async function executeImportFromParsedWorkbook({
                 reportSourceId: reportSourceId || null,
                 reportSourceName: reportSourceName || null,
                 user,
+                autosyncConfig,
             });
         } else {
             reportSource = await loadReportSourceForImport(client, reportSourceId);
@@ -985,6 +1149,8 @@ async function executeImportFromParsedWorkbook({
             err.details = { maxColumns: MAX_UPLOAD_COLUMNS };
             throw err;
         }
+        const semanticRules = await loadSemanticProfileRules();
+        const semanticProfile = buildSheetSemanticProfile({ headers, sampleRows: firstTabRowsRaw, rules: semanticRules });
 
         const versionedFilename = await getVersionedFilename(client, reportSource.id, originalName);
         const headerDiff = buildHeaderDiff(reportSource.previousHeaders, headers);
@@ -996,9 +1162,23 @@ async function executeImportFromParsedWorkbook({
         const sourceVersion = Number(versionRes.rows?.[0]?.next_version || 1);
 
         await client.query(
-            `INSERT INTO sheets (id, headers, active, filename, display_name, stored_path, tab_name, tabs, report_source_id, source_version)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-            [sheetId, JSON.stringify(headers), !approvalRequired, versionedFilename, displayName, null, firstTabName, JSON.stringify(sheetNames), reportSource.id, sourceVersion]
+            `INSERT INTO sheets
+               (id, headers, active, filename, display_name, stored_path, tab_name, tabs,
+                report_source_id, source_version, semantic_profile, semantic_profile_updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, CURRENT_TIMESTAMP)`,
+            [
+                sheetId,
+                JSON.stringify(headers),
+                !approvalRequired,
+                versionedFilename,
+                displayName,
+                null,
+                firstTabName,
+                JSON.stringify(sheetNames),
+                reportSource.id,
+                sourceVersion,
+                JSON.stringify(semanticProfile),
+            ]
         );
 
         let totalRows = 0;
@@ -1102,6 +1282,7 @@ async function executeImportFromParsedWorkbook({
             source_version: sourceVersion,
             schema_status: schemaStatus,
             schema_diff: headerDiff,
+            semantic_profile: semanticProfile,
             headers,
             rows: totalRows,
             active: !approvalRequired,
@@ -1120,6 +1301,26 @@ async function executeImportFromParsedWorkbook({
         });
 
         await client.query("COMMIT");
+
+        const businessClassification = await carryForwardBusinessClassificationIfPrompted({
+            reportSourceId: reportSource.id,
+            sheetId,
+            fileLabel,
+        }) || await classifyAndPersistBusinessContext({
+            reportSource,
+            sheetId,
+            groupId,
+            sourceKind: classificationSourceKind,
+            sourceName: reportSource.name,
+            fileName: originalName,
+            sheetNames,
+            headers,
+            sampleRows: firstTabRowsRaw,
+        });
+        if (businessClassification) {
+            responsePayload.business_classification = businessClassification;
+            responsePayload.business_classification_status = businessClassification.status || null;
+        }
 
         return { responsePayload, importStatus };
     } catch (err) {
@@ -1165,6 +1366,7 @@ async function enqueueDbImportJob({
         autosyncRemoteModifiedAt: autosyncConfig?.remoteModifiedAt || null,
         autosyncDisplayName: autosyncConfig?.displayName || null,
         autosyncFileLabel: autosyncConfig?.fileLabel || null,
+        classificationSourceKind: autosyncConfig?.enabled ? "autosync" : "manual_upload",
     };
     const client = await getClient();
     try {
@@ -1174,6 +1376,7 @@ async function enqueueDbImportJob({
                 reportSourceId: rawReportSourceId || null,
                 reportSourceName: rawReportSourceName || null,
                 user,
+                autosyncConfig,
             })
             : await loadReportSourceForImport(client, rawReportSourceId);
         payloadMeta.reportSourceId = resolvedSource.id;
@@ -1333,6 +1536,7 @@ async function executeQueuedImportJob(job, payloadRows = null) {
             displayName: payloadMeta.autosyncDisplayName,
             fileLabel: payloadMeta.autosyncFileLabel,
         } : null,
+        classificationSourceKind: payloadMeta.classificationSourceKind || (payloadMeta.autosyncEnabled ? "autosync" : "manual_upload"),
     });
 
     await query("DELETE FROM import_job_payloads WHERE job_id = $1", [job.id]);
@@ -1672,6 +1876,7 @@ async function processAutosyncReportSource(source) {
             displayName,
             fileLabel,
         },
+        classificationSourceKind: "autosync",
     });
 }
 
@@ -1871,6 +2076,7 @@ export async function uploadSheet(req, res) {
             enforceOwnership: true,
             fileSizeBytes: Number(req.file?.size || fileBuffer.length || 0),
             autosyncConfig,
+            classificationSourceKind: autosyncConfig?.enabled ? "autosync" : "manual_upload",
         });
 
         await writeAuditLog({
@@ -2031,6 +2237,7 @@ export async function ingestEmailAttachment(req, res) {
             enforceOwnership: false,
             fileSizeBytes: Number(file?.size || fileBuffer.length || 0),
             autosyncConfig: null,
+            classificationSourceKind: "email_ingest",
         });
 
         await writeAuditLog({
@@ -2174,7 +2381,11 @@ export async function getActiveSheet(req, res) {
     if (isPlatformAdminUser(req.user)) {
         s = await query(
             `SELECT s.id, s.headers, s.filename, s.display_name, s.totals_column,
-                    s.report_source_id, s.source_version, rs.name AS report_source_name
+                    s.report_source_id, s.source_version, s.business_classification,
+                    s.business_classification_status, s.business_classification_model,
+                    s.business_classification_updated_at, s.business_classification_confirmed_at,
+                    s.semantic_profile, s.semantic_profile_updated_at,
+                    rs.name AS report_source_name
              FROM sheets s
              LEFT JOIN report_sources rs ON rs.id = s.report_source_id
              WHERE s.active = TRUE
@@ -2185,7 +2396,11 @@ export async function getActiveSheet(req, res) {
     } else {
         s = await query(
             `SELECT DISTINCT s.id, s.headers, s.filename, s.display_name, s.totals_column,
-                    s.report_source_id, s.source_version, rs.name AS report_source_name
+                    s.report_source_id, s.source_version, s.business_classification,
+                    s.business_classification_status, s.business_classification_model,
+                    s.business_classification_updated_at, s.business_classification_confirmed_at,
+                    s.semantic_profile, s.semantic_profile_updated_at,
+                    rs.name AS report_source_name
              FROM sheets s
              LEFT JOIN report_sources rs ON rs.id = s.report_source_id
              LEFT JOIN report_source_imports rsi ON rsi.sheet_id = s.id
@@ -2222,6 +2437,13 @@ export async function getActiveSheet(req, res) {
         report_source_id: s[0].report_source_id || null,
         report_source_name: s[0].report_source_name || null,
         source_version: s[0].source_version || null,
+        business_classification: s[0].business_classification || {},
+        business_classification_status: s[0].business_classification_status || "none",
+        business_classification_model: s[0].business_classification_model || null,
+        business_classification_updated_at: s[0].business_classification_updated_at || null,
+        business_classification_confirmed_at: s[0].business_classification_confirmed_at || null,
+        semantic_profile: s[0].semantic_profile || {},
+        semantic_profile_updated_at: s[0].semantic_profile_updated_at || null,
         totals_column: s[0].totals_column || null
     });
 }
@@ -2237,7 +2459,11 @@ export async function listMySheets(req, res) {
     if (isPlatformAdminUser(req.user)) {
         const rows = await query(
             `SELECT s.id, s.filename, s.display_name, s.uploaded_at,
-                    s.active, s.report_source_id, s.source_version, rs.name AS report_source_name,
+                    s.active, s.report_source_id, s.source_version, s.business_classification,
+                    s.business_classification_status, s.business_classification_model,
+                    s.business_classification_updated_at, s.business_classification_confirmed_at,
+                    s.semantic_profile, s.semantic_profile_updated_at,
+                    rs.name AS report_source_name,
                     (rs.current_sheet_id = s.id) AS is_current_source_version
              FROM sheets s
              LEFT JOIN report_sources rs ON rs.id = s.report_source_id
@@ -2249,7 +2475,11 @@ export async function listMySheets(req, res) {
 
     const rows = await query(
         `SELECT DISTINCT s.id, s.filename, s.display_name, s.uploaded_at,
-                s.active, s.report_source_id, s.source_version, rs.name AS report_source_name,
+                s.active, s.report_source_id, s.source_version, s.business_classification,
+                s.business_classification_status, s.business_classification_model,
+                s.business_classification_updated_at, s.business_classification_confirmed_at,
+                s.semantic_profile, s.semantic_profile_updated_at,
+                rs.name AS report_source_name,
                 (rs.current_sheet_id = s.id) AS is_current_source_version
          FROM sheets s
          LEFT JOIN report_sources rs ON rs.id = s.report_source_id
@@ -2284,7 +2514,11 @@ export async function listAllSheets(req, res) {
     if (pagination.error) return res.status(400).json({ error: pagination.error });
     const rows = await query(
         `SELECT s.id, s.filename, s.display_name, s.uploaded_at,
-                s.active, s.report_source_id, s.source_version, rs.name AS report_source_name,
+                s.active, s.report_source_id, s.source_version, s.business_classification,
+                s.business_classification_status, s.business_classification_model,
+                s.business_classification_updated_at, s.business_classification_confirmed_at,
+                s.semantic_profile, s.semantic_profile_updated_at,
+                rs.name AS report_source_name,
                 (rs.current_sheet_id = s.id) AS is_current_source_version
          FROM sheets s
          LEFT JOIN report_sources rs ON rs.id = s.report_source_id
@@ -2724,7 +2958,11 @@ export async function getSheetDetails(req, res) {
     if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
     const s = await query(
         `SELECT s.id, s.headers, s.active, s.filename, s.display_name, s.totals_column,
-                s.report_source_id, s.source_version, rs.name AS report_source_name
+                s.report_source_id, s.source_version, s.business_classification,
+                s.business_classification_status, s.business_classification_model,
+                s.business_classification_updated_at, s.business_classification_confirmed_at,
+                s.semantic_profile, s.semantic_profile_updated_at,
+                rs.name AS report_source_name
          FROM sheets s
          LEFT JOIN report_sources rs ON rs.id = s.report_source_id
          WHERE s.id=$1`,
@@ -2749,6 +2987,157 @@ export async function getSheetDetails(req, res) {
     }
 
     res.json(s[0]);
+}
+
+export async function confirmSheetBusinessClassification(req, res) {
+    const sheetId = String(req.params.id || "").trim();
+    if (!sheetId) return res.status(400).json({ error: "invalid_sheet_id" });
+    const hasAccess = await checkSheetAccess(sheetId, req.user);
+    if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
+
+    const confirmed = req.body?.confirmed === true;
+    const rejected = req.body?.confirmed === false;
+    if (!confirmed && !rejected) {
+        return res.status(400).json({ error: "business_classification_confirmation_required" });
+    }
+
+    const rows = await query(
+        `SELECT business_classification, business_classification_status
+           FROM sheets
+          WHERE id = $1
+          LIMIT 1`,
+        [sheetId]
+    );
+    if (!rows.length) return res.status(404).json({ error: "not_found" });
+    const current = rows[0].business_classification && typeof rows[0].business_classification === "object"
+        ? rows[0].business_classification
+        : {};
+    if (!Object.keys(current).length) {
+        return res.status(400).json({ error: "business_classification_missing" });
+    }
+    const currentStatus = String(rows[0].business_classification_status || current.status || "").toLowerCase();
+    if (currentStatus === "confirmed" || currentStatus === "rejected") {
+        return res.json({
+            success: true,
+            sheetId,
+            business_classification: current,
+            business_classification_status: currentStatus,
+        });
+    }
+    const status = confirmed ? "confirmed" : "rejected";
+    const next = {
+        ...current,
+        status,
+        confirmed: confirmed,
+        confirmedAt: new Date().toISOString(),
+    };
+    await query(
+        `UPDATE sheets
+            SET business_classification = $2::jsonb,
+                business_classification_status = $3,
+                business_classification_confirmed_at = CURRENT_TIMESTAMP
+          WHERE id = $1`,
+        [sheetId, JSON.stringify(next), status]
+    );
+    return res.json({
+        success: true,
+        sheetId,
+        business_classification: next,
+        business_classification_status: status,
+    });
+}
+
+function normalizeStoredHeaders(value) {
+    if (Array.isArray(value)) return value.map(String);
+    if (typeof value === "string") {
+        try {
+            const parsed = JSON.parse(value || "[]");
+            return Array.isArray(parsed) ? parsed.map(String) : [];
+        } catch {
+            return [];
+        }
+    }
+    return [];
+}
+
+function sanitizeSemanticProfileDefaults(input, headers) {
+    const headerSet = new Set((Array.isArray(headers) ? headers : []).map((h) => String(h)));
+    const defaults = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+    const out = {};
+    const keepColumn = (value) => {
+        const text = String(value || "").trim();
+        return text && headerSet.has(text) ? text : null;
+    };
+
+    if (defaults.metricColumns && typeof defaults.metricColumns === "object" && !Array.isArray(defaults.metricColumns)) {
+        const metricColumns = {};
+        Object.entries(defaults.metricColumns).forEach(([meaning, column]) => {
+            const safeMeaning = String(meaning || "").trim().replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 40);
+            const safeColumn = keepColumn(column);
+            if (safeMeaning && safeColumn) metricColumns[safeMeaning] = safeColumn;
+        });
+        if (Object.keys(metricColumns).length) out.metricColumns = metricColumns;
+    }
+
+    const dateColumn = keepColumn(defaults.dateColumn);
+    if (dateColumn) out.dateColumn = dateColumn;
+
+    const driverDimensionColumn = keepColumn(defaults.driverDimensionColumn);
+    if (driverDimensionColumn) out.driverDimensionColumn = driverDimensionColumn;
+
+    for (const key of ["dimensions", "metrics"]) {
+        if (!Array.isArray(defaults[key])) continue;
+        const safeList = Array.from(new Set(defaults[key].map(keepColumn).filter(Boolean))).slice(0, 50);
+        if (safeList.length) out[key] = safeList;
+    }
+
+    return out;
+}
+
+export async function updateSheetSemanticProfile(req, res) {
+    const sheetId = String(req.params.id || "").trim();
+    if (!sheetId) return res.status(400).json({ error: "invalid_sheet_id" });
+    const hasAccess = await checkSheetAccess(sheetId, req.user);
+    if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
+    const canUpdate = isPlatformAdminUser(req.user) || await hasReportSourceOwnerAccess(sheetId, req.user.id);
+    if (!canUpdate) return res.status(403).json({ error: "Forbidden" });
+
+    const rows = await query(
+        `SELECT headers, semantic_profile
+           FROM sheets
+          WHERE id = $1
+          LIMIT 1`,
+        [sheetId]
+    );
+    if (!rows.length) return res.status(404).json({ error: "not_found" });
+
+    const headers = normalizeStoredHeaders(rows[0].headers);
+    const defaults = sanitizeSemanticProfileDefaults(req.body?.defaults || req.body || {}, headers);
+    if (!Object.keys(defaults).length) {
+        return res.status(400).json({ error: "semantic_profile_defaults_required" });
+    }
+
+    const current = rows[0].semantic_profile && typeof rows[0].semantic_profile === "object"
+        ? rows[0].semantic_profile
+        : {};
+    const next = mergeSheetSemanticProfileLearning(current, {
+        defaults,
+        notes: req.body?.notes || null,
+    });
+
+    await query(
+        `UPDATE sheets
+            SET semantic_profile = $2::jsonb,
+                semantic_profile_updated_at = CURRENT_TIMESTAMP
+          WHERE id = $1`,
+        [sheetId, JSON.stringify(next)]
+    );
+
+    return res.json({
+        success: true,
+        sheetId,
+        semantic_profile: next,
+    });
 }
 
 export async function updateSheetDetails(req, res) {

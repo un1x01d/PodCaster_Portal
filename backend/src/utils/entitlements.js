@@ -25,6 +25,53 @@ export const DEFAULT_GROUP_ENTITLEMENTS = {
   },
 };
 
+const PRODUCT_BUNDLE_KEYS = new Set(["core", "growth", "enterprise"]);
+
+function normalizeFeatureFlags(rawFeatures = {}) {
+  const source = rawFeatures && typeof rawFeatures === "object" && !Array.isArray(rawFeatures)
+    ? rawFeatures
+    : {};
+  return Object.fromEntries(
+    Object.entries(source).map(([key, rawValue]) => {
+      if (typeof rawValue === "string") {
+        const normalized = rawValue.trim().toLowerCase();
+        if (["false", "0", "no", "off", ""].includes(normalized)) return [key, false];
+        if (["true", "1", "yes", "on"].includes(normalized)) return [key, true];
+      }
+      return [key, rawValue === false ? false : !!rawValue];
+    })
+  );
+}
+
+function normalizePositiveIntOrNull(value, min = 1) {
+  if (value === null || value === undefined || value === "") return null;
+  return Math.max(min, Number.parseInt(value, 10) || min);
+}
+
+function normalizeBundleFeatureSets(raw = {}) {
+  const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  return Object.fromEntries(
+    Object.entries(source)
+      .filter(([key]) => PRODUCT_BUNDLE_KEYS.has(String(key || "").toLowerCase()))
+      .map(([key, features]) => [String(key).toLowerCase(), normalizeFeatureFlags(features)])
+  );
+}
+
+function normalizeBundleCapacityLimits(raw = {}) {
+  const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  return Object.fromEntries(
+    Object.entries(source)
+      .filter(([key]) => PRODUCT_BUNDLE_KEYS.has(String(key || "").toLowerCase()))
+      .map(([key, limits]) => {
+        const src = limits && typeof limits === "object" && !Array.isArray(limits) ? limits : {};
+        return [String(key).toLowerCase(), {
+          maxUsers: normalizePositiveIntOrNull(src.maxUsers),
+          maxReportSources: normalizePositiveIntOrNull(src.maxReportSources),
+        }];
+      })
+  );
+}
+
 export function normalizeGroupEntitlements(value = {}) {
   let raw = value;
   if (typeof raw === "string") {
@@ -46,16 +93,7 @@ export function normalizeGroupEntitlements(value = {}) {
   rawFeatures = rawFeatures && typeof rawFeatures === "object" && !Array.isArray(rawFeatures)
     ? rawFeatures
     : {};
-  const normalizedFeatures = Object.fromEntries(
-    Object.entries(rawFeatures).map(([key, rawValue]) => {
-      if (typeof rawValue === "string") {
-        const normalized = rawValue.trim().toLowerCase();
-        if (["false", "0", "no", "off", ""].includes(normalized)) return [key, false];
-        if (["true", "1", "yes", "on"].includes(normalized)) return [key, true];
-      }
-      return [key, rawValue === false ? false : !!rawValue];
-    })
-  );
+  const normalizedFeatures = normalizeFeatureFlags(rawFeatures);
   const normalizeNullableBool = (v) => {
     if (v === null || v === undefined || v === "") return null;
     if (typeof v === "boolean") return v;
@@ -64,18 +102,14 @@ export function normalizeGroupEntitlements(value = {}) {
     if (["false", "0", "no", "off", "disabled"].includes(normalized)) return false;
     return null;
   };
+  const bundleTier = PRODUCT_BUNDLE_KEYS.has(String(raw.bundleTier || "").toLowerCase())
+    ? String(raw.bundleTier).toLowerCase()
+    : null;
   return {
     ...DEFAULT_GROUP_ENTITLEMENTS,
-    ...raw,
-    maxUsers: raw.maxUsers === null || raw.maxUsers === undefined || raw.maxUsers === ""
-      ? null
-      : Math.max(1, Number.parseInt(raw.maxUsers, 10) || 1),
-    maxReportSources: raw.maxReportSources === null || raw.maxReportSources === undefined || raw.maxReportSources === ""
-      ? null
-      : Math.max(1, Number.parseInt(raw.maxReportSources, 10) || 1),
-    maxAiQueriesPerMonth: raw.maxAiQueriesPerMonth === null || raw.maxAiQueriesPerMonth === undefined || raw.maxAiQueriesPerMonth === ""
-      ? null
-      : Math.max(1, Number.parseInt(raw.maxAiQueriesPerMonth, 10) || 1),
+    maxUsers: normalizePositiveIntOrNull(raw.maxUsers),
+    maxReportSources: normalizePositiveIntOrNull(raw.maxReportSources),
+    maxAiQueriesPerMonth: normalizePositiveIntOrNull(raw.maxAiQueriesPerMonth),
     aiMonthlyBudgetUsd: raw.aiMonthlyBudgetUsd === null || raw.aiMonthlyBudgetUsd === undefined || raw.aiMonthlyBudgetUsd === ""
       ? null
       : Math.max(0.01, Number.parseFloat(raw.aiMonthlyBudgetUsd) || 0.01),
@@ -89,6 +123,9 @@ export function normalizeGroupEntitlements(value = {}) {
       ...DEFAULT_GROUP_ENTITLEMENTS.features,
       ...normalizedFeatures,
     },
+    bundleTier,
+    bundleFeatureSets: normalizeBundleFeatureSets(raw.bundleFeatureSets),
+    bundleCapacityLimits: normalizeBundleCapacityLimits(raw.bundleCapacityLimits),
   };
 }
 

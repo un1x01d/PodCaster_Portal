@@ -1,6 +1,17 @@
 import React from "react";
 import StorageOptionCard from "../common/StorageOptionCard.jsx";
 
+const AI_MODEL_OPTIONS = [
+  { value: "gpt-5-nano", label: "gpt-5-nano", openaiInputCostPer1M: 0.05, openaiOutputCostPer1M: 0.40 },
+  { value: "gpt-4.1-nano", label: "gpt-4.1-nano", openaiInputCostPer1M: 0.10, openaiOutputCostPer1M: 0.40 },
+  { value: "gpt-4.1-mini", label: "gpt-4.1-mini", openaiInputCostPer1M: 0.40, openaiOutputCostPer1M: 1.60 },
+  { value: "gpt-4.1", label: "gpt-4.1", openaiInputCostPer1M: 2.00, openaiOutputCostPer1M: 8.00 },
+];
+
+function getAiModelPricing(model) {
+  return AI_MODEL_OPTIONS.find((option) => option.value === model) || AI_MODEL_OPTIONS[0];
+}
+
 export default function IntegrationSettingsPanel(props) {
   const {
     canManageIntegrations,
@@ -95,22 +106,12 @@ export default function IntegrationSettingsPanel(props) {
 
   return (
     <div className="mb-4 rounded-md border border-slate-200 bg-slate-50 p-4 space-y-3">
-      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Storage Options</div>
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">AI Options</div>
       {!isSuperAdmin && !selectedGroupId && (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
           Select a customer to configure scoped integration credentials.
         </div>
       )}
-      <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
-        <div className="flex items-center justify-between gap-2">
-          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Autosync Check Interval</div>
-          <span className="text-[10px] font-semibold text-slate-400">{autosyncInterval.intervalMinutes || 5} min</span>
-        </div>
-        <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="1" max="1440" placeholder="Interval in minutes" value={autosyncInterval.intervalMinutes} onChange={(e) => setAutosyncInterval((prev) => ({ ...prev, intervalMinutes: e.target.value }))} />
-        <div className="text-[10px] text-slate-500">Cloud drive sources are checked for file updates on this interval.</div>
-        <button type="button" onClick={saveAutosyncIntervalSetting} disabled={autosyncIntervalSaving} className={`btn-premium text-white w-full py-1.5 text-[11px] ${autosyncIntervalSaved ? "bg-emerald-600 hover:bg-emerald-600" : "bg-slate-800"} ${autosyncIntervalSaving ? "opacity-60 cursor-not-allowed" : ""}`}>{autosyncIntervalSaving ? "Saving..." : autosyncIntervalSaved ? "Saved" : "Save Autosync Interval"}</button>
-      </div>
-
       {(
         <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
           <div className="flex items-center justify-between gap-2">
@@ -141,44 +142,50 @@ export default function IntegrationSettingsPanel(props) {
           {integrationOpen.aiRuntime && (
           <>
           <div className="flex flex-col gap-1">
+            <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-red-700 px-2 py-1 rounded-md border border-red-200 bg-red-50">
+              <input type="checkbox" checked={aiRuntimeSettings.globalAiDisabled === true} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, globalAiDisabled: e.target.checked }))} />
+              <span>Global AI Disabled</span>
+            </label>
             <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 px-2 py-1 rounded-md border border-slate-200">
-              <input type="checkbox" checked={aiRuntimeSettings.chatEnabled !== false} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, chatEnabled: e.target.checked }))} />
+              <input type="checkbox" disabled={aiRuntimeSettings.globalAiDisabled === true} checked={aiRuntimeSettings.chatEnabled === true} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, chatEnabled: e.target.checked }))} />
               <span>Chat AI Enabled</span>
             </label>
             <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 px-2 py-1 rounded-md border border-slate-200">
-              <input type="checkbox" checked={aiRuntimeSettings.chatAudioEnabled === true} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, chatAudioEnabled: e.target.checked }))} />
+              <input type="checkbox" disabled={aiRuntimeSettings.globalAiDisabled === true} checked={aiRuntimeSettings.chatAudioEnabled === true} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, chatAudioEnabled: e.target.checked }))} />
               <span>Chat Audio AI Enabled</span>
             </label>
             <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 px-2 py-1 rounded-md border border-slate-200">
-              <input type="checkbox" checked={aiRuntimeSettings.dashboardTranslationEnabled === true} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, dashboardTranslationEnabled: e.target.checked }))} />
+              <input type="checkbox" disabled={aiRuntimeSettings.globalAiDisabled === true} checked={aiRuntimeSettings.dashboardTranslationEnabled === true} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, dashboardTranslationEnabled: e.target.checked }))} />
               <span>Dashboard Translation AI Enabled</span>
+            </label>
+            <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 px-2 py-1 rounded-md border border-slate-200">
+              <input type="checkbox" disabled={aiRuntimeSettings.globalAiDisabled === true} checked={aiRuntimeSettings.insightAiEnabled === true} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, insightAiEnabled: e.target.checked }))} />
+              <span>Insight AI Enabled</span>
+            </label>
+            <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 px-2 py-1 rounded-md border border-slate-200">
+              <input type="checkbox" disabled={aiRuntimeSettings.globalAiDisabled === true} checked={aiRuntimeSettings.businessClassificationEnabled === true} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, businessClassificationEnabled: e.target.checked }))} />
+              <span>Business Type Detection Enabled</span>
             </label>
           </div>
           <div className="grid grid-cols-2 gap-2">
             <div className="col-span-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Model</div>
-            <select className="input-premium py-1.5 text-[11px] font-semibold col-span-2" value={aiRuntimeSettings.openaiModel || "gpt-5-nano"} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, openaiModel: e.target.value }))}>
-              <option value="gpt-5-nano">gpt-5-nano</option>
-              <option value="gpt-4.1-nano">gpt-4.1-nano</option>
-              <option value="gpt-4.1-mini">gpt-4.1-mini</option>
-              <option value="gpt-4.1">gpt-4.1</option>
-            </select>
-            <div className="col-span-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Pricing Profile</div>
             <select
               className="input-premium py-1.5 text-[11px] font-semibold col-span-2"
-              value={`${Number(aiRuntimeSettings.openaiInputCostPer1M || 0).toFixed(4)}|${Number(aiRuntimeSettings.openaiOutputCostPer1M || 0).toFixed(4)}`}
+              value={aiRuntimeSettings.openaiModel || "gpt-5-nano"}
               onChange={(e) => {
-                const [inputRate, outputRate] = String(e.target.value).split("|");
+                const model = e.target.value;
+                const pricing = getAiModelPricing(model);
                 setAiRuntimeSettings((prev) => ({
                   ...prev,
-                  openaiInputCostPer1M: Number.parseFloat(inputRate),
-                  openaiOutputCostPer1M: Number.parseFloat(outputRate),
+                  openaiModel: model,
+                  openaiInputCostPer1M: pricing.openaiInputCostPer1M,
+                  openaiOutputCostPer1M: pricing.openaiOutputCostPer1M,
                 }));
               }}
             >
-              <option value="0.0500|0.4000">Pricing: GPT-5 nano</option>
-              <option value="0.1000|0.4000">Pricing: GPT-4.1 nano</option>
-              <option value="0.4000|1.6000">Pricing: GPT-4.1 mini</option>
-              <option value="2.0000|8.0000">Pricing: GPT-4.1</option>
+              {AI_MODEL_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
             </select>
             <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">OpenAI Timeout (ms)</div>
             <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">OpenAI Temperature</div>
@@ -194,10 +201,35 @@ export default function IntegrationSettingsPanel(props) {
             <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Chat Audio Max Chars</div>
             <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="1000" max="200000" placeholder="Insight Max Prompt Chars" value={aiRuntimeSettings.insightAiMaxPromptChars} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, insightAiMaxPromptChars: e.target.value }))} />
             <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="1000" max="100000" placeholder="Chat Audio Max Chars" value={aiRuntimeSettings.chatAudioMaxChars} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, chatAudioMaxChars: e.target.value }))} />
+            <div className="col-span-2 mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Business Type Detection</div>
+            <select className="input-premium py-1.5 text-[11px] font-semibold col-span-2" value={aiRuntimeSettings.businessClassificationModel || "gpt-5-nano"} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, businessClassificationModel: e.target.value }))}>
+              <option value="gpt-5-nano">gpt-5-nano</option>
+              <option value="gpt-4.1-nano">gpt-4.1-nano</option>
+              <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+              <option value="gpt-4.1">gpt-4.1</option>
+            </select>
+            <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 px-2 py-1 rounded-md border border-slate-200">
+              <input type="checkbox" checked={aiRuntimeSettings.businessClassificationApplyUploads !== false} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, businessClassificationApplyUploads: e.target.checked }))} />
+              <span>Uploads</span>
+            </label>
+            <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 px-2 py-1 rounded-md border border-slate-200">
+              <input type="checkbox" checked={aiRuntimeSettings.businessClassificationApplyEmailIngest !== false} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, businessClassificationApplyEmailIngest: e.target.checked }))} />
+              <span>Email Ingest</span>
+            </label>
+            <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 px-2 py-1 rounded-md border border-slate-200 col-span-2">
+              <input type="checkbox" checked={aiRuntimeSettings.businessClassificationApplyAutosync !== false} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, businessClassificationApplyAutosync: e.target.checked }))} />
+              <span>Autosync</span>
+            </label>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Sample Rows</div>
+            <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="0" max="100" placeholder="Sample Rows" value={aiRuntimeSettings.businessClassificationMaxSampleRows} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, businessClassificationMaxSampleRows: e.target.value }))} />
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Prompt Chars</div>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Output Tokens</div>
+            <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="1000" max="50000" placeholder="Prompt Chars" value={aiRuntimeSettings.businessClassificationMaxPromptChars} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, businessClassificationMaxPromptChars: e.target.value }))} />
+            <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="128" max="2048" placeholder="Output Tokens" value={aiRuntimeSettings.businessClassificationMaxOutputTokens} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, businessClassificationMaxOutputTokens: e.target.value }))} />
             <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Input Cost / 1M Tokens (USD)</div>
             <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Output Cost / 1M Tokens (USD)</div>
-            <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="0" max="1000" step="0.0001" placeholder="Input Cost / 1M Tokens (USD)" value={aiRuntimeSettings.openaiInputCostPer1M} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, openaiInputCostPer1M: e.target.value }))} />
-            <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="0" max="1000" step="0.0001" placeholder="Output Cost / 1M Tokens (USD)" value={aiRuntimeSettings.openaiOutputCostPer1M} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, openaiOutputCostPer1M: e.target.value }))} />
+            <input className="input-premium py-1.5 text-[11px] font-semibold bg-slate-50 text-slate-500" readOnly value={Number(aiRuntimeSettings.openaiInputCostPer1M || 0).toFixed(4)} />
+            <input className="input-premium py-1.5 text-[11px] font-semibold bg-slate-50 text-slate-500" readOnly value={Number(aiRuntimeSettings.openaiOutputCostPer1M || 0).toFixed(4)} />
             <div className="col-span-2 mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Translation Model</div>
             <select className="input-premium py-1.5 text-[11px] font-semibold col-span-2" value={aiRuntimeSettings.translationOpenaiModel || "gpt-5-nano"} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, translationOpenaiModel: e.target.value }))}>
               <option value="gpt-5-nano">gpt-5-nano</option>
@@ -256,11 +288,28 @@ export default function IntegrationSettingsPanel(props) {
             ) : (
               <>
                 <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-700">
-                  <div>Queries: <span className="font-semibold">{Number(aiUsageSummary?.totals?.queryCount || 0)}</span></div>
-                  <div>Estimated Cost: <span className="font-semibold">${Number(aiUsageSummary?.totals?.estimatedCostUsd || 0).toFixed(2)}</span></div>
-                  <div>Prompt Tokens: <span className="font-semibold">{Number(aiUsageSummary?.totals?.promptTokens || 0)}</span></div>
-                  <div>Completion Tokens: <span className="font-semibold">{Number(aiUsageSummary?.totals?.completionTokens || 0)}</span></div>
+                  <div>OpenAI Requests: <span className="font-semibold">{aiUsageSummary?.totals?.queryCount == null ? "Unavailable" : Number(aiUsageSummary.totals.queryCount || 0)}</span></div>
+                  <div>OpenAI Actual Cost: <span className="font-semibold">{aiUsageSummary?.totals?.actualCostUsd == null ? "Unavailable" : `$${Number(aiUsageSummary.totals.actualCostUsd || 0).toFixed(2)}`}</span></div>
+                  <div>Prompt Tokens: <span className="font-semibold">{aiUsageSummary?.totals?.promptTokens == null ? "Unavailable" : Number(aiUsageSummary.totals.promptTokens || 0)}</span></div>
+                  <div>Completion Tokens: <span className="font-semibold">{aiUsageSummary?.totals?.completionTokens == null ? "Unavailable" : Number(aiUsageSummary.totals.completionTokens || 0)}</span></div>
+                  <div>App-Attributed Queries: <span className="font-semibold">{Number(aiUsageSummary?.appLocal?.queryCount || 0)}</span></div>
+                  <div>App Estimate: <span className="font-semibold">${Number(aiUsageSummary?.appLocal?.estimatedCostUsd || 0).toFixed(2)}</span></div>
                 </div>
+                {aiUsageSummary?.openAi?.error ? (
+                  <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-semibold text-amber-800">
+                    OpenAI usage unavailable: {aiUsageSummary.openAi.error}
+                  </div>
+                ) : null}
+                {Array.isArray(aiUsageSummary?.openAi?.lineItems) && aiUsageSummary.openAi.lineItems.length ? (
+                  <div className="max-h-28 overflow-auto rounded border border-slate-200 bg-white">
+                    {aiUsageSummary.openAi.lineItems.map((item) => (
+                      <div key={item.lineItem || "Uncategorized"} className="flex items-center justify-between gap-2 px-2 py-1 text-[10px] border-b border-slate-100 last:border-b-0">
+                        <div className="truncate text-slate-700">{item.lineItem || "Uncategorized"}</div>
+                        <div className="shrink-0 font-semibold text-slate-700">${Number(item.costUsd || 0).toFixed(2)}</div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
                 <div className="max-h-40 overflow-auto rounded border border-slate-200 bg-white">
                   {(Array.isArray(aiUsageSummary?.groups) && aiUsageSummary.groups.length)
                     ? aiUsageSummary.groups.map((row) => (
@@ -299,6 +348,16 @@ export default function IntegrationSettingsPanel(props) {
 
       <div className="pt-1">
         <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Data Source Integrations</div>
+      </div>
+
+      <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Autosync Check Interval</div>
+          <span className="text-[10px] font-semibold text-slate-400">{autosyncInterval.intervalMinutes || 5} min</span>
+        </div>
+        <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="1" max="1440" placeholder="Interval in minutes" value={autosyncInterval.intervalMinutes} onChange={(e) => setAutosyncInterval((prev) => ({ ...prev, intervalMinutes: e.target.value }))} />
+        <div className="text-[10px] text-slate-500">Cloud drive sources are checked for file updates on this interval.</div>
+        <button type="button" onClick={saveAutosyncIntervalSetting} disabled={autosyncIntervalSaving} className={`btn-premium text-white w-full py-1.5 text-[11px] ${autosyncIntervalSaved ? "bg-emerald-600 hover:bg-emerald-600" : "bg-slate-800"} ${autosyncIntervalSaving ? "opacity-60 cursor-not-allowed" : ""}`}>{autosyncIntervalSaving ? "Saving..." : autosyncIntervalSaved ? "Saved" : "Save Autosync Interval"}</button>
       </div>
 
       {/* Dropbox */}

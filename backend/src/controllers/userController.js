@@ -19,6 +19,7 @@ import { isPlatformAdminUser } from "../utils/authorization.js";
 import { normalize2faDigits, normalize2faPeriod } from "../utils/twoFactor.js";
 import { AI_FEATURE_TOGGLES_SETTINGS_KEY, normalizeAiFeatureToggles, resolveEffectiveAiFeaturesForUser } from "../utils/aiFeatureToggles.js";
 import { loadAiRuntimeSettings, saveAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
+import { fetchOpenAiOrganizationUsageSummary, normalizeUsagePeriodMonth } from "../utils/openAiUsage.js";
 import { randomBytes, createHash } from "crypto";
 
 const EXPOSE_TEMP_PASSWORDS = process.env.EXPOSE_TEMP_PASSWORDS
@@ -140,7 +141,7 @@ export async function listAuditLogs(req, res) {
 
 export async function getAiUsageSummary(req, res) {
     if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
-    const periodMonth = String(req.query?.periodMonth || "").trim() || new Date().toISOString().slice(0, 7);
+    const periodMonth = normalizeUsagePeriodMonth(req.query?.periodMonth);
     const rows = await query(
         `SELECT g.id AS group_id,
                 g.name AS group_name,
@@ -161,20 +162,54 @@ export async function getAiUsageSummary(req, res) {
                    g.name ASC`,
         [periodMonth]
     );
-    const totals = rows.reduce((acc, row) => {
+    const appTotals = rows.reduce((acc, row) => {
         acc.queryCount += Number(row.query_count || 0);
         acc.promptTokens += Number(row.prompt_tokens || 0);
         acc.completionTokens += Number(row.completion_tokens || 0);
         acc.estimatedCostUsd += Number(row.estimated_cost_usd || 0);
         return acc;
     }, { queryCount: 0, promptTokens: 0, completionTokens: 0, estimatedCostUsd: 0 });
+    let openAiUsage = null;
+    let openAiError = null;
+    let openAiErrorCode = null;
+    try {
+        openAiUsage = await fetchOpenAiOrganizationUsageSummary(periodMonth);
+    } catch (err) {
+        openAiError = err?.message || "openai_usage_unavailable";
+        openAiErrorCode = err?.code || "openai_usage_unavailable";
+    }
     return res.json({
         periodMonth,
+        source: openAiUsage ? "openai" : "app_local",
         totals: {
-            queryCount: totals.queryCount,
-            promptTokens: totals.promptTokens,
-            completionTokens: totals.completionTokens,
-            estimatedCostUsd: Number(totals.estimatedCostUsd.toFixed(6)),
+            queryCount: openAiUsage ? Number(openAiUsage.queryCount || 0) : null,
+            promptTokens: openAiUsage ? Number(openAiUsage.promptTokens || 0) : null,
+            completionTokens: openAiUsage ? Number(openAiUsage.completionTokens || 0) : null,
+            actualCostUsd: openAiUsage ? Number(openAiUsage.costUsd || 0) : null,
+            estimatedCostUsd: Number(appTotals.estimatedCostUsd.toFixed(6)),
+            currency: openAiUsage?.currency || "usd",
+            inputCachedTokens: Number(openAiUsage?.inputCachedTokens || 0),
+            inputAudioTokens: Number(openAiUsage?.inputAudioTokens || 0),
+            outputAudioTokens: Number(openAiUsage?.outputAudioTokens || 0),
+            audioSpeechCharacters: Number(openAiUsage?.audioSpeechCharacters || 0),
+        },
+        openAi: openAiUsage ? {
+            source: "openai",
+            actualCostUsd: Number(openAiUsage.costUsd || 0),
+            currency: openAiUsage.currency || "usd",
+            lineItems: Array.isArray(openAiUsage.lineItems) ? openAiUsage.lineItems : [],
+            partialErrors: Array.isArray(openAiUsage.partialErrors) ? openAiUsage.partialErrors : [],
+        } : {
+            source: "unavailable",
+            code: openAiErrorCode,
+            error: openAiError,
+        },
+        appLocal: {
+            source: "app_local",
+            queryCount: appTotals.queryCount,
+            promptTokens: appTotals.promptTokens,
+            completionTokens: appTotals.completionTokens,
+            estimatedCostUsd: Number(appTotals.estimatedCostUsd.toFixed(6)),
         },
         groups: rows.map((row) => ({
             groupId: Number(row.group_id),
@@ -1897,6 +1932,20 @@ export async function setAiRuntimeSetting(req, res) {
     try {
         const scope = await resolveScopedGroupForIntegrationSettings(req);
         const next = await saveAiRuntimeSettings(scope.groupId || null, req.body || {});
+        if (!scope.groupId) {
+            const featureToggles = normalizeAiFeatureToggles({
+                chatEnabled: next.globalAiDisabled !== true && next.chatEnabled === true,
+                dashboardTranslationEnabled: next.globalAiDisabled !== true && next.dashboardTranslationEnabled === true,
+                chatAudioEnabled: next.globalAiDisabled !== true && next.chatAudioEnabled === true,
+            });
+            await query(
+                `INSERT INTO app_settings (key, value, updated_at)
+                 VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+                 ON CONFLICT (key)
+                 DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+                [AI_FEATURE_TOGGLES_SETTINGS_KEY, JSON.stringify(featureToggles)]
+            );
+        }
         await writeAuditLog({
             req,
             action: "ai_runtime.settings_updated",

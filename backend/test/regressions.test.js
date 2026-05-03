@@ -277,12 +277,36 @@ test("chat deterministic YoY answers override AI prose and keep bullets stacked"
   assert.match(source, /const numericOps = new Set\(\["count", "sum", "avg", "max", "min", "top_n", "year_over_year"\]\)/);
   assert.match(source, /replace\(\/\\s\+•\\s\+\/g, "\\n• "\)/);
   assert.match(source, /function normalizeChatMarkdownText/);
+  assert.match(source, /function formatDenseYoYComparisonBullets/);
+  assert.match(source, /год к году\|г\\\/г\|р\\\/р/);
+  assert.match(source, /replace\(\/;\\s\+\(\?=\\d\{4\}\\s\+\(\?:год\|рік\|year\)\\b\)\/gi, "\\n• "\)/);
+  assert.match(source, /replace\(\/,\\s\+\(\?=\\d\{4\}\\s\+vs\\s\+\\d\{4\}\\b\)\/gi, "\\n• "\)/);
+  assert.ok(source.indexOf("formatDenseYoYComparisonBullets(text)") < source.indexOf("if (!text.includes(\"\\n\") && /\\d\\.\\d/.test(text)) return text;"));
   assert.match(source, /replace\(\/\\s\+\\\*\\\*\(\[\^\*\\n:\]\{1,80\}\):\\\*\\\*\/g, "\\n\$1:"\)/);
   assert.match(source, /replace\(\/\\\*\\\*\(\[\^\*\\n\]\+\)\\\*\\\*\/g, "\$1"\)/);
   assert.match(source, /bestYear\.change_percent >= 0/);
   assert.match(source, /function dropImplicitTrailingPartialYear/);
   assert.match(source, /shouldIncludeTrailingPartialYear\(queryText, latestYear/);
   assert.match(source, /replace\(\/\\\\r\?\\\\n\/g, "\\n"\)/);
+});
+
+test("chat driver ranking queries infer revenue metric and grouping dimension", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const controllerPath = path.join(__dirname, "..", "src", "controllers", "chatController.js");
+  const source = fs.readFileSync(controllerPath, "utf8");
+
+  assert.match(source, /function isDriverRankingQuery\(message = ""\)/);
+  assert.match(source, /drivers\?\|drives\|contributors\?/);
+  assert.match(source, /const asksDriverRanking = isDriverRankingQuery\(message\)/);
+  assert.match(source, /resolvedOperation = "top_n"/);
+  assert.match(source, /const profileMetric = resolveProfileMetric\(semanticProfile, message, \[ai\?\.target_column, ai\?\.chart\?\.value_column\]\)/);
+  assert.match(source, /resolvedTarget = profileMetric\s+\|\|\s+inferLikelyMetricColumn\(aiHeaders, sampleRows, message, \[ai\?\.target_column, ai\?\.chart\?\.value_column\]\)/);
+  assert.match(source, /resolvedGroupBy = resolveProfileDimension\(semanticProfile, message, \[resolvedTarget, ai\?\.target_column, ai\?\.chart\?\.value_column\]\)/);
+  assert.match(source, /resolvedOperation === "top_n" && \(!resolvedTarget \|\| !resolvedGroupBy\)/);
+  assert.match(source, /function inferLikelyMetricColumn/);
+  assert.match(source, /isUsableMetricColumn/);
+  assert.match(source, /numericHits >= Math\.max\(1, Math\.ceil\(samples\.length \/ 3\)\)/);
 });
 
 test("insight feed locale changes force fresh translation and avoid caching unchanged cards", async () => {
@@ -334,6 +358,38 @@ test("customer AI query quota is entitlement backed and enforced before chat AI 
   assert.match(uiSource, /AI Budget \/ Month \(\$\)/);
   assert.match(env, /OPENAI_INPUT_COST_PER_1M=0\.05/);
   assert.match(env, /OPENAI_OUTPUT_COST_PER_1M=0\.40/);
+});
+
+test("admin AI usage stats use OpenAI costs instead of local estimates for totals", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const repoRoot = path.resolve(__dirname, "..", "..");
+  const userControllerPath = path.join(repoRoot, "backend", "src", "controllers", "userController.js");
+  const openAiUsagePath = path.join(repoRoot, "backend", "src", "utils", "openAiUsage.js");
+  const uiPath = path.join(repoRoot, "frontend", "src", "components", "admin", "IntegrationSettingsPanel.jsx");
+  const envPath = path.join(repoRoot, ".env.example");
+
+  const controllerSource = fs.readFileSync(userControllerPath, "utf8");
+  const usageSource = fs.readFileSync(openAiUsagePath, "utf8");
+  const uiSource = fs.readFileSync(uiPath, "utf8");
+  const env = fs.readFileSync(envPath, "utf8");
+
+  assert.match(controllerSource, /fetchOpenAiOrganizationUsageSummary\(periodMonth\)/);
+  assert.match(controllerSource, /actualCostUsd: openAiUsage \? Number\(openAiUsage\.costUsd \|\| 0\) : null/);
+  assert.match(controllerSource, /appLocal: \{/);
+  assert.match(usageSource, /\/organization\/costs/);
+  assert.match(usageSource, /\/organization\/usage\/completions/);
+  assert.match(usageSource, /\/organization\/usage\/audio_speeches/);
+  assert.match(usageSource, /OPENAI_ADMIN_API_KEY \|\| process\.env\.OPENAI_USAGE_API_KEY/);
+  assert.match(usageSource, /openai_usage_api_key_missing/);
+  assert.match(usageSource, /openai_usage_key_unauthorized/);
+  assert.match(usageSource, /OpenAI admin key with organization usage and costs access/);
+  assert.doesNotMatch(usageSource, /OPENAI_API_KEY \|\| ""/);
+  assert.match(controllerSource, /code: openAiErrorCode/);
+  assert.match(uiSource, /OpenAI Actual Cost/);
+  assert.match(uiSource, /App Estimate/);
+  assert.match(uiSource, /OpenAI usage unavailable/);
+  assert.match(env, /OPENAI_ADMIN_API_KEY=your_openai_admin_key_here/);
 });
 
 test("unique values endpoint applies row filters before distinct sampling", async () => {
@@ -574,6 +630,27 @@ test("client spreadsheet exports neutralize formula injection values", async () 
   assert.match(source, /json_to_sheet\(sanitizeSpreadsheetExportRows\(sortedData\)\)/);
 });
 
+test("pivot chart uses raw grouped values and supports count without a value column", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
+  const appPath = path.join(repoRoot, "frontend", "src", "App.jsx");
+  const overlayPath = path.join(repoRoot, "frontend", "src", "components", "dashboard", "PivotOverlay.jsx");
+  const appSource = fs.readFileSync(appPath, "utf8");
+  const overlaySource = fs.readFileSync(overlayPath, "utf8");
+
+  assert.match(appSource, /const isCountAgg = pivotAgg === "count" \|\| pivotAgg === "Count"/);
+  assert.match(appSource, /!pivotOn \|\| !pivotRowKey \|\| \(!isCountAgg && !pivotValKey\) \|\| !sortedData\.length/);
+  assert.match(appSource, /const rowTotals = \{\}/);
+  assert.match(appSource, /rowTotals\[rVal\]\.sum \+= val/);
+  assert.match(appSource, /rowTotals\[rVal\]\.count \+= 1/);
+  assert.match(appSource, /Object\.entries\(rowTotals\)/);
+  assert.match(appSource, /entry\.count > 0 \? entry\.sum \/ entry\.count : 0/);
+  assert.match(appSource, /Math\.abs\(b\.value \|\| 0\) - Math\.abs\(a\.value \|\| 0\)/);
+  assert.match(overlaySource, /const pivotValueLabel = pivotAgg === "count" \? "Count" : \(pivotValKey \|\| "Value"\)/);
+  assert.match(overlaySource, /<Bar dataKey="value" name=\{pivotValueLabel\}/);
+  assert.match(overlaySource, /formatSmart\(row\[h\], j > 0 \? pivotValueLabel : h\)/);
+});
+
 test("insights push row filters and column projection into SQL", async () => {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
@@ -716,19 +793,322 @@ test("customer admin promotion requires explicit entitlement and frontend expose
   assert.match(uiSource, /groupId: selectedGroupId/);
 });
 
-test("customer product bundles include user and source limits", async () => {
+test("customer product bundles expose editable user and source limits", async () => {
   const __filename = fileURLToPath(import.meta.url);
   const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
   const uiPath = path.join(repoRoot, "frontend", "src", "UserManagement.jsx");
   const uiSource = fs.readFileSync(uiPath, "utf8");
 
-  assert.match(uiSource, /const BUNDLE_CAPACITY_LIMITS = \{/);
+  assert.match(uiSource, /const BUNDLE_DEFAULT_CAPACITY_LIMITS = \{/);
   assert.match(uiSource, /core: \{ maxUsers: 10, maxReportSources: 3 \}/);
   assert.match(uiSource, /growth: \{ maxUsers: 50, maxReportSources: 15 \}/);
   assert.match(uiSource, /enterprise: \{ maxUsers: 250, maxReportSources: 100 \}/);
-  assert.match(uiSource, /const capacityLimits = BUNDLE_CAPACITY_LIMITS\[bundle\.key\] \|\| \{\}/);
-  assert.match(uiSource, /maxUsers: capacityLimits\.maxUsers \?\? current\.maxUsers \?\? ""/);
-  assert.match(uiSource, /maxReportSources: capacityLimits\.maxReportSources \?\? current\.maxReportSources \?\? ""/);
+  assert.match(uiSource, /const ensureBundleCapacityLimits = \(bundleCapacityLimits, fallbackLimits = \{\}\) =>/);
+  assert.match(uiSource, /bundleCapacityLimits/);
+  assert.match(uiSource, /Max Users/);
+  assert.match(uiSource, /Max Sources/);
+  assert.match(uiSource, /\[bundleTier\]: currentCapacity/);
+  assert.match(uiSource, /maxUsers: activeCapacityLimits\.maxUsers === "" \? null : Number\(activeCapacityLimits\.maxUsers\)/);
+  assert.doesNotMatch(uiSource, /const capacityLimits = BUNDLE_CAPACITY_LIMITS\[bundle\.key\] \|\| \{\}/);
+});
+
+test("customer bundle capacity limits are explicitly normalized server-side", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
+  const entitlementsPath = path.join(repoRoot, "backend", "src", "utils", "entitlements.js");
+  const source = fs.readFileSync(entitlementsPath, "utf8");
+
+  assert.match(source, /const PRODUCT_BUNDLE_KEYS = new Set\(\["core", "growth", "enterprise"\]\)/);
+  assert.match(source, /function normalizeBundleCapacityLimits\(raw = \{\}\)/);
+  assert.match(source, /maxUsers: normalizePositiveIntOrNull\(src\.maxUsers\)/);
+  assert.match(source, /maxReportSources: normalizePositiveIntOrNull\(src\.maxReportSources\)/);
+  assert.match(source, /bundleCapacityLimits: normalizeBundleCapacityLimits\(raw\.bundleCapacityLimits\)/);
+  assert.doesNotMatch(source, /\.\.\.raw,/);
+});
+
+test("max report sources entitlement is enforced before creating new sources", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const controllerPath = path.join(__dirname, "..", "src", "controllers", "sheetController.js");
+  const source = fs.readFileSync(controllerPath, "utf8");
+
+  assert.match(source, /async function assertReportSourceLimitAvailable\(client, groupId\)/);
+  assert.match(source, /SELECT id, entitlements FROM groups WHERE id = \$1 LIMIT 1 FOR UPDATE/);
+  assert.match(source, /COUNT\(DISTINCT rs\.id\)::int AS c/);
+  assert.match(source, /rs\.is_inferred IS NOT TRUE/);
+  assert.match(source, /rs\.sync_group_id = \$1/);
+  assert.match(source, /ug\.group_id = \$1/);
+  assert.match(source, /group_report_source_limit_exceeded/);
+  assert.match(source, /await assertReportSourceLimitAvailable\(client, groupId\);/);
+  assert.match(source, /await assertReportSourceLimitAvailable\(client, targetGroupId\);/);
+  assert.match(source, /autosyncConfig\.groupId/);
+});
+
+test("dashboard translation endpoint bounds request size before reserving AI quota", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const controllerPath = path.join(__dirname, "..", "src", "controllers", "localeController.js");
+  const source = fs.readFileSync(controllerPath, "utf8");
+
+  assert.match(source, /import \{ isAiGloballyDisabled, loadAiRuntimeSettings \} from "\.\.\/utils\/aiRuntimeSettings\.js";/);
+  assert.match(source, /dashboardTranslateMaxItems/);
+  assert.match(source, /dashboardTranslateMaxCharsPerItem/);
+  assert.match(source, /dashboard_translate_too_many_items/);
+  assert.match(source, /dashboard_translate_item_too_large/);
+  assert.match(source, /const normalizedItems = items\.map/);
+  assert.match(source, /isAiGloballyDisabled\(runtime\)/);
+  assert.match(source, /runtime\?\.dashboardTranslationEnabled !== true/);
+  assert.match(source, /await reserveAiQueryForUser\(\{ user: req\.user, kind: "dashboard_translate" \}\)/);
+  assert.ok(source.indexOf("isAiGloballyDisabled(runtime)") < source.indexOf("reservation = await reserveAiQueryForUser"));
+  assert.ok(source.indexOf("runtime?.dashboardTranslationEnabled !== true") < source.indexOf("reservation = await reserveAiQueryForUser"));
+  assert.ok(source.indexOf("dashboard_translate_too_many_items") < source.indexOf("reservation = await reserveAiQueryForUser"));
+  assert.ok(source.indexOf("dashboard_translate_item_too_large") < source.indexOf("reservation = await reserveAiQueryForUser"));
+});
+
+test("AI spending features are default-off and visible in admin runtime controls", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
+  const runtimePath = path.join(repoRoot, "backend", "src", "utils", "aiRuntimeSettings.js");
+  const featureTogglesPath = path.join(repoRoot, "backend", "src", "utils", "aiFeatureToggles.js");
+  const chatControllerPath = path.join(repoRoot, "backend", "src", "controllers", "chatController.js");
+  const insightControllerPath = path.join(repoRoot, "backend", "src", "controllers", "insightController.js");
+  const dashboardLocalizationPath = path.join(repoRoot, "backend", "src", "utils", "dashboardLocalization.js");
+  const uiPath = path.join(repoRoot, "frontend", "src", "components", "admin", "IntegrationSettingsPanel.jsx");
+  const adminPath = path.join(repoRoot, "frontend", "src", "UserManagement.jsx");
+
+  const runtimeSource = fs.readFileSync(runtimePath, "utf8");
+  const featureTogglesSource = fs.readFileSync(featureTogglesPath, "utf8");
+  const chatSource = fs.readFileSync(chatControllerPath, "utf8");
+  const chatQueryBody = chatSource.slice(
+    chatSource.indexOf("export async function chatQuery")
+  );
+  const chatAudioBody = chatSource.slice(
+    chatSource.indexOf("export async function getChatAudio"),
+    chatSource.indexOf("export async function synthesizeChatAudioBuffer")
+  );
+  const insightSource = fs.readFileSync(insightControllerPath, "utf8");
+  const dashboardLocalizationSource = fs.readFileSync(dashboardLocalizationPath, "utf8");
+  const uiSource = fs.readFileSync(uiPath, "utf8");
+  const adminSource = fs.readFileSync(adminPath, "utf8");
+
+  assert.match(runtimeSource, /globalAiDisabled: false/);
+  assert.match(runtimeSource, /return runtime\?\.globalAiDisabled === true/);
+  assert.match(runtimeSource, /chatEnabled: false/);
+  assert.match(runtimeSource, /chatAudioEnabled: false/);
+  assert.match(runtimeSource, /dashboardTranslationEnabled: false/);
+  assert.match(runtimeSource, /businessClassificationEnabled: false/);
+  assert.match(runtimeSource, /insightAiEnabled: false/);
+  assert.match(featureTogglesSource, /chatEnabled: raw\?\.chatEnabled === true/);
+  assert.match(featureTogglesSource, /dashboardTranslationEnabled: raw\?\.dashboardTranslationEnabled === true/);
+  assert.match(featureTogglesSource, /chatAudioEnabled: raw\?\.chatAudioEnabled === true/);
+  assert.match(chatSource, /resolveAiGroupIdForSheet/);
+  assert.match(chatSource, /isAiGloballyDisabled\(runtime\)/);
+  assert.match(chatQueryBody, /if \(!runtime\.chatEnabled\) return res\.status\(403\)\.json\(\{ error: "chat_disabled" \}\)/);
+  assert.ok(chatQueryBody.indexOf("isAiGloballyDisabled(runtime)") < chatQueryBody.indexOf("reserveAiQueryForSheet({ sheetId"));
+  assert.ok(chatQueryBody.indexOf("if (!runtime.chatEnabled)") < chatQueryBody.indexOf("reserveAiQueryForSheet({ sheetId"));
+  assert.ok(chatQueryBody.indexOf("feature_not_enabled:chatAi") < chatQueryBody.indexOf("reserveAiQueryForSheet({ sheetId"));
+  assert.match(chatAudioBody, /if \(!runtime\.chatAudioEnabled\) return res\.status\(403\)\.json\(\{ error: "chat_audio_disabled" \}\)/);
+  assert.ok(chatAudioBody.indexOf("isAiGloballyDisabled(runtime)") < chatAudioBody.indexOf('reserveAiQueryForSheet({ sheetId, user: req.user, kind: "chat_audio" })'));
+  assert.ok(chatAudioBody.indexOf("if (!runtime.chatAudioEnabled)") < chatAudioBody.indexOf('reserveAiQueryForSheet({ sheetId, user: req.user, kind: "chat_audio" })'));
+  assert.ok(chatAudioBody.indexOf("feature_not_enabled:chatAudioAi") < chatAudioBody.indexOf('reserveAiQueryForSheet({ sheetId, user: req.user, kind: "chat_audio" })'));
+  assert.match(insightSource, /runtime\?\.insightAiEnabled !== true/);
+  assert.match(insightSource, /runtime\?\.dashboardTranslationEnabled !== true/);
+  assert.match(insightSource, /runtime\?\.chatAudioEnabled !== true/);
+  assert.match(dashboardLocalizationSource, /runtime\?\.dashboardTranslationEnabled !== true/);
+  assert.match(dashboardLocalizationSource, /isAiGloballyDisabled\(runtime\)/);
+  assert.match(uiSource, /Global AI Disabled/);
+  assert.match(uiSource, /checked=\{aiRuntimeSettings\.globalAiDisabled === true\}/);
+  assert.match(uiSource, /disabled=\{aiRuntimeSettings\.globalAiDisabled === true\} checked=\{aiRuntimeSettings\.chatEnabled === true\}/);
+  assert.match(uiSource, /disabled=\{aiRuntimeSettings\.globalAiDisabled === true\} checked=\{aiRuntimeSettings\.businessClassificationEnabled === true\}/);
+  assert.match(uiSource, /Chat AI Enabled/);
+  assert.ok(uiSource.indexOf("Global AI Disabled") < uiSource.indexOf("Chat AI Enabled"));
+  assert.match(uiSource, /Chat Audio AI Enabled/);
+  assert.match(uiSource, /Dashboard Translation AI Enabled/);
+  assert.match(uiSource, /Insight AI Enabled/);
+  assert.match(uiSource, /Business Type Detection Enabled/);
+  assert.match(uiSource, /AI Options/);
+  assert.doesNotMatch(uiSource, /Storage Options/);
+  assert.ok(uiSource.indexOf("Autosync Check Interval") > uiSource.indexOf("Data Source Integrations"));
+  assert.doesNotMatch(uiSource, /Pricing Profile/);
+  assert.match(uiSource, /getAiModelPricing\(model\)/);
+  assert.doesNotMatch(uiSource, /chatEnabled !== false/);
+  assert.match(adminSource, /const AI_FEATURE_RUNTIME_DEFAULTS = \{\s+globalAiDisabled: false,\s+chatEnabled: false,\s+chatAudioEnabled: false,\s+dashboardTranslationEnabled: false,\s+insightAiEnabled: false,/);
+  assert.match(adminSource, /const AI_MODEL_PRICING = \{/);
+  assert.match(adminSource, /const \[aiRuntimeSettings, setAiRuntimeSettingsState\] = useState\(\{ \.\.\.AI_RUNTIME_PRESETS\.mid \}\)/);
+  assert.match(adminSource, /const aiRuntimeSettingsRef = useRef\(aiRuntimeSettings\)/);
+  assert.match(adminSource, /const setAiRuntimeSettings = useCallback\(\(updater\) =>/);
+  assert.match(adminSource, /aiRuntimeSettingsRef\.current = next/);
+  assert.match(adminSource, /const runtimeDraft = aiRuntimeSettingsRef\.current \|\| aiRuntimeSettings \|\| \{\}/);
+  assert.match(adminSource, /businessClassificationEnabled: runtimeDraft\.businessClassificationEnabled === true/);
+  assert.match(adminSource, /const aiRuntimeRequestSeqRef = useRef\(0\)/);
+  assert.match(adminSource, /const requestSeq = \+\+aiRuntimeRequestSeqRef\.current/);
+  assert.match(adminSource, /if \(requestSeq !== aiRuntimeRequestSeqRef\.current\) return/);
+  assert.match(adminSource, /openaiInputCostPer1M: selectedModelPricing\.openaiInputCostPer1M/);
+  assert.match(adminSource, /next\.openaiInputCostPer1M = savedPricingForModel\.openaiInputCostPer1M/);
+  assert.match(adminSource, /axios\.get\(`\$\{API\}\/admin\/settings\/ai-runtime`, \{\s+headers: \{ Authorization: `Bearer \$\{token\}` \},\s+params: integrationScopeParams,/);
+  assert.match(adminSource, /axios\.patch\(`\$\{API\}\/admin\/settings\/ai-runtime`, \{ \.\.\.next, \.\.\.integrationScopeParams \}, \{/);
+  assert.match(adminSource, /\.\.\.AI_FEATURE_RUNTIME_DEFAULTS/);
+  assert.match(adminSource, /chatEnabled: data\.chatEnabled === true/);
+  assert.match(adminSource, /globalAiDisabled: data\.globalAiDisabled === true/);
+  assert.match(adminSource, /insightAiEnabled: data\.insightAiEnabled === true/);
+  assert.match(adminSource, /insightAiEnabled: runtimeDraft\.insightAiEnabled === true/);
+});
+
+test("business type detection is runtime configurable and confirmed per sheet", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
+  const runtimePath = path.join(repoRoot, "backend", "src", "utils", "aiRuntimeSettings.js");
+  const classifierPath = path.join(repoRoot, "backend", "src", "utils", "businessClassification.js");
+  const sheetControllerPath = path.join(repoRoot, "backend", "src", "controllers", "sheetController.js");
+  const sheetRoutesPath = path.join(repoRoot, "backend", "src", "routes", "sheetRoutes.js");
+  const dbPath = path.join(repoRoot, "backend", "src", "config", "db.js");
+  const uiPath = path.join(repoRoot, "frontend", "src", "components", "admin", "IntegrationSettingsPanel.jsx");
+  const appPath = path.join(repoRoot, "frontend", "src", "App.jsx");
+  const dashboardBodyPath = path.join(repoRoot, "frontend", "src", "components", "dashboard", "DashboardBody.jsx");
+  const storageImportPickerPath = path.join(repoRoot, "frontend", "src", "components", "common", "StorageImportPicker.jsx");
+  const envPath = path.join(repoRoot, ".env.example");
+
+  const runtimeSource = fs.readFileSync(runtimePath, "utf8");
+  const classifierSource = fs.readFileSync(classifierPath, "utf8");
+  const sheetSource = fs.readFileSync(sheetControllerPath, "utf8");
+  const sheetRoutesSource = fs.readFileSync(sheetRoutesPath, "utf8");
+  const dbSource = fs.readFileSync(dbPath, "utf8");
+  const uiSource = fs.readFileSync(uiPath, "utf8");
+  const appSource = fs.readFileSync(appPath, "utf8");
+  const dashboardBodySource = fs.readFileSync(dashboardBodyPath, "utf8");
+  const storageImportPickerSource = fs.readFileSync(storageImportPickerPath, "utf8");
+  const env = fs.readFileSync(envPath, "utf8");
+
+  assert.match(runtimeSource, /businessClassificationEnabled: false/);
+  assert.match(runtimeSource, /businessClassificationModel/);
+  assert.match(runtimeSource, /businessClassificationApplyUploads/);
+  assert.match(runtimeSource, /businessClassificationApplyEmailIngest/);
+  assert.match(runtimeSource, /businessClassificationApplyAutosync/);
+  assert.match(runtimeSource, /businessClassificationMaxSampleRows/);
+  assert.match(classifierSource, /export async function classifySheetBusinessContext/);
+  assert.match(classifierSource, /sourceKindEnabled\(runtime, sourceKind\)/);
+  assert.match(classifierSource, /responseFormat: \{ type: "json_object" \}/);
+  assert.match(classifierSource, /isBusinessData/);
+  assert.match(dbSource, /ALTER TABLE sheets ADD COLUMN IF NOT EXISTS business_classification JSONB NOT NULL DEFAULT '\{\}'::jsonb/);
+  assert.match(dbSource, /ALTER TABLE sheets ADD COLUMN IF NOT EXISTS business_classification_status TEXT NOT NULL DEFAULT 'none'/);
+  assert.doesNotMatch(dbSource, /ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS business_classification JSONB/);
+  assert.match(sheetSource, /classifyAndPersistBusinessContext/);
+  assert.match(sheetSource, /carryForwardBusinessClassificationIfPrompted/);
+  assert.match(sheetSource, /already_prompted/);
+  assert.match(sheetSource, /promptSuppressed: true/);
+  assert.match(sheetSource, /business_classification = \$2::jsonb/);
+  assert.match(sheetSource, /business_classification_status = 'pending'/);
+  assert.match(sheetSource, /export async function confirmSheetBusinessClassification/);
+  assert.match(sheetSource, /business_classification_status = \$3/);
+  assert.match(sheetSource, /classificationSourceKind: "email_ingest"/);
+  assert.match(sheetSource, /classificationSourceKind: "autosync"/);
+  assert.match(sheetSource, /classificationSourceKind: autosyncConfig\?\.enabled \? "autosync" : "manual_upload"/);
+  assert.match(sheetSource, /s\.business_classification/);
+  assert.doesNotMatch(sheetSource, /rs\.business_classification/);
+  assert.match(sheetRoutesSource, /router\.patch\("\/sheets\/:id\/business-classification", asyncHandler\(confirmSheetBusinessClassification\)\)/);
+  assert.match(appSource, /Confirm Sheet Type/);
+  assert.match(appSource, /maybePromptBusinessClassification\(res\.data\)/);
+  assert.match(appSource, /answerBusinessClassificationPrompt\(true\)/);
+  assert.match(appSource, /answerBusinessClassificationPrompt\(false\)/);
+  assert.doesNotMatch(appSource, /setFolderFiles/);
+  assert.match(dashboardBodySource, /const getLabelOptionsForSource = React\.useCallback/);
+  assert.match(dashboardBodySource, /reportSourceImports\?\.\[String\(sourceId\)\]/);
+  assert.match(dashboardBodySource, /selectedReportSourceId && labelOptions\.length > 0/);
+  assert.doesNotMatch(dashboardBodySource, /labelOptions\.length > 1/);
+  assert.match(storageImportPickerSource, /selectedReportSourceId && labelOptions\.length > 0/);
+  assert.doesNotMatch(storageImportPickerSource, /__NEW__/);
+  assert.match(uiSource, /Business Type Detection Enabled/);
+  assert.match(uiSource, /businessClassificationModel/);
+  assert.match(uiSource, /businessClassificationApplyEmailIngest/);
+  assert.match(env, /OPENAI_BUSINESS_CLASSIFICATION_MODEL=gpt-5-nano/);
+});
+
+test("sheet semantic profiles are generated, stored, learned, and used by chat", async () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
+  const profilePath = path.join(repoRoot, "backend", "src", "utils", "sheetSemanticProfile.js");
+  const sheetControllerPath = path.join(repoRoot, "backend", "src", "controllers", "sheetController.js");
+  const chatControllerPath = path.join(repoRoot, "backend", "src", "controllers", "chatController.js");
+  const sheetRoutesPath = path.join(repoRoot, "backend", "src", "routes", "sheetRoutes.js");
+  const dbPath = path.join(repoRoot, "backend", "src", "config", "db.js");
+
+  const profileSource = fs.readFileSync(profilePath, "utf8");
+  const sheetSource = fs.readFileSync(sheetControllerPath, "utf8");
+  const chatSource = fs.readFileSync(chatControllerPath, "utf8");
+  const routesSource = fs.readFileSync(sheetRoutesPath, "utf8");
+  const dbSource = fs.readFileSync(dbPath, "utf8");
+
+  assert.match(dbSource, /ALTER TABLE sheets ADD COLUMN IF NOT EXISTS semantic_profile JSONB NOT NULL DEFAULT '\{\}'::jsonb/);
+  assert.match(dbSource, /ALTER TABLE sheets ADD COLUMN IF NOT EXISTS semantic_profile_updated_at TIMESTAMP/);
+  assert.match(profileSource, /export function buildSheetSemanticProfile/);
+  assert.match(profileSource, /export function resolveProfileMetric/);
+  assert.match(profileSource, /export function resolveProfileDimension/);
+  assert.match(profileSource, /export function mergeSheetSemanticProfileLearning/);
+  assert.match(profileSource, /SEMANTIC_PROFILE_RULES_SETTINGS_KEY = "semantic_profile_rules"/);
+  assert.match(profileSource, /export async function loadSemanticProfileRules/);
+  assert.match(profileSource, /export function normalizeSemanticProfileRules/);
+  assert.match(profileSource, /serviceLine/);
+  assert.match(profileSource, /valueSemantics/);
+  assert.doesNotMatch(profileSource, /SERVICE_LINE_RECURRING_PATTERN/);
+  assert.doesNotMatch(profileSource, /SERVICE_LINE_PROJECT_PATTERN/);
+  assert.match(profileSource, /serviceLineColumn/);
+  assert.match(profileSource, /revenueModelColumn/);
+  assert.match(dbSource, /SEMANTIC_PROFILE_RULES_SETTINGS_KEY/);
+  assert.match(dbSource, /DEFAULT_SEMANTIC_PROFILE_RULES/);
+  assert.match(sheetSource, /const semanticRules = await loadSemanticProfileRules\(\)/);
+  assert.match(sheetSource, /buildSheetSemanticProfile\(\{ headers, sampleRows: firstTabRowsRaw, rules: semanticRules \}\)/);
+  assert.match(sheetSource, /semantic_profile, semantic_profile_updated_at/);
+  assert.match(sheetSource, /semantic_profile: semanticProfile/);
+  assert.match(sheetSource, /export async function updateSheetSemanticProfile/);
+  assert.match(sheetSource, /sanitizeSemanticProfileDefaults/);
+  assert.match(sheetSource, /mergeSheetSemanticProfileLearning/);
+  assert.match(sheetSource, /semantic_profile = \$2::jsonb/);
+  assert.match(sheetSource, /semantic_profile_updated_at = CURRENT_TIMESTAMP/);
+  assert.match(routesSource, /router\.patch\("\/sheets\/:id\/semantic-profile", asyncHandler\(updateSheetSemanticProfile\)\)/);
+  assert.match(chatSource, /import \{\s+buildSheetSemanticProfile,\s+resolveProfileDateColumn,\s+resolveProfileDimension,\s+resolveProfileMetric,/);
+  assert.match(chatSource, /restrictSemanticProfileToHeaders\(loadedSample\.semanticProfile, aiHeaders, scopedSampleRows\)/);
+  assert.match(chatSource, /semantic_profile: compactSemanticProfileForPrompt\(semanticProfile\)/);
+  assert.match(chatSource, /SELECT headers, tabs, tab_name, semantic_profile FROM sheets WHERE id = \$1/);
+  assert.match(chatSource, /semanticProfile: sheet\.semantic_profile \|\| \{\}/);
+  assert.match(chatSource, /semanticProfile,/);
+});
+
+test("semantic profile treats Service Line as a PSA operating dimension with revenue model groups", async () => {
+  const mod = await import(`../src/utils/sheetSemanticProfile.js?t=${Date.now()}_service_line`);
+  const rules = mod.normalizeSemanticProfileRules({
+    meanings: {
+      serviceLine: { headerPatterns: ["\\b(line\\s*of\\s*work|service\\s*line)\\b"] },
+    },
+    valueSemantics: {
+      revenueModel: {
+        recurring: ["\\b(saas|subscription|maintenance|retained\\s*support)\\b"],
+        project: ["\\b(implementation|strategy|launch\\s*project)\\b"],
+      },
+    },
+    dimensionPreference: ["serviceLine", "product", "category"],
+  });
+  const profile = mod.buildSheetSemanticProfile({
+    headers: ["Product Category", "Service Line", "Gross Revenue", "COGS Amount"],
+    sampleRows: [
+      { "Product Category": "Software", "Service Line": "SaaS Subscription", "Gross Revenue": "1000", "COGS Amount": "200" },
+      { "Product Category": "Software", "Service Line": "Maintenance", "Gross Revenue": "750", "COGS Amount": "150" },
+      { "Product Category": "Software", "Service Line": "Implementation", "Gross Revenue": "500", "COGS Amount": "350" },
+      { "Product Category": "Services", "Service Line": "Strategy", "Gross Revenue": "300", "COGS Amount": "180" },
+    ],
+    rules,
+  });
+
+  const serviceLine = profile.columns.find((col) => col.name === "Service Line");
+  assert.ok(serviceLine);
+  assert.ok(serviceLine.roles.includes("dimension"));
+  assert.ok(serviceLine.meanings.includes("serviceLine"));
+  assert.ok(serviceLine.meanings.includes("revenueModel"));
+  assert.equal(profile.defaults.serviceLineColumn, "Service Line");
+  assert.equal(profile.defaults.revenueModelColumn, "Service Line");
+  assert.equal(profile.defaults.driverDimensionColumn, "Service Line");
+  assert.deepEqual(serviceLine.valueSemantics.revenueModel.recurring, ["SaaS Subscription", "Maintenance"]);
+  assert.deepEqual(serviceLine.valueSemantics.revenueModel.project, ["Implementation", "Strategy"]);
+  assert.equal(mod.resolveProfileDimension(profile, "What percentage of revenue is recurring vs one-time implementations?"), "Service Line");
 });
 
 test("customer-scoped SSO toggle is wired and enforced for Google auth", async () => {
@@ -924,7 +1304,7 @@ test("storage options are exposed in system settings and wire connection tests f
   assert.match(storageControllerSource, /export async function testS3StorageSetting\(req, res\)/);
   assert.match(storageControllerSource, /export async function getAzureBlobStorageSetting\(req, res\)/);
   assert.match(storageControllerSource, /export async function testAzureBlobStorageSetting\(req, res\)/);
-  assert.match(uiSource, /Storage Options/);
+  assert.match(uiSource, /STORAGE_PROVIDER_DEFS\.map/);
   assert.match(uiConfigSource, /SCP \/ SFTP/);
   assert.match(uiConfigSource, /Google Cloud Storage/);
   assert.match(uiConfigSource, /Amazon S3/);

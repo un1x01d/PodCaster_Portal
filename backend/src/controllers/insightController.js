@@ -3,7 +3,7 @@ import { query } from "../config/db.js";
 import { isEnglishLocale, normalizeLocale, translateDashboardCards } from "../utils/dashboardLocalization.js";
 import { checkSheetAccess, hasReportSourceOwnerAccess, loadSheetPermissionSets } from "../utils/authorization.js";
 import { synthesizeChatAudioBuffer } from "./chatController.js";
-import { loadAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
+import { isAiGloballyDisabled, loadAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
 import { buildChatCompletionRequestBody, extractOpenAiAssistantText, minCompletionTokensForModel } from "../utils/openAiCompat.js";
 
 const INSIGHT_MAX_ROWS = Number.parseInt(process.env.INSIGHT_MAX_ROWS || "300000", 10);
@@ -191,6 +191,13 @@ function insightCardTextSignature(cards = []) {
 async function localizeInsightCards({ sheetId, locale, cards, context, cacheKey, forceRefresh = false }) {
   if (isEnglishLocale(locale)) return { cards, localized: false, locale: normalizeLocale(locale), source: "english" };
   const normalizedLocale = normalizeLocale(locale);
+  const runtime = await loadAiRuntimeSettings(null).catch(() => ({}));
+  if (isAiGloballyDisabled(runtime)) {
+    return { cards: cards || [], localized: false, locale: normalizedLocale, source: "global_ai_disabled" };
+  }
+  if (runtime?.dashboardTranslationEnabled !== true) {
+    return { cards: cards || [], localized: false, locale: normalizedLocale, source: "disabled" };
+  }
   const translationCacheKey = makeInsightTranslationCacheKey({ cacheKey, locale: normalizedLocale, context });
   const settings = await loadInsightTranslationCacheSettings();
   await ensureInsightTranslationCacheSchema();
@@ -348,6 +355,8 @@ async function callInsightRag({ metricCol, dateCol, categoryCol, series, categor
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return null;
   const runtime = await loadAiRuntimeSettings(null);
+  if (isAiGloballyDisabled(runtime)) return null;
+  if (runtime?.insightAiEnabled !== true) return null;
   const maxSeriesPoints = Number(runtime?.insightAiMaxSeriesPoints || INSIGHT_AI_MAX_SERIES_POINTS);
   const maxPromptChars = Number(runtime?.insightAiMaxPromptChars || INSIGHT_AI_MAX_PROMPT_CHARS);
   const baseUrl = String(runtime?.openaiBaseUrl || OPENAI_BASE_URL).replace(/\/+$/, "");
@@ -1569,6 +1578,8 @@ export async function getInsightCardAudio(req, res) {
   const narrationText = buildInsightNarrationText({ title, bullets });
   if (!narrationText) return res.status(400).json({ error: "missing_narration_text" });
   const runtime = await loadAiRuntimeSettings(null);
+  if (isAiGloballyDisabled(runtime)) return res.status(403).json({ error: "global_ai_disabled" });
+  if (runtime?.chatAudioEnabled !== true) return res.status(403).json({ error: "chat_audio_disabled" });
   const maxChars = Number(runtime?.chatAudioMaxChars || INSIGHT_AUDIO_MAX_CHARS);
   if (narrationText.length > maxChars) {
     return res.status(413).json({ error: "text_too_large", maxChars });

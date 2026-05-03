@@ -584,6 +584,7 @@ export default function App() {
   const [uploadProgressPercent, setUploadProgressPercent] = useState(0);
   const [uploadProgressPhase, setUploadProgressPhase] = useState("uploading");
   const [uploadProgressError, setUploadProgressError] = useState("");
+  const [businessClassificationPrompt, setBusinessClassificationPrompt] = useState(null);
 
   // My files (sheet selection)
   const [myFiles, setMyFiles] = useState([]);
@@ -867,20 +868,21 @@ export default function App() {
 
   /* -------- Computed: Pivot -------- */
   const { pivotRows, pivotHeaders, pivotSeriesKeys, pieData } = React.useMemo(() => {
-    if (!pivotOn || !pivotRowKey || !pivotValKey || !sortedData.length) {
+    const isCountAgg = pivotAgg === "count" || pivotAgg === "Count";
+    if (!pivotOn || !pivotRowKey || (!isCountAgg && !pivotValKey) || !sortedData.length) {
       return { pivotRows: [], pivotHeaders: [], pivotSeriesKeys: [], pieData: [] };
     }
 
     const rowMap = {};
+    const rowTotals = {};
     const dynCols = new Set();
-    const cKey = pivotColKey || "Total";
 
     sortedData.forEach((row) => {
       const rVal = row[pivotRowKey] ?? "(blank)";
       const cVal = pivotColKey ? (row[pivotColKey] ?? "(blank)") : "Total";
 
       let val = 0;
-      if (pivotAgg === "count" || pivotAgg === "Count") {
+      if (isCountAgg) {
         val = 1;
       } else {
         val = parseNum(row[pivotValKey]);
@@ -888,9 +890,12 @@ export default function App() {
 
       if (!rowMap[rVal]) rowMap[rVal] = {};
       if (!rowMap[rVal][cVal]) rowMap[rVal][cVal] = { sum: 0, count: 0 };
+      if (!rowTotals[rVal]) rowTotals[rVal] = { sum: 0, count: 0 };
 
       rowMap[rVal][cVal].sum += val;
       rowMap[rVal][cVal].count += 1;
+      rowTotals[rVal].sum += val;
+      rowTotals[rVal].count += 1;
       dynCols.add(cVal);
     });
 
@@ -914,12 +919,15 @@ export default function App() {
       return obj;
     });
 
-    const pData = [];
-    result.slice(0, parseInt(pieTopN) || 10).forEach(r => {
-      let sum = 0;
-      sortedDynCols.forEach(c => sum += (r[c] || 0));
-      pData.push({ name: r[pivotRowKey], value: sum });
-    });
+    const pData = Object.entries(rowTotals)
+      .map(([name, entry]) => ({
+        name,
+        value: (pivotAgg === "Average" || pivotAgg === "avg")
+          ? (entry.count > 0 ? entry.sum / entry.count : 0)
+          : entry.sum,
+      }))
+      .sort((a, b) => Math.abs(b.value || 0) - Math.abs(a.value || 0))
+      .slice(0, parseInt(pieTopN, 10) || 10);
 
     return {
       pivotRows: result,
@@ -1490,6 +1498,40 @@ export default function App() {
       });
   }, [API, token, user]);
 
+  const maybePromptBusinessClassification = React.useCallback((payload) => {
+    const classification = payload?.business_classification;
+    const sheetIdentifier = payload?.sheetId || payload?.sheet_id;
+    const businessType = String(classification?.businessType || classification?.business_type || "").trim();
+    const status = String(classification?.status || payload?.business_classification_status || "").trim().toLowerCase();
+    if (!sheetIdentifier || !businessType || classification?.isBusinessData !== true || status !== "pending") return;
+    setBusinessClassificationPrompt({
+      sheetId: sheetIdentifier,
+      businessType,
+      confidence: Number(classification?.confidence || 0),
+      signals: Array.isArray(classification?.signals) ? classification.signals.slice(0, 4) : [],
+    });
+  }, []);
+
+  const answerBusinessClassificationPrompt = React.useCallback(async (confirmed) => {
+    const prompt = businessClassificationPrompt;
+    if (!prompt?.sheetId) return;
+    try {
+      await axios.patch(`${API}/sheets/${prompt.sheetId}/business-classification`, { confirmed }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setMyFiles((prev) => (prev || []).map((file) => (
+        String(file.id) === String(prompt.sheetId)
+          ? { ...file, business_classification_status: confirmed ? "confirmed" : "rejected" }
+          : file
+      )));
+    } catch (e) {
+      console.error("business classification confirmation failed", e);
+      alert(e?.response?.data?.error || "Failed to save business type confirmation");
+    } finally {
+      setBusinessClassificationPrompt(null);
+    }
+  }, [API, businessClassificationPrompt, token]);
+
   const handleUpload = async (uploadFile, displayName, reportSourceId = "", newReportSourceName = "", fileLabel = "") => {
     if (!uploadFile || !String(displayName || "").trim()) return;
     if (!reportSourceId && !String(newReportSourceName || "").trim()) return;
@@ -1565,6 +1607,7 @@ export default function App() {
           localStorage.setItem("activeTab", res.data.tabs[0]);
         }
         loadData(res.data.sheetId);
+        maybePromptBusinessClassification(res.data);
         // Refresh my files too
         if (token) {
           axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } })
@@ -1631,6 +1674,7 @@ export default function App() {
           localStorage.setItem("activeTab", res.data.tabs[0]);
         }
         loadData(res.data.sheetId);
+        maybePromptBusinessClassification(res.data);
         if (token) {
           axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } })
             .then(r => setMyFiles(r.data || []));
@@ -1688,6 +1732,7 @@ export default function App() {
           localStorage.setItem("activeTab", res.data.tabs[0]);
         }
         loadData(res.data.sheetId);
+        maybePromptBusinessClassification(res.data);
         if (token) {
           axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } })
             .then(r => setMyFiles(r.data || []));
@@ -1744,6 +1789,7 @@ export default function App() {
           localStorage.setItem("activeTab", res.data.tabs[0]);
         }
         loadData(res.data.sheetId);
+        maybePromptBusinessClassification(res.data);
         if (token) {
           axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } })
             .then(r => setMyFiles(r.data || []));
@@ -1788,7 +1834,6 @@ export default function App() {
     try {
       await axios.delete(`${API}/sheets/${id}`, { headers: { Authorization: `Bearer ${token}` } });
       setMyFiles((prev) => prev.filter((f) => f.id !== id));
-      setFolderFiles((prev) => prev.filter((f) => f.id !== id));
       await refreshReportSources();
 
       if (id === sheetId) {
@@ -2489,6 +2534,7 @@ export default function App() {
                       azureBlobStorageEnabled={azureBlobStorageEnabled}
                       loadData={loadData}
                       refreshReportSources={refreshReportSources}
+                      onBusinessClassificationGuess={maybePromptBusinessClassification}
                       selectedViewId={selectedViewId} setSelectedViewId={setSelectedViewId}
                       views={views} setViews={setViews}
                       setPendingViewName={setPendingViewName}
@@ -2649,6 +2695,46 @@ export default function App() {
                     </button>
                   </div>
                 )}
+              </div>
+            </div>
+          )}
+          {businessClassificationPrompt && (
+            <div className="fixed inset-0 z-[1100] bg-slate-900/55 backdrop-blur-sm flex items-center justify-center px-4">
+              <div className="w-full max-w-md rounded-lg bg-white shadow-2xl border border-slate-200 p-5">
+                <div className="text-sm font-black text-slate-900 tracking-tight">Confirm Sheet Type</div>
+                <div className="mt-2 text-[12px] font-semibold text-slate-600">
+                  Is this sheet for <span className="text-slate-950">{businessClassificationPrompt.businessType}</span>?
+                </div>
+                {businessClassificationPrompt.confidence > 0 && (
+                  <div className="mt-1 text-[10px] font-semibold text-slate-500">
+                    Confidence: {Math.round(Math.max(0, Math.min(1, businessClassificationPrompt.confidence)) * 100)}%
+                  </div>
+                )}
+                {businessClassificationPrompt.signals?.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-1">
+                    {businessClassificationPrompt.signals.map((signal) => (
+                      <span key={signal} className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-semibold text-slate-600">
+                        {signal}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <div className="mt-5 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => answerBusinessClassificationPrompt(false)}
+                    className="rounded-md border border-slate-300 bg-white px-3 py-2 text-[11px] font-bold text-slate-700 hover:bg-slate-50"
+                  >
+                    No
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => answerBusinessClassificationPrompt(true)}
+                    className="rounded-md bg-slate-900 px-3 py-2 text-[11px] font-bold text-white hover:bg-slate-800"
+                  >
+                    Yes
+                  </button>
+                </div>
               </div>
             </div>
           )}

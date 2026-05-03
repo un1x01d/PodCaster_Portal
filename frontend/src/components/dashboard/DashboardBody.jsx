@@ -55,6 +55,7 @@ export default function DashboardBody(props) {
         azureBlobStorageEnabled,
         loadData,
         refreshReportSources = () => {},
+        onBusinessClassificationGuess = () => {},
         selectedViewId,
         setSelectedViewId,
         views,
@@ -699,6 +700,7 @@ export default function DashboardBody(props) {
                     localStorage.setItem("activeTab", res.data.tabs[0]);
                 }
                 loadData(res.data.sheetId);
+                onBusinessClassificationGuess(res.data);
                 refreshReportSources();
             }
         } catch (e) {
@@ -707,7 +709,7 @@ export default function DashboardBody(props) {
         } finally {
             closeStoragePicker(provider);
         }
-    }, [closeStoragePicker, loadData, onTabChange, refreshReportSources, setSelectedFileName, setSheetId, setTabs, storagePickers, storageProviderMeta, tabListCacheRef]);
+    }, [closeStoragePicker, loadData, onBusinessClassificationGuess, onTabChange, refreshReportSources, setSelectedFileName, setSheetId, setTabs, storagePickers, storageProviderMeta, tabListCacheRef]);
 
     const activeView = views.find((v) => String(v.id) === String(selectedViewId));
 
@@ -1469,22 +1471,33 @@ export default function DashboardBody(props) {
         );
     }, [reportSources]);
 
+    const getLabelOptionsForSource = React.useCallback((sourceId) => {
+        if (!sourceId) return [];
+        const imports = reportSourceImports?.[String(sourceId)] || [];
+        const labels = [];
+        const seen = new Set();
+        imports.forEach((item) => {
+            const label = String(item?.file_label || "").trim();
+            if (!label) return;
+            const key = label.toLowerCase();
+            if (seen.has(key)) return;
+            seen.add(key);
+            labels.push(label);
+        });
+        return labels.map((label) => ({ value: label, label }));
+    }, [reportSourceImports]);
+
     const labelOptions = React.useMemo(() => {
-        return [];
-    }, []);
+        return getLabelOptionsForSource(selectedReportSourceId);
+    }, [getLabelOptionsForSource, selectedReportSourceId]);
 
     useEffect(() => {
         if (selectedReportSourceId) {
-            // If we have labels, default to the first one.
-            if (labelOptions.length > 1) {
+            if (labelOptions.length > 0) {
                 if (!fileLabel || !labelOptions.some(o => o.value === fileLabel)) {
                     const firstVal = labelOptions[0].value;
-                    if (firstVal !== "__NEW__") {
-                        setFileLabel(firstVal);
-                        setIsNewLabel(false);
-                    } else {
-                        setIsNewLabel(true);
-                    }
+                    setFileLabel(firstVal);
+                    setIsNewLabel(false);
                 }
             } else {
                 setIsNewLabel(true);
@@ -1966,18 +1979,13 @@ export default function DashboardBody(props) {
                                                             panelWidth="100%"
                                                         />
 
-                                                        {selectedReportSourceId && labelOptions.length > 1 && (
+                                                        {selectedReportSourceId && labelOptions.length > 0 && (
                                                             <SearchableSelect
                                                                 options={labelOptions}
-                                                                value={isNewLabel ? "__NEW__" : fileLabel}
+                                                                value={fileLabel}
                                                                 onChange={(e) => {
-                                                                    if (e.target.value === "__NEW__") {
-                                                                        setIsNewLabel(true);
-                                                                        setFileLabel("");
-                                                                    } else {
-                                                                        setIsNewLabel(false);
-                                                                        setFileLabel(e.target.value);
-                                                                    }
+                                                                    setIsNewLabel(false);
+                                                                    setFileLabel(e.target.value);
                                                                 }}
                                                                 placeholder="Select Label"
                                                                 className="w-full"
@@ -1986,7 +1994,7 @@ export default function DashboardBody(props) {
                                                             />
                                                         )}
 
-                                                        {(!selectedReportSourceId || isNewLabel || labelOptions.length <= 1) && (
+                                                        {(!selectedReportSourceId || labelOptions.length === 0) && (
                                                             <input
                                                                 type="text"
                                                                 value={fileLabel}
@@ -2231,25 +2239,20 @@ export default function DashboardBody(props) {
                                 className="w-full border border-slate-300 rounded-md text-xs"
                                 panelWidth="100%"
                             />
-                            {selectedReportSourceId && labelOptions.length > 1 && (
+                            {selectedReportSourceId && labelOptions.length > 0 && (
                                 <SearchableSelect
                                     options={labelOptions}
-                                    value={isNewLabel ? "__NEW__" : fileLabel}
+                                    value={fileLabel}
                                     onChange={(e) => {
-                                        if (e.target.value === "__NEW__") {
-                                            setIsNewLabel(true);
-                                            setFileLabel("");
-                                        } else {
-                                            setIsNewLabel(false);
-                                            setFileLabel(e.target.value);
-                                        }
+                                        setIsNewLabel(false);
+                                        setFileLabel(e.target.value);
                                     }}
                                     placeholder="Select Label"
                                     className="w-full border border-slate-300 rounded-md text-xs"
                                     panelWidth="100%"
                                 />
                             )}
-                            {(!selectedReportSourceId || isNewLabel || labelOptions.length <= 1) && (
+                            {(!selectedReportSourceId || labelOptions.length === 0) && (
                                 <input
                                     type="text"
                                     value={fileLabel}
@@ -2385,25 +2388,20 @@ export default function DashboardBody(props) {
                                 className="w-full border border-slate-300 rounded-md text-xs"
                                 panelWidth="100%"
                             />
-                            {selectedReportSourceId && labelOptions.length > 1 && (
+                            {selectedReportSourceId && labelOptions.length > 0 && (
                                 <SearchableSelect
                                     options={labelOptions}
-                                    value={isNewLabel ? "__NEW__" : fileLabel}
+                                    value={fileLabel}
                                     onChange={(e) => {
-                                        if (e.target.value === "__NEW__") {
-                                            setIsNewLabel(true);
-                                            setFileLabel("");
-                                        } else {
-                                            setIsNewLabel(false);
-                                            setFileLabel(e.target.value);
-                                        }
+                                        setIsNewLabel(false);
+                                        setFileLabel(e.target.value);
                                     }}
                                     placeholder="Select Label"
                                     className="w-full border border-slate-300 rounded-md text-xs"
                                     panelWidth="100%"
                                 />
                             )}
-                            {(!selectedReportSourceId || isNewLabel || labelOptions.length <= 1) && (
+                            {(!selectedReportSourceId || labelOptions.length === 0) && (
                                 <input
                                     type="text"
                                     value={fileLabel}
@@ -2538,25 +2536,20 @@ export default function DashboardBody(props) {
                                 className="w-full border border-slate-300 rounded-md text-xs"
                                 panelWidth="100%"
                             />
-                            {selectedReportSourceId && labelOptions.length > 1 && (
+                            {selectedReportSourceId && labelOptions.length > 0 && (
                                 <SearchableSelect
                                     options={labelOptions}
-                                    value={isNewLabel ? "__NEW__" : fileLabel}
+                                    value={fileLabel}
                                     onChange={(e) => {
-                                        if (e.target.value === "__NEW__") {
-                                            setIsNewLabel(true);
-                                            setFileLabel("");
-                                        } else {
-                                            setIsNewLabel(false);
-                                            setFileLabel(e.target.value);
-                                        }
+                                        setIsNewLabel(false);
+                                        setFileLabel(e.target.value);
                                     }}
                                     placeholder="Select Label"
                                     className="w-full border border-slate-300 rounded-md text-xs"
                                     panelWidth="100%"
                                 />
                             )}
-                            {(!selectedReportSourceId || isNewLabel || labelOptions.length <= 1) && (
+                            {(!selectedReportSourceId || labelOptions.length === 0) && (
                                 <input
                                     type="text"
                                     value={fileLabel}
@@ -2626,8 +2619,12 @@ export default function DashboardBody(props) {
                 onClose={() => closeStoragePicker("sftp_storage")}
                 reportSourceOptions={reportSourceOptions}
                 selectedReportSourceId={storagePickers.sftp_storage.selectedReportSourceId}
-                onChangeReportSourceId={(e) => setStoragePicker("sftp_storage", { selectedReportSourceId: e.target.value })}
-                labelOptions={labelOptions}
+                onChangeReportSourceId={(e) => {
+                    const nextId = e.target.value;
+                    const nextLabels = getLabelOptionsForSource(nextId);
+                    setStoragePicker("sftp_storage", { selectedReportSourceId: nextId, fileLabel: nextLabels[0]?.value || "", isNewLabel: nextLabels.length === 0 });
+                }}
+                labelOptions={getLabelOptionsForSource(storagePickers.sftp_storage.selectedReportSourceId)}
                 fileLabel={storagePickers.sftp_storage.fileLabel}
                 onChangeFileLabel={(value) => setStoragePicker("sftp_storage", { fileLabel: value })}
                 isNewLabel={storagePickers.sftp_storage.isNewLabel}
@@ -2650,8 +2647,12 @@ export default function DashboardBody(props) {
                 onClose={() => closeStoragePicker("gcs_storage")}
                 reportSourceOptions={reportSourceOptions}
                 selectedReportSourceId={storagePickers.gcs_storage.selectedReportSourceId}
-                onChangeReportSourceId={(e) => setStoragePicker("gcs_storage", { selectedReportSourceId: e.target.value })}
-                labelOptions={labelOptions}
+                onChangeReportSourceId={(e) => {
+                    const nextId = e.target.value;
+                    const nextLabels = getLabelOptionsForSource(nextId);
+                    setStoragePicker("gcs_storage", { selectedReportSourceId: nextId, fileLabel: nextLabels[0]?.value || "", isNewLabel: nextLabels.length === 0 });
+                }}
+                labelOptions={getLabelOptionsForSource(storagePickers.gcs_storage.selectedReportSourceId)}
                 fileLabel={storagePickers.gcs_storage.fileLabel}
                 onChangeFileLabel={(value) => setStoragePicker("gcs_storage", { fileLabel: value })}
                 isNewLabel={storagePickers.gcs_storage.isNewLabel}
@@ -2674,8 +2675,12 @@ export default function DashboardBody(props) {
                 onClose={() => closeStoragePicker("s3_storage")}
                 reportSourceOptions={reportSourceOptions}
                 selectedReportSourceId={storagePickers.s3_storage.selectedReportSourceId}
-                onChangeReportSourceId={(e) => setStoragePicker("s3_storage", { selectedReportSourceId: e.target.value })}
-                labelOptions={labelOptions}
+                onChangeReportSourceId={(e) => {
+                    const nextId = e.target.value;
+                    const nextLabels = getLabelOptionsForSource(nextId);
+                    setStoragePicker("s3_storage", { selectedReportSourceId: nextId, fileLabel: nextLabels[0]?.value || "", isNewLabel: nextLabels.length === 0 });
+                }}
+                labelOptions={getLabelOptionsForSource(storagePickers.s3_storage.selectedReportSourceId)}
                 fileLabel={storagePickers.s3_storage.fileLabel}
                 onChangeFileLabel={(value) => setStoragePicker("s3_storage", { fileLabel: value })}
                 isNewLabel={storagePickers.s3_storage.isNewLabel}
@@ -2698,8 +2703,12 @@ export default function DashboardBody(props) {
                 onClose={() => closeStoragePicker("azure_blob_storage")}
                 reportSourceOptions={reportSourceOptions}
                 selectedReportSourceId={storagePickers.azure_blob_storage.selectedReportSourceId}
-                onChangeReportSourceId={(e) => setStoragePicker("azure_blob_storage", { selectedReportSourceId: e.target.value })}
-                labelOptions={labelOptions}
+                onChangeReportSourceId={(e) => {
+                    const nextId = e.target.value;
+                    const nextLabels = getLabelOptionsForSource(nextId);
+                    setStoragePicker("azure_blob_storage", { selectedReportSourceId: nextId, fileLabel: nextLabels[0]?.value || "", isNewLabel: nextLabels.length === 0 });
+                }}
+                labelOptions={getLabelOptionsForSource(storagePickers.azure_blob_storage.selectedReportSourceId)}
                 fileLabel={storagePickers.azure_blob_storage.fileLabel}
                 onChangeFileLabel={(value) => setStoragePicker("azure_blob_storage", { fileLabel: value })}
                 isNewLabel={storagePickers.azure_blob_storage.isNewLabel}

@@ -2,6 +2,7 @@ import pg from "pg";
 import { AsyncLocalStorage } from "async_hooks";
 import { encryptSettingValue } from "../utils/settingsCrypto.js";
 import { hashPassword } from "../utils/security.js";
+import { DEFAULT_SEMANTIC_PROFILE_RULES, SEMANTIC_PROFILE_RULES_SETTINGS_KEY } from "../utils/sheetSemanticProfile.js";
 const { Pool } = pg;
 
 const tenantDbContext = new AsyncLocalStorage();
@@ -674,6 +675,13 @@ export async function initDb(targetPool = pool, options = {}) {
   await db.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS display_name TEXT;`);
   await db.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS report_source_id INT;`);
   await db.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS source_version INT;`);
+  await db.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS business_classification JSONB NOT NULL DEFAULT '{}'::jsonb;`);
+  await db.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS business_classification_model TEXT;`);
+  await db.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS business_classification_status TEXT NOT NULL DEFAULT 'none';`);
+  await db.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS business_classification_updated_at TIMESTAMP;`);
+  await db.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS business_classification_confirmed_at TIMESTAMP;`);
+  await db.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS semantic_profile JSONB NOT NULL DEFAULT '{}'::jsonb;`);
+  await db.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS semantic_profile_updated_at TIMESTAMP;`);
   await db.query(`CREATE INDEX IF NOT EXISTS idx_sheets_report_source_id ON sheets(report_source_id);`);
   await db.query(`
     DO $$
@@ -989,6 +997,12 @@ export async function initDb(targetPool = pool, options = {}) {
     VALUES ('onedrive_integration', '{"enabled": true}'::jsonb, CURRENT_TIMESTAMP)
     ON CONFLICT (key) DO NOTHING;
   `);
+  await db.query(
+    `INSERT INTO app_settings (key, value, updated_at)
+     VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+     ON CONFLICT (key) DO NOTHING;`,
+    [SEMANTIC_PROFILE_RULES_SETTINGS_KEY, JSON.stringify(DEFAULT_SEMANTIC_PROFILE_RULES)]
+  );
   await db.query(`
     INSERT INTO app_settings (key, value, updated_at)
     VALUES (

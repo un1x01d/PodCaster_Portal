@@ -1,4 +1,4 @@
-import { loadAiRuntimeSettings } from "./aiRuntimeSettings.js";
+import { isAiGloballyDisabled, loadAiRuntimeSettings } from "./aiRuntimeSettings.js";
 import { buildChatCompletionRequestBody, extractOpenAiAssistantText, minCompletionTokensForModel } from "./openAiCompat.js";
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
 const OPENAI_MODEL = process.env.OPENAI_MODEL;
@@ -164,6 +164,12 @@ async function callOpenAITranslation({ locale, items, context }) {
   if (inFlight) return inFlight.then((result) => result.map((item) => ({ ...item })));
 
   const runtime = await loadAiRuntimeSettings(null);
+  if (isAiGloballyDisabled(runtime)) {
+    return items.map((item) => ({ key: item.key, text: item.text }));
+  }
+  if (runtime?.dashboardTranslationEnabled !== true) {
+    return items.map((item) => ({ key: item.key, text: item.text }));
+  }
   const model = String(runtime?.translationOpenaiModel || runtime?.openaiModel || OPENAI_MODEL);
   const baseUrl = String(runtime?.openaiBaseUrl || OPENAI_BASE_URL).replace(/\/+$/, "");
   const timeoutMs = Number(runtime?.openaiTimeoutMs || OPENAI_TIMEOUT_MS);
