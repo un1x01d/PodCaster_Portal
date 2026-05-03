@@ -1,69 +1,29 @@
 import { query } from "../config/db.js";
 import { normalizeGroupEntitlements, groupHasFeature } from "./entitlements.js";
 
-const OPENAI_INPUT_COST_PER_1M = Number.parseFloat(process.env.OPENAI_INPUT_COST_PER_1M || "0.40");
-const OPENAI_OUTPUT_COST_PER_1M = Number.parseFloat(process.env.OPENAI_OUTPUT_COST_PER_1M || "1.60");
-const OPENAI_TTS_1_COST_PER_1M_CHARS = Number.parseFloat(process.env.OPENAI_TTS_1_COST_PER_1M_CHARS || "15");
-const OPENAI_TTS_1_HD_COST_PER_1M_CHARS = Number.parseFloat(process.env.OPENAI_TTS_1_HD_COST_PER_1M_CHARS || "30");
+const OPENAI_INPUT_COST_PER_1M = Number.parseFloat(process.env.OPENAI_INPUT_COST_PER_1M || "0.10");
+const OPENAI_OUTPUT_COST_PER_1M = Number.parseFloat(process.env.OPENAI_OUTPUT_COST_PER_1M || "0.40");
 
 function currentPeriodMonth(date = new Date()) {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
-export function estimateOpenAiCostUsd(promptTokens = 0, completionTokens = 0) {
+export function estimateOpenAiCostUsd(promptTokens = 0, completionTokens = 0, rates = null) {
   const inputTokens = Number(promptTokens || 0);
   const outputTokens = Number(completionTokens || 0);
-  const cost = ((inputTokens / 1_000_000) * OPENAI_INPUT_COST_PER_1M)
-    + ((outputTokens / 1_000_000) * OPENAI_OUTPUT_COST_PER_1M);
+  const inputRate = Number.parseFloat(String(rates?.inputPer1M ?? OPENAI_INPUT_COST_PER_1M));
+  const outputRate = Number.parseFloat(String(rates?.outputPer1M ?? OPENAI_OUTPUT_COST_PER_1M));
+  const safeInputRate = Number.isFinite(inputRate) && inputRate >= 0 ? inputRate : OPENAI_INPUT_COST_PER_1M;
+  const safeOutputRate = Number.isFinite(outputRate) && outputRate >= 0 ? outputRate : OPENAI_OUTPUT_COST_PER_1M;
+  const cost = ((inputTokens / 1_000_000) * safeInputRate)
+    + ((outputTokens / 1_000_000) * safeOutputRate);
   return Number.isFinite(cost) ? cost : 0;
-}
-
-export function estimateAiCostUsd({ provider = "openai", model = null, promptTokens = 0, completionTokens = 0, textChars = 0 } = {}) {
-  const normalizedProvider = String(provider || "openai").toLowerCase();
-  const normalizedModel = String(model || "").toLowerCase();
-  if (normalizedProvider !== "openai") return 0;
-
-  if (normalizedModel.startsWith("tts-1-hd")) {
-    const chars = Math.max(0, Number(textChars || 0));
-    const cost = (chars / 1_000_000) * OPENAI_TTS_1_HD_COST_PER_1M_CHARS;
-    return Number.isFinite(cost) ? cost : 0;
-  }
-  if (normalizedModel.startsWith("tts-1")) {
-    const chars = Math.max(0, Number(textChars || 0));
-    const cost = (chars / 1_000_000) * OPENAI_TTS_1_COST_PER_1M_CHARS;
-    return Number.isFinite(cost) ? cost : 0;
-  }
-
-  return estimateOpenAiCostUsd(promptTokens, completionTokens);
 }
 
 function quotaNumber(value) {
   if (value === null || value === undefined || value === "") return null;
   const n = Number(value);
   return Number.isFinite(n) && n > 0 ? n : null;
-}
-
-function isPlatformAdminLike(user) {
-  const role = String(user?.role || "").trim().toLowerCase();
-  return role === "admin" || role === "super_admin" || role === "superadmin" || String(user?.is_admin || "").toLowerCase() === "true";
-}
-
-async function resolveFallbackGroupForAdmin(user) {
-  if (!isPlatformAdminLike(user)) return null;
-  const userId = Number.parseInt(String(user?.id || ""), 10);
-  if (Number.isInteger(userId) && userId > 0) {
-    const ownedRows = await query(
-      `SELECT ug.group_id
-         FROM user_groups ug
-        WHERE ug.user_id = $1
-        ORDER BY ug.is_admin DESC, ug.group_id ASC
-        LIMIT 1`,
-      [userId]
-    );
-    if (ownedRows?.[0]?.group_id) return ownedRows[0].group_id;
-  }
-  const anyRows = await query("SELECT id FROM groups ORDER BY id ASC LIMIT 1", []);
-  return anyRows?.[0]?.id || null;
 }
 
 async function resolveCustomerGroupForSheet(sheetId, user) {
@@ -103,20 +63,6 @@ async function resolveCustomerGroupForSheet(sheetId, user) {
   return rows?.[0]?.group_id || null;
 }
 
-async function resolveCustomerGroupForUser(user) {
-  const userId = Number.parseInt(String(user?.id || ""), 10);
-  if (!Number.isInteger(userId) || userId <= 0) return null;
-  const rows = await query(
-    `SELECT group_id
-       FROM user_groups
-      WHERE user_id = $1
-      ORDER BY is_admin DESC, group_id ASC
-      LIMIT 1`,
-    [userId]
-  );
-  return rows?.[0]?.group_id || null;
-}
-
 async function loadCustomerQuota(groupId) {
   if (!groupId) return null;
   const rows = await query("SELECT id, name, entitlements FROM groups WHERE id = $1", [groupId]);
@@ -132,8 +78,7 @@ async function loadCustomerQuota(groupId) {
 }
 
 export async function reserveAiQueryForSheet({ sheetId, user, kind = "chat_query" }) {
-  let groupId = await resolveCustomerGroupForSheet(sheetId, user);
-  if (!groupId) groupId = await resolveFallbackGroupForAdmin(user);
+  const groupId = await resolveCustomerGroupForSheet(sheetId, user);
   if (!groupId) return { groupId: null, periodMonth: currentPeriodMonth(), enforced: false };
 
   const quota = await loadCustomerQuota(groupId);
@@ -173,12 +118,34 @@ export async function reserveAiQueryForSheet({ sheetId, user, kind = "chat_query
     throw err;
   }
 
-  return { groupId, periodMonth, enforced: true, quota, kind };
+  await query(
+    `UPDATE ai_usage_monthly
+        SET query_count = query_count + 1,
+            last_kind = $3,
+            updated_at = CURRENT_TIMESTAMP
+      WHERE group_id = $1 AND period_month = $2`,
+    [groupId, periodMonth, kind]
+  );
+
+  return { groupId, periodMonth, enforced: true, quota };
 }
 
-export async function reserveAiQueryForUser({ user, kind = "generic_ai" }) {
-  let groupId = await resolveCustomerGroupForUser(user);
-  if (!groupId) groupId = await resolveFallbackGroupForAdmin(user);
+export async function reserveAiQueryForUser({ user, kind = "dashboard_translate" }) {
+  const userId = Number(user?.id || 0);
+  if (!Number.isInteger(userId) || userId <= 0) return { groupId: null, periodMonth: currentPeriodMonth(), enforced: false };
+  if (String(user?.role || "").toLowerCase() === "admin") {
+    return { groupId: null, periodMonth: currentPeriodMonth(), enforced: false };
+  }
+
+  const membershipRows = await query(
+    `SELECT group_id
+       FROM user_groups
+      WHERE user_id = $1
+      ORDER BY is_admin DESC, group_id ASC
+      LIMIT 1`,
+    [userId]
+  );
+  const groupId = Number(membershipRows?.[0]?.group_id || 0) || null;
   if (!groupId) return { groupId: null, periodMonth: currentPeriodMonth(), enforced: false };
 
   const quota = await loadCustomerQuota(groupId);
@@ -218,22 +185,29 @@ export async function reserveAiQueryForUser({ user, kind = "generic_ai" }) {
     throw err;
   }
 
-  return { groupId, periodMonth, enforced: true, quota, kind };
+  await query(
+    `UPDATE ai_usage_monthly
+        SET query_count = query_count + 1,
+            last_kind = $3,
+            updated_at = CURRENT_TIMESTAMP
+      WHERE group_id = $1 AND period_month = $2`,
+    [groupId, periodMonth, kind]
+  );
+
+  return { groupId, periodMonth, enforced: true, quota };
 }
 
-export async function recordAiUsage({ reservation, provider = "openai", model = null, promptTokens = 0, completionTokens = 0, estimatedCostUsd = null, textChars = 0 }) {
+export async function recordAiUsage({ reservation, provider = "openai", model = null, promptTokens = 0, completionTokens = 0, estimatedCostUsd = null }) {
   if (!reservation?.groupId) return;
   const inputTokens = Number(promptTokens || 0);
   const outputTokens = Number(completionTokens || 0);
   const cost = estimatedCostUsd === null || estimatedCostUsd === undefined
-    ? estimateAiCostUsd({ provider, model, promptTokens: inputTokens, completionTokens: outputTokens, textChars })
+    ? estimateOpenAiCostUsd(inputTokens, outputTokens)
     : Number(estimatedCostUsd || 0);
   await query(
     `UPDATE ai_usage_monthly
         SET provider = $3,
             model = $4,
-            query_count = query_count + 1,
-            last_kind = COALESCE($8, last_kind),
             prompt_tokens = prompt_tokens + $5,
             completion_tokens = completion_tokens + $6,
             estimated_cost_usd = estimated_cost_usd + $7,
@@ -247,7 +221,6 @@ export async function recordAiUsage({ reservation, provider = "openai", model = 
       inputTokens,
       outputTokens,
       Number.isFinite(cost) ? cost : 0,
-      reservation.kind || null,
     ]
   );
 }

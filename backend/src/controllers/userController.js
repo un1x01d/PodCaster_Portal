@@ -17,6 +17,8 @@ import { loadInvitationPolicy, saveInvitationPolicy, computeInvitationExpiryDate
 import { DLP_SETTINGS_KEY, normalizeDlpSettings } from "../utils/dlp.js";
 import { isPlatformAdminUser } from "../utils/authorization.js";
 import { normalize2faDigits, normalize2faPeriod } from "../utils/twoFactor.js";
+import { AI_FEATURE_TOGGLES_SETTINGS_KEY, normalizeAiFeatureToggles, resolveEffectiveAiFeaturesForUser } from "../utils/aiFeatureToggles.js";
+import { loadAiRuntimeSettings, saveAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
 import { randomBytes, createHash } from "crypto";
 
 const EXPOSE_TEMP_PASSWORDS = process.env.EXPOSE_TEMP_PASSWORDS
@@ -140,12 +142,23 @@ export async function getAiUsageSummary(req, res) {
     if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
     const periodMonth = String(req.query?.periodMonth || "").trim() || new Date().toISOString().slice(0, 7);
     const rows = await query(
-        `SELECT a.group_id, g.name AS group_name, a.period_month, a.query_count,
-                a.prompt_tokens, a.completion_tokens, a.estimated_cost_usd, a.provider, a.model, a.updated_at
-           FROM ai_usage_monthly a
-           JOIN groups g ON g.id = a.group_id
-          WHERE a.period_month = $1
-          ORDER BY a.estimated_cost_usd DESC, a.query_count DESC`,
+        `SELECT g.id AS group_id,
+                g.name AS group_name,
+                $1::text AS period_month,
+                COALESCE(a.query_count, 0) AS query_count,
+                COALESCE(a.prompt_tokens, 0) AS prompt_tokens,
+                COALESCE(a.completion_tokens, 0) AS completion_tokens,
+                COALESCE(a.estimated_cost_usd, 0) AS estimated_cost_usd,
+                a.provider,
+                a.model,
+                a.updated_at
+           FROM groups g
+           LEFT JOIN ai_usage_monthly a
+                  ON a.group_id = g.id
+                 AND a.period_month = $1
+          ORDER BY COALESCE(a.estimated_cost_usd, 0) DESC,
+                   COALESCE(a.query_count, 0) DESC,
+                   g.name ASC`,
         [periodMonth]
     );
     const totals = rows.reduce((acc, row) => {
@@ -1835,6 +1848,66 @@ export async function setInsightTranslationCacheSetting(req, res) {
         metadata: next,
     });
     return res.json({ success: true, ...next });
+}
+
+export async function getAiFeatureTogglesSetting(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [AI_FEATURE_TOGGLES_SETTINGS_KEY]);
+    const current = normalizeAiFeatureToggles(rows?.[0]?.value || {});
+    return res.json(current);
+}
+
+export async function setAiFeatureTogglesSetting(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    assertAllowedKeys(req.body || {}, ["chatEnabled", "dashboardTranslationEnabled", "chatAudioEnabled"]);
+    const next = normalizeAiFeatureToggles(req.body || {});
+    await query(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+         ON CONFLICT (key)
+         DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+        [AI_FEATURE_TOGGLES_SETTINGS_KEY, JSON.stringify(next)]
+    );
+    await writeAuditLog({
+        req,
+        action: "ai_feature_toggles.settings_updated",
+        resourceType: "app_settings",
+        resourceId: AI_FEATURE_TOGGLES_SETTINGS_KEY,
+        metadata: next,
+    });
+    return res.json({ success: true, ...next });
+}
+
+export async function getMyAiFeatureTogglesSetting(req, res) {
+    const effective = await resolveEffectiveAiFeaturesForUser(req.user);
+    return res.json(effective);
+}
+
+export async function getAiRuntimeSetting(req, res) {
+    try {
+        const scope = await resolveScopedGroupForIntegrationSettings(req);
+        const current = await loadAiRuntimeSettings(scope.groupId || null);
+        return res.json({ ...current, groupId: scope.groupId || null });
+    } catch (err) {
+        return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
+}
+
+export async function setAiRuntimeSetting(req, res) {
+    try {
+        const scope = await resolveScopedGroupForIntegrationSettings(req);
+        const next = await saveAiRuntimeSettings(scope.groupId || null, req.body || {});
+        await writeAuditLog({
+            req,
+            action: "ai_runtime.settings_updated",
+            resourceType: "app_settings",
+            resourceId: `ai_runtime_settings:${scope.groupId || "global"}`,
+            metadata: { ...next, groupId: scope.groupId || null },
+        });
+        return res.json({ success: true, ...next, groupId: scope.groupId || null });
+    } catch (err) {
+        return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    }
 }
 
 export async function getMetricsExposureSetting(req, res) {

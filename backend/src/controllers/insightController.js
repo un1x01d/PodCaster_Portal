@@ -3,10 +3,12 @@ import { query } from "../config/db.js";
 import { isEnglishLocale, normalizeLocale, translateDashboardCards } from "../utils/dashboardLocalization.js";
 import { checkSheetAccess, hasReportSourceOwnerAccess, loadSheetPermissionSets } from "../utils/authorization.js";
 import { synthesizeChatAudioBuffer } from "./chatController.js";
+import { loadAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
 
 const INSIGHT_MAX_ROWS = Number.parseInt(process.env.INSIGHT_MAX_ROWS || "300000", 10);
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+const OPENAI_MODEL = process.env.OPENAI_MODEL;
+if (!OPENAI_MODEL) throw new Error("OPENAI_MODEL is required");
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10);
 // Compatibility caps retained for regression guards.
 const INSIGHT_AI_MAX_SERIES_POINTS = Number.parseInt(process.env.INSIGHT_AI_MAX_SERIES_POINTS || "18", 10);
@@ -333,7 +335,11 @@ function buildLegacyInsightPromptEnvelope({ metricCol, dateCol, series, context 
 async function callInsightRag({ metricCol, dateCol, categoryCol, series, categoryDeltas = [], attentionTitles = [], locale = "en" }) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return null;
-  const compactSeries = compactInsightSeries(series, 24);
+  const runtime = await loadAiRuntimeSettings(null);
+  const maxSeriesPoints = Number(runtime?.insightAiMaxSeriesPoints || INSIGHT_AI_MAX_SERIES_POINTS);
+  const maxPromptChars = Number(runtime?.insightAiMaxPromptChars || INSIGHT_AI_MAX_PROMPT_CHARS);
+  const baseUrl = String(runtime?.openaiBaseUrl || OPENAI_BASE_URL).replace(/\/+$/, "");
+  const compactSeries = compactInsightSeries(series, maxSeriesPoints);
   const compactDeltas = (Array.isArray(categoryDeltas) ? categoryDeltas : []).slice(0, 10).map((d) => ({
     key: truncateText(d?.key, 80),
     current: Number(d?.current || 0),
@@ -350,8 +356,8 @@ async function callInsightRag({ metricCol, dateCol, categoryCol, series, categor
     priority_signals: (attentionTitles || []).slice(0, 6).map((t) => truncateText(t, 120)),
   };
   const userContent = JSON.stringify(promptPayload);
-  if (userContent.length > INSIGHT_AI_MAX_PROMPT_CHARS) {
-    console.warn(`[insights] ai rag skipped: prompt_chars=${userContent.length} max=${INSIGHT_AI_MAX_PROMPT_CHARS}`);
+  if (userContent.length > maxPromptChars) {
+    console.warn(`[insights] ai rag skipped: prompt_chars=${userContent.length} max=${maxPromptChars}`);
     return null;
   }
 
@@ -385,18 +391,22 @@ async function callInsightRag({ metricCol, dateCol, categoryCol, series, categor
 
   const system = "You generate deterministic dashboard insights from supplied data only. No invented values.";
   const user = `Return JSON only. Build 3 forecast periods and 3 concise recommendations.\n\n${userContent}`;
+  const model = String(runtime?.openaiModel || OPENAI_MODEL);
+  const timeoutMs = Number(runtime?.openaiTimeoutMs || OPENAI_TIMEOUT_MS);
+  const temperature = Number(runtime?.openaiTemperature);
+  const safeTemperature = Number.isFinite(temperature) ? Math.max(0, Math.min(2, temperature)) : 0.1;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+    const resp = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: OPENAI_MODEL,
-        temperature: 0.1,
+        model,
+        temperature: safeTemperature,
         response_format: { type: "json_schema", json_schema: schema },
         messages: [
           { role: "system", content: system },
@@ -1530,8 +1540,10 @@ export async function getInsightCardAudio(req, res) {
 
   const narrationText = buildInsightNarrationText({ title, bullets });
   if (!narrationText) return res.status(400).json({ error: "missing_narration_text" });
-  if (narrationText.length > INSIGHT_AUDIO_MAX_CHARS) {
-    return res.status(413).json({ error: "text_too_large", maxChars: INSIGHT_AUDIO_MAX_CHARS });
+  const runtime = await loadAiRuntimeSettings(null);
+  const maxChars = Number(runtime?.chatAudioMaxChars || INSIGHT_AUDIO_MAX_CHARS);
+  if (narrationText.length > maxChars) {
+    return res.status(413).json({ error: "text_too_large", maxChars });
   }
 
   const textHash = createHash("sha256").update(narrationText).digest("hex");
@@ -1553,7 +1565,7 @@ export async function getInsightCardAudio(req, res) {
     return res.status(200).send(cachedBytes);
   }
 
-  const audioBuffer = await synthesizeChatAudioBuffer({ text: narrationText, locale });
+  const audioBuffer = await synthesizeChatAudioBuffer({ text: narrationText, locale, runtime });
   if (!audioBuffer?.length) {
     return res.status(502).json({ error: "tts_empty_response" });
   }

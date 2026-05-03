@@ -3,6 +3,9 @@ export const DEFAULT_GROUP_ENTITLEMENTS = {
   maxReportSources: null,
   maxAiQueriesPerMonth: null,
   aiMonthlyBudgetUsd: null,
+  aiChatEnabled: null,
+  aiChatAudioEnabled: null,
+  aiDashboardTranslationEnabled: null,
   maxImportParseMemoryMb: null,
   features: {
     manageUsers: true,
@@ -53,6 +56,14 @@ export function normalizeGroupEntitlements(value = {}) {
       return [key, rawValue === false ? false : !!rawValue];
     })
   );
+  const normalizeNullableBool = (v) => {
+    if (v === null || v === undefined || v === "") return null;
+    if (typeof v === "boolean") return v;
+    const normalized = String(v).trim().toLowerCase();
+    if (["true", "1", "yes", "on", "enabled"].includes(normalized)) return true;
+    if (["false", "0", "no", "off", "disabled"].includes(normalized)) return false;
+    return null;
+  };
   return {
     ...DEFAULT_GROUP_ENTITLEMENTS,
     ...raw,
@@ -68,6 +79,9 @@ export function normalizeGroupEntitlements(value = {}) {
     aiMonthlyBudgetUsd: raw.aiMonthlyBudgetUsd === null || raw.aiMonthlyBudgetUsd === undefined || raw.aiMonthlyBudgetUsd === ""
       ? null
       : Math.max(0.01, Number.parseFloat(raw.aiMonthlyBudgetUsd) || 0.01),
+    aiChatEnabled: normalizeNullableBool(raw.aiChatEnabled),
+    aiChatAudioEnabled: normalizeNullableBool(raw.aiChatAudioEnabled),
+    aiDashboardTranslationEnabled: normalizeNullableBool(raw.aiDashboardTranslationEnabled),
     maxImportParseMemoryMb: raw.maxImportParseMemoryMb === null || raw.maxImportParseMemoryMb === undefined || raw.maxImportParseMemoryMb === ""
       ? null
       : Math.max(64, Number.parseInt(raw.maxImportParseMemoryMb, 10) || 64),

@@ -2,21 +2,22 @@ import { createHash } from "crypto";
 import { query } from "../config/db.js";
 import { isEnglishLocale, normalizeLocale, translateDashboardItems } from "../utils/dashboardLocalization.js";
 import { checkSheetAccess, hasReportSourceOwnerAccess, isPlatformAdminUser, loadSheetPermissionSets } from "../utils/authorization.js";
-import { estimateOpenAiCostUsd, recordAiUsage, reserveAiQueryForSheet, reserveAiQueryForUser } from "../utils/aiQuota.js";
+import { estimateOpenAiCostUsd, recordAiUsage, reserveAiQueryForSheet } from "../utils/aiQuota.js";
+import { loadAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
+import { groupHasFeature } from "../utils/entitlements.js";
 export { checkSheetAccess } from "../utils/authorization.js";
 
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+const OPENAI_MODEL = process.env.OPENAI_MODEL;
+if (!OPENAI_MODEL) throw new Error("OPENAI_MODEL is required");
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10);
 const CHAT_MAX_ROWS = Math.min(100000, Number.parseInt(process.env.CHAT_MAX_ROWS || "50000", 10));
 const CHAT_SQL_AGG_MAX_ROWS = Math.min(300000, Number.parseInt(process.env.CHAT_SQL_AGG_MAX_ROWS || "120000", 10));
 const CHAT_AUDIO_MAX_CHARS = Number.parseInt(process.env.CHAT_AUDIO_MAX_CHARS || "8000", 10);
-const CHAT_AUDIO_SAFE_CHUNK_CHARS = Number.parseInt(process.env.CHAT_AUDIO_SAFE_CHUNK_CHARS || "2500", 10);
-const CHAT_AUDIO_FIRST_CHUNK_CHARS = Number.parseInt(process.env.CHAT_AUDIO_FIRST_CHUNK_CHARS || "420", 10);
 const CHAT_TTS_SETTINGS_KEY = "chat_tts_settings";
 const CHAT_TTS_DEFAULTS = {
   voices: { default: "nova", es: "shimmer", uk: "nova", ru: "nova" },
-  models: { en: "tts-1", default: "tts-1" },
+  models: { en: "tts-1", default: "tts-1-hd" },
   speed: { default: 0.9 },
 };
 
@@ -920,11 +921,11 @@ async function computeDeterministicAnswer(operation, rows, targetColumn, groupBy
   
   // --- Financial Ratio & Analysis Engine (Loaded from DB) ---
   const { ratios } = await loadSemanticBrain();
-  const rowHeaders = Object.keys(rows?.[0] || {});
 
   const matchedRatio = ratios.find((r) => r?.match?.test?.(q));
   if (matchedRatio) {
     const ratioCols = Array.isArray(matchedRatio.cols) ? matchedRatio.cols : [];
+    const rowHeaders = Object.keys(rows?.[0] || {});
     const resolvedCols = await Promise.all(
       ratioCols.map((c) => resolveColumn(rowHeaders, c, rows.slice(0, 10)))
     );
@@ -1456,9 +1457,20 @@ function buildDateFormatHints(headers = [], rows = []) {
   return hints;
 }
 
-async function callOpenAI({ message, schemaProfile, sampleRows, headers, conversationHistory, locale, dateFormatHints }) {
+async function callOpenAI({ message, schemaProfile, sampleRows, headers, conversationHistory, locale, dateFormatHints, maxOutputTokens = 800, runtime = null }) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error("no_api_key");
+  const model = String(runtime?.openaiModel || OPENAI_MODEL);
+  const baseUrl = String(runtime?.openaiBaseUrl || OPENAI_BASE_URL).replace(/\/+$/, "");
+  const timeoutMs = Number(runtime?.openaiTimeoutMs || OPENAI_TIMEOUT_MS);
+  const temperature = Number(runtime?.openaiTemperature);
+  const safeTemperature = Number.isFinite(temperature) ? Math.max(0, Math.min(2, temperature)) : 0.1;
+  const runtimeMaxOutput = Number(runtime?.openaiMaxOutputTokens);
+  const effectiveMaxTokens = Number.isFinite(runtimeMaxOutput)
+    ? Math.min(Math.max(32, runtimeMaxOutput), Math.max(32, Number(maxOutputTokens || 800)))
+    : Number(maxOutputTokens || 800);
+  const inputCostPer1M = Number(runtime?.openaiInputCostPer1M);
+  const outputCostPer1M = Number(runtime?.openaiOutputCostPer1M);
   const promptRows = sanitizePromptRows(sampleRows);
   const promptHistory = sanitizeConversationHistory(conversationHistory);
 
@@ -1544,18 +1556,19 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
   };
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
-  const isReasoningModel = OPENAI_MODEL.startsWith("o");
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const isReasoningModel = model.startsWith("o");
   const startedAt = Date.now();
 
   let resp;
   try {
-    resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+    resp = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: OPENAI_MODEL,
-        temperature: isReasoningModel ? 1 : 0.1,
+        model,
+        temperature: isReasoningModel ? 1 : safeTemperature,
+        max_tokens: effectiveMaxTokens,
         response_format: { type: "json_object" },
         messages: [{ role: "system", content: system }, { role: "user", content: JSON.stringify(userPrompt) }]
       }),
@@ -1579,11 +1592,14 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
   }
   const parsed = JSON.parse(content);
   const validated = validateAiResponseSchemaStrict(parsed);
-  const estimatedCostUsd = estimateOpenAiCostUsd(promptTokens, completionTokens);
+  const estimatedCostUsd = estimateOpenAiCostUsd(promptTokens, completionTokens, {
+    inputPer1M: inputCostPer1M,
+    outputPer1M: outputCostPer1M,
+  });
   console.info("[ai_metrics]", JSON.stringify({
     provider: "openai",
     endpoint: "chat.completions",
-    model: OPENAI_MODEL,
+    model,
     latency_ms: Date.now() - startedAt,
     prompt_tokens: promptTokens,
     completion_tokens: completionTokens,
@@ -1599,7 +1615,7 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
       totalTokens,
       estimatedCostUsd,
       provider: "openai",
-      model: OPENAI_MODEL,
+      model,
     },
   };
 }
@@ -1855,12 +1871,6 @@ function naturalizeNumbersForTTS(text = "", locale = "en") {
     out = out.replace(/\bRevenue\b/gi, "Виторг");
     out = out.replace(/\btab\b/gi, "вкладка");
     out = out.replace(/\$([\d,.\s]+)\b/g, "$1 доларів");
-    out = out
-      .replace(/\s*:\s*/g, ". ")
-      .replace(/\s*=\s*/g, " дорівнює ")
-      .replace(/[()]/g, " ")
-      .replace(/(?<=\d)\s*-\s*(?=\d)/g, " мінус ")
-      .replace(/(?<=\d)\s*\/\s*(?=\d)/g, " поділити на ");
   } else if (lang === "ru") {
     // Keep percentage decimals explicit for speech (including sub-1% values).
     out = out.replace(/([+-]?(?:\d+(?:[.,]\d+)?|[.,]\d+))%/g, (m, numRaw) => `${normalizePercentToken(numRaw)} процента`);
@@ -1877,12 +1887,6 @@ function naturalizeNumbersForTTS(text = "", locale = "en") {
     out = out.replace(/\bRevenue\b/gi, "Выручка");
     out = out.replace(/\btab\b/gi, "вкладка");
     out = out.replace(/\$([\d,.\s]+)\b/g, "$1 долларов");
-    out = out
-      .replace(/\s*:\s*/g, ". ")
-      .replace(/\s*=\s*/g, " равно ")
-      .replace(/[()]/g, " ")
-      .replace(/(?<=\d)\s*-\s*(?=\d)/g, " минус ")
-      .replace(/(?<=\d)\s*\/\s*(?=\d)/g, " разделить на ");
   } else {
     // English defaults
     out = out.replace(/\bvs\b/gi, "versus");
@@ -1910,17 +1914,11 @@ function naturalizeNumbersForTTS(text = "", locale = "en") {
     });
     
     out = out.replace(/([+-]?(?:\d+(?:[.,]\d+)?|[.,]\d+))%/g, (m, numRaw) => `${normalizePercentToken(numRaw)} percent`);
-    out = out.replace(/\(\+/g, " plus ");
-    out = out.replace(/\(\-/g, " minus ");
-    out = out
-      .replace(/\s*:\s*/g, ". ")
-      .replace(/\s*=\s*/g, " equals ")
-      .replace(/[()]/g, " ")
-      .replace(/(?<=\d)\s*-\s*(?=\d)/g, " minus ")
-      .replace(/(?<=\d)\s*\/\s*(?=\d)/g, " divided by ");
+    out = out.replace(/\(\+/g, "(plus ");
+    out = out.replace(/\(\-/g, "(minus ");
   }
 
-  return out.replace(/\s+/g, " ").trim();
+  return out;
 }
 
 function getSlavicPlural(n, forms) {
@@ -2065,48 +2063,36 @@ function expandFinancialTextPhonetically(text = "", lang = "ru") {
 }
 
 export async function getChatAudio(req, res) {
-  const { text, locale } = req.body;
+  const { text, locale, sheetId = null } = req.body;
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey || !text) return res.status(400).json({ error: "missing_params" });
+  let runtime = null;
+  let aiReservation = null;
+  if (sheetId) {
+    const hasAccess = await checkSheetAccess(sheetId, req.user);
+    if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
+    try {
+      aiReservation = await reserveAiQueryForSheet({ sheetId, user: req.user, kind: "chat_audio" });
+    } catch (err) {
+      return res.status(err.statusCode || 429).json({ error: err.message, ...(err.details || {}) });
+    }
+    runtime = await loadAiRuntimeSettings(aiReservation?.groupId || null);
+    if (!runtime.chatAudioEnabled) return res.status(403).json({ error: "chat_audio_disabled" });
+    if (aiReservation?.groupId) {
+      const rows = await query("SELECT id, entitlements FROM groups WHERE id = $1 LIMIT 1", [aiReservation.groupId]);
+      if (rows?.[0] && !groupHasFeature(rows[0], "chatAudioAi")) return res.status(403).json({ error: "feature_not_enabled:chatAudioAi" });
+    }
+  }
+  if (!runtime) runtime = await loadAiRuntimeSettings(null);
 
   try {
-    let reservation = null;
-    try {
-      reservation = await reserveAiQueryForUser({ user: req.user, kind: "chat_audio" });
-    } catch (_) {
-      reservation = null;
+    const audioBuffer = await synthesizeChatAudioBuffer({ text, locale, runtime });
+    if (!audioBuffer || !audioBuffer.length) {
+      return res.status(502).json({ error: "tts_empty_response" });
     }
-    const { cleanedText, model, voice, speed } = await buildChatTtsConfig({ text, locale });
-    const safeMax = Math.max(500, Math.min(CHAT_AUDIO_MAX_CHARS, CHAT_AUDIO_SAFE_CHUNK_CHARS));
-    const chunks = splitTextForTts(cleanedText, safeMax);
-    if (!chunks.length) return res.status(413).json({ error: "text_too_large" });
-
     res.setHeader("Content-Type", "audio/mpeg");
-    res.setHeader("Transfer-Encoding", "chunked");
-    res.setHeader("Cache-Control", "no-store");
-
-    let wroteAny = false;
-    for (const chunk of chunks) {
-      const part = await synthesizeTtsChunk({ text: chunk, model, voice, speed, apiKey });
-      if (part?.length) {
-        wroteAny = true;
-        res.write(part);
-      }
-    }
-    if (!wroteAny) {
-      if (!res.headersSent) return res.status(502).json({ error: "tts_empty_response" });
-      res.destroy();
-      return;
-    }
-    await recordAiUsage({
-      reservation,
-      provider: "openai",
-      model,
-      promptTokens: 0,
-      completionTokens: 0,
-      textChars: String(cleanedText || "").length,
-    }).catch(() => {});
-    return res.end();
+    res.setHeader("Content-Length", String(audioBuffer.length));
+    return res.status(200).send(audioBuffer);
   } catch (e) {
     const errorCode = e?.code || "internal_server_error";
     const status = errorCode === "text_too_large" ? 413 : errorCode === "tts_timeout" ? 504 : errorCode === "tts_upstream_error" ? 502 : 500;
@@ -2114,82 +2100,59 @@ export async function getChatAudio(req, res) {
     if (e?.message && errorCode === "tts_upstream_error") {
       payload.message = String(e.message).slice(0, 300);
     }
-    console.error("[chat_audio] failed", {
-      error: errorCode,
-      message: String(e?.message || ""),
-      locale: String(locale || ""),
-      text_length: String(text || "").length,
-    });
-    if (res.headersSent) {
-      try { res.destroy(); } catch (_) {}
-      return;
-    }
     return res.status(status).json(payload);
   }
 }
 
-function splitTextForTts(text, maxChars) {
-  const content = String(text || "").trim();
-  if (!content) return [];
-  if (content.length <= maxChars) return [content];
-
-  const chunks = [];
-  const sentenceParts = content.split(/(?<=[.!?])\s+/);
-  let current = "";
-
-  const pushCurrent = () => {
-    const normalized = String(current || "").trim();
-    if (normalized) chunks.push(normalized);
-    current = "";
-  };
-
-  for (const partRaw of sentenceParts) {
-    const part = String(partRaw || "").trim();
-    if (!part) continue;
-
-    if (part.length > maxChars) {
-      pushCurrent();
-      for (let i = 0; i < part.length; i += maxChars) {
-        chunks.push(part.slice(i, i + maxChars));
-      }
-      continue;
-    }
-
-    const candidate = current ? `${current} ${part}` : part;
-    if (candidate.length <= maxChars) {
-      current = candidate;
-    } else {
-      pushCurrent();
-      current = part;
-    }
+export async function synthesizeChatAudioBuffer({ text, locale, runtime = null }) {
+  let speechText = text;
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey || !speechText) {
+    const err = new Error("missing_params");
+    err.code = "missing_params";
+    throw err;
+  }
+  const maxChars = Number(runtime?.chatAudioMaxChars || CHAT_AUDIO_MAX_CHARS);
+  if (String(speechText).length > maxChars) {
+    const err = new Error("text_too_large");
+    err.code = "text_too_large";
+    throw err;
   }
 
-  pushCurrent();
-  return chunks;
-}
+  // Strip Markdown markers before TTS
+  speechText = String(speechText).replace(/\*/g, "");
 
-function splitTextForTtsStreaming(text, maxChars, firstChunkChars) {
-  const chunks = splitTextForTts(text, maxChars);
-  if (!chunks.length) return [];
-  const firstMax = Math.max(120, Math.min(maxChars, Number(firstChunkChars || 0)));
-  const firstChunk = String(chunks[0] || "");
-  if (firstChunk.length <= firstMax) return chunks;
-  return [firstChunk.slice(0, firstMax), firstChunk.slice(firstMax), ...chunks.slice(1)].filter(Boolean);
-}
+  const ttsCfg = await loadChatTtsSettings();
+  const lang = (locale || "en").split("-")[0].toLowerCase();
+  const voice = String(ttsCfg?.voices?.[lang] || ttsCfg?.voices?.default || "nova");
+  const model = String(lang === "en"
+    ? (ttsCfg?.models?.en || "tts-1")
+    : (ttsCfg?.models?.[lang] || ttsCfg?.models?.default || "tts-1-hd"));
+  const speedNum = Number(ttsCfg?.speed?.[lang] ?? ttsCfg?.speed?.default ?? 0.9);
+  const speed = Number.isFinite(speedNum) && speedNum > 0 ? speedNum : 0.9;
+  
+  let cleanedText = naturalizeNumbersForTTS(speechText, locale);
+  
+  if (lang === "uk" || lang === "ru") {
+      // Convert all remaining digits to Cyrillic words to force native accent
+      cleanedText = expandFinancialTextPhonetically(cleanedText, lang);
+  }
 
-async function synthesizeTtsChunk({ text, model, voice, speed, apiKey }) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
+  const timeoutMs = Number(runtime?.openaiTimeoutMs || OPENAI_TIMEOUT_MS);
+  const baseUrl = String(runtime?.openaiBaseUrl || OPENAI_BASE_URL).replace(/\/+$/, "");
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
   try {
-    const response = await fetch(`${OPENAI_BASE_URL}/audio/speech`, {
+    const response = await fetch(`${baseUrl}/audio/speech`, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       signal: controller.signal,
-      body: JSON.stringify({
+      body: JSON.stringify({ 
         model,
-        input: text,
+        input: cleanedText, 
         voice,
-        speed,
+        speed
       }),
     });
     if (!response.ok) {
@@ -2210,51 +2173,6 @@ async function synthesizeTtsChunk({ text, model, voice, speed, apiKey }) {
   }
 }
 
-export async function synthesizeChatAudioBuffer({ text, locale }) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey || !text) {
-    const err = new Error("missing_params");
-    err.code = "missing_params";
-    throw err;
-  }
-  const { cleanedText, model, voice, speed } = await buildChatTtsConfig({ text, locale });
-
-  const safeMax = Math.max(500, Math.min(CHAT_AUDIO_MAX_CHARS, CHAT_AUDIO_SAFE_CHUNK_CHARS));
-    const chunks = splitTextForTtsStreaming(cleanedText, safeMax, CHAT_AUDIO_FIRST_CHUNK_CHARS);
-  if (!chunks.length) {
-    const err = new Error("text_too_large");
-    err.code = "text_too_large";
-    throw err;
-  }
-  const audioParts = [];
-  for (const chunk of chunks) {
-    // Concatenated MP3 buffers are valid for playback in browsers.
-    const part = await synthesizeTtsChunk({ text: chunk, model, voice, speed, apiKey });
-    if (part?.length) audioParts.push(part);
-  }
-  return Buffer.concat(audioParts);
-}
-
-async function buildChatTtsConfig({ text, locale }) {
-  const speechText = String(text || "")
-    .replace(/\*/g, "")
-    .replace(/[()]/g, " ");
-  const ttsCfg = await loadChatTtsSettings();
-  const lang = (locale || "en").split("-")[0].toLowerCase();
-  const voice = String(ttsCfg?.voices?.[lang] || ttsCfg?.voices?.default || "nova");
-  const model = String(lang === "en"
-    ? (ttsCfg?.models?.en || "tts-1")
-    : (ttsCfg?.models?.[lang] || ttsCfg?.models?.default || "tts-1"));
-  const speedNum = Number(ttsCfg?.speed?.[lang] ?? ttsCfg?.speed?.default ?? 0.9);
-  const speed = Number.isFinite(speedNum) && speedNum > 0 ? speedNum : 0.9;
-
-  let cleanedText = naturalizeNumbersForTTS(speechText, locale);
-  if (lang === "uk" || lang === "ru") {
-    cleanedText = expandFinancialTextPhonetically(cleanedText, lang);
-  }
-  return { cleanedText, model, voice, speed };
-}
-
 export async function chatQuery(req, res) {
   const { sheetId, activeTab = null, message, activeFilters = {}, splitContext = null, activeViewScope = null, conversationHistory = [], locale: rawLocale } = req.body || {};
   const locale = normalizeLocale(rawLocale || "en");
@@ -2265,6 +2183,19 @@ export async function chatQuery(req, res) {
     aiReservation = await reserveAiQueryForSheet({ sheetId, user: req.user, kind: "chat_query" });
   } catch (err) {
     return res.status(err.statusCode || 429).json({ error: err.message, ...(err.details || {}) });
+  }
+  const runtime = await loadAiRuntimeSettings(aiReservation?.groupId || null);
+  if (!runtime.chatEnabled) return res.status(403).json({ error: "chat_disabled" });
+  if (aiReservation?.groupId) {
+    const rows = await query("SELECT id, entitlements FROM groups WHERE id = $1 LIMIT 1", [aiReservation.groupId]);
+    if (rows?.[0] && !groupHasFeature(rows[0], "chatAi")) return res.status(403).json({ error: "feature_not_enabled:chatAi" });
+  }
+  const boundedConversationHistory = Array.isArray(conversationHistory)
+    ? conversationHistory.slice(-Math.max(1, Number(runtime.chatHistoryWindowMessages || 8)))
+    : [];
+  const estimatedInputChars = String(message || "").length + JSON.stringify(boundedConversationHistory).length;
+  if (estimatedInputChars > Number(runtime.chatMaxInputChars || 12000)) {
+    return res.status(413).json({ error: "chat_input_too_large", maxChars: Number(runtime.chatMaxInputChars || 12000) });
   }
 
   // PERF-01: Load only SAMPLE rows for AI context, not all 500k rows
@@ -2340,7 +2271,7 @@ export async function chatQuery(req, res) {
       message: `${message}\n\nAvailable tabs: ${tabNames.join(", ") || "N/A"}\nIf the question maps to a specific tab, set target_tab in the JSON response.`,
       headers: aiHeaders,
       sampleRows,
-      conversationHistory,
+      conversationHistory: boundedConversationHistory,
       locale,
       dateFormatHints,
       schemaProfile: { 
@@ -2348,7 +2279,9 @@ export async function chatQuery(req, res) {
           available_files: availableFiles,
           active_filters: activeDashboardFilters,
           split_context: parsedSplitContext,
-      }
+      },
+      maxOutputTokens: Number(runtime.llmMaxOutputTokens || 800),
+      runtime,
     });
     ai = normalizeAiPlan(aiResult.plan);
     await recordAiUsage({

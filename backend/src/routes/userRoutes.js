@@ -19,6 +19,9 @@ import {
     getInviteEmailTemplateSetting, setInviteEmailTemplateSetting, previewInviteEmailTemplate,
     getCustomerInvitationPolicy, setCustomerInvitationPolicy,
     getInsightTranslationCacheSetting, setInsightTranslationCacheSetting,
+    getAiRuntimeSetting, setAiRuntimeSetting,
+    getAiFeatureTogglesSetting, setAiFeatureTogglesSetting,
+    getMyAiFeatureTogglesSetting,
     getDlpSetting, setDlpSetting,
     getMetricsExposureSetting, setMetricsExposureSetting, getMyMetricsExposureSetting,
     getTwoFactorTotpSetting, setTwoFactorTotpSetting,
@@ -90,6 +93,10 @@ router.get("/admin/settings/customer-invitations", asyncHandler(getCustomerInvit
 router.patch("/admin/settings/customer-invitations", asyncHandler(setCustomerInvitationPolicy));
 router.get("/admin/settings/insight-translation-cache", asyncHandler(getInsightTranslationCacheSetting));
 router.patch("/admin/settings/insight-translation-cache", asyncHandler(setInsightTranslationCacheSetting));
+router.get("/admin/settings/ai-runtime", asyncHandler(getAiRuntimeSetting));
+router.patch("/admin/settings/ai-runtime", asyncHandler(setAiRuntimeSetting));
+router.get("/admin/settings/ai-features", asyncHandler(getAiFeatureTogglesSetting));
+router.patch("/admin/settings/ai-features", asyncHandler(setAiFeatureTogglesSetting));
 router.get("/admin/settings/dlp", asyncHandler(getDlpSetting));
 router.patch("/admin/settings/dlp", asyncHandler(setDlpSetting));
 router.get("/admin/settings/metrics-exposure", asyncHandler(getMetricsExposureSetting));
@@ -135,6 +142,7 @@ router.get("/groups/:id/sheets", asyncHandler(getGroupSheets));
 router.get("/users/me/kpi-overrides", asyncHandler(getUserKpiOverrides));
 router.put("/users/me/kpi-overrides", asyncHandler(setUserKpiOverrides));
 router.get("/users/me/metrics-exposure", asyncHandler(getMyMetricsExposureSetting));
+router.get("/users/me/ai-features", asyncHandler(getMyAiFeatureTogglesSetting));
 router.get("/audit-logs", asyncHandler(listAuditLogs));
 router.get("/admin/ai-usage-summary", asyncHandler(getAiUsageSummary));
 

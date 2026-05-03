@@ -24,7 +24,9 @@ const CUSTOMER_FEATURE_OPTIONS = [
   ["manageUsers", "Manage users"],
   ["managePermissions", "Permissions"],
   ["manageGroupAdmins", "Promote admins"],
-  ["ai", "AI"],
+  ["chatAi", "Chat AI"],
+  ["chatAudioAi", "Chat Audio AI"],
+  ["dashboardTranslationAi", "Dashboard Translation AI"],
   ["exports", "Exports"],
   ["imports", "Imports"],
   ["approvalFlow", "Approvals"],
@@ -47,7 +49,9 @@ const BUNDLE_DEFAULT_FEATURES = {
     manageUsers: true,
     managePermissions: true,
     manageGroupAdmins: false,
-    ai: false,
+    chatAi: true,
+    chatAudioAi: false,
+    dashboardTranslationAi: false,
     exports: true,
     imports: true,
     approvalFlow: false,
@@ -63,7 +67,9 @@ const BUNDLE_DEFAULT_FEATURES = {
     manageUsers: true,
     managePermissions: true,
     manageGroupAdmins: true,
-    ai: true,
+    chatAi: true,
+    chatAudioAi: false,
+    dashboardTranslationAi: false,
     exports: true,
     imports: true,
     approvalFlow: true,
@@ -79,7 +85,9 @@ const BUNDLE_DEFAULT_FEATURES = {
     manageUsers: true,
     managePermissions: true,
     manageGroupAdmins: true,
-    ai: true,
+    chatAi: true,
+    chatAudioAi: false,
+    dashboardTranslationAi: false,
     exports: true,
     imports: true,
     approvalFlow: true,
@@ -90,6 +98,123 @@ const BUNDLE_DEFAULT_FEATURES = {
     oneDrive: true,
     quickbooks: true,
     dlp: true,
+  },
+};
+const BUNDLE_AI_LIMITS = {
+  core: { maxAiQueriesPerMonth: 2000, aiMonthlyBudgetUsd: 25 },
+  growth: { maxAiQueriesPerMonth: 10000, aiMonthlyBudgetUsd: 150 },
+  enterprise: { maxAiQueriesPerMonth: 50000, aiMonthlyBudgetUsd: 1000 },
+};
+const BUNDLE_AI_PRICING = {
+  core: { openaiModel: "gpt-4.1-nano", openaiInputCostPer1M: 0.10, openaiOutputCostPer1M: 0.40 },
+  growth: { openaiModel: "gpt-4.1-mini", openaiInputCostPer1M: 0.40, openaiOutputCostPer1M: 1.60 },
+  enterprise: { openaiModel: "gpt-4.1", openaiInputCostPer1M: 2.00, openaiOutputCostPer1M: 8.00 },
+};
+const AI_RUNTIME_PRESETS = {
+  micro: {
+    aiRuntimePreset: "micro",
+    chatEnabled: true,
+    chatAudioEnabled: false,
+    dashboardTranslationEnabled: false,
+    chatMaxInputChars: 1500,
+    chatHistoryWindowMessages: 1,
+    dashboardTranslateMaxItems: 20,
+    dashboardTranslateMaxCharsPerItem: 125,
+    llmMaxOutputTokens: 100,
+    openaiModel: "gpt-4.1-nano",
+    openaiBaseUrl: "https://api.openai.com/v1",
+    openaiTimeoutMs: 15000,
+    openaiTemperature: 0.1,
+    openaiMaxOutputTokens: 100,
+    openaiInputCostPer1M: 0.10,
+    openaiOutputCostPer1M: 0.40,
+    insightAiMaxSeriesPoints: 6,
+    insightAiMaxPromptChars: 4000,
+    chatAudioMaxChars: 3000,
+  },
+  tiny: {
+    aiRuntimePreset: "tiny",
+    chatEnabled: true,
+    chatAudioEnabled: false,
+    dashboardTranslationEnabled: false,
+    chatMaxInputChars: 3000,
+    chatHistoryWindowMessages: 2,
+    dashboardTranslateMaxItems: 40,
+    dashboardTranslateMaxCharsPerItem: 250,
+    llmMaxOutputTokens: 200,
+    openaiModel: "gpt-4.1-nano",
+    openaiBaseUrl: "https://api.openai.com/v1",
+    openaiTimeoutMs: 30000,
+    openaiTemperature: 0.1,
+    openaiMaxOutputTokens: 200,
+    openaiInputCostPer1M: 0.10,
+    openaiOutputCostPer1M: 0.40,
+    insightAiMaxSeriesPoints: 12,
+    insightAiMaxPromptChars: 8000,
+    chatAudioMaxChars: 6000,
+  },
+  low: {
+    aiRuntimePreset: "low",
+    chatEnabled: true,
+    chatAudioEnabled: false,
+    dashboardTranslationEnabled: false,
+    chatMaxInputChars: 6000,
+    chatHistoryWindowMessages: 4,
+    dashboardTranslateMaxItems: 80,
+    dashboardTranslateMaxCharsPerItem: 250,
+    llmMaxOutputTokens: 400,
+    openaiModel: "gpt-4.1-nano",
+    openaiBaseUrl: "https://api.openai.com/v1",
+    openaiTimeoutMs: 30000,
+    openaiTemperature: 0.1,
+    openaiMaxOutputTokens: 400,
+    openaiInputCostPer1M: 0.10,
+    openaiOutputCostPer1M: 0.40,
+    insightAiMaxSeriesPoints: 12,
+    insightAiMaxPromptChars: 8000,
+    chatAudioMaxChars: 6000,
+  },
+  mid: {
+    aiRuntimePreset: "mid",
+    chatEnabled: true,
+    chatAudioEnabled: true,
+    dashboardTranslationEnabled: true,
+    chatMaxInputChars: 12000,
+    chatHistoryWindowMessages: 8,
+    dashboardTranslateMaxItems: 200,
+    dashboardTranslateMaxCharsPerItem: 500,
+    llmMaxOutputTokens: 800,
+    openaiModel: "gpt-4.1-nano",
+    openaiBaseUrl: "https://api.openai.com/v1",
+    openaiTimeoutMs: 60000,
+    openaiTemperature: 0.1,
+    openaiMaxOutputTokens: 800,
+    openaiInputCostPer1M: 0.10,
+    openaiOutputCostPer1M: 0.40,
+    insightAiMaxSeriesPoints: 18,
+    insightAiMaxPromptChars: 12000,
+    chatAudioMaxChars: 8000,
+  },
+  high: {
+    aiRuntimePreset: "high",
+    chatEnabled: true,
+    chatAudioEnabled: true,
+    dashboardTranslationEnabled: true,
+    chatMaxInputChars: 24000,
+    chatHistoryWindowMessages: 16,
+    dashboardTranslateMaxItems: 400,
+    dashboardTranslateMaxCharsPerItem: 1000,
+    llmMaxOutputTokens: 1600,
+    openaiModel: "gpt-4.1-nano",
+    openaiBaseUrl: "https://api.openai.com/v1",
+    openaiTimeoutMs: 120000,
+    openaiTemperature: 0.1,
+    openaiMaxOutputTokens: 1600,
+    openaiInputCostPer1M: 0.10,
+    openaiOutputCostPer1M: 0.40,
+    insightAiMaxSeriesPoints: 32,
+    insightAiMaxPromptChars: 24000,
+    chatAudioMaxChars: 12000,
   },
 };
 function loadTemplates() {
@@ -132,6 +257,7 @@ export default function UserManagement({ token, user, sheetId }) {
     frontendUrl: "",
   });
   const [googleOauthSaving, setGoogleOauthSaving] = useState(false);
+  const [googleOauthSaved, setGoogleOauthSaved] = useState(false);
   const [googleOauthTesting, setGoogleOauthTesting] = useState(false);
   const [dropboxOauthMeta, setDropboxOauthMeta] = useState({
     hasClientId: false,
@@ -148,6 +274,7 @@ export default function UserManagement({ token, user, sheetId }) {
     frontendUrl: "",
   });
   const [dropboxOauthSaving, setDropboxOauthSaving] = useState(false);
+  const [dropboxOauthSaved, setDropboxOauthSaved] = useState(false);
   const [dropboxOauthTesting, setDropboxOauthTesting] = useState(false);
   const [oneDriveOauthMeta, setOneDriveOauthMeta] = useState({
     hasClientId: false,
@@ -164,6 +291,7 @@ export default function UserManagement({ token, user, sheetId }) {
     frontendUrl: "",
   });
   const [oneDriveOauthSaving, setOneDriveOauthSaving] = useState(false);
+  const [oneDriveOauthSaved, setOneDriveOauthSaved] = useState(false);
   const [oneDriveOauthTesting, setOneDriveOauthTesting] = useState(false);
   const [quickbooksOauthMeta, setQuickbooksOauthMeta] = useState({
     hasClientId: false,
@@ -186,6 +314,7 @@ export default function UserManagement({ token, user, sheetId }) {
     selectedDataTypes: [],
   });
   const [quickbooksOauthSaving, setQuickbooksOauthSaving] = useState(false);
+  const [quickbooksOauthSaved, setQuickbooksOauthSaved] = useState(false);
   const [quickbooksOauthTesting, setQuickbooksOauthTesting] = useState(false);
   const [samlMeta, setSamlMeta] = useState({
     idpSsoUrl: "",
@@ -207,6 +336,7 @@ export default function UserManagement({ token, user, sheetId }) {
     defaultRelayState: "",
   });
   const [samlSaving, setSamlSaving] = useState(false);
+  const [samlSaved, setSamlSaved] = useState(false);
   const [samlTesting, setSamlTesting] = useState(false);
   const [integrationOpen, setIntegrationOpen] = useState({ google: false, dropbox: false, onedrive: false, quickbooks: false, saml: false, emailIngest: false });
   const [integrationTestStatus, setIntegrationTestStatus] = useState({ google: null, dropbox: null, onedrive: null, quickbooks: null, saml: null });
@@ -230,6 +360,7 @@ export default function UserManagement({ token, user, sheetId }) {
     fromName: "",
   });
   const [smtpSaving, setSmtpSaving] = useState(false);
+  const [smtpSaved, setSmtpSaved] = useState(false);
   const [inviteEmailTemplate, setInviteEmailTemplate] = useState({
     subject: "",
     html: "",
@@ -237,6 +368,7 @@ export default function UserManagement({ token, user, sheetId }) {
     logoUrl: "",
   });
   const [inviteEmailSaving, setInviteEmailSaving] = useState(false);
+  const [inviteEmailSaved, setInviteEmailSaved] = useState(false);
   const [inviteEmailPreviewLoading, setInviteEmailPreviewLoading] = useState(false);
   const [inviteEmailPreview, setInviteEmailPreview] = useState({ subject: "", html: "", text: "" });
   const [pendingInvitations, setPendingInvitations] = useState([]);
@@ -244,12 +376,10 @@ export default function UserManagement({ token, user, sheetId }) {
   const [inviteActionBusyId, setInviteActionBusyId] = useState(null);
   const [invitePolicy, setInvitePolicy] = useState({ ttlHours: 72, retentionDays: 30 });
   const [invitePolicySaving, setInvitePolicySaving] = useState(false);
+  const [invitePolicySaved, setInvitePolicySaved] = useState(false);
   const [insightTranslationCache, setInsightTranslationCache] = useState({ ttlMinutes: 60 });
   const [insightTranslationCacheSaving, setInsightTranslationCacheSaving] = useState(false);
-  const [aiUsageSummary, setAiUsageSummary] = useState({ periodMonth: "", totals: { queryCount: 0, promptTokens: 0, completionTokens: 0, estimatedCostUsd: 0 }, groups: [] });
-  const [aiUsageLoading, setAiUsageLoading] = useState(false);
-  const [aiUsageError, setAiUsageError] = useState("");
-  const [aiUsageRefreshedAt, setAiUsageRefreshedAt] = useState("");
+  const [insightTranslationCacheSaved, setInsightTranslationCacheSaved] = useState(false);
   const [dlpSettings, setDlpSettings] = useState({
     mode: "block",
     checkSsn: true,
@@ -261,18 +391,28 @@ export default function UserManagement({ token, user, sheetId }) {
     configured: false,
   });
   const [dlpSettingsSaving, setDlpSettingsSaving] = useState(false);
+  const [dlpSettingsSaved, setDlpSettingsSaved] = useState(false);
   const [dlpSettingsOpen, setDlpSettingsOpen] = useState(false);
   const [smtpSettingsOpen, setSmtpSettingsOpen] = useState(false);
   const [metricsExposure, setMetricsExposure] = useState({ enabled: false });
   const [metricsExposureSaving, setMetricsExposureSaving] = useState(false);
   const [autosyncInterval, setAutosyncInterval] = useState({ intervalMinutes: 5 });
   const [autosyncIntervalSaving, setAutosyncIntervalSaving] = useState(false);
+  const [autosyncIntervalSaved, setAutosyncIntervalSaved] = useState(false);
+  const [aiRuntimeSettings, setAiRuntimeSettings] = useState({ ...AI_RUNTIME_PRESETS.mid });
+  const [aiRuntimeSaving, setAiRuntimeSaving] = useState(false);
+  const [aiRuntimeSaved, setAiRuntimeSaved] = useState(false);
+  const [aiUsagePeriodMonth, setAiUsagePeriodMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [aiUsageSummary, setAiUsageSummary] = useState({ periodMonth: "", totals: null, groups: [] });
+  const [aiUsageLoading, setAiUsageLoading] = useState(false);
+  const [aiUsageError, setAiUsageError] = useState("");
   const [twoFactorTotpSettings, setTwoFactorTotpSettings] = useState({
     issuer: "",
     digits: 6,
     period: 30,
   });
   const [twoFactorTotpSaving, setTwoFactorTotpSaving] = useState(false);
+  const [twoFactorTotpSaved, setTwoFactorTotpSaved] = useState(false);
   const [smsOtpSettings, setSmsOtpSettings] = useState({
     provider: "twilio",
     enabled: true,
@@ -283,6 +423,7 @@ export default function UserManagement({ token, user, sheetId }) {
     messagingServiceSid: "",
   });
   const [smsOtpSaving, setSmsOtpSaving] = useState(false);
+  const [smsOtpSaved, setSmsOtpSaved] = useState(false);
   const [twoFactorSettingsOpen, setTwoFactorSettingsOpen] = useState(false);
   const metricsUrl = useMemo(() => `${String(API || "").replace(/\/+$/, "")}/metrics`, []);
   const [emailIngestConfig, setEmailIngestConfig] = useState({
@@ -298,6 +439,7 @@ export default function UserManagement({ token, user, sheetId }) {
     notes: "",
   });
   const [emailIngestSaving, setEmailIngestSaving] = useState(false);
+  const [emailIngestSaved, setEmailIngestSaved] = useState(false);
   const [storageSettings, setStorageSettings] = useState(() => createInitialStorageState());
 
   // user-level permissions UI (select a sheet from user's groups)
@@ -337,6 +479,7 @@ export default function UserManagement({ token, user, sheetId }) {
   const [groupSettingsDirty, setGroupSettingsDirty] = useState(false);
   const lastLoadedGroupIdRef = useRef(null);
   const [groupSettingsSaving, setGroupSettingsSaving] = useState(false);
+  const [groupSettingsSaved, setGroupSettingsSaved] = useState(false);
 
   const ensureBundleFeatureSets = (bundleFeatureSets, baseFeatures) => {
     const normalizedBase = { ...(baseFeatures || {}) };
@@ -375,6 +518,7 @@ export default function UserManagement({ token, user, sheetId }) {
   const [draftUserViewIds, setDraftUserViewIds] = useState([]);
   const [viewAssignmentOpen, setViewAssignmentOpen] = useState(false);
   const [viewAssignmentSaving, setViewAssignmentSaving] = useState(false);
+  const [viewAssignmentSaved, setViewAssignmentSaved] = useState(false);
   const [selectedUserGroupIds, setSelectedUserGroupIds] = useState(new Set());
   const [userGroupMap, setUserGroupMap] = useState({});
   const [editingUserId, setEditingUserId] = useState(null);
@@ -522,7 +666,7 @@ export default function UserManagement({ token, user, sheetId }) {
       alert("Select a customer first.");
       return;
     }
-    updateStorageProvider(provider.key, { saving: true });
+    updateStorageProvider(provider.key, { saving: true, saved: false });
     try {
       const payload = { ...storageScopeParams, enabled: !!current.form.enabled };
       for (const field of provider.fields) {
@@ -561,7 +705,8 @@ export default function UserManagement({ token, user, sheetId }) {
         },
         testStatus: null,
       }));
-      alert(`${provider.title} settings updated`);
+      updateStorageProvider(provider.key, { saved: true });
+      setTimeout(() => updateStorageProvider(provider.key, { saved: false }), 1800);
     } catch (e) {
       alert(e.response?.data?.error || `Failed to update ${provider.title} settings`);
     } finally {
@@ -686,6 +831,7 @@ export default function UserManagement({ token, user, sheetId }) {
       return;
     }
     setGoogleOauthSaving(true);
+    setGoogleOauthSaved(false);
     try {
       const payload = {
         clientId: googleOauthForm.clientId || "***",
@@ -712,7 +858,8 @@ export default function UserManagement({ token, user, sheetId }) {
         clientSecret: "",
       }));
       setIntegrationTestStatus((prev) => ({ ...prev, google: null }));
-      alert("Google OAuth settings updated");
+      setGoogleOauthSaved(true);
+      setTimeout(() => setGoogleOauthSaved(false), 1800);
     } catch (e) {
       alert(e.response?.data?.error || "Failed to update Google OAuth settings");
     } finally {
@@ -780,6 +927,7 @@ export default function UserManagement({ token, user, sheetId }) {
       return;
     }
     setDropboxOauthSaving(true);
+    setDropboxOauthSaved(false);
     try {
       const payload = {
         clientId: dropboxOauthForm.clientId || "***",
@@ -806,7 +954,8 @@ export default function UserManagement({ token, user, sheetId }) {
         clientSecret: "",
       }));
       setIntegrationTestStatus((prev) => ({ ...prev, dropbox: null }));
-      alert("Dropbox OAuth settings updated");
+      setDropboxOauthSaved(true);
+      setTimeout(() => setDropboxOauthSaved(false), 1800);
     } catch (e) {
       alert(e.response?.data?.error || "Failed to update Dropbox OAuth settings");
     } finally {
@@ -874,6 +1023,7 @@ export default function UserManagement({ token, user, sheetId }) {
       return;
     }
     setOneDriveOauthSaving(true);
+    setOneDriveOauthSaved(false);
     try {
       const payload = {
         clientId: oneDriveOauthForm.clientId || "***",
@@ -900,7 +1050,8 @@ export default function UserManagement({ token, user, sheetId }) {
         clientSecret: "",
       }));
       setIntegrationTestStatus((prev) => ({ ...prev, onedrive: null }));
-      alert("OneDrive OAuth settings updated");
+      setOneDriveOauthSaved(true);
+      setTimeout(() => setOneDriveOauthSaved(false), 1800);
     } catch (e) {
       alert(e.response?.data?.error || "Failed to update OneDrive OAuth settings");
     } finally {
@@ -975,6 +1126,7 @@ export default function UserManagement({ token, user, sheetId }) {
       return;
     }
     setQuickbooksOauthSaving(true);
+    setQuickbooksOauthSaved(false);
     try {
       const payload = {
         clientId: quickbooksOauthForm.clientId || "***",
@@ -1011,7 +1163,8 @@ export default function UserManagement({ token, user, sheetId }) {
         selectedDataTypes,
       }));
       setIntegrationTestStatus((prev) => ({ ...prev, quickbooks: null }));
-      alert("QuickBooks OAuth settings updated");
+      setQuickbooksOauthSaved(true);
+      setTimeout(() => setQuickbooksOauthSaved(false), 1800);
     } catch (e) {
       alert(e.response?.data?.error || "Failed to update QuickBooks OAuth settings");
     } finally {
@@ -1060,6 +1213,7 @@ export default function UserManagement({ token, user, sheetId }) {
       return;
     }
     setSamlSaving(true);
+    setSamlSaved(false);
     try {
       const payload = {
         idpSsoUrl: samlForm.idpSsoUrl || "",
@@ -1086,7 +1240,8 @@ export default function UserManagement({ token, user, sheetId }) {
         hasX509Certificate: !!data.hasX509Certificate,
       });
       setIntegrationTestStatus((prev) => ({ ...prev, saml: null }));
-      alert("SAML settings updated");
+      setSamlSaved(true);
+      setTimeout(() => setSamlSaved(false), 1800);
     } catch (e) {
       alert(e.response?.data?.error || "Failed to update SAML settings");
     } finally {
@@ -1152,6 +1307,7 @@ export default function UserManagement({ token, user, sheetId }) {
   const saveSmtpSetting = async () => {
     if (!isSuperAdmin || smtpSaving) return;
     setSmtpSaving(true);
+    setSmtpSaved(false);
     try {
       const payload = {
         host: smtpForm.host || "",
@@ -1177,7 +1333,8 @@ export default function UserManagement({ token, user, sheetId }) {
         fromName: data.fromName || "",
       });
       setSmtpForm((prev) => ({ ...prev, password: "" }));
-      alert("SMTP settings updated");
+      setSmtpSaved(true);
+      setTimeout(() => setSmtpSaved(false), 1800);
     } catch (e) {
       alert(e.response?.data?.error || "Failed to update SMTP settings");
     } finally {
@@ -1206,6 +1363,7 @@ export default function UserManagement({ token, user, sheetId }) {
   const saveInviteEmailTemplate = async () => {
     if (!isSuperAdmin || inviteEmailSaving) return;
     setInviteEmailSaving(true);
+    setInviteEmailSaved(false);
     try {
       const payload = {
         subject: inviteEmailTemplate.subject || "",
@@ -1223,7 +1381,8 @@ export default function UserManagement({ token, user, sheetId }) {
         text: data.text || "",
         logoUrl: data.logoUrl || "",
       });
-      alert("Invite email template saved");
+      setInviteEmailSaved(true);
+      setTimeout(() => setInviteEmailSaved(false), 1800);
     } catch (e) {
       alert(e.response?.data?.error || "Failed to save invite email template");
     } finally {
@@ -1275,6 +1434,7 @@ export default function UserManagement({ token, user, sheetId }) {
   const saveInvitationPolicy = async () => {
     if (!isSuperAdmin || invitePolicySaving) return;
     setInvitePolicySaving(true);
+    setInvitePolicySaved(false);
     try {
       const payload = {
         ttlHours: Number.parseInt(String(invitePolicy.ttlHours || "").trim(), 10) || 72,
@@ -1287,7 +1447,8 @@ export default function UserManagement({ token, user, sheetId }) {
         ttlHours: Number(res?.data?.ttlHours || payload.ttlHours),
         retentionDays: Number(res?.data?.retentionDays || payload.retentionDays),
       });
-      alert("Invitation policy saved");
+      setInvitePolicySaved(true);
+      setTimeout(() => setInvitePolicySaved(false), 1800);
     } catch (e) {
       alert(e.response?.data?.error || "Failed to save invitation policy");
     } finally {
@@ -1306,35 +1467,6 @@ export default function UserManagement({ token, user, sheetId }) {
       });
     } catch (e) {
       console.error("fetchInsightTranslationCacheSetting failed", e);
-    }
-  };
-
-  const fetchAiUsageSummary = async () => {
-    if (!isSuperAdmin) return;
-    setAiUsageLoading(true);
-    setAiUsageError("");
-    try {
-      const res = await axios.get(`${API}/admin/ai-usage-summary`, {
-        headers: { Authorization: `Bearer ${token}` },
-        params: { _: Date.now() },
-      });
-      const data = res?.data || {};
-      setAiUsageSummary({
-        periodMonth: data.periodMonth || "",
-        totals: {
-          queryCount: Number(data?.totals?.queryCount || 0),
-          promptTokens: Number(data?.totals?.promptTokens || 0),
-          completionTokens: Number(data?.totals?.completionTokens || 0),
-          estimatedCostUsd: Number(data?.totals?.estimatedCostUsd || 0),
-        },
-        groups: Array.isArray(data.groups) ? data.groups : [],
-      });
-      setAiUsageRefreshedAt(new Date().toLocaleTimeString());
-    } catch (e) {
-      console.error("fetchAiUsageSummary failed", e);
-      setAiUsageError(e?.response?.data?.error || e?.message || "Refresh failed");
-    } finally {
-      setAiUsageLoading(false);
     }
   };
 
@@ -1385,6 +1517,60 @@ export default function UserManagement({ token, user, sheetId }) {
       });
     } catch (e) {
       console.error("fetchAutosyncIntervalSetting failed", e);
+    }
+  };
+  const fetchAiRuntimeSetting = async () => {
+    if (!isSuperAdmin) return;
+    try {
+      const res = await axios.get(`${API}/admin/settings/ai-runtime`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || {};
+      setAiRuntimeSettings({
+        aiRuntimePreset: String(data.aiRuntimePreset || AI_RUNTIME_PRESETS.mid.aiRuntimePreset),
+        chatEnabled: data.chatEnabled !== false,
+        chatAudioEnabled: data.chatAudioEnabled === true,
+        dashboardTranslationEnabled: data.dashboardTranslationEnabled === true,
+        chatMaxInputChars: Number(data.chatMaxInputChars || AI_RUNTIME_PRESETS.mid.chatMaxInputChars),
+        chatHistoryWindowMessages: Number(data.chatHistoryWindowMessages || AI_RUNTIME_PRESETS.mid.chatHistoryWindowMessages),
+        dashboardTranslateMaxItems: Number(data.dashboardTranslateMaxItems || AI_RUNTIME_PRESETS.mid.dashboardTranslateMaxItems),
+        dashboardTranslateMaxCharsPerItem: Number(data.dashboardTranslateMaxCharsPerItem || AI_RUNTIME_PRESETS.mid.dashboardTranslateMaxCharsPerItem),
+        llmMaxOutputTokens: Number(data.llmMaxOutputTokens || AI_RUNTIME_PRESETS.mid.llmMaxOutputTokens),
+        openaiModel: String(data.openaiModel || AI_RUNTIME_PRESETS.mid.openaiModel),
+        openaiBaseUrl: String(data.openaiBaseUrl || AI_RUNTIME_PRESETS.mid.openaiBaseUrl),
+        openaiTimeoutMs: Number(data.openaiTimeoutMs || AI_RUNTIME_PRESETS.mid.openaiTimeoutMs),
+        openaiTemperature: Number(data.openaiTemperature || AI_RUNTIME_PRESETS.mid.openaiTemperature),
+        openaiMaxOutputTokens: Number(data.openaiMaxOutputTokens || AI_RUNTIME_PRESETS.mid.openaiMaxOutputTokens),
+        openaiInputCostPer1M: Number(data.openaiInputCostPer1M || AI_RUNTIME_PRESETS.mid.openaiInputCostPer1M),
+        openaiOutputCostPer1M: Number(data.openaiOutputCostPer1M || AI_RUNTIME_PRESETS.mid.openaiOutputCostPer1M),
+        insightAiMaxSeriesPoints: Number(data.insightAiMaxSeriesPoints || AI_RUNTIME_PRESETS.mid.insightAiMaxSeriesPoints),
+        insightAiMaxPromptChars: Number(data.insightAiMaxPromptChars || AI_RUNTIME_PRESETS.mid.insightAiMaxPromptChars),
+        chatAudioMaxChars: Number(data.chatAudioMaxChars || AI_RUNTIME_PRESETS.mid.chatAudioMaxChars),
+      });
+    } catch (e) {
+      console.error("fetchAiRuntimeSetting failed", e);
+    }
+  };
+  const fetchAiUsageSummary = async (periodMonth = aiUsagePeriodMonth) => {
+    if (!isSuperAdmin) return;
+    const month = String(periodMonth || "").trim() || new Date().toISOString().slice(0, 7);
+    setAiUsageLoading(true);
+    setAiUsageError("");
+    try {
+      const res = await axios.get(`${API}/admin/ai-usage-summary`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { periodMonth: month },
+      });
+      const data = res?.data || {};
+      setAiUsageSummary({
+        periodMonth: String(data.periodMonth || month),
+        totals: data.totals || null,
+        groups: Array.isArray(data.groups) ? data.groups : [],
+      });
+    } catch (e) {
+      setAiUsageError(e.response?.data?.error || "Failed to load AI usage stats");
+    } finally {
+      setAiUsageLoading(false);
     }
   };
 
@@ -1473,6 +1659,7 @@ export default function UserManagement({ token, user, sheetId }) {
   const saveInsightTranslationCacheSetting = async () => {
     if (!isSuperAdmin || insightTranslationCacheSaving) return;
     setInsightTranslationCacheSaving(true);
+    setInsightTranslationCacheSaved(false);
     try {
       const payload = {
         ttlMinutes: Number.parseInt(String(insightTranslationCache.ttlMinutes || "").trim(), 10) || 60,
@@ -1483,7 +1670,8 @@ export default function UserManagement({ token, user, sheetId }) {
       setInsightTranslationCache({
         ttlMinutes: Number(res?.data?.ttlMinutes || payload.ttlMinutes),
       });
-      alert("Insight translation cache settings saved");
+      setInsightTranslationCacheSaved(true);
+      setTimeout(() => setInsightTranslationCacheSaved(false), 1800);
     } catch (e) {
       alert(e.response?.data?.error || "Failed to save insight translation cache settings");
     } finally {
@@ -1494,6 +1682,7 @@ export default function UserManagement({ token, user, sheetId }) {
   const saveDlpSetting = async () => {
     if (!isSuperAdmin || dlpSettingsSaving) return;
     setDlpSettingsSaving(true);
+    setDlpSettingsSaved(false);
     try {
       const payload = {
         mode: ["block", "warn", "mask"].includes(dlpSettings.mode) ? dlpSettings.mode : "block",
@@ -1518,7 +1707,8 @@ export default function UserManagement({ token, user, sheetId }) {
         maskDetectedColumns: data.maskDetectedColumns === true,
         configured: true,
       });
-      alert("DLP settings saved");
+      setDlpSettingsSaved(true);
+      setTimeout(() => setDlpSettingsSaved(false), 1800);
     } catch (e) {
       alert(e.response?.data?.error || "Failed to save DLP settings");
     } finally {
@@ -1529,6 +1719,7 @@ export default function UserManagement({ token, user, sheetId }) {
   const saveAutosyncIntervalSetting = async () => {
     if (!isSuperAdmin || autosyncIntervalSaving) return;
     setAutosyncIntervalSaving(true);
+    setAutosyncIntervalSaved(false);
     try {
       const payload = {
         intervalMinutes: Number.parseInt(String(autosyncInterval.intervalMinutes || "").trim(), 10) || 5,
@@ -1539,17 +1730,85 @@ export default function UserManagement({ token, user, sheetId }) {
       setAutosyncInterval({
         intervalMinutes: Number(res?.data?.intervalMinutes || payload.intervalMinutes),
       });
-      alert("Autosync interval settings saved");
+      setAutosyncIntervalSaved(true);
+      setTimeout(() => setAutosyncIntervalSaved(false), 1800);
     } catch (e) {
       alert(e.response?.data?.error || "Failed to save autosync interval settings");
     } finally {
       setAutosyncIntervalSaving(false);
     }
   };
+  const saveAiRuntimeSetting = async (preset = null) => {
+    if (!isSuperAdmin || aiRuntimeSaving) return;
+    setAiRuntimeSaving(true);
+    setAiRuntimeSaved(false);
+    try {
+      const next = preset && AI_RUNTIME_PRESETS[preset]
+        ? { ...AI_RUNTIME_PRESETS[preset] }
+        : {
+            chatEnabled: aiRuntimeSettings.chatEnabled !== false,
+            aiRuntimePreset: String(aiRuntimeSettings.aiRuntimePreset || preset || "mid").toLowerCase(),
+            chatAudioEnabled: aiRuntimeSettings.chatAudioEnabled === true,
+            dashboardTranslationEnabled: aiRuntimeSettings.dashboardTranslationEnabled === true,
+            chatMaxInputChars: Number.parseInt(String(aiRuntimeSettings.chatMaxInputChars || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.chatMaxInputChars,
+            chatHistoryWindowMessages: Number.parseInt(String(aiRuntimeSettings.chatHistoryWindowMessages || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.chatHistoryWindowMessages,
+            dashboardTranslateMaxItems: Number.parseInt(String(aiRuntimeSettings.dashboardTranslateMaxItems || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.dashboardTranslateMaxItems,
+            dashboardTranslateMaxCharsPerItem: Number.parseInt(String(aiRuntimeSettings.dashboardTranslateMaxCharsPerItem || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.dashboardTranslateMaxCharsPerItem,
+            llmMaxOutputTokens: Number.parseInt(String(aiRuntimeSettings.llmMaxOutputTokens || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.llmMaxOutputTokens,
+            openaiModel: String(aiRuntimeSettings.openaiModel || "").trim() || AI_RUNTIME_PRESETS.mid.openaiModel,
+            openaiBaseUrl: String(aiRuntimeSettings.openaiBaseUrl || "").trim() || AI_RUNTIME_PRESETS.mid.openaiBaseUrl,
+            openaiTimeoutMs: Number.parseInt(String(aiRuntimeSettings.openaiTimeoutMs || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.openaiTimeoutMs,
+            openaiTemperature: Number.parseFloat(String(aiRuntimeSettings.openaiTemperature || "").trim()) || AI_RUNTIME_PRESETS.mid.openaiTemperature,
+            openaiMaxOutputTokens: Number.parseInt(String(aiRuntimeSettings.openaiMaxOutputTokens || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.openaiMaxOutputTokens,
+            openaiInputCostPer1M: Number.parseFloat(String(aiRuntimeSettings.openaiInputCostPer1M || "").trim()) || AI_RUNTIME_PRESETS.mid.openaiInputCostPer1M,
+            openaiOutputCostPer1M: Number.parseFloat(String(aiRuntimeSettings.openaiOutputCostPer1M || "").trim()) || AI_RUNTIME_PRESETS.mid.openaiOutputCostPer1M,
+            insightAiMaxSeriesPoints: Number.parseInt(String(aiRuntimeSettings.insightAiMaxSeriesPoints || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.insightAiMaxSeriesPoints,
+            insightAiMaxPromptChars: Number.parseInt(String(aiRuntimeSettings.insightAiMaxPromptChars || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.insightAiMaxPromptChars,
+            chatAudioMaxChars: Number.parseInt(String(aiRuntimeSettings.chatAudioMaxChars || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.chatAudioMaxChars,
+          };
+      const res = await axios.patch(`${API}/admin/settings/ai-runtime`, next, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || next;
+      setAiRuntimeSettings({
+        aiRuntimePreset: String(data.aiRuntimePreset || next.aiRuntimePreset || "mid"),
+        chatEnabled: data.chatEnabled !== false,
+        chatAudioEnabled: data.chatAudioEnabled === true,
+        dashboardTranslationEnabled: data.dashboardTranslationEnabled === true,
+        chatMaxInputChars: Number(data.chatMaxInputChars || next.chatMaxInputChars),
+        chatHistoryWindowMessages: Number(data.chatHistoryWindowMessages || next.chatHistoryWindowMessages),
+        dashboardTranslateMaxItems: Number(data.dashboardTranslateMaxItems || next.dashboardTranslateMaxItems),
+        dashboardTranslateMaxCharsPerItem: Number(data.dashboardTranslateMaxCharsPerItem || next.dashboardTranslateMaxCharsPerItem),
+        llmMaxOutputTokens: Number(data.llmMaxOutputTokens || next.llmMaxOutputTokens),
+        openaiModel: String(data.openaiModel || next.openaiModel),
+        openaiBaseUrl: String(data.openaiBaseUrl || next.openaiBaseUrl),
+        openaiTimeoutMs: Number(data.openaiTimeoutMs || next.openaiTimeoutMs),
+        openaiTemperature: Number(data.openaiTemperature || next.openaiTemperature),
+        openaiMaxOutputTokens: Number(data.openaiMaxOutputTokens || next.openaiMaxOutputTokens),
+        openaiInputCostPer1M: Number(data.openaiInputCostPer1M || next.openaiInputCostPer1M),
+        openaiOutputCostPer1M: Number(data.openaiOutputCostPer1M || next.openaiOutputCostPer1M),
+        insightAiMaxSeriesPoints: Number(data.insightAiMaxSeriesPoints || next.insightAiMaxSeriesPoints),
+        insightAiMaxPromptChars: Number(data.insightAiMaxPromptChars || next.insightAiMaxPromptChars),
+        chatAudioMaxChars: Number(data.chatAudioMaxChars || next.chatAudioMaxChars),
+      });
+      setAiRuntimeSaved(true);
+      setTimeout(() => setAiRuntimeSaved(false), 1800);
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to save AI runtime settings");
+    } finally {
+      setAiRuntimeSaving(false);
+    }
+  };
+
+  const applyAiRuntimePreset = (preset) => {
+    if (!preset || !AI_RUNTIME_PRESETS[preset]) return;
+    setAiRuntimeSettings((prev) => ({ ...prev, ...AI_RUNTIME_PRESETS[preset], aiRuntimePreset: preset }));
+  };
 
   const saveTwoFactorTotpSetting = async () => {
     if (!isSuperAdmin || twoFactorTotpSaving) return;
     setTwoFactorTotpSaving(true);
+    setTwoFactorTotpSaved(false);
     try {
       const payload = {
         issuer: String(twoFactorTotpSettings.issuer || "").trim(),
@@ -1564,7 +1823,8 @@ export default function UserManagement({ token, user, sheetId }) {
         digits: Number(res?.data?.digits || payload.digits),
         period: Number(res?.data?.period || payload.period),
       });
-      alert("2FA TOTP settings saved");
+      setTwoFactorTotpSaved(true);
+      setTimeout(() => setTwoFactorTotpSaved(false), 1800);
     } catch (e) {
       alert(e.response?.data?.error || "Failed to save 2FA TOTP settings");
     } finally {
@@ -1575,6 +1835,7 @@ export default function UserManagement({ token, user, sheetId }) {
   const saveSmsOtpSetting = async () => {
     if (!isSuperAdmin || smsOtpSaving) return;
     setSmsOtpSaving(true);
+    setSmsOtpSaved(false);
     try {
       const payload = {
         provider: "twilio",
@@ -1598,7 +1859,8 @@ export default function UserManagement({ token, user, sheetId }) {
         fromNumber: String(data.fromNumber || payload.fromNumber),
         messagingServiceSid: String(data.messagingServiceSid || payload.messagingServiceSid),
       }));
-      alert("2FA SMS settings saved");
+      setSmsOtpSaved(true);
+      setTimeout(() => setSmsOtpSaved(false), 1800);
     } catch (e) {
       alert(e.response?.data?.error || "Failed to save 2FA SMS settings");
     } finally {
@@ -1610,6 +1872,7 @@ export default function UserManagement({ token, user, sheetId }) {
     if (!canManageIntegrations || emailIngestSaving) return;
     if (!isSuperAdmin && !inviteGroupId) return;
     setEmailIngestSaving(true);
+    setEmailIngestSaved(false);
     try {
       const payload = {
         enabled: emailIngestConfig.enabled !== false,
@@ -1642,7 +1905,8 @@ export default function UserManagement({ token, user, sheetId }) {
         allowedSenderDomains: Array.isArray(data.allowedSenderDomains) ? data.allowedSenderDomains : [],
         notes: data.notes || "",
       });
-      alert("Email ingest settings saved");
+      setEmailIngestSaved(true);
+      setTimeout(() => setEmailIngestSaved(false), 1800);
     } catch (e) {
       alert(e.response?.data?.error || "Failed to save email ingest settings");
     } finally {
@@ -1853,10 +2117,11 @@ export default function UserManagement({ token, user, sheetId }) {
       fetchInviteEmailTemplate();
       fetchInvitationPolicy();
       fetchInsightTranslationCacheSetting();
-      fetchAiUsageSummary();
       fetchDlpSetting();
       fetchMetricsExposureSetting();
       fetchAutosyncIntervalSetting();
+      fetchAiRuntimeSetting();
+      fetchAiUsageSummary();
     }
   }, [token]);
 
@@ -1884,10 +2149,11 @@ export default function UserManagement({ token, user, sheetId }) {
     fetchSmtpSetting();
     fetchInviteEmailTemplate();
     fetchInsightTranslationCacheSetting();
-    fetchAiUsageSummary();
     fetchDlpSetting();
     fetchMetricsExposureSetting();
     fetchAutosyncIntervalSetting();
+    fetchAiRuntimeSetting();
+    fetchAiUsageSummary();
   }, [token, canManageIntegrations, selectedGroupId, groups, isSuperAdmin]);
 
   useEffect(() => {
@@ -2256,7 +2522,7 @@ export default function UserManagement({ token, user, sheetId }) {
         allowed_columns,
         row_filters
       }, { headers: { Authorization: `Bearer ${token}` } });
-      alert("User permissions saved");
+      return true;
     } catch (e) {
       alert(e.response?.data?.error || "Failed to save user permissions");
     }
@@ -2429,7 +2695,7 @@ export default function UserManagement({ token, user, sheetId }) {
       allowed_columns,
       row_filters
     }, { headers: { Authorization: `Bearer ${token}` } });
-    alert("Customer permissions saved");
+    return true;
   };
 
   // NEW: delete group (with confirm) from Groups panel
@@ -2502,7 +2768,7 @@ export default function UserManagement({ token, user, sheetId }) {
     setTemplates(next);
     saveTemplates(next);
     setNewTplNameUser("");
-    alert("Template saved");
+    return true;
   };
 
   const handleApplyTemplateToUser = (tplId) => {
@@ -2540,7 +2806,7 @@ export default function UserManagement({ token, user, sheetId }) {
     setTemplates(next);
     saveTemplates(next);
     setNewTplNameGroup("");
-    alert("Template saved");
+    return true;
   };
 
   const handleApplyTemplateToGroup = (tplId) => {
@@ -2687,6 +2953,7 @@ export default function UserManagement({ token, user, sheetId }) {
 
   const saveGroupSettings = async () => {
     if (!selectedGroupId || (!isSuperAdmin && user?.role !== "admin") || !groupSettingsDraft || groupSettingsSaving) return;
+    setGroupSettingsSaved(false);
     setGroupSettingsSaving(true);
     try {
       const maxFileSizeMb = Number.parseInt(String(groupSettingsDraft.maxFileSizeMb || "").trim(), 10);
@@ -2752,7 +3019,8 @@ export default function UserManagement({ token, user, sheetId }) {
       setGroupSettingsDirty(false);
       lastLoadedGroupIdRef.current = Number(selectedGroupId);
       await fetchGroups();
-      alert("Customer settings saved");
+      setGroupSettingsSaved(true);
+      setTimeout(() => setGroupSettingsSaved(false), 1800);
     } catch (e) {
       alert(e.response?.data?.error || "Failed to save customer settings");
     } finally {
@@ -3074,14 +3342,16 @@ export default function UserManagement({ token, user, sheetId }) {
                             <div className="flex items-center justify-end gap-2 pt-1">
                               <button
                                 type="button"
-                                className={`rounded-md bg-slate-900 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-slate-800 ${viewAssignmentSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                                className={`rounded-md px-3 py-1.5 text-[11px] font-semibold text-white ${viewAssignmentSaved ? "bg-emerald-600 hover:bg-emerald-600" : "bg-slate-900 hover:bg-slate-800"} ${viewAssignmentSaving ? "opacity-60 cursor-not-allowed" : ""}`}
                                 disabled={viewAssignmentSaving}
                                 onClick={async () => {
                                   if (!selectedUserId) return;
                                   setViewAssignmentSaving(true);
+                                  setViewAssignmentSaved(false);
                                   try {
                                     await syncUserAssignedViews(draftUserViewIds);
-                                    alert("User assigned views saved");
+                                    setViewAssignmentSaved(true);
+                                    setTimeout(() => setViewAssignmentSaved(false), 1800);
                                   } catch {
                                     alert("Failed to save user assigned views");
                                   } finally {
@@ -3089,7 +3359,7 @@ export default function UserManagement({ token, user, sheetId }) {
                                   }
                                 }}
                               >
-                                {viewAssignmentSaving ? "Saving..." : "Save"}
+                                {viewAssignmentSaving ? "Saving..." : viewAssignmentSaved ? "Saved" : "Save"}
                               </button>
                             </div>
                           </>
@@ -3197,11 +3467,21 @@ export default function UserManagement({ token, user, sheetId }) {
                                 ...(current.bundleTier ? { [current.bundleTier]: { ...currentFeatures } } : {}),
                               };
                               const targetFeatures = { ...(nextSets[bundle.key] || currentFeatures) };
+                              const aiLimits = BUNDLE_AI_LIMITS[bundle.key] || {};
+                              const aiPricing = BUNDLE_AI_PRICING[bundle.key] || {};
+                              setAiRuntimeSettings((prevRuntime) => ({
+                                ...prevRuntime,
+                                ...(aiPricing.openaiModel ? { openaiModel: aiPricing.openaiModel } : {}),
+                                ...(Number.isFinite(aiPricing.openaiInputCostPer1M) ? { openaiInputCostPer1M: aiPricing.openaiInputCostPer1M } : {}),
+                                ...(Number.isFinite(aiPricing.openaiOutputCostPer1M) ? { openaiOutputCostPer1M: aiPricing.openaiOutputCostPer1M } : {}),
+                              }));
                               return {
                                 ...current,
                                 bundleTier: bundle.key,
                                 bundleFeatureSets: nextSets,
                                 features: targetFeatures,
+                                maxAiQueriesPerMonth: aiLimits.maxAiQueriesPerMonth ?? current.maxAiQueriesPerMonth ?? "",
+                                aiMonthlyBudgetUsd: aiLimits.aiMonthlyBudgetUsd ?? current.aiMonthlyBudgetUsd ?? "",
                               };
                             });
                           }}
@@ -3246,9 +3526,9 @@ export default function UserManagement({ token, user, sheetId }) {
                       type="button"
                       onClick={saveGroupSettings}
                       disabled={groupSettingsSaving}
-                      className={`mt-3 btn-premium bg-slate-800 text-white w-full py-2 ${groupSettingsSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                      className={`mt-3 btn-premium text-white w-full py-2 ${groupSettingsSaved ? "bg-emerald-600 hover:bg-emerald-600" : "bg-slate-800"} ${groupSettingsSaving ? "opacity-60 cursor-not-allowed" : ""}`}
                     >
-                      {groupSettingsSaving ? "Saving..." : "Save Customer Settings"}
+                      {groupSettingsSaving ? "Saving..." : groupSettingsSaved ? "Saved" : "Save Customer Settings"}
                     </button>
                   </div>
                 </div>
@@ -3261,40 +3541,6 @@ export default function UserManagement({ token, user, sheetId }) {
             <div className="flex items-center justify-between mb-3">
               <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500">System Settings</div>
               <span className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600">Super Admin</span>
-            </div>
-            <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2 mb-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">AI Total Usage ({aiUsageSummary.periodMonth || "month"})</div>
-                <button
-                  type="button"
-                  onClick={fetchAiUsageSummary}
-                  disabled={aiUsageLoading}
-                  className={`text-[10px] font-semibold ${aiUsageLoading ? "text-slate-400 cursor-not-allowed" : "text-slate-600 hover:text-slate-900"}`}
-                >
-                  {aiUsageLoading ? "Refreshing..." : "Refresh"}
-                </button>
-              </div>
-              <div className="text-[10px] text-slate-500">
-                {aiUsageError ? `Refresh error: ${aiUsageError}` : `Last refresh: ${aiUsageRefreshedAt || "not yet"}`}
-              </div>
-              <div className="grid grid-cols-2 gap-2 text-[11px]">
-                <div className="rounded border border-slate-200 p-2">
-                  <div className="text-[10px] text-slate-500">Total Queries</div>
-                  <div className="font-semibold text-slate-900">{aiUsageSummary.totals.queryCount.toLocaleString()}</div>
-                </div>
-                <div className="rounded border border-slate-200 p-2">
-                  <div className="text-[10px] text-slate-500">Total Cost</div>
-                  <div className="font-semibold text-slate-900">${Number(aiUsageSummary.totals.estimatedCostUsd || 0).toFixed(4)}</div>
-                </div>
-                <div className="rounded border border-slate-200 p-2">
-                  <div className="text-[10px] text-slate-500">Prompt Tokens</div>
-                  <div className="font-semibold text-slate-900">{aiUsageSummary.totals.promptTokens.toLocaleString()}</div>
-                </div>
-                <div className="rounded border border-slate-200 p-2">
-                  <div className="text-[10px] text-slate-500">Completion Tokens</div>
-                  <div className="font-semibold text-slate-900">{aiUsageSummary.totals.completionTokens.toLocaleString()}</div>
-                </div>
-              </div>
             </div>
             <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
               <div className="flex items-center justify-between gap-2">
@@ -3347,9 +3593,9 @@ export default function UserManagement({ token, user, sheetId }) {
                       type="button"
                       onClick={saveTwoFactorTotpSetting}
                       disabled={twoFactorTotpSaving}
-                      className={`btn-premium bg-slate-800 text-white w-full py-1.5 text-[11px] ${twoFactorTotpSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                      className={`btn-premium text-white w-full py-1.5 text-[11px] ${twoFactorTotpSaved ? "bg-emerald-600 hover:bg-emerald-600" : "bg-slate-800"} ${twoFactorTotpSaving ? "opacity-60 cursor-not-allowed" : ""}`}
                     >
-                      {twoFactorTotpSaving ? "Saving..." : "Save TOTP Settings"}
+                      {twoFactorTotpSaving ? "Saving..." : twoFactorTotpSaved ? "Saved" : "Save TOTP Settings"}
                     </button>
                   </div>
                   <div className="rounded-md border border-slate-200 bg-slate-50 p-2 space-y-2">
@@ -3392,9 +3638,9 @@ export default function UserManagement({ token, user, sheetId }) {
                       type="button"
                       onClick={saveSmsOtpSetting}
                       disabled={smsOtpSaving}
-                      className={`btn-premium bg-slate-800 text-white w-full py-1.5 text-[11px] ${smsOtpSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                      className={`btn-premium text-white w-full py-1.5 text-[11px] ${smsOtpSaved ? "bg-emerald-600 hover:bg-emerald-600" : "bg-slate-800"} ${smsOtpSaving ? "opacity-60 cursor-not-allowed" : ""}`}
                     >
-                      {smsOtpSaving ? "Saving..." : "Save SMS OTP Settings"}
+                      {smsOtpSaving ? "Saving..." : smsOtpSaved ? "Saved" : "Save SMS OTP Settings"}
                     </button>
                   </div>
                 </>
@@ -3475,9 +3721,9 @@ export default function UserManagement({ token, user, sheetId }) {
                     type="button"
                     onClick={saveDlpSetting}
                     disabled={dlpSettingsSaving}
-                    className={`btn-premium bg-slate-800 text-white w-full py-1.5 text-[11px] ${dlpSettingsSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                    className={`btn-premium text-white w-full py-1.5 text-[11px] ${dlpSettingsSaved ? "bg-emerald-600 hover:bg-emerald-600" : "bg-slate-800"} ${dlpSettingsSaving ? "opacity-60 cursor-not-allowed" : ""}`}
                   >
-                    {dlpSettingsSaving ? "Saving..." : "Save DLP Settings"}
+                    {dlpSettingsSaving ? "Saving..." : dlpSettingsSaved ? "Saved" : "Save DLP Settings"}
                   </button>
                 </>
               )}
@@ -3512,13 +3758,23 @@ export default function UserManagement({ token, user, sheetId }) {
                   <input type="password" className="input-premium py-1.5 text-[11px] font-semibold" placeholder={smtpMeta.hasPassword ? "***" : "SMTP Password"} value={smtpForm.password} onChange={(e) => setSmtpForm((prev) => ({ ...prev, password: e.target.value }))} autoComplete="new-password" />
                   <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="From Email" value={smtpForm.fromEmail} onChange={(e) => setSmtpForm((prev) => ({ ...prev, fromEmail: e.target.value }))} />
                   <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="From Name" value={smtpForm.fromName} onChange={(e) => setSmtpForm((prev) => ({ ...prev, fromName: e.target.value }))} />
+                  <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600">
+                    <a
+                      className="text-blue-700 hover:underline"
+                      href="https://support.google.com/a/answer/176600?hl=en"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Google SMTP server documentation
+                    </a>
+                  </div>
                   <button
                     type="button"
                     onClick={saveSmtpSetting}
                     disabled={smtpSaving}
-                    className={`btn-premium bg-slate-800 text-white w-full py-1.5 text-[11px] ${smtpSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                    className={`btn-premium text-white w-full py-1.5 text-[11px] ${smtpSaved ? "bg-emerald-600 hover:bg-emerald-600" : "bg-slate-800"} ${smtpSaving ? "opacity-60 cursor-not-allowed" : ""}`}
                   >
-                    {smtpSaving ? "Saving..." : "Save SMTP Settings"}
+                    {smtpSaving ? "Saving..." : smtpSaved ? "Saved" : "Save SMTP Settings"}
                   </button>
                 </>
               )}
@@ -3541,9 +3797,9 @@ export default function UserManagement({ token, user, sheetId }) {
                 type="button"
                 onClick={saveInsightTranslationCacheSetting}
                 disabled={insightTranslationCacheSaving}
-                className={`btn-premium bg-slate-800 text-white w-full py-1.5 text-[11px] ${insightTranslationCacheSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                className={`btn-premium text-white w-full py-1.5 text-[11px] ${insightTranslationCacheSaved ? "bg-emerald-600 hover:bg-emerald-600" : "bg-slate-800"} ${insightTranslationCacheSaving ? "opacity-60 cursor-not-allowed" : ""}`}
               >
-                {insightTranslationCacheSaving ? "Saving..." : "Save Insight Cache Settings"}
+                {insightTranslationCacheSaving ? "Saving..." : insightTranslationCacheSaved ? "Saved" : "Save Insight Cache Settings"}
               </button>
             </div>
           </div>
@@ -3749,9 +4005,9 @@ export default function UserManagement({ token, user, sheetId }) {
                 type="button"
                 onClick={saveInvitationPolicy}
                 disabled={invitePolicySaving}
-                className={`btn-premium bg-slate-800 text-white w-full py-2 ${invitePolicySaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                className={`btn-premium text-white w-full py-2 ${invitePolicySaved ? "bg-emerald-600 hover:bg-emerald-600" : "bg-slate-800"} ${invitePolicySaving ? "opacity-60 cursor-not-allowed" : ""}`}
               >
-                {invitePolicySaving ? "Saving..." : "Save Invitation Policy"}
+                {invitePolicySaving ? "Saving..." : invitePolicySaved ? "Saved" : "Save Invitation Policy"}
               </button>
             </div>
             <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
@@ -3785,9 +4041,9 @@ export default function UserManagement({ token, user, sheetId }) {
                   type="button"
                   onClick={saveInviteEmailTemplate}
                   disabled={inviteEmailSaving}
-                  className={`btn-premium bg-slate-800 text-white w-full py-2 ${inviteEmailSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                  className={`btn-premium text-white w-full py-2 ${inviteEmailSaved ? "bg-emerald-600 hover:bg-emerald-600" : "bg-slate-800"} ${inviteEmailSaving ? "opacity-60 cursor-not-allowed" : ""}`}
                 >
-                  {inviteEmailSaving ? "Saving..." : "Save Invite Template"}
+                  {inviteEmailSaving ? "Saving..." : inviteEmailSaved ? "Saved" : "Save Invite Template"}
                 </button>
                 <button
                   type="button"
@@ -3829,14 +4085,17 @@ export default function UserManagement({ token, user, sheetId }) {
           canManageIntegrations={canManageIntegrations}
           isSuperAdmin={isSuperAdmin}
           selectedGroupId={selectedGroupId}
+          selectedGroupBundleTier={selectedGroupEntitlements?.bundleTier || ""}
           reportSourceOptions={reportSourceOptions}
           autosyncInterval={autosyncInterval}
           autosyncIntervalSaving={autosyncIntervalSaving}
+          autosyncIntervalSaved={autosyncIntervalSaved}
           setAutosyncInterval={setAutosyncInterval}
           saveAutosyncIntervalSetting={saveAutosyncIntervalSetting}
           INTEGRATION_LOGOS={INTEGRATION_LOGOS}
           emailIngestConfig={emailIngestConfig}
           emailIngestSaving={emailIngestSaving}
+          emailIngestSaved={emailIngestSaved}
           integrationOpen={integrationOpen}
           setIntegrationOpen={setIntegrationOpen}
           setEmailIngestConfig={setEmailIngestConfig}
@@ -3845,6 +4104,7 @@ export default function UserManagement({ token, user, sheetId }) {
           googleOauthMeta={googleOauthMeta}
           googleOauthForm={googleOauthForm}
           googleOauthSaving={googleOauthSaving}
+          googleOauthSaved={googleOauthSaved}
           googleOauthTesting={googleOauthTesting}
           setGoogleOauthForm={setGoogleOauthForm}
           saveGoogleOauthSetting={saveGoogleOauthSetting}
@@ -3853,6 +4113,7 @@ export default function UserManagement({ token, user, sheetId }) {
           dropboxOauthMeta={dropboxOauthMeta}
           dropboxOauthForm={dropboxOauthForm}
           dropboxOauthSaving={dropboxOauthSaving}
+          dropboxOauthSaved={dropboxOauthSaved}
           dropboxOauthTesting={dropboxOauthTesting}
           setDropboxOauthForm={setDropboxOauthForm}
           saveDropboxOauthSetting={saveDropboxOauthSetting}
@@ -3861,6 +4122,7 @@ export default function UserManagement({ token, user, sheetId }) {
           oneDriveOauthMeta={oneDriveOauthMeta}
           oneDriveOauthForm={oneDriveOauthForm}
           oneDriveOauthSaving={oneDriveOauthSaving}
+          oneDriveOauthSaved={oneDriveOauthSaved}
           oneDriveOauthTesting={oneDriveOauthTesting}
           setOneDriveOauthForm={setOneDriveOauthForm}
           saveOneDriveOauthSetting={saveOneDriveOauthSetting}
@@ -3869,11 +4131,13 @@ export default function UserManagement({ token, user, sheetId }) {
           quickbooksOauthMeta={quickbooksOauthMeta}
           quickbooksOauthForm={quickbooksOauthForm}
           quickbooksOauthSaving={quickbooksOauthSaving}
+          quickbooksOauthSaved={quickbooksOauthSaved}
           quickbooksOauthTesting={quickbooksOauthTesting}
           samlConfigured={samlConfigured}
           samlMeta={samlMeta}
           samlForm={samlForm}
           samlSaving={samlSaving}
+          samlSaved={samlSaved}
           samlTesting={samlTesting}
           QUICKBOOKS_DATA_TYPE_OPTIONS={QUICKBOOKS_DATA_TYPE_OPTIONS}
           setQuickbooksOauthForm={setQuickbooksOauthForm}
@@ -3889,6 +4153,18 @@ export default function UserManagement({ token, user, sheetId }) {
           updateStorageProvider={updateStorageProvider}
           saveStorageSetting={saveStorageSetting}
           testStorageSetting={testStorageSetting}
+          aiRuntimeSettings={aiRuntimeSettings}
+          setAiRuntimeSettings={setAiRuntimeSettings}
+          aiRuntimeSaving={aiRuntimeSaving}
+          aiRuntimeSaved={aiRuntimeSaved}
+          saveAiRuntimeSetting={saveAiRuntimeSetting}
+          applyAiRuntimePreset={applyAiRuntimePreset}
+          aiUsagePeriodMonth={aiUsagePeriodMonth}
+          setAiUsagePeriodMonth={setAiUsagePeriodMonth}
+          aiUsageSummary={aiUsageSummary}
+          aiUsageLoading={aiUsageLoading}
+          aiUsageError={aiUsageError}
+          fetchAiUsageSummary={fetchAiUsageSummary}
         />
 
         </>

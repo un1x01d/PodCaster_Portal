@@ -17,10 +17,12 @@ export default function StorageOptionCard({
   onSave,
   onTest,
   saving,
+  saved,
   testing,
   saveLabel = "Save",
   testLabel = "Test Connection",
   helpLinks = [],
+  enterpriseOnly = false,
 }) {
   const borderClass = enabled && tested ? "border-emerald-400" : "border-slate-200";
   const statusText = enabled ? "Enabled" : "Disabled";
@@ -42,6 +44,7 @@ export default function StorageOptionCard({
           <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{title}</div>
           <span className={`text-[10px] font-semibold ${statusClass}`}>{statusText}</span>
           {tested && <span className="text-[10px] font-semibold text-emerald-600">{testText}</span>}
+          {enterpriseOnly && <span className="text-[10px] font-semibold text-amber-700">Enterprise only</span>}
           {!tested && configured && <span className="text-[10px] font-semibold text-slate-500">Configured</span>}
         </div>
         <button type="button" className="text-[10px] font-semibold text-slate-600 hover:text-slate-900" onClick={onToggleOpen}>
@@ -114,9 +117,9 @@ export default function StorageOptionCard({
               type="button"
               onClick={onSave}
               disabled={saving}
-              className={`btn-premium bg-slate-800 text-white w-full py-2 ${saving ? "opacity-60 cursor-not-allowed" : ""}`}
+              className={`btn-premium text-white w-full py-2 ${saved ? "bg-emerald-600 hover:bg-emerald-600" : "bg-slate-800"} ${saving ? "opacity-60 cursor-not-allowed" : ""}`}
             >
-              {saving ? "Saving..." : saveLabel}
+              {saving ? "Saving..." : saved ? "Saved" : saveLabel}
             </button>
             <button
               type="button"

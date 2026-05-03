@@ -1,5 +1,7 @@
+import { loadAiRuntimeSettings } from "./aiRuntimeSettings.js";
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+const OPENAI_MODEL = process.env.OPENAI_MODEL;
+if (!OPENAI_MODEL) throw new Error("OPENAI_MODEL is required");
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "25000", 10);
 const TRANSLATION_CACHE = new Map();
 const TRANSLATION_IN_FLIGHT = new Map();
@@ -160,8 +162,12 @@ async function callOpenAITranslation({ locale, items, context }) {
   const inFlight = TRANSLATION_IN_FLIGHT.get(cacheKey);
   if (inFlight) return inFlight.then((result) => result.map((item) => ({ ...item })));
 
+  const runtime = await loadAiRuntimeSettings(null);
+  const model = String(runtime?.openaiModel || OPENAI_MODEL);
+  const baseUrl = String(runtime?.openaiBaseUrl || OPENAI_BASE_URL).replace(/\/+$/, "");
+  const timeoutMs = Number(runtime?.openaiTimeoutMs || OPENAI_TIMEOUT_MS);
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const promise = (async () => {
     const targetLanguage = getLanguageLabel(locale);
     const preparedItems = items.map((item) => {
@@ -197,7 +203,7 @@ async function callOpenAITranslation({ locale, items, context }) {
       },
     };
 
-    const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+    const resp = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
       signal: controller.signal,
       headers: {
@@ -205,7 +211,7 @@ async function callOpenAITranslation({ locale, items, context }) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: OPENAI_MODEL,
+        model,
         temperature: 0,
         response_format: { type: "json_object" },
         messages: [
@@ -240,14 +246,8 @@ async function callOpenAITranslation({ locale, items, context }) {
       key: item.key,
       text: restoreTerms(translated.get(item.key) || item.text, item.placeholders),
     }));
-    const usage = {
-      provider: "openai",
-      model: OPENAI_MODEL,
-      promptTokens: Number(json?.usage?.prompt_tokens || 0),
-      completionTokens: Number(json?.usage?.completion_tokens || 0),
-    };
     setCachedTranslation(cacheKey, result);
-    return { items: result, usage };
+    return result;
   })();
 
   TRANSLATION_IN_FLIGHT.set(cacheKey, promise);
@@ -255,10 +255,7 @@ async function callOpenAITranslation({ locale, items, context }) {
     return await promise;
   } catch (error) {
     console.error("dashboard translation failed:", error?.message || error);
-    return {
-      items: items.map((item) => ({ key: item.key, text: item.text })),
-      usage: null,
-    };
+    return items.map((item) => ({ key: item.key, text: item.text }));
   } finally {
     clearTimeout(timeout);
     TRANSLATION_IN_FLIGHT.delete(cacheKey);
@@ -266,16 +263,12 @@ async function callOpenAITranslation({ locale, items, context }) {
 }
 
 export async function translateDashboardItems({ locale, items, context = "dashboard-ui" }) {
-  const out = await callOpenAITranslation({ locale, items, context });
-  return out?.items || [];
+  return callOpenAITranslation({ locale, items, context });
 }
 
 export async function translateDashboardItemsWithUsage({ locale, items, context = "dashboard-ui" }) {
-  const out = await callOpenAITranslation({ locale, items, context });
-  return {
-    items: out?.items || [],
-    usage: out?.usage || null,
-  };
+  const translatedItems = await callOpenAITranslation({ locale, items, context });
+  return { items: translatedItems, usage: null };
 }
 
 export async function translateDashboardCards({ locale, cards, preserveTerms = [], context = "dashboard-cards" }) {
@@ -296,8 +289,7 @@ export async function translateDashboardCards({ locale, cards, preserveTerms = [
     });
   });
 
-  const translatedResult = await callOpenAITranslation({ locale, items, context });
-  const translated = translatedResult?.items || [];
+  const translated = await callOpenAITranslation({ locale, items, context });
   const byKey = new Map(translated.map((item) => [item.key, item.text]));
   return cards.map((card) => ({
     ...card,

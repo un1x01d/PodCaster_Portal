@@ -9,6 +9,7 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
     const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
     const containerRef = useRef(null);
     const [speakingIndex, setSpeakingIndex] = React.useState(null);
+    const [chatAudioEnabled, setChatAudioEnabled] = React.useState(false);
     const utteranceRef = useRef(null);
     const readCookie = (name) => {
         if (typeof document === "undefined") return "";
@@ -119,7 +120,10 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
             signal,
             credentials: "include",
         });
-        if (!response.ok) return { cacheKey, blob: null, fromCache: false };
+        if (!response.ok) {
+            if (response.status === 403) setChatAudioEnabled(false);
+            return { cacheKey, blob: null, fromCache: false };
+        }
         const blob = await response.blob();
         await cacheAudioBlob(cacheKey, blob);
         return { cacheKey, blob, fromCache: false };
@@ -147,6 +151,31 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
             containerRef.current.scrollTop = containerRef.current.scrollHeight;
         }
     }, [messages]);
+
+    useEffect(() => {
+        const token =
+            localStorage.getItem("token")
+            || localStorage.getItem("authToken")
+            || localStorage.getItem("jwt")
+            || localStorage.getItem("jwtToken")
+            || "";
+        if (!token) return;
+        fetch(`${API}/users/me/ai-features`, {
+            method: "GET",
+            headers: {
+                ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+            credentials: "include",
+        })
+            .then((res) => (res.ok ? res.json() : null))
+            .then((data) => {
+                if (!data || typeof data !== "object") return;
+                setChatAudioEnabled(data.chatAudioEnabled === true);
+            })
+            .catch(() => {
+                setChatAudioEnabled(false);
+            });
+    }, [API]);
 
     useEffect(() => {
         warmRecentAudioCache();
@@ -346,6 +375,7 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
     };
 
     const handleSpeak = async (text, index) => {
+        if (!chatAudioEnabled) return;
         const synth = window.speechSynthesis;
         const localeBase = String(locale || "en").toLowerCase().split("-")[0];
         if (synth) synth.cancel();
@@ -389,6 +419,7 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
     };
 
     const streamTextToAudio = async (text) => {
+        if (!chatAudioEnabled) return false;
         window._stopPlayback = false;
         window._audioQueue = [];
         window._audioAbortControllers = [];
@@ -428,7 +459,10 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
             signal: controller.signal,
             credentials: "include",
         });
-        if (!response.ok) return false;
+        if (!response.ok) {
+            if (response.status === 403) setChatAudioEnabled(false);
+            return false;
+        }
         if (!response.body) return false;
 
         if ("MediaSource" in window && MediaSource.isTypeSupported("audio/mpeg")) {
@@ -579,7 +613,7 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
                         <div className={`max-w-[90%] rounded-xl px-2.5 py-1.5 text-[11px] leading-snug shadow-sm group relative transition-all break-words overflow-wrap-anywhere ${
                             msg.type === 'user' ? 'bg-blue-600 text-white rounded-tr-sm' : `bg-white text-slate-600 border border-slate-200 rounded-tl-sm pr-8 ${isSpeaking ? 'bg-indigo-50/30' : ''}`
                         }`}>
-                            {msg.type === 'bot' && (
+                            {msg.type === 'bot' && chatAudioEnabled && (
                                 <button 
                                     onClick={() => handleSpeak(msg.text, i)}
                                     className={`absolute right-1.5 top-1.5 w-6 h-6 rounded-full flex items-center justify-center transition-all shadow-md z-[120] cursor-pointer ${isSpeaking ? 'bg-orange-500 text-white' : 'bg-white text-slate-400 border border-slate-100 opacity-0 group-hover:opacity-100 hover:text-indigo-600'}`}

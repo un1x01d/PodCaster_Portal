@@ -1,13 +1,25 @@
 import { normalizeLocale, translateDashboardItemsWithUsage } from "../utils/dashboardLocalization.js";
 import { recordAiUsage, reserveAiQueryForUser } from "../utils/aiQuota.js";
+import { resolveEffectiveAiFeaturesForUser } from "../utils/aiFeatureToggles.js";
 
 export async function translateDashboardCopy(req, res) {
+  const aiFeatures = await resolveEffectiveAiFeaturesForUser(req.user).catch(() => ({ dashboardTranslationEnabled: false }));
+  if (!aiFeatures?.dashboardTranslationEnabled) {
+    return res.status(403).json({ error: "ai_feature_disabled:dashboard_translation" });
+  }
   const body = req.body || {};
   const locale = normalizeLocale(body.locale || body.lang || "en");
   const items = Array.isArray(body.items) ? body.items : [];
 
   if (!items.length) {
     return res.json({ locale, translations: {} });
+  }
+
+  let reservation = null;
+  try {
+    reservation = await reserveAiQueryForUser({ user: req.user, kind: "dashboard_translate" });
+  } catch (err) {
+    return res.status(err.statusCode || 429).json({ error: err.message, ...(err.details || {}) });
   }
 
   const translatedResult = await translateDashboardItemsWithUsage({
@@ -24,7 +36,6 @@ export async function translateDashboardCopy(req, res) {
 
   if (usage && (Number(usage.promptTokens || 0) > 0 || Number(usage.completionTokens || 0) > 0)) {
     try {
-      const reservation = await reserveAiQueryForUser({ user: req.user, kind: "dashboard_translate" });
       await recordAiUsage({
         reservation,
         provider: usage.provider || "openai",
