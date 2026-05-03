@@ -419,7 +419,7 @@ async function callInsightRag({ metricCol, dateCol, categoryCol, series, categor
   }
 }
 
-function buildRowFilterWhereClause(rowFiltersList = [], startParamIndex = 1) {
+function buildRowFilterWhereClause(rowFiltersList = [], startParamIndex = 1, actualHeaders = []) {
   const normalized = Array.isArray(rowFiltersList) ? rowFiltersList : [];
   const hasAllowAll = normalized.some((f) => !f || Object.keys(f).length === 0);
   if (hasAllowAll) return { sql: "", params: [] };
@@ -427,11 +427,22 @@ function buildRowFilterWhereClause(rowFiltersList = [], startParamIndex = 1) {
   const groups = [];
   const params = [];
   let paramIdx = startParamIndex;
+
+  const headersList = Array.isArray(actualHeaders) ? actualHeaders : [];
+  const resolveColumnKey = (requested) => {
+      if (!headersList.length) return requested;
+      const exact = headersList.find((h) => h === requested);
+      if (exact) return exact;
+      const lowerRequested = String(requested).toLowerCase().trim();
+      return headersList.find((h) => String(h).toLowerCase().trim() === lowerRequested) || requested;
+  };
+
   normalized.forEach((filters) => {
     const entries = Object.entries(filters || {}).filter(([k]) => !!k);
     if (!entries.length) return;
     const predicates = entries.map(([k, v]) => {
-      params.push(k, String(v));
+      const resolvedKey = resolveColumnKey(k);
+      params.push(resolvedKey, String(v));
       const sql = `(row_data->>$${paramIdx}) = $${paramIdx + 1}`;
       paramIdx += 2;
       return sql;
@@ -600,7 +611,7 @@ async function loadAccessibleRows(sheetId, user) {
     }
 
     if (rowFiltersList.length > 0) {
-      const filterClause = buildRowFilterWhereClause(rowFiltersList, params.length + 1);
+      const filterClause = buildRowFilterWhereClause(rowFiltersList, params.length + 1, headers);
       where += filterClause.sql;
       params.push(...filterClause.params);
     }

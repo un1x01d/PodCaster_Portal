@@ -18,6 +18,7 @@ import {
 } from "./userController.js";
 
 const STORAGE_TEST_TIMEOUT_MS = Number.parseInt(process.env.STORAGE_TEST_TIMEOUT_MS || "20000", 10);
+const SFTP_TMP_PREFIX = "storage-sftp-";
 
 function parsePositiveInt(value) {
   const parsed = Number.parseInt(value, 10);
@@ -27,6 +28,32 @@ function parsePositiveInt(value) {
 function trimString(value, fallback = "") {
   const raw = value === undefined || value === null ? fallback : value;
   return String(raw || "").trim();
+}
+
+function shellQuote(value) {
+  const raw = String(value ?? "");
+  return `'${raw.replaceAll("'", `'\\''`)}'`;
+}
+
+function safeAskpassScript(secretValue) {
+  return `#!/bin/sh\nprintf '%s\\n' ${shellQuote(String(secretValue || ""))}\n`;
+}
+
+function cleanupStaleSftpTempArtifacts() {
+  try {
+    const root = os.tmpdir();
+    const now = Date.now();
+    const entries = fs.readdirSync(root, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.startsWith(SFTP_TMP_PREFIX)) continue;
+      const target = path.join(root, entry.name);
+      try {
+        const st = fs.statSync(target);
+        const ageMs = now - Number(st.mtimeMs || st.ctimeMs || now);
+        if (ageMs > 60 * 60 * 1000) fs.rmSync(target, { recursive: true, force: true });
+      } catch {}
+    }
+  } catch {}
 }
 
 function maskIfPresent(value) {
@@ -211,7 +238,8 @@ async function runSshProbe(cfg) {
     "-p", String(port),
   ];
 
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "storage-sftp-"));
+  cleanupStaleSftpTempArtifacts();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), SFTP_TMP_PREFIX));
   const cleanupPaths = [];
   const env = { ...process.env };
 
@@ -226,7 +254,7 @@ async function runSshProbe(cfg) {
       const passphrase = trimString(decryptSettingValue(String(cfg?.passphrase || "")));
       if (passphrase) {
         const scriptPath = path.join(tmpDir, "askpass.sh");
-        fs.writeFileSync(scriptPath, `#!/bin/sh\nprintf '%s\\n' "${passphrase.replace(/"/g, '\\"')}"\n`, { mode: 0o700 });
+        fs.writeFileSync(scriptPath, safeAskpassScript(passphrase), { mode: 0o700 });
         cleanupPaths.push(scriptPath);
         env.SSH_ASKPASS = scriptPath;
         env.SSH_ASKPASS_REQUIRE = "force";
@@ -236,7 +264,7 @@ async function runSshProbe(cfg) {
       const password = trimString(decryptSettingValue(String(cfg?.password || "")));
       if (!password) return { ok: false, error: "ssh_password_missing" };
       const scriptPath = path.join(tmpDir, "askpass.sh");
-      fs.writeFileSync(scriptPath, `#!/bin/sh\nprintf '%s\\n' "${password.replace(/"/g, '\\"')}"\n`, { mode: 0o700 });
+      fs.writeFileSync(scriptPath, safeAskpassScript(password), { mode: 0o700 });
       cleanupPaths.push(scriptPath);
       env.SSH_ASKPASS = scriptPath;
       env.SSH_ASKPASS_REQUIRE = "force";

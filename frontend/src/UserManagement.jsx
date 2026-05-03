@@ -1,5 +1,5 @@
 // UserManagement.jsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import CustomerFormModal from "./components/admin/CustomerFormModal.jsx";
 import PasswordResetModal from "./components/admin/PasswordResetModal.jsx";
@@ -20,6 +20,78 @@ const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
  * Local templates (frontend-only)
  * --------------------------- */
 const LS_KEY = "permTemplates:v1";
+const CUSTOMER_FEATURE_OPTIONS = [
+  ["manageUsers", "Manage users"],
+  ["managePermissions", "Permissions"],
+  ["manageGroupAdmins", "Promote admins"],
+  ["ai", "AI"],
+  ["exports", "Exports"],
+  ["imports", "Imports"],
+  ["approvalFlow", "Approvals"],
+  ["auditLogs", "Audit logs"],
+  ["sso", "SSO / SAML"],
+  ["googleDrive", "Google Drive"],
+  ["dropbox", "Dropbox"],
+  ["oneDrive", "OneDrive"],
+  ["quickbooks", "QuickBooks"],
+  ["dlp", "DLP"],
+];
+const PRODUCT_BUNDLES = [
+  { key: "core", label: "Core", description: "Essential sharing" },
+  { key: "growth", label: "Growth", description: "Governed operations" },
+  { key: "enterprise", label: "Enterprise", description: "Full controls" },
+];
+const BUNDLE_KEYS = PRODUCT_BUNDLES.map((bundle) => bundle.key);
+const BUNDLE_DEFAULT_FEATURES = {
+  core: {
+    manageUsers: true,
+    managePermissions: true,
+    manageGroupAdmins: false,
+    ai: false,
+    exports: true,
+    imports: true,
+    approvalFlow: false,
+    auditLogs: false,
+    sso: false,
+    googleDrive: true,
+    dropbox: false,
+    oneDrive: false,
+    quickbooks: false,
+    dlp: false,
+  },
+  growth: {
+    manageUsers: true,
+    managePermissions: true,
+    manageGroupAdmins: true,
+    ai: true,
+    exports: true,
+    imports: true,
+    approvalFlow: true,
+    auditLogs: false,
+    sso: true,
+    googleDrive: true,
+    dropbox: true,
+    oneDrive: true,
+    quickbooks: false,
+    dlp: false,
+  },
+  enterprise: {
+    manageUsers: true,
+    managePermissions: true,
+    manageGroupAdmins: true,
+    ai: true,
+    exports: true,
+    imports: true,
+    approvalFlow: true,
+    auditLogs: true,
+    sso: true,
+    googleDrive: true,
+    dropbox: true,
+    oneDrive: true,
+    quickbooks: true,
+    dlp: true,
+  },
+};
 function loadTemplates() {
   try {
     const raw = localStorage.getItem(LS_KEY);
@@ -174,6 +246,10 @@ export default function UserManagement({ token, user, sheetId }) {
   const [invitePolicySaving, setInvitePolicySaving] = useState(false);
   const [insightTranslationCache, setInsightTranslationCache] = useState({ ttlMinutes: 60 });
   const [insightTranslationCacheSaving, setInsightTranslationCacheSaving] = useState(false);
+  const [aiUsageSummary, setAiUsageSummary] = useState({ periodMonth: "", totals: { queryCount: 0, promptTokens: 0, completionTokens: 0, estimatedCostUsd: 0 }, groups: [] });
+  const [aiUsageLoading, setAiUsageLoading] = useState(false);
+  const [aiUsageError, setAiUsageError] = useState("");
+  const [aiUsageRefreshedAt, setAiUsageRefreshedAt] = useState("");
   const [dlpSettings, setDlpSettings] = useState({
     mode: "block",
     checkSsn: true,
@@ -257,7 +333,24 @@ export default function UserManagement({ token, user, sheetId }) {
   const [groupMembers, setGroupMembers] = useState([]);
   const [groupAddUserId, setGroupAddUserId] = useState("");
   const [groupSettingsDraft, setGroupSettingsDraft] = useState(null);
+  const [selectedProductBundle, setSelectedProductBundle] = useState("");
+  const [groupSettingsDirty, setGroupSettingsDirty] = useState(false);
+  const lastLoadedGroupIdRef = useRef(null);
   const [groupSettingsSaving, setGroupSettingsSaving] = useState(false);
+
+  const ensureBundleFeatureSets = (bundleFeatureSets, baseFeatures) => {
+    const normalizedBase = { ...(baseFeatures || {}) };
+    const source = bundleFeatureSets && typeof bundleFeatureSets === "object" && !Array.isArray(bundleFeatureSets)
+      ? bundleFeatureSets
+      : {};
+    return Object.fromEntries(
+      BUNDLE_KEYS.map((key) => {
+        const existing = source[key] && typeof source[key] === "object" && !Array.isArray(source[key]) ? source[key] : null;
+        const defaults = BUNDLE_DEFAULT_FEATURES[key] || {};
+        return [key, { ...normalizedBase, ...defaults, ...(existing || {}) }];
+      })
+    );
+  };
 
   // customer permissions (per-sheet)
   const [groupAllowedCols, setGroupAllowedCols] = useState(new Set());
@@ -282,7 +375,6 @@ export default function UserManagement({ token, user, sheetId }) {
   const [draftUserViewIds, setDraftUserViewIds] = useState([]);
   const [viewAssignmentOpen, setViewAssignmentOpen] = useState(false);
   const [viewAssignmentSaving, setViewAssignmentSaving] = useState(false);
-  const [viewPreviewOpen, setViewPreviewOpen] = useState(false);
   const [selectedUserGroupIds, setSelectedUserGroupIds] = useState(new Set());
   const [userGroupMap, setUserGroupMap] = useState({});
   const [editingUserId, setEditingUserId] = useState(null);
@@ -1217,6 +1309,35 @@ export default function UserManagement({ token, user, sheetId }) {
     }
   };
 
+  const fetchAiUsageSummary = async () => {
+    if (!isSuperAdmin) return;
+    setAiUsageLoading(true);
+    setAiUsageError("");
+    try {
+      const res = await axios.get(`${API}/admin/ai-usage-summary`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { _: Date.now() },
+      });
+      const data = res?.data || {};
+      setAiUsageSummary({
+        periodMonth: data.periodMonth || "",
+        totals: {
+          queryCount: Number(data?.totals?.queryCount || 0),
+          promptTokens: Number(data?.totals?.promptTokens || 0),
+          completionTokens: Number(data?.totals?.completionTokens || 0),
+          estimatedCostUsd: Number(data?.totals?.estimatedCostUsd || 0),
+        },
+        groups: Array.isArray(data.groups) ? data.groups : [],
+      });
+      setAiUsageRefreshedAt(new Date().toLocaleTimeString());
+    } catch (e) {
+      console.error("fetchAiUsageSummary failed", e);
+      setAiUsageError(e?.response?.data?.error || e?.message || "Refresh failed");
+    } finally {
+      setAiUsageLoading(false);
+    }
+  };
+
   const fetchDlpSetting = async () => {
     if (!isSuperAdmin) return;
     try {
@@ -1375,13 +1496,13 @@ export default function UserManagement({ token, user, sheetId }) {
     setDlpSettingsSaving(true);
     try {
       const payload = {
-        mode: ["block", "warn"].includes(dlpSettings.mode) ? dlpSettings.mode : "block",
+        mode: ["block", "warn", "mask"].includes(dlpSettings.mode) ? dlpSettings.mode : "block",
         checkSsn: dlpSettings.checkSsn !== false,
         checkCreditCard: dlpSettings.checkCreditCard !== false,
         checkEmail: dlpSettings.checkEmail !== false,
         checkPhone: dlpSettings.checkPhone !== false,
         checkIban: dlpSettings.checkIban !== false,
-        maskDetectedColumns: dlpSettings.maskDetectedColumns === true,
+        maskDetectedColumns: dlpSettings.mode === "mask",
       };
       const res = await axios.patch(`${API}/admin/settings/dlp`, payload, {
         headers: { Authorization: `Bearer ${token}` },
@@ -1732,6 +1853,7 @@ export default function UserManagement({ token, user, sheetId }) {
       fetchInviteEmailTemplate();
       fetchInvitationPolicy();
       fetchInsightTranslationCacheSetting();
+      fetchAiUsageSummary();
       fetchDlpSetting();
       fetchMetricsExposureSetting();
       fetchAutosyncIntervalSetting();
@@ -1762,6 +1884,7 @@ export default function UserManagement({ token, user, sheetId }) {
     fetchSmtpSetting();
     fetchInviteEmailTemplate();
     fetchInsightTranslationCacheSetting();
+    fetchAiUsageSummary();
     fetchDlpSetting();
     fetchMetricsExposureSetting();
     fetchAutosyncIntervalSetting();
@@ -1783,6 +1906,21 @@ export default function UserManagement({ token, user, sheetId }) {
       setViews(res.data || []);
     } catch (e) {
       console.error("fetchAllViews failed", e);
+    }
+  };
+
+  const handleDeleteView = async (viewId) => {
+    if (!isSuperAdmin || !viewId) return;
+    if (!window.confirm("Delete this view?")) return;
+    try {
+      await axios.delete(`${API}/views/${viewId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      await fetchAllViews();
+      if (selectedUserId) await fetchUserViews(selectedUserId);
+    } catch (e) {
+      console.error("delete view failed", e);
+      alert(e?.response?.data?.error || "Failed to delete view");
     }
   };
 
@@ -2449,10 +2587,6 @@ export default function UserManagement({ token, user, sheetId }) {
   const selectedReportSource = useMemo(() => {
     return reportSourceOptions.find((source) => String(source.id) === String(selectedReportSourceId)) || null;
   }, [reportSourceOptions, selectedReportSourceId]);
-  const previewAssignedViews = useMemo(() => {
-    const idSet = new Set((draftUserViewIds || []).map((id) => String(id)));
-    return (Array.isArray(views) ? views : []).filter((v) => idSet.has(String(v.id)));
-  }, [views, draftUserViewIds]);
   const isSplitScreenView = (view) => {
     const cfg = (view && typeof view.config === "string")
       ? (() => { try { return JSON.parse(view.config); } catch { return {}; } })()
@@ -2491,9 +2625,19 @@ export default function UserManagement({ token, user, sheetId }) {
   useEffect(() => {
     if (!selectedGroup) {
       setGroupSettingsDraft(null);
+      setGroupSettingsDirty(false);
+      lastLoadedGroupIdRef.current = null;
       return;
     }
+    const selectedId = Number(selectedGroup.id);
+    const sameGroup = Number(lastLoadedGroupIdRef.current) === selectedId;
+    if (sameGroup && groupSettingsDirty) return;
     const ent = normalizeGroupEntitlements(selectedGroup.entitlements || {});
+    const bundleTier = BUNDLE_KEYS.includes(String(ent.bundleTier || "").toLowerCase())
+      ? String(ent.bundleTier || "").toLowerCase()
+      : "";
+    const bundleFeatureSets = ensureBundleFeatureSets(ent.bundleFeatureSets, ent.features || {});
+    const activeFeatures = bundleTier ? (bundleFeatureSets[bundleTier] || ent.features || {}) : (ent.features || {});
     setGroupSettingsDraft({
       maxFileSizeMb: String(selectedGroup.max_file_size_mb || 100),
       maxTotalStorageMb: String(selectedGroup.max_total_storage_mb || 10240),
@@ -2502,11 +2646,17 @@ export default function UserManagement({ token, user, sheetId }) {
       maxAiQueriesPerMonth: ent.maxAiQueriesPerMonth ?? "",
       aiMonthlyBudgetUsd: ent.aiMonthlyBudgetUsd ?? "",
       maxImportParseMemoryMb: ent.maxImportParseMemoryMb ?? "",
-      features: { ...(ent.features || {}) },
+      bundleTier,
+      bundleFeatureSets,
+      features: { ...activeFeatures },
     });
-  }, [selectedGroup]);
+    setSelectedProductBundle(bundleTier);
+    setGroupSettingsDirty(false);
+    lastLoadedGroupIdRef.current = selectedId;
+  }, [selectedGroup, groupSettingsDirty]);
 
   const updateGroupSettingsDraft = (patch) => {
+    setGroupSettingsDirty(true);
     setGroupSettingsDraft((prev) => {
       const current = prev || {
         maxFileSizeMb: "",
@@ -2516,11 +2666,17 @@ export default function UserManagement({ token, user, sheetId }) {
         maxAiQueriesPerMonth: "",
         aiMonthlyBudgetUsd: "",
         maxImportParseMemoryMb: "",
+        bundleTier: "",
+        bundleFeatureSets: {},
         features: {},
       };
       return {
         ...current,
         ...patch,
+        bundleFeatureSets: {
+          ...(current.bundleFeatureSets || {}),
+          ...(patch.bundleFeatureSets || {}),
+        },
         features: {
           ...(current.features || {}),
           ...(patch.features || {}),
@@ -2530,7 +2686,7 @@ export default function UserManagement({ token, user, sheetId }) {
   };
 
   const saveGroupSettings = async () => {
-    if (!selectedGroupId || user?.role !== "admin" || !groupSettingsDraft || groupSettingsSaving) return;
+    if (!selectedGroupId || (!isSuperAdmin && user?.role !== "admin") || !groupSettingsDraft || groupSettingsSaving) return;
     setGroupSettingsSaving(true);
     try {
       const maxFileSizeMb = Number.parseInt(String(groupSettingsDraft.maxFileSizeMb || "").trim(), 10);
@@ -2542,16 +2698,60 @@ export default function UserManagement({ token, user, sheetId }) {
         maxAiQueriesPerMonth: groupSettingsDraft.maxAiQueriesPerMonth === "" ? null : Number(groupSettingsDraft.maxAiQueriesPerMonth),
         aiMonthlyBudgetUsd: groupSettingsDraft.aiMonthlyBudgetUsd === "" ? null : Number(groupSettingsDraft.aiMonthlyBudgetUsd),
         maxImportParseMemoryMb: groupSettingsDraft.maxImportParseMemoryMb === "" ? null : Number(groupSettingsDraft.maxImportParseMemoryMb),
+        bundleTier: BUNDLE_KEYS.includes(String(groupSettingsDraft.bundleTier || "").toLowerCase())
+          ? String(groupSettingsDraft.bundleTier || "").toLowerCase()
+          : null,
+        bundleFeatureSets: ensureBundleFeatureSets(
+          groupSettingsDraft.bundleFeatureSets,
+          groupSettingsDraft.features || {}
+        ),
         features: { ...(groupSettingsDraft.features || {}) },
       });
-      await axios.patch(`${API}/groups/${selectedGroupId}`, {
+      const saveRes = await axios.patch(`${API}/groups/${selectedGroupId}`, {
         maxFileSizeMb: Number.isInteger(maxFileSizeMb) && maxFileSizeMb > 0 ? maxFileSizeMb : 100,
         maxTotalStorageMb: Number.isInteger(maxTotalStorageMb) && maxTotalStorageMb > 0 ? maxTotalStorageMb : 10240,
         entitlements,
       }, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      fetchGroups();
+      const savedGroup = saveRes?.data || {};
+      const savedEntitlements = normalizeGroupEntitlements(savedGroup?.entitlements || entitlements);
+      const savedBundleTier = BUNDLE_KEYS.includes(String(savedEntitlements.bundleTier || "").toLowerCase())
+        ? String(savedEntitlements.bundleTier || "").toLowerCase()
+        : "";
+      const savedBundleFeatureSets = ensureBundleFeatureSets(
+        savedEntitlements.bundleFeatureSets,
+        savedEntitlements.features || {}
+      );
+      const savedActiveFeatures = savedBundleTier
+        ? (savedBundleFeatureSets[savedBundleTier] || savedEntitlements.features || {})
+        : (savedEntitlements.features || {});
+      setGroups((prev) => (Array.isArray(prev) ? prev.map((g) => (
+        Number(g?.id) === Number(selectedGroupId)
+          ? {
+              ...g,
+              ...savedGroup,
+              entitlements: savedEntitlements,
+            }
+          : g
+      )) : prev));
+      setGroupSettingsDraft((prev) => prev ? {
+        ...prev,
+        maxFileSizeMb: String(savedGroup?.max_file_size_mb || (Number.isInteger(maxFileSizeMb) && maxFileSizeMb > 0 ? maxFileSizeMb : 100)),
+        maxTotalStorageMb: String(savedGroup?.max_total_storage_mb || (Number.isInteger(maxTotalStorageMb) && maxTotalStorageMb > 0 ? maxTotalStorageMb : 10240)),
+        maxUsers: savedEntitlements.maxUsers ?? "",
+        maxReportSources: savedEntitlements.maxReportSources ?? "",
+        maxAiQueriesPerMonth: savedEntitlements.maxAiQueriesPerMonth ?? "",
+        aiMonthlyBudgetUsd: savedEntitlements.aiMonthlyBudgetUsd ?? "",
+        maxImportParseMemoryMb: savedEntitlements.maxImportParseMemoryMb ?? "",
+        bundleTier: savedBundleTier,
+        bundleFeatureSets: savedBundleFeatureSets,
+        features: { ...savedActiveFeatures },
+      } : prev);
+      setSelectedProductBundle(savedBundleTier);
+      setGroupSettingsDirty(false);
+      lastLoadedGroupIdRef.current = Number(selectedGroupId);
+      await fetchGroups();
       alert("Customer settings saved");
     } catch (e) {
       alert(e.response?.data?.error || "Failed to save customer settings");
@@ -2693,7 +2893,7 @@ export default function UserManagement({ token, user, sheetId }) {
                     {formatBytes(g.used_storage_bytes)} / {formatMb(g.max_total_storage_mb || 10240)} total
                   </div>
                 </div>
-                {user?.role === "admin" && (
+                {isSuperAdmin && (
                   <div className="flex items-center gap-1">
                     <button className={`text-xs px-2 py-1 rounded ${selectedGroupId === g.id ? "hover:bg-white/20" : "hover:bg-slate-100 text-slate-600 hover:text-slate-900"}`} onClick={(e) => { e.stopPropagation(); openEditCustomerForm(g); }}>Edit</button>
                     <button className={`text-xs px-2 py-1 rounded ${selectedGroupId === g.id ? "hover:bg-white/20" : "hover:bg-red-50 text-slate-500 hover:text-red-500"}`} onClick={(e) => { e.stopPropagation(); deleteGroup(g.id); }}>Delete</button>
@@ -2874,13 +3074,6 @@ export default function UserManagement({ token, user, sheetId }) {
                             <div className="flex items-center justify-end gap-2 pt-1">
                               <button
                                 type="button"
-                                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
-                                onClick={() => setViewPreviewOpen((prev) => !prev)}
-                              >
-                                {viewPreviewOpen ? "Hide Preview" : "Preview"}
-                              </button>
-                              <button
-                                type="button"
                                 className={`rounded-md bg-slate-900 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-slate-800 ${viewAssignmentSaving ? "opacity-60 cursor-not-allowed" : ""}`}
                                 disabled={viewAssignmentSaving}
                                 onClick={async () => {
@@ -2899,24 +3092,6 @@ export default function UserManagement({ token, user, sheetId }) {
                                 {viewAssignmentSaving ? "Saving..." : "Save"}
                               </button>
                             </div>
-                            {viewPreviewOpen && (
-                              <div className="rounded-md border border-slate-200 bg-slate-50 p-2.5 space-y-1.5">
-                                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-600">Preview</div>
-                                {previewAssignedViews.length ? previewAssignedViews.map((v) => {
-                                  const cfg = (v && typeof v.config === "string") ? (() => { try { return JSON.parse(v.config); } catch { return {}; } })() : (v?.config || {});
-                                  const visibleColumns = Array.isArray(cfg?.visibleColumns) ? cfg.visibleColumns.length : 0;
-                                  const filterCount = cfg?.columnFilters && typeof cfg.columnFilters === "object" ? Object.keys(cfg.columnFilters).length : 0;
-                                  return (
-                                    <div key={`preview-${v.id}`} className="rounded-md border border-slate-200 bg-white px-2.5 py-2">
-                                      <div className="text-[11px] font-semibold text-slate-700 truncate">{v.name}</div>
-                                      <div className="text-[10px] text-slate-500">Columns: {visibleColumns} • Filters: {filterCount}</div>
-                                    </div>
-                                  );
-                                }) : (
-                                  <div className="text-[10px] text-slate-400 italic">No views selected for preview.</div>
-                                )}
-                              </div>
-                            )}
                           </>
                         ) : <div className="text-[10px] text-slate-400 italic">No existing views found.</div>
                       ) : (
@@ -2945,7 +3120,7 @@ export default function UserManagement({ token, user, sheetId }) {
                   </div>
                 </div>
               )}
-              {user?.role === "admin" && (
+              {isSuperAdmin && (
                 <div className="mt-3 grid grid-cols-2 gap-2 items-center">
                   <label className="text-[10px] font-semibold text-slate-500">Per File Limit (MB)</label>
                   <input
@@ -3003,33 +3178,65 @@ export default function UserManagement({ token, user, sheetId }) {
                     placeholder="Default"
                     onChange={(e) => updateGroupSettingsDraft({ maxImportParseMemoryMb: e.target.value })}
                   />
-                  <div className="col-span-2 rounded-md border border-sky-100 bg-sky-50 px-2 py-1.5 text-[10px] leading-snug text-sky-800">
-                    OpenAI estimate with gpt-4.1-mini: about $0.40 / 1M input tokens and $1.60 / 1M output tokens. A typical compact spreadsheet question is usually well below one cent.
-                  </div>
                   <div className="col-span-2 mt-2 rounded-md border border-slate-200 bg-white p-2">
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-2">Product Bundle</div>
+                    <div className="grid grid-cols-3 gap-2 mb-3">
+                      {PRODUCT_BUNDLES.map((bundle) => (
+                        <button
+                          key={bundle.key}
+                          type="button"
+                          onClick={() => {
+                            setSelectedProductBundle(bundle.key);
+                            setGroupSettingsDirty(true);
+                            setGroupSettingsDraft((prev) => {
+                              const current = prev || {};
+                              const currentFeatures = { ...(current.features || {}) };
+                              const currentSets = ensureBundleFeatureSets(current.bundleFeatureSets, currentFeatures);
+                              const nextSets = {
+                                ...currentSets,
+                                ...(current.bundleTier ? { [current.bundleTier]: { ...currentFeatures } } : {}),
+                              };
+                              const targetFeatures = { ...(nextSets[bundle.key] || currentFeatures) };
+                              return {
+                                ...current,
+                                bundleTier: bundle.key,
+                                bundleFeatureSets: nextSets,
+                                features: targetFeatures,
+                              };
+                            });
+                          }}
+                          className={`rounded-md border px-2 py-1.5 text-left ${selectedProductBundle === bundle.key ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`}
+                        >
+                          <div className="text-[10px] font-semibold uppercase tracking-wide">{bundle.label}</div>
+                          <div className={`text-[10px] ${selectedProductBundle === bundle.key ? "text-slate-200" : "text-slate-500"}`}>{bundle.description}</div>
+                        </button>
+                      ))}
+                    </div>
                     <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-2">Customer Features</div>
                     <div className="grid grid-cols-2 gap-1.5">
-                      {[
-                        ["manageUsers", "Manage users"],
-                        ["managePermissions", "Permissions"],
-                        ["manageGroupAdmins", "Promote admins"],
-                        ["ai", "AI"],
-                        ["exports", "Exports"],
-                        ["imports", "Imports"],
-                        ["approvalFlow", "Approvals"],
-                        ["auditLogs", "Audit logs"],
-                        ["sso", "SSO / SAML"],
-                        ["googleDrive", "Google Drive"],
-                        ["dropbox", "Dropbox"],
-                        ["oneDrive", "OneDrive"],
-                        ["quickbooks", "QuickBooks"],
-                        ["dlp", "DLP"],
-                      ].map(([key, label]) => (
+                      {CUSTOMER_FEATURE_OPTIONS.map(([key, label]) => (
                         <label key={key} className="flex items-center gap-1.5 text-[10px] font-semibold text-slate-600">
                           <input
                             type="checkbox"
                             checked={groupSettingsDraft?.features?.[key] !== false}
-                            onChange={(e) => updateGroupSettingsDraft({ features: { [key]: e.target.checked } })}
+                            onChange={(e) => setGroupSettingsDraft((prev) => {
+                              const current = prev || {};
+                              const nextFeatures = {
+                                ...(current.features || {}),
+                                [key]: e.target.checked,
+                              };
+                              const nextBundleTier = String(current.bundleTier || "");
+                              const nextSets = ensureBundleFeatureSets(current.bundleFeatureSets, nextFeatures);
+                              if (BUNDLE_KEYS.includes(nextBundleTier)) {
+                                nextSets[nextBundleTier] = { ...nextFeatures };
+                              }
+                              setGroupSettingsDirty(true);
+                              return {
+                                ...current,
+                                features: nextFeatures,
+                                bundleFeatureSets: nextSets,
+                              };
+                            })}
                           />
                           {label}
                         </label>
@@ -3054,6 +3261,40 @@ export default function UserManagement({ token, user, sheetId }) {
             <div className="flex items-center justify-between mb-3">
               <div className="text-[10px] uppercase tracking-wide font-semibold text-slate-500">System Settings</div>
               <span className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600">Super Admin</span>
+            </div>
+            <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2 mb-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">AI Total Usage ({aiUsageSummary.periodMonth || "month"})</div>
+                <button
+                  type="button"
+                  onClick={fetchAiUsageSummary}
+                  disabled={aiUsageLoading}
+                  className={`text-[10px] font-semibold ${aiUsageLoading ? "text-slate-400 cursor-not-allowed" : "text-slate-600 hover:text-slate-900"}`}
+                >
+                  {aiUsageLoading ? "Refreshing..." : "Refresh"}
+                </button>
+              </div>
+              <div className="text-[10px] text-slate-500">
+                {aiUsageError ? `Refresh error: ${aiUsageError}` : `Last refresh: ${aiUsageRefreshedAt || "not yet"}`}
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-[11px]">
+                <div className="rounded border border-slate-200 p-2">
+                  <div className="text-[10px] text-slate-500">Total Queries</div>
+                  <div className="font-semibold text-slate-900">{aiUsageSummary.totals.queryCount.toLocaleString()}</div>
+                </div>
+                <div className="rounded border border-slate-200 p-2">
+                  <div className="text-[10px] text-slate-500">Total Cost</div>
+                  <div className="font-semibold text-slate-900">${Number(aiUsageSummary.totals.estimatedCostUsd || 0).toFixed(4)}</div>
+                </div>
+                <div className="rounded border border-slate-200 p-2">
+                  <div className="text-[10px] text-slate-500">Prompt Tokens</div>
+                  <div className="font-semibold text-slate-900">{aiUsageSummary.totals.promptTokens.toLocaleString()}</div>
+                </div>
+                <div className="rounded border border-slate-200 p-2">
+                  <div className="text-[10px] text-slate-500">Completion Tokens</div>
+                  <div className="font-semibold text-slate-900">{aiUsageSummary.totals.completionTokens.toLocaleString()}</div>
+                </div>
+              </div>
             </div>
             <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
               <div className="flex items-center justify-between gap-2">
@@ -3196,7 +3437,7 @@ export default function UserManagement({ token, user, sheetId }) {
               {dlpSettingsOpen && (
                 <>
                   <div className="grid grid-cols-3 gap-2">
-                    {["block", "warn"].map((mode) => (
+                    {["block", "warn", "mask"].map((mode) => (
                       <label key={mode} className="inline-flex items-center gap-2 text-[10px] font-semibold text-slate-700 border border-slate-200 rounded-md px-2 py-1">
                         <input
                           type="radio"
@@ -3228,10 +3469,6 @@ export default function UserManagement({ token, user, sheetId }) {
                     <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700">
                       <input type="checkbox" checked={dlpSettings.checkIban !== false} onChange={(e) => setDlpSettings((prev) => ({ ...prev, checkIban: e.target.checked }))} />
                       Detect IBAN
-                    </label>
-                    <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 col-span-2">
-                      <input type="checkbox" checked={dlpSettings.maskDetectedColumns === true} onChange={(e) => setDlpSettings((prev) => ({ ...prev, maskDetectedColumns: e.target.checked }))} />
-                      Mask detected columns on import
                     </label>
                   </div>
                   <button
@@ -3331,7 +3568,7 @@ export default function UserManagement({ token, user, sheetId }) {
             <h4 className="font-bold text-xs text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>Customer Settings</h4>
 
-            {user?.role === "admin" && (
+            {isSuperAdmin && (
               <div className="mb-6 space-y-2">
                 <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Max File Size (MB)</label>
                 <div className="flex gap-2">
@@ -3456,7 +3693,7 @@ export default function UserManagement({ token, user, sheetId }) {
                   <div className={`text-[10px] uppercase tracking-widest font-bold border-l pl-2 ${selectedGroupId === g.id ? "border-white/20 text-emerald-100" : "border-slate-100 text-emerald-400"}`}>Limit: {g.max_file_size_mb || 100}MB</div>
                 </div>
               </div>
-              {user?.role === "admin" && (
+              {isSuperAdmin && (
                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100">
                   <button
                     className={`text-[10px] font-semibold px-2 py-1 rounded ${
@@ -3564,10 +3801,9 @@ export default function UserManagement({ token, user, sheetId }) {
               {inviteEmailPreview.html ? (
                 <div className="rounded-md border border-slate-200 bg-slate-50 p-2 space-y-2">
                   <div className="text-[10px] font-semibold text-slate-600">Preview Subject: {inviteEmailPreview.subject}</div>
-                  <div
-                    className="rounded-md border border-slate-200 bg-white p-2 max-h-[280px] overflow-auto"
-                    dangerouslySetInnerHTML={{ __html: inviteEmailPreview.html }}
-                  />
+                  <pre className="rounded-md border border-slate-200 bg-white p-2 max-h-[280px] overflow-auto text-[11px] leading-5 whitespace-pre-wrap break-words">
+                    {String(inviteEmailPreview.html || "")}
+                  </pre>
                 </div>
               ) : null}
             </div>
@@ -3688,7 +3924,7 @@ export default function UserManagement({ token, user, sheetId }) {
         onCopy={copyResetPassword}
         onSubmit={submitPasswordReset}
       />
-    </div>
+      </div>
     </div>
   );
 }

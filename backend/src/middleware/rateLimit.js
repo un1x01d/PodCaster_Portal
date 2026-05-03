@@ -46,6 +46,9 @@ let lastPruneAt = 0;
 const DISTRIBUTED_RATE_LIMIT = String(
   process.env.RATE_LIMIT_DISTRIBUTED ?? (process.env.NODE_ENV === "production" ? "1" : "0")
 ).trim() !== "0";
+const RATE_LIMIT_FAIL_OPEN = String(
+  process.env.RATE_LIMIT_FAIL_OPEN ?? (process.env.NODE_ENV === "production" ? "0" : "1")
+).trim() !== "0";
 
 function pruneExpiredBuckets(now) {
   if (now - lastPruneAt < PRUNE_INTERVAL_MS) return;
@@ -210,6 +213,9 @@ function runRateLimitMiddleware(req, res, next, options) {
       next();
     })
     .catch(() => {
+      if (!RATE_LIMIT_FAIL_OPEN) {
+        return res.status(503).json({ error: "rate_limiter_unavailable" });
+      }
       const blocked = runLocalRateLimit({ map, key, now, maxAttempts, windowMs, maxBuckets, res, errorCode });
       if (blocked) return;
       next();

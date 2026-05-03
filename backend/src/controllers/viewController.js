@@ -1,5 +1,5 @@
 import { query } from "../config/db.js";
-import { checkSheetAccess } from "../utils/authorization.js";
+import { checkSheetAccess, isPlatformAdminUser } from "../utils/authorization.js";
 import { parsePagination } from "../utils/pagination.js";
 
 async function isGroupAdminUser(userId) {
@@ -52,7 +52,7 @@ async function assertUserWithinManagedGroups(userId, managedGroupIds) {
 
 export async function createView(req, res) {
     const { name, sheetId, config, level = "revision" } = req.body || {};
-    const isGlobalAdmin = req.user.role === "admin";
+    const isGlobalAdmin = isPlatformAdminUser(req.user);
     const isCustomerAdmin = isGlobalAdmin ? true : await isGroupAdminUser(req.user.id);
     if (!isCustomerAdmin) return res.status(403).json({ error: "Forbidden" });
     if (!String(name || "").trim()) return res.status(400).json({ error: "name_required" });
@@ -117,7 +117,7 @@ export async function createView(req, res) {
 }
 
 export async function duplicateView(req, res) {
-    const isGlobalAdmin = req.user.role === "admin";
+    const isGlobalAdmin = isPlatformAdminUser(req.user);
     const isCustomerAdmin = isGlobalAdmin ? true : await isGroupAdminUser(req.user.id);
     if (!isCustomerAdmin) return res.status(403).json({ error: "Forbidden" });
     const { id } = req.params;
@@ -159,14 +159,51 @@ export async function duplicateView(req, res) {
     res.json(newView);
 }
 
+export async function updateView(req, res) {
+    const isGlobalAdmin = isPlatformAdminUser(req.user);
+    const isCustomerAdmin = isGlobalAdmin ? true : await isGroupAdminUser(req.user.id);
+    if (!isCustomerAdmin) return res.status(403).json({ error: "Forbidden" });
+
+    const vid = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(vid) || vid <= 0) {
+        return res.status(400).json({ error: "invalid_view_id" });
+    }
+
+    const { name, config } = req.body || {};
+    if (!String(name || "").trim()) {
+        return res.status(400).json({ error: "name_required" });
+    }
+
+    try {
+        const [existing] = await query("SELECT id, created_by FROM views WHERE id = $1", [vid]);
+        if (!existing) return res.status(404).json({ error: "not_found" });
+        if (!isGlobalAdmin && Number(existing.created_by) !== Number(req.user.id)) {
+            return res.status(403).json({ error: "Forbidden" });
+        }
+
+        const r = await query(
+            `UPDATE views
+             SET name = $1, config = $2
+             WHERE id = $3
+             RETURNING id, name, sheet_id, report_source_id, file_label, is_global, created_at`,
+            [String(name).trim(), JSON.stringify(config || {}), vid]
+        );
+        return res.json(r[0]);
+    } catch (e) {
+        console.error("update view failed:", e);
+        return res.status(500).json({ error: "update_view_failed" });
+    }
+}
+
 export async function listViews(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const isPlatformAdmin = isPlatformAdminUser(req.user);
+    if (!isPlatformAdmin) return res.status(403).json({ error: "Forbidden" });
     const pagination = parsePagination(req.query, { maxLimit: 1000 });
     if (pagination.error) return res.status(400).json({ error: pagination.error });
     const totalRows = await query("SELECT COUNT(*)::int AS c FROM views", []);
     const total = Number(totalRows[0]?.c || 0);
     const rows = await query(
-        `SELECT v.id, v.name, v.sheet_id, u.email as created_by
+        `SELECT v.id, v.name, v.sheet_id, v.report_source_id, v.file_label, v.is_global, v.config, u.email as created_by
          FROM views v
          JOIN users u ON u.id = v.created_by
          ORDER BY v.name ASC
@@ -180,7 +217,7 @@ export async function listViews(req, res) {
 }
 
 export async function deleteView(req, res) {
-    const isGlobalAdmin = req.user.role === "admin";
+    const isGlobalAdmin = isPlatformAdminUser(req.user);
     const isCustomerAdmin = isGlobalAdmin ? true : await isGroupAdminUser(req.user.id);
     if (!isCustomerAdmin) return res.status(403).json({ error: "Forbidden" });
     const vid = req.params.id;
@@ -223,7 +260,7 @@ export async function getViewsForSheet(req, res) {
         )
     `;
 
-    if (req.user.role === "admin") {
+    if (isPlatformAdminUser(req.user)) {
         const rows = await query(
             `SELECT v.id, v.name, v.sheet_id, v.report_source_id, v.file_label, v.is_global, v.config, v.created_at, v.created_by AS created_by_id, u.email as created_by
              FROM views v
@@ -263,7 +300,7 @@ export async function createViewUserPerm(req, res) {
         return res.status(400).json({ error: "invalid_request" });
     }
 
-    if (req.user.role !== "admin") {
+    if (!isPlatformAdminUser(req.user)) {
         const isCustomerAdmin = await isGroupAdminUser(req.user.id);
         if (!isCustomerAdmin) return res.status(403).json({ error: "Forbidden" });
         const managedGroupIds = await getManagedGroupIds(req.user.id);
@@ -288,7 +325,7 @@ export async function deleteViewUserPerm(req, res) {
         return res.status(400).json({ error: "invalid_request" });
     }
 
-    if (req.user.role !== "admin") {
+    if (!isPlatformAdminUser(req.user)) {
         const isCustomerAdmin = await isGroupAdminUser(req.user.id);
         if (!isCustomerAdmin) return res.status(403).json({ error: "Forbidden" });
         try {

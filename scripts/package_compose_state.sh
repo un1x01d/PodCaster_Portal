@@ -19,14 +19,31 @@ fi
 DB_VOLUME="${COMPOSE_PROJECT}_db_data"
 
 if ! docker volume inspect "$DB_VOLUME" >/dev/null 2>&1; then
-  echo "ERROR: Docker volume '$DB_VOLUME' not found. Start compose first."
+  echo "Derived volume '$DB_VOLUME' not found, discovering from db container..."
+  docker compose -f "$ROOT_DIR/docker-compose.yml" up -d db >/dev/null
+  DB_CID="$(docker compose -f "$ROOT_DIR/docker-compose.yml" ps -q db || true)"
+  if [[ -n "${DB_CID:-}" ]]; then
+    DB_VOLUME="$(docker inspect "$DB_CID" --format '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql/data"}}{{.Name}}{{end}}{{end}}' || true)"
+  fi
+fi
+
+if [[ -z "${DB_VOLUME:-}" ]] || ! docker volume inspect "$DB_VOLUME" >/dev/null 2>&1; then
+  echo "ERROR: Could not resolve Postgres volume. Ensure compose db service is defined and started."
   exit 1
 fi
 
-echo "[2/7] Capturing compose/app files..."
-cp "$ROOT_DIR/docker-compose.yml" "$BUNDLE_DIR/project/"
-[[ -f "$ROOT_DIR/.env" ]] && cp "$ROOT_DIR/.env" "$BUNDLE_DIR/project/.env" || true
-cp -r "$ROOT_DIR/db" "$BUNDLE_DIR/project/" || true
+echo "[2/7] Capturing project files required by compose..."
+# Keep this portable: compose uses local bind-mounts for backend/frontend,
+# so package the repo (minus heavy/regenerable dirs) for extract-and-run.
+tar \
+  --exclude='.git' \
+  --exclude='node_modules' \
+  --exclude='backend/node_modules' \
+  --exclude='frontend/node_modules' \
+  --exclude='transfer_bundle_*' \
+  --exclude='*.log' \
+  -C "$ROOT_DIR" \
+  -cf - . | tar -C "$BUNDLE_DIR/project" -xf -
 
 echo "[3/7] Exporting Postgres volume..."
 docker run --rm \
@@ -69,17 +86,16 @@ if [[ ! -f .env && -f .env.example ]]; then
   cp .env.example .env
 fi
 
-echo "[4/6] Starting compose once to create volume/network..."
-docker compose up -d
-
-echo "[5/6] Restoring db volume..."
+echo "[4/6] Resolving compose project and db volume..."
 COMPOSE_PROJECT="$(docker compose config --format json | sed -n 's/.*"name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1 || true)"
 if [[ -z "${COMPOSE_PROJECT:-}" ]]; then
   COMPOSE_PROJECT="$(basename "$PROJECT_DIR" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
 fi
 DB_VOLUME="${COMPOSE_PROJECT}_db_data"
 
-docker compose down
+echo "[5/6] Creating/restoring db volume..."
+docker compose down --remove-orphans || true
+docker volume create "$DB_VOLUME" >/dev/null
 docker run --rm \
   -v "$DB_VOLUME:/volume" \
   -v "$ROOT_DIR/db:/backup:ro" \

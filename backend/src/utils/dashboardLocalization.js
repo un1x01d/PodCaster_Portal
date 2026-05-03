@@ -240,8 +240,14 @@ async function callOpenAITranslation({ locale, items, context }) {
       key: item.key,
       text: restoreTerms(translated.get(item.key) || item.text, item.placeholders),
     }));
+    const usage = {
+      provider: "openai",
+      model: OPENAI_MODEL,
+      promptTokens: Number(json?.usage?.prompt_tokens || 0),
+      completionTokens: Number(json?.usage?.completion_tokens || 0),
+    };
     setCachedTranslation(cacheKey, result);
-    return result;
+    return { items: result, usage };
   })();
 
   TRANSLATION_IN_FLIGHT.set(cacheKey, promise);
@@ -249,7 +255,10 @@ async function callOpenAITranslation({ locale, items, context }) {
     return await promise;
   } catch (error) {
     console.error("dashboard translation failed:", error?.message || error);
-    return items.map((item) => ({ key: item.key, text: item.text }));
+    return {
+      items: items.map((item) => ({ key: item.key, text: item.text })),
+      usage: null,
+    };
   } finally {
     clearTimeout(timeout);
     TRANSLATION_IN_FLIGHT.delete(cacheKey);
@@ -257,7 +266,16 @@ async function callOpenAITranslation({ locale, items, context }) {
 }
 
 export async function translateDashboardItems({ locale, items, context = "dashboard-ui" }) {
-  return callOpenAITranslation({ locale, items, context });
+  const out = await callOpenAITranslation({ locale, items, context });
+  return out?.items || [];
+}
+
+export async function translateDashboardItemsWithUsage({ locale, items, context = "dashboard-ui" }) {
+  const out = await callOpenAITranslation({ locale, items, context });
+  return {
+    items: out?.items || [],
+    usage: out?.usage || null,
+  };
 }
 
 export async function translateDashboardCards({ locale, cards, preserveTerms = [], context = "dashboard-cards" }) {
@@ -278,7 +296,8 @@ export async function translateDashboardCards({ locale, cards, preserveTerms = [
     });
   });
 
-  const translated = await callOpenAITranslation({ locale, items, context });
+  const translatedResult = await callOpenAITranslation({ locale, items, context });
+  const translated = translatedResult?.items || [];
   const byKey = new Map(translated.map((item) => [item.key, item.text]));
   return cards.map((card) => ({
     ...card,

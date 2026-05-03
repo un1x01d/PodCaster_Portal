@@ -21,3 +21,20 @@ backend/uploads/
 
 # Root node modules
 node_modules/
+coverage/
+.nyc_output/
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+__pycache__/
+*.py[cod]
+.eslintcache
+.vite/
+.turbo/
+.parcel-cache/
+*.tmp
+*.temp
+*.bak
+*.old
+*.orig

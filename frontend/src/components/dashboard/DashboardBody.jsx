@@ -63,6 +63,7 @@ export default function DashboardBody(props) {
         setShowColumnSelector,
         setVisibleColumns,
         setSaveViewConfigOverride,
+        setEditingViewId,
 
         // Data & State
         sortedData,
@@ -866,6 +867,11 @@ export default function DashboardBody(props) {
     }, [secondarySelectedRowIndexes]);
 
     const buildSelectionFilters = React.useCallback(() => {
+        // Explicit column selection means "keep full column", not "filter rows".
+        if (selectedColIndexes.size > 0) return null;
+        // Only build value filters when rows are explicitly selected.
+        // Column-only selection should create a visible-columns view without row filtering.
+        if (selectedRowIndexes.size === 0) return null;
         if (selectedPrimaryColumns.length === 0 || selectedPrimaryRowIndexes.length === 0) return null;
         const next = {};
         selectedPrimaryColumns.forEach((col) => {
@@ -878,9 +884,11 @@ export default function DashboardBody(props) {
             });
         }
         return next;
-    }, [sortedData, selectedPrimaryColumns, selectedPrimaryRowIndexes]);
+    }, [sortedData, selectedPrimaryColumns, selectedPrimaryRowIndexes, selectedRowIndexes, selectedColIndexes]);
 
     const buildSecondarySelectionFilters = React.useCallback(() => {
+        if (secondarySelectedColIndexes.size > 0) return null;
+        if (secondarySelectedRowIndexes.size === 0) return null;
         if (selectedSecondaryColumns.length === 0 || selectedSecondaryRowIndexes.length === 0) return null;
         const rows = Array.isArray(secondaryData) ? secondaryData : [];
         const activeFilters = Object.entries(secondaryColumnFilters)
@@ -901,7 +909,7 @@ export default function DashboardBody(props) {
             });
         }
         return next;
-    }, [secondaryData, secondaryColumnFilters, selectedSecondaryColumns, selectedSecondaryRowIndexes]);
+    }, [secondaryData, secondaryColumnFilters, selectedSecondaryColumns, selectedSecondaryRowIndexes, secondarySelectedRowIndexes, secondarySelectedColIndexes]);
 
     const isPrimaryCellSelected = React.useCallback((rowIndex, colIndex) => {
         if (selectedRowIndexes.size > 0 && selectedColIndexes.size > 0) {
@@ -1027,7 +1035,7 @@ export default function DashboardBody(props) {
     }, [secondaryLastRowSelectionIndex]);
 
     const createLockedViewFromSelection = React.useCallback(() => {
-        if (selectedPrimaryColumns.length === 0 || selectedPrimaryRowIndexes.length === 0) return;
+        if (selectedPrimaryColumns.length === 0) return;
         const filters = buildSelectionFilters();
         const secondarySelectionFilters = buildSecondarySelectionFilters();
         const secondarySerializableFilters = {};
@@ -1044,6 +1052,7 @@ export default function DashboardBody(props) {
         setSaveViewConfigOverride({
             columnFilters: filters || {},
             visibleColumns: selectedPrimaryColumns,
+            activeTab: activeTab || null,
             splitContext: {
                 secondarySheetId: secondarySheetId || null,
                 secondaryTab: secondaryTab || null,
@@ -1055,7 +1064,6 @@ export default function DashboardBody(props) {
         setShowColumnSelector(true);
     }, [
         selectedPrimaryColumns,
-        selectedPrimaryRowIndexes,
         buildSelectionFilters,
         buildSecondarySelectionFilters,
         selectedSecondaryColumns,
@@ -1074,8 +1082,14 @@ export default function DashboardBody(props) {
     }, [user]);
     const canManageViews = React.useMemo(() => {
         if (!user) return false;
-        if (String(user.role || "").toLowerCase() === "admin") return true;
+        const role = String(user.role || "").toLowerCase().trim();
+        if (role === "admin" || role === "super_admin" || role === "superadmin" || !!user.super_admin) return true;
         return !!(user.is_group_admin || user.group_admin || user.is_admin);
+    }, [user]);
+    const isPlatformAdmin = React.useMemo(() => {
+        if (!user) return false;
+        const role = String(user.role || "").toLowerCase().trim();
+        return role === "admin" || role === "super_admin" || role === "superadmin" || !!user.super_admin;
     }, [user]);
     const canOpenAdminPage = React.useMemo(() => {
         if (!user) return false;
@@ -3008,9 +3022,48 @@ export default function DashboardBody(props) {
                                     </div>
                                     {canManageViews && (
                                         <div className="flex items-center justify-end gap-1.5 shrink-0">
+                                            {isPlatformAdmin && (
+                                                <>
+                                                    <select
+                                                        className="input-premium h-8 min-w-[180px] px-3 py-1.5 text-xs font-bold"
+                                                        value={String(selectedViewId || "")}
+                                                        onChange={(e) => setSelectedViewId(String(e.target.value || ""))}
+                                                    >
+                                                        <option value="">No View</option>
+                                                        {(Array.isArray(views) ? views : []).map((v) => (
+                                                            <option key={`admin-view-${v.id}`} value={String(v.id)}>
+                                                                {v.name}
+                                                            </option>
+                                                        ))}
+                                                    </select>
+                                                    <button
+                                                        type="button"
+                                                        disabled={!selectedViewId}
+                                                        className={`btn-premium h-8 px-3 text-xs font-bold rounded-md border-none whitespace-nowrap ${selectedViewId ? "bg-indigo-600 text-white hover:bg-indigo-700" : "bg-slate-200 text-slate-500 cursor-not-allowed"}`}
+                                                        onClick={() => {
+                                                            const active = (views || []).find((v) => String(v.id) === String(selectedViewId));
+                                                            if (!active) return;
+                                                            setPendingViewName(String(active.name || ""));
+                                                            setEditingViewId(active.id);
+                                                            setSaveViewConfigOverride(null);
+                                                            setShowColumnSelector(true);
+                                                        }}
+                                                    >
+                                                        Edit View
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        disabled={!selectedViewId}
+                                                        className={`btn-premium h-8 px-3 text-xs font-bold rounded-md border-none whitespace-nowrap ${selectedViewId ? "bg-rose-600 text-white hover:bg-rose-700" : "bg-slate-200 text-slate-500 cursor-not-allowed"}`}
+                                                        onClick={() => deleteView(selectedViewId)}
+                                                    >
+                                                        Delete View
+                                                    </button>
+                                                </>
+                                            )}
                                             <button
                                                 type="button"
-                                                className={`btn-premium px-2.5 py-1 text-[10px] font-bold rounded-md border-none ${selectionModeOn ? "bg-emerald-600 text-white hover:bg-emerald-700" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
+                                                className={`btn-premium h-8 px-3 text-xs font-bold rounded-md border-none whitespace-nowrap ${selectionModeOn ? "bg-emerald-600 text-white hover:bg-emerald-700" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
                                                 onClick={() => {
                                                     setSelectionModeOn((v) => {
                                                         const next = !v;
@@ -3023,15 +3076,15 @@ export default function DashboardBody(props) {
                                             </button>
                                             <button
                                                 type="button"
-                                                className="btn-premium bg-slate-100 text-slate-700 hover:bg-slate-200 px-2.5 py-1 text-[10px] font-bold rounded-md border-none"
+                                                className="btn-premium h-8 bg-slate-100 text-slate-700 hover:bg-slate-200 px-3 text-xs font-bold rounded-md border-none whitespace-nowrap"
                                                 onClick={clearSelection}
                                             >
                                                 Clear
                                             </button>
                                             <button
                                                 type="button"
-                                                disabled={selectedPrimaryColumns.length === 0 || selectedPrimaryRowIndexes.length === 0}
-                                                className={`btn-premium px-2.5 py-1 text-[10px] font-bold rounded-md border-none ${(selectedPrimaryColumns.length > 0 && selectedPrimaryRowIndexes.length > 0) ? "bg-emerald-600 text-white hover:bg-emerald-700" : "bg-slate-200 text-slate-500 cursor-not-allowed"}`}
+                                                disabled={selectedPrimaryColumns.length === 0}
+                                                className={`btn-premium h-8 px-3 text-xs font-bold rounded-md border-none whitespace-nowrap ${(selectedPrimaryColumns.length > 0) ? "bg-emerald-600 text-white hover:bg-emerald-700" : "bg-slate-200 text-slate-500 cursor-not-allowed"}`}
                                                 onClick={createLockedViewFromSelection}
                                             >
                                                 Create View From Selection

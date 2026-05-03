@@ -1,19 +1,27 @@
 import jwt from "jsonwebtoken";
 import { randomBytes } from "crypto";
-import { getTenantPool, isTenantDbIsolationEnabled, runWithDbPool } from "../config/db.js";
+import { getTenantPool, isTenantDbIsolationEnabled, query, runWithDbPool } from "../config/db.js";
+import { isPlatformAdminUser } from "../utils/authorization.js";
 
-const JWT_SECRET = String(process.env.JWT_SECRET || "").trim() || randomBytes(32).toString("hex");
+const JWT_SECRET_CONFIGURED = String(process.env.JWT_SECRET || "").trim();
+const ALLOW_EPHEMERAL_JWT_SECRET = ["1", "true", "yes", "on"].includes(
+    String(process.env.ALLOW_EPHEMERAL_JWT_SECRET || "").trim().toLowerCase()
+);
+const AUTH_DB_REFRESH_FAIL_OPEN = ["1", "true", "yes", "on"].includes(
+    String(process.env.AUTH_DB_REFRESH_FAIL_OPEN || "").trim().toLowerCase()
+);
+const JWT_SECRET = JWT_SECRET_CONFIGURED || randomBytes(32).toString("hex");
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "8h";
 const JWT_ISSUER = String(process.env.JWT_ISSUER || "").trim();
 const JWT_AUDIENCE = String(process.env.JWT_AUDIENCE || "").trim();
 const JWT_ALGORITHM = "HS256";
 
-if (!process.env.JWT_SECRET) {
-    if (process.env.NODE_ENV === "production") {
-        console.error("FATAL ERROR: JWT_SECRET is not defined in production environment.");
+if (!JWT_SECRET_CONFIGURED) {
+    if (!ALLOW_EPHEMERAL_JWT_SECRET) {
+        console.error("FATAL ERROR: JWT_SECRET is not defined. Set JWT_SECRET or ALLOW_EPHEMERAL_JWT_SECRET=true for temporary non-production use.");
         process.exit(1);
     }
-    console.warn("WARN: JWT_SECRET not set; using ephemeral in-memory secret for non-production.");
+    console.warn("WARN: using ephemeral in-memory JWT secret because ALLOW_EPHEMERAL_JWT_SECRET=true.");
 }
 
 if ((JWT_ISSUER && !JWT_AUDIENCE) || (!JWT_ISSUER && JWT_AUDIENCE)) {
@@ -89,7 +97,7 @@ export function clearAuthCookie(req, res) {
     appendSetCookie(res, cookie);
 }
 
-export function auth(req, res, next) {
+export async function auth(req, res, next) {
     const token = tokenFromReq(req);
     if (!token) return res.status(401).json({ error: "Unauthorized" });
     try {
@@ -99,9 +107,41 @@ export function auth(req, res, next) {
             verifyOpts.audience = JWT_AUDIENCE;
         }
         req.user = jwt.verify(token, JWT_SECRET, verifyOpts);
+        // Refresh privilege claims from DB so stale tokens do not keep old role/admin flags.
+        const userId = Number.parseInt(String(req.user?.id || ""), 10);
+        if (Number.isInteger(userId) && userId > 0) {
+            try {
+                const rows = await query(
+                    `SELECT u.role,
+                            EXISTS (
+                              SELECT 1 FROM user_groups ug
+                              WHERE ug.user_id = u.id AND ug.is_admin = TRUE
+                            ) AS is_group_admin
+                       FROM users u
+                      WHERE u.id = $1
+                      LIMIT 1`,
+                    [userId]
+                );
+                const row = rows?.[0];
+                if (!row) {
+                    return res.status(401).json({ error: "Invalid token" });
+                }
+                const role = String(row.role || req.user.role || "").trim().toLowerCase();
+                req.user.role = role || req.user.role;
+                const isGroupAdmin = String(row.is_group_admin || "").toLowerCase() === "true" || row.is_group_admin === true;
+                req.user.is_group_admin = isGroupAdmin;
+                req.user.group_admin = isGroupAdmin;
+                req.user.is_admin = isPlatformAdminUser(req.user);
+            } catch (err) {
+                if (!AUTH_DB_REFRESH_FAIL_OPEN) {
+                    console.error("[auth] failed to refresh auth claims from DB:", err?.message || err);
+                    return res.status(503).json({ error: "auth_claim_refresh_failed" });
+                }
+            }
+        }
         const tenantDbName = String(req.user.tenant_database || "").trim();
         const shouldUseTenantDb = isTenantDbIsolationEnabled()
-            && req.user.role !== "admin"
+            && !isPlatformAdminUser(req.user)
             && !isControlPlaneRoute(req)
             && tenantDbName;
         if (!shouldUseTenantDb) return next();

@@ -9,6 +9,7 @@ import { parsePagination } from "../utils/pagination.js";
 import {
     checkSheetAccess,
     hasReportSourceOwnerAccess,
+    isPlatformAdminUser,
     resolveAssignedViewForSheet,
     resolveViewColumnAllowlist as resolveViewColumnAllowlistFromAuth,
 } from "../utils/authorization.js";
@@ -324,7 +325,7 @@ function freezeViewConfigForRefresh(config, previousHeaders = [], nextHeaders = 
     };
 }
 
-function buildRowFilterWhereClause(rowFiltersList = [], startParamIndex = 1) {
+function buildRowFilterWhereClause(rowFiltersList = [], startParamIndex = 1, actualHeaders = []) {
     const normalized = Array.isArray(rowFiltersList) ? rowFiltersList : [];
     const hasAllowAll = normalized.some((f) => !f || Object.keys(f).length === 0);
     if (hasAllowAll) return { sql: "", params: [] };
@@ -332,14 +333,55 @@ function buildRowFilterWhereClause(rowFiltersList = [], startParamIndex = 1) {
     const groups = [];
     const params = [];
     let paramIdx = startParamIndex;
+
+    const headersList = Array.isArray(actualHeaders) ? actualHeaders : [];
+    const resolveColumnKey = (requested) => {
+        if (!headersList.length) return requested;
+        const exact = headersList.find((h) => h === requested);
+        if (exact) return exact;
+        const lowerRequested = String(requested).toLowerCase().trim();
+        return headersList.find((h) => String(h).toLowerCase().trim() === lowerRequested) || requested;
+    };
+
     normalized.forEach((filters) => {
         const entries = Object.entries(filters || {}).filter(([k]) => !!k);
         if (!entries.length) return;
         const predicates = entries.map(([k, v]) => {
-            params.push(k);
-            params.push(String(v));
-            const sql = `(row_data->>$${paramIdx}) = $${paramIdx + 1}`;
-            paramIdx += 2;
+            const resolvedKey = resolveColumnKey(k);
+            params.push(resolvedKey);
+            const rawValues = Array.isArray(v)
+                ? v.map((item) => String(item ?? "").trim()).filter(Boolean)
+                : String(v ?? "").split(",").map((item) => item.trim()).filter(Boolean);
+            const normalizedValues = Array.from(new Set(rawValues.flatMap((value) => {
+                if (/^\d{4}-\d{2}-\d{2}T/.test(value)) {
+                    // Views may persist ISO timestamps while row data stores date-only values.
+                    return [value, value.slice(0, 10)];
+                }
+                return [value];
+            })));
+            const normalizedTextValues = normalizedValues.map((value) => value.trim().toLowerCase());
+            const normalizedNumericValues = Array.from(new Set(
+                normalizedValues
+                    .map((value) => String(value).replace(/[^0-9.-]/g, ""))
+                    .filter((value) => /^-?\d+(?:\.\d+)?$/.test(value))
+            ));
+            params.push(normalizedTextValues);
+            params.push(normalizedNumericValues);
+            const colSql = `row_data->>$${paramIdx}`;
+            const sql = `(
+                LOWER(BTRIM(COALESCE(${colSql}, ''))) = ANY($${paramIdx + 1}::text[])
+                OR (
+                  cardinality($${paramIdx + 2}::text[]) > 0
+                  AND NULLIF(regexp_replace(COALESCE(${colSql}, ''), '[^0-9.-]', '', 'g'), '') IS NOT NULL
+                  AND EXISTS (
+                    SELECT 1
+                    FROM unnest($${paramIdx + 2}::text[]) AS fval(value)
+                    WHERE CAST(NULLIF(regexp_replace(COALESCE(${colSql}, ''), '[^0-9.-]', '', 'g'), '') AS NUMERIC)
+                          = CAST(fval.value AS NUMERIC)
+                  )
+                )
+            )`;
+            paramIdx += 3;
             return sql;
         });
         if (predicates.length) groups.push(`(${predicates.join(" AND ")})`);
@@ -364,8 +406,7 @@ function normalizeStringArray(value) {
 }
 
 export function canUploadSheetsByRole(role) {
-    const normalized = String(role || "").toLowerCase();
-    return normalized === "admin";
+    return isPlatformAdminUser({ role });
 }
 
 export function resolveViewColumnAllowlist(viewConfig, sheetHeaders = []) {
@@ -382,8 +423,7 @@ async function isGroupAdminUser(userId) {
 
 async function canWriteToReportSource(client, user, reportSourceId) {
     if (!Number.isInteger(reportSourceId)) return false;
-    const role = String(user?.role || "").toLowerCase();
-    if (role === "admin") return true;
+    if (isPlatformAdminUser(user)) return true;
     const userId = Number(user?.id || 0);
     if (!Number.isInteger(userId) || userId <= 0) return false;
     const res = await client.query(
@@ -413,9 +453,8 @@ async function resolveReportSourceForUpload(client, { reportSourceId, reportSour
             throw err;
         }
         const row = source.rows[0];
-        const role = String(user?.role || "").toLowerCase();
         const userId = Number(user?.id || 0);
-        if (role !== "admin" && row.created_by !== userId) {
+        if (!isPlatformAdminUser(user) && row.created_by !== userId) {
             const err = new Error("report_source_forbidden");
             err.statusCode = 403;
             throw err;
@@ -915,7 +954,7 @@ async function executeImportFromParsedWorkbook({
                         },
                     });
                 }
-                if (dlp.maskDetectedColumns && scan.findings.length > 0) {
+                if ((dlp.mode === "mask" || dlp.maskDetectedColumns) && scan.findings.length > 0) {
                     sheets = applyDlpColumnMasking(sheets, scan.maskedColumns);
                 }
                 if (scan.findings.length > 0 && dlp.mode === "block") {
@@ -1396,9 +1435,10 @@ export function startImportJobWorker() {
     importWorkerTimer = setInterval(async () => {
         if (importWorkerRunning) return;
         importWorkerRunning = true;
+        let lockAcquired = false;
         try {
-            const locked = await tryAdvisoryLock(IMPORT_WORKER_ADVISORY_LOCK_KEY);
-            if (!locked) return;
+            lockAcquired = await tryAdvisoryLock(IMPORT_WORKER_ADVISORY_LOCK_KEY);
+            if (!lockAcquired) return;
             await processImportJobsForCurrentDb(importWorkerOwnerId);
             await forEachActiveTenantPool(async (tenant) => {
                 await processImportJobsForCurrentDb(`${importWorkerOwnerId}:${tenant.db_name}`);
@@ -1406,7 +1446,9 @@ export function startImportJobWorker() {
         } catch (err) {
             console.error("[import_worker] tick failed:", err?.message || err);
         } finally {
-            await releaseAdvisoryLock(IMPORT_WORKER_ADVISORY_LOCK_KEY);
+            if (lockAcquired) {
+                await releaseAdvisoryLock(IMPORT_WORKER_ADVISORY_LOCK_KEY);
+            }
             importWorkerRunning = false;
         }
     }, IMPORT_JOB_POLL_MS);
@@ -1674,9 +1716,10 @@ async function runReportSourceAutosyncWorkerTick() {
         return;
     }
     autosyncWorkerRunning = true;
+    let lockAcquired = false;
     try {
-        const locked = await tryAdvisoryLock(AUTOSYNC_WORKER_ADVISORY_LOCK_KEY);
-        if (!locked) return;
+        lockAcquired = await tryAdvisoryLock(AUTOSYNC_WORKER_ADVISORY_LOCK_KEY);
+        if (!lockAcquired) return;
         await processAutosyncSourcesForCurrentDb(autosyncWorkerOwnerId);
         await forEachActiveTenantPool(async (tenant) => {
             await processAutosyncSourcesForCurrentDb(`${autosyncWorkerOwnerId}:${tenant.db_name}`);
@@ -1684,7 +1727,9 @@ async function runReportSourceAutosyncWorkerTick() {
     } catch (err) {
         console.error("[autosync_worker] tick failed:", err?.message || err);
     } finally {
-        await releaseAdvisoryLock(AUTOSYNC_WORKER_ADVISORY_LOCK_KEY);
+        if (lockAcquired) {
+            await releaseAdvisoryLock(AUTOSYNC_WORKER_ADVISORY_LOCK_KEY);
+        }
         autosyncWorkerRunning = false;
         await scheduleNextAutosyncWorkerTick();
     }
@@ -2061,12 +2106,12 @@ export async function getUniqueValues(req, res) {
         return res.status(403).json({ error: "Forbidden" });
     }
 
-    let hasFullAccess = req.user.role === "admin";
+    let hasFullAccess = isPlatformAdminUser(req.user);
     let rowFiltersList = [];
 
     // For non-admin users without report-source owner access, require explicit column permissions
     // and apply the same row filters used by the main sheet data endpoint.
-    if (req.user.role !== "admin") {
+    if (!isPlatformAdminUser(req.user)) {
         hasFullAccess = await hasReportSourceOwnerAccess(id, userId);
         if (!hasFullAccess) {
             // Legacy reference retained for regression text checks:
@@ -2126,7 +2171,7 @@ export async function getUniqueValues(req, res) {
 
 export async function getActiveSheet(req, res) {
     let s = [];
-    if (req.user.role === "admin") {
+    if (isPlatformAdminUser(req.user)) {
         s = await query(
             `SELECT s.id, s.headers, s.filename, s.display_name, s.totals_column,
                     s.report_source_id, s.source_version, rs.name AS report_source_name
@@ -2189,7 +2234,7 @@ export async function listMySheets(req, res) {
     const suffix = pagination.hasPagination ? " LIMIT $1 OFFSET $2" : "";
     const paginationParams = pagination.hasPagination ? [pagination.limit, pagination.offset] : [];
 
-    if (req.user.role === "admin") {
+    if (isPlatformAdminUser(req.user)) {
         const rows = await query(
             `SELECT s.id, s.filename, s.display_name, s.uploaded_at,
                     s.active, s.report_source_id, s.source_version, rs.name AS report_source_name,
@@ -2234,7 +2279,7 @@ export async function listMySheets(req, res) {
 }
 
 export async function listAllSheets(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
     const pagination = parsePagination(req.query, { maxLimit: MAX_SHEET_DATA_LIMIT });
     if (pagination.error) return res.status(400).json({ error: pagination.error });
     const rows = await query(
@@ -2256,7 +2301,7 @@ export async function listReportSources(req, res) {
     const limitSql = pagination.hasPagination ? " LIMIT $1 OFFSET $2" : "";
     const limitParams = pagination.hasPagination ? [pagination.limit, pagination.offset] : [];
 
-    if (req.user.role === "admin") {
+    if (isPlatformAdminUser(req.user)) {
         const rows = await query(
             `SELECT rs.id, rs.name, rs.current_sheet_id, rs.is_inferred,
                     rs.sync_enabled, rs.sync_provider, rs.sync_source_ref,
@@ -2379,12 +2424,13 @@ export async function getReportSourceImports(req, res) {
     if (!Number.isInteger(sourceId) || sourceId <= 0) {
         return res.status(400).json({ error: "invalid_report_source_id" });
     }
+    const isPlatformAdmin = isPlatformAdminUser(req.user);
     const [source] = await query("SELECT current_sheet_id FROM report_sources WHERE id = $1", [sourceId]);
     if (!source) return res.status(404).json({ error: "not_found" });
     if (source.current_sheet_id) {
         const hasAccess = await checkSheetAccess(source.current_sheet_id, req.user);
         if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
-    } else if (req.user.role !== "admin") {
+    } else if (!isPlatformAdmin) {
         return res.status(403).json({ error: "Forbidden" });
     }
     const rows = await query(
@@ -2410,7 +2456,7 @@ export async function listImportJobs(req, res) {
 
     const baseParams = [];
     let where = "";
-    if (req.user.role !== "admin") {
+    if (!isPlatformAdminUser(req.user)) {
         baseParams.push(req.user.id);
         where = `WHERE (
           ij.requested_by = $1
@@ -2462,7 +2508,7 @@ export async function getImportJob(req, res) {
     );
     if (!rows.length) return res.status(404).json({ error: "not_found" });
     const job = rows[0];
-    if (req.user.role !== "admin") {
+    if (!isPlatformAdminUser(req.user)) {
         const userId = req.user.id;
         const hasAccess = job.requested_by === userId || (job.sheet_id && await checkSheetAccess(job.sheet_id, req.user));
         if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
@@ -2687,7 +2733,7 @@ export async function getSheetDetails(req, res) {
     if (!s.length) return res.status(404).json({ error: "not_found" });
 
     // Enforce allowed_columns on the headers array returned
-    if (req.user.role !== "admin") {
+    if (!isPlatformAdminUser(req.user)) {
         const hasOwnerAccess = await hasReportSourceOwnerAccess(req.params.id, req.user.id);
         if (!hasOwnerAccess) {
             const assigned = await resolveAssignedViewForSheet(req.params.id, req.user.id);
@@ -2706,7 +2752,7 @@ export async function getSheetDetails(req, res) {
 }
 
 export async function updateSheetDetails(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
     const { totals_column } = req.body || {};
     await query("UPDATE sheets SET totals_column = $1 WHERE id = $2", [totals_column || null, req.params.id]);
     res.json({ success: true });
@@ -2733,6 +2779,9 @@ export async function getSheetData(req, res) {
     const { id } = req.params;
     const { tab, sort_by, sort_order, filters: filtersRaw, viewId } = req.query;
     const userId = req.user.id;
+    const isPlatformAdmin = isPlatformAdminUser(req.user);
+    const isGroupAdmin = await isGroupAdminUser(userId);
+    const canBypassViewAssignmentCheck = isPlatformAdmin || isGroupAdmin;
     const pagination = parsePagination(req.query, { maxLimit: MAX_SHEET_DATA_LIMIT });
     if (pagination.error) {
         return res.status(400).json({ error: pagination.error });
@@ -2747,7 +2796,7 @@ export async function getSheetData(req, res) {
 
     // 1. Resolve Locked View if provided
     if (viewId) {
-        const [view] = await query(
+        let [view] = await query(
             `SELECT v.config, s.headers
              FROM views v
              CROSS JOIN sheets s
@@ -2763,11 +2812,27 @@ export async function getSheetData(req, res) {
                  )
                )
                    AND (
-                     $3 = 'admin'
+                     $3 = TRUE
                      OR EXISTS (SELECT 1 FROM view_user_permissions WHERE view_id = v.id AND user_id = $4)
                    )`,
-                [viewId, id, req.user.role, userId]
+                [viewId, id, canBypassViewAssignmentCheck, userId]
             );
+        if (!view) {
+            // Fallback: allow loading a locked view by id when sheet/source linkage changed across revisions.
+            // We still enforce that requester is platform/group admin or explicitly assigned to the view.
+            [view] = await query(
+                `SELECT v.config, s.headers
+                   FROM views v
+                   LEFT JOIN sheets s ON s.id = $2
+                  WHERE v.id = $1
+                    AND (
+                      $3 = TRUE
+                      OR EXISTS (SELECT 1 FROM view_user_permissions WHERE view_id = v.id AND user_id = $4)
+                    )
+                  LIMIT 1`,
+                [viewId, id, canBypassViewAssignmentCheck, userId]
+            );
+        }
         if (!view) {
             return res.status(403).json({ error: "Forbidden", message: "You do not have permission to access this view." });
         }
@@ -2776,7 +2841,7 @@ export async function getSheetData(req, res) {
     }
 
     // 2. Resolve Base Permissions
-    if (req.user.role !== "admin") {
+    if (!isPlatformAdmin) {
         hasFullAccess = await hasReportSourceOwnerAccess(id, userId);
         if (!hasFullAccess && !viewId) {
             const assigned = await resolveAssignedViewForSheet(id, userId);
@@ -2815,6 +2880,21 @@ export async function getSheetData(req, res) {
     }
 
     try {
+        if (sheetHeaders.length === 0) {
+            const [hRow] = await query("SELECT headers FROM sheets WHERE id = $1", [id]);
+            if (hRow) {
+                sheetHeaders = typeof hRow.headers === "string" ? JSON.parse(hRow.headers) : (hRow.headers || []);
+            }
+        }
+
+        const resolveColumnKey = (requested) => {
+            if (!sheetHeaders.length) return requested;
+            const exact = sheetHeaders.find((h) => h === requested);
+            if (exact) return exact;
+            const lowerRequested = String(requested).toLowerCase().trim();
+            return sheetHeaders.find((h) => String(h).toLowerCase().trim() === lowerRequested) || requested;
+        };
+
         let columnSelection = "row_data";
         const sqlParams = [id];
 
@@ -2843,7 +2923,7 @@ export async function getSheetData(req, res) {
 
         // Apply RBAC + Locked View row filters
         if (!hasFullAccess && rowFiltersList.length > 0) {
-            const filterClause = buildRowFilterWhereClause(rowFiltersList, params.length + 1);
+            const filterClause = buildRowFilterWhereClause(rowFiltersList, params.length + 1, sheetHeaders);
             sql += filterClause.sql;
             params.push(...filterClause.params);
         }
@@ -2854,21 +2934,40 @@ export async function getSheetData(req, res) {
                 const uiFilters = typeof filtersRaw === 'string' ? JSON.parse(filtersRaw) : filtersRaw;
                 if (typeof uiFilters === 'object' && !Array.isArray(uiFilters)) {
                     Object.entries(uiFilters).forEach(([col, val]) => {
-                        if (!val) return;
+                        if (val === null || val === undefined || val === "") return;
                         // Security: Only allow filtering on validCols if not admin
                         if (!hasFullAccess && !validCols.includes(col)) return;
 
+                        const resolvedCol = resolveColumnKey(col);
+                        const colExpr = `row_data->>$${params.length + 1}`;
+                        
                         if (typeof val === 'string' || typeof val === 'number') {
-                            sql += ` AND (row_data->>$${params.length + 1}) ILIKE $${params.length + 2}`;
-                            params.push(col, `%${val}%`);
+                            const strVal = String(val).trim();
+                            if (strVal.includes(",")) {
+                                // Multi-select string fallback
+                                const vals = strVal.split(",").map(v => v.trim()).filter(Boolean);
+                                sql += ` AND (${colExpr}) = ANY($${params.length + 2}::text[])`;
+                                params.push(resolvedCol, vals);
+                            } else {
+                                const isLikelyNumeric = /^-?\d+(?:\.\d+)?$/.test(strVal.replace(/[^0-9.-]/g, ""));
+                                if (isLikelyNumeric && !/[a-zA-Z]/.test(strVal)) {
+                                    const cleanVal = strVal.replace(/[^0-9.-]/g, "");
+                                    sql += ` AND (NULLIF(regexp_replace(COALESCE(${colExpr}, ''), '[^0-9.-]', '', 'g'), '') IS NOT NULL 
+                                                AND CAST(NULLIF(regexp_replace(COALESCE(${colExpr}, ''), '[^0-9.-]', '', 'g'), '') AS NUMERIC) = $${params.length + 2}::numeric)`;
+                                    params.push(resolvedCol, cleanVal);
+                                } else {
+                                    sql += ` AND (${colExpr}) ILIKE $${params.length + 2}`;
+                                    params.push(resolvedCol, `%${strVal}%`);
+                                }
+                            }
                         } else if (Array.isArray(val) && val.length > 0) {
-                            sql += ` AND (row_data->>$${params.length + 1}) = ANY($${params.length + 2}::text[])`;
-                            params.push(col, val.map(v => String(v)));
+                            sql += ` AND (${colExpr}) = ANY($${params.length + 2}::text[])`;
+                            params.push(resolvedCol, val.map(v => String(v)));
                         } else if (typeof val === 'object' && val.value) {
                             const op = val.operator === 'equals' ? '=' : 'ILIKE';
                             const searchVal = val.operator === 'equals' ? String(val.value) : `%${val.value}%`;
-                            sql += ` AND (row_data->>$${params.length + 1}) ${op} $${params.length + 2}`;
-                            params.push(col, searchVal);
+                            sql += ` AND (${colExpr}) ${op} $${params.length + 2}`;
+                            params.push(resolvedCol, searchVal);
                         }
                     });
                 }
@@ -2940,7 +3039,7 @@ export async function getSheetData(req, res) {
 }
 
 export async function deleteSheet(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
     const { id } = req.params;
     const client = await getClient();
 

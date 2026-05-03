@@ -15,6 +15,7 @@ import { normalizeGroupEntitlements, groupHasFeature } from "../utils/entitlemen
 import { sendInvitationEmail, loadInviteEmailTemplate, normalizeInviteEmailTemplateForSave, renderInviteTemplate } from "../utils/smtpMailer.js";
 import { loadInvitationPolicy, saveInvitationPolicy, computeInvitationExpiryDate } from "../utils/invitationLifecycle.js";
 import { DLP_SETTINGS_KEY, normalizeDlpSettings } from "../utils/dlp.js";
+import { isPlatformAdminUser } from "../utils/authorization.js";
 import { normalize2faDigits, normalize2faPeriod } from "../utils/twoFactor.js";
 import { randomBytes, createHash } from "crypto";
 
@@ -25,6 +26,7 @@ const ALLOWED_ROLES = new Set(["admin", "user"]);
 const HEAVY_LIST_CACHE = new Map();
 const HEAVY_LIST_CACHE_TTL_MS = Number.parseInt(process.env.HEAVY_LIST_CACHE_TTL_MS || "20000", 10);
 const HEAVY_LIST_CACHE_MAX = Number.parseInt(process.env.HEAVY_LIST_CACHE_MAX || "200", 10);
+const GROUPS_LIST_CACHE_ENABLED = String(process.env.GROUPS_LIST_CACHE_ENABLED || "false").trim().toLowerCase() === "true";
 const ENABLE_STORAGE_USAGE_METRICS = String(process.env.ENABLE_STORAGE_USAGE_METRICS || "").toLowerCase() === "true";
 const CUSTOMER_INVITE_BASE_URL = String(process.env.CUSTOMER_INVITE_BASE_URL || "").trim();
 const INSIGHT_TRANSLATION_CACHE_SETTINGS_KEY = "insight_translation_cache_settings";
@@ -99,7 +101,7 @@ function clearHeavyListCache() {
 }
 
 export async function listAuditLogs(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
     const pagination = parsePagination(req.query, { maxLimit: 1000 });
     if (pagination.error) return res.status(400).json({ error: pagination.error });
     const params = [];
@@ -132,6 +134,47 @@ export async function listAuditLogs(req, res) {
         params
     );
     res.json(rows);
+}
+
+export async function getAiUsageSummary(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    const periodMonth = String(req.query?.periodMonth || "").trim() || new Date().toISOString().slice(0, 7);
+    const rows = await query(
+        `SELECT a.group_id, g.name AS group_name, a.period_month, a.query_count,
+                a.prompt_tokens, a.completion_tokens, a.estimated_cost_usd, a.provider, a.model, a.updated_at
+           FROM ai_usage_monthly a
+           JOIN groups g ON g.id = a.group_id
+          WHERE a.period_month = $1
+          ORDER BY a.estimated_cost_usd DESC, a.query_count DESC`,
+        [periodMonth]
+    );
+    const totals = rows.reduce((acc, row) => {
+        acc.queryCount += Number(row.query_count || 0);
+        acc.promptTokens += Number(row.prompt_tokens || 0);
+        acc.completionTokens += Number(row.completion_tokens || 0);
+        acc.estimatedCostUsd += Number(row.estimated_cost_usd || 0);
+        return acc;
+    }, { queryCount: 0, promptTokens: 0, completionTokens: 0, estimatedCostUsd: 0 });
+    return res.json({
+        periodMonth,
+        totals: {
+            queryCount: totals.queryCount,
+            promptTokens: totals.promptTokens,
+            completionTokens: totals.completionTokens,
+            estimatedCostUsd: Number(totals.estimatedCostUsd.toFixed(6)),
+        },
+        groups: rows.map((row) => ({
+            groupId: Number(row.group_id),
+            groupName: row.group_name,
+            queryCount: Number(row.query_count || 0),
+            promptTokens: Number(row.prompt_tokens || 0),
+            completionTokens: Number(row.completion_tokens || 0),
+            estimatedCostUsd: Number(Number(row.estimated_cost_usd || 0).toFixed(6)),
+            provider: row.provider || "openai",
+            model: row.model || null,
+            updatedAt: row.updated_at,
+        })),
+    });
 }
 
 async function getAdminGroups(userId) {
@@ -219,7 +262,7 @@ function parseEntitlementsInput(value) {
 
 export async function getUserGroups(req, res) {
     const id = parseInt(req.params.id, 10);
-    const isGlobalAdmin = req.user.role === "admin";
+    const isGlobalAdmin = isPlatformAdminUser(req.user);
     if (!isGlobalAdmin) {
         const adminGroups = await getAdminGroups(req.user.id);
         if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
@@ -237,7 +280,7 @@ export async function getUserGroups(req, res) {
 }
 
 export async function listUsers(req, res) {
-    const isGlobalAdmin = req.user.role === "admin";
+    const isGlobalAdmin = isPlatformAdminUser(req.user);
     const pagination = parsePagination(req.query, { maxLimit: 1000 });
     if (pagination.error) return res.status(400).json({ error: pagination.error });
     try {
@@ -304,7 +347,7 @@ export async function listUsers(req, res) {
 }
 
 export async function createUser(req, res) {
-    const isGlobalAdmin = req.user.role === "admin";
+    const isGlobalAdmin = isPlatformAdminUser(req.user);
     const desiredRole = normalizeRole(req.body?.role, "user");
     const requestedGroupId = req.body?.groupId ?? req.body?.group_id;
     const targetGroupId = requestedGroupId ? Number.parseInt(requestedGroupId, 10) : null;
@@ -382,7 +425,7 @@ export async function createUser(req, res) {
 }
 
 export async function inviteCustomerUser(req, res) {
-    const isGlobalAdmin = req.user.role === "admin";
+    const isGlobalAdmin = isPlatformAdminUser(req.user);
     const targetGroupId = parsePositiveInt(req.body?.groupId ?? req.body?.group_id);
     const emailText = normalizeEmail(req.body?.email);
     const firstNameText = String(req.body?.firstName || "").trim();
@@ -479,7 +522,7 @@ export async function inviteCustomerUser(req, res) {
 }
 
 export async function listCustomerInvitations(req, res) {
-    const isGlobalAdmin = req.user.role === "admin";
+    const isGlobalAdmin = isPlatformAdminUser(req.user);
     const requestedGroupId = parsePositiveInt(req.query?.groupId);
     const pagination = parsePagination(req.query, { maxLimit: 250 });
     if (pagination.error) return res.status(400).json({ error: pagination.error });
@@ -537,7 +580,7 @@ export async function listCustomerInvitations(req, res) {
 export async function resendCustomerInvitation(req, res) {
     const invitationId = parsePositiveInt(req.params?.id);
     if (!invitationId) return res.status(400).json({ error: "invalid_invitation_id" });
-    const isGlobalAdmin = req.user.role === "admin";
+    const isGlobalAdmin = isPlatformAdminUser(req.user);
     const inviteBaseUrl = resolveInviteBaseUrl(req);
 
     try {
@@ -597,7 +640,7 @@ export async function resendCustomerInvitation(req, res) {
 export async function revokeCustomerInvitation(req, res) {
     const invitationId = parsePositiveInt(req.params?.id);
     if (!invitationId) return res.status(400).json({ error: "invalid_invitation_id" });
-    const isGlobalAdmin = req.user.role === "admin";
+    const isGlobalAdmin = isPlatformAdminUser(req.user);
 
     try {
         const rows = await query(
@@ -635,7 +678,7 @@ export async function updateUser(req, res) {
     const { id } = req.params;
     const { email, password, role, reset, firstName, lastName, company } = req.body;
     
-    const isGlobalAdmin = req.user.role === "admin";
+    const isGlobalAdmin = isPlatformAdminUser(req.user);
     const desiredRole = role !== undefined ? normalizeRole(role, "user") : undefined;
     if (role !== undefined && !desiredRole) return res.status(400).json({ error: "invalid_role" });
     if (!isGlobalAdmin) {
@@ -746,7 +789,7 @@ export async function updateUser(req, res) {
 
 export async function deleteUser(req, res) {
     const { id } = req.params;
-    const isGlobalAdmin = req.user.role === "admin";
+    const isGlobalAdmin = isPlatformAdminUser(req.user);
     
     try {
         if (!isGlobalAdmin) {
@@ -795,7 +838,7 @@ export async function deleteUser(req, res) {
 }
 
 export async function setDefaultView(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
     const { userId } = req.params;
     const { viewId } = req.body;
     await query(
@@ -1766,11 +1809,6 @@ export function normalizeEmailIngestSenderAllowlist(raw = {}) {
     return Array.from(new Set(allowedSenderDomains.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean)));
 }
 
-function isPlatformAdminUser(user) {
-    const role = String(user?.role || "").trim().toLowerCase();
-    return role === "admin" || role === "super_admin" || role === "superadmin" || !!user?.is_admin || !!user?.super_admin;
-}
-
 export async function getInsightTranslationCacheSetting(req, res) {
     if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
     const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [INSIGHT_TRANSLATION_CACHE_SETTINGS_KEY]);
@@ -2069,10 +2107,12 @@ export async function listGroups(req, res) {
     const pagination = parsePagination(req.query, { maxLimit: 1000 });
     if (pagination.error) return res.status(400).json({ error: pagination.error });
     const pageTag = pagination.hasPagination ? `:l${pagination.limit}:o${pagination.offset}` : ":all";
-    if (req.user.role === "admin") {
+    if (isPlatformAdminUser(req.user)) {
         const cacheKey = `listGroups:admin:${ENABLE_STORAGE_USAGE_METRICS ? "usage" : "lite"}${pageTag}`;
-        const cached = getHeavyListCache(cacheKey);
-        if (cached) return res.json(cached);
+        if (GROUPS_LIST_CACHE_ENABLED) {
+            const cached = getHeavyListCache(cacheKey);
+            if (cached) return res.json(cached);
+        }
         const totalRows = await query("SELECT COUNT(*)::int AS c FROM groups", []);
         const total = Number(totalRows[0]?.c || 0);
         let sql = `SELECT g.*, c.id AS customer_id, c.db_name AS customer_db_name, c.status AS customer_db_status,
@@ -2086,7 +2126,7 @@ export async function listGroups(req, res) {
             params.push(pagination.limit, pagination.offset);
         }
         const groups = await query(sql, params);
-        setHeavyListCache(cacheKey, groups);
+        if (GROUPS_LIST_CACHE_ENABLED) setHeavyListCache(cacheKey, groups);
         res.set("X-Total-Count", String(total));
         res.set("X-Limit", String(pagination.limit));
         res.set("X-Offset", String(pagination.offset));
@@ -2096,8 +2136,10 @@ export async function listGroups(req, res) {
     const adminGroups = await getAdminGroups(req.user.id);
     if (!adminGroups.length) return res.status(403).json({ error: "Forbidden" });
     const cacheKey = `listGroups:user:${req.user.id}:${[...adminGroups].sort((a, b) => a - b).join(",")}:${ENABLE_STORAGE_USAGE_METRICS ? "usage" : "lite"}${pageTag}`;
-    const cached = getHeavyListCache(cacheKey);
-    if (cached) return res.json(cached);
+    if (GROUPS_LIST_CACHE_ENABLED) {
+        const cached = getHeavyListCache(cacheKey);
+        if (cached) return res.json(cached);
+    }
 
     const totalRows = await query(
         `SELECT COUNT(*)::int AS c FROM groups g WHERE g.id = ANY($1::int[])`,
@@ -2114,7 +2156,7 @@ export async function listGroups(req, res) {
         params.push(pagination.limit, pagination.offset);
     }
     const groups = await query(sql, params);
-    setHeavyListCache(cacheKey, groups);
+    if (GROUPS_LIST_CACHE_ENABLED) setHeavyListCache(cacheKey, groups);
     res.set("X-Total-Count", String(total));
     res.set("X-Limit", String(pagination.limit));
     res.set("X-Offset", String(pagination.offset));
@@ -2122,7 +2164,7 @@ export async function listGroups(req, res) {
 }
 
 export async function createGroup(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
     const { name, maxFileSizeMb, maxTotalStorageMb } = req.body;
     const customerFirstName = String(req.body?.customerFirstName || "").trim();
     const customerLastName = String(req.body?.customerLastName || "").trim();
@@ -2229,7 +2271,7 @@ export async function createGroup(req, res) {
 }
 
 export async function provisionGroupDatabase(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
     const gid = Number.parseInt(req.params.id, 10);
     if (!Number.isInteger(gid) || gid <= 0) return res.status(400).json({ error: "invalid_group_id" });
     try {
@@ -2247,7 +2289,7 @@ export async function provisionGroupDatabase(req, res) {
 }
 
 export async function updateGroup(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
     const { id } = req.params;
     const { name, maxFileSizeMb, maxTotalStorageMb } = req.body;
     const customerFirstName = req.body?.customerFirstName;
@@ -2314,7 +2356,7 @@ export async function updateGroup(req, res) {
 }
 
 export async function deleteGroup(req, res) {
-    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
     const { id } = req.params;
     const client = await getClient();
     try {
@@ -2345,7 +2387,7 @@ export async function deleteGroup(req, res) {
 
 export async function getGroupMembers(req, res) {
     const gid = parseInt(req.params.id, 10);
-    if (req.user.role !== "admin") {
+    if (!isPlatformAdminUser(req.user)) {
         const adminGroups = await getAdminGroups(req.user.id);
         if (!adminGroups.includes(gid)) return res.status(403).json({ error: "Forbidden" });
         try {
@@ -2368,7 +2410,7 @@ export async function getGroupMembers(req, res) {
 
 export async function updateGroupMembers(req, res) {
     const gid = parseInt(req.params.id, 10);
-    if (req.user.role !== "admin") {
+    if (!isPlatformAdminUser(req.user)) {
         const adminGroups = await getAdminGroups(req.user.id);
         if (!adminGroups.includes(gid)) return res.status(403).json({ error: "Forbidden" });
         try {
@@ -2384,7 +2426,7 @@ export async function updateGroupMembers(req, res) {
     } catch (err) {
         return res.status(err.statusCode || 403).json({ error: err.message });
     }
-    if (req.user.role !== "admin") {
+    if (!isPlatformAdminUser(req.user)) {
         const group = await loadGroupForAdminAction(gid);
         const entitlements = normalizeGroupEntitlements(group?.entitlements || {});
         if (entitlements.maxUsers && userIds.length > entitlements.maxUsers) {
@@ -2455,7 +2497,7 @@ export async function addUserToGroup(req, res) {
     } catch (err) {
         return res.status(err.statusCode || 403).json({ error: err.message });
     }
-    if (req.user.role !== "admin") {
+    if (!isPlatformAdminUser(req.user)) {
         const adminGroups = await getAdminGroups(req.user.id);
         if (!adminGroups.includes(gid)) return res.status(403).json({ error: "Forbidden" });
         try {
@@ -2478,7 +2520,7 @@ export async function addUserToGroup(req, res) {
 
 export async function removeUserFromGroup(req, res) {
     const gid = parseInt(req.params.id, 10);
-    if (req.user.role !== "admin") {
+    if (!isPlatformAdminUser(req.user)) {
         const adminGroups = await getAdminGroups(req.user.id);
         if (!adminGroups.includes(gid)) return res.status(403).json({ error: "Forbidden" });
         try {
@@ -2514,7 +2556,7 @@ export async function toggleGroupAdmin(req, res) {
     const { isAdmin } = req.body;
 
     try {
-        if (req.user.role !== "admin") {
+        if (!isPlatformAdminUser(req.user)) {
             const adminGroups = await getAdminGroups(req.user.id);
             if (!adminGroups.includes(Number(gid))) return res.status(403).json({ error: "Forbidden" });
             const group = await loadGroupForAdminAction(gid);
@@ -2577,7 +2619,7 @@ export async function toggleGroupAdmin(req, res) {
 
 export async function getGroupSheets(req, res) {
     const gid = parseInt(req.params.id, 10);
-    if (req.user.role !== "admin") {
+    if (!isPlatformAdminUser(req.user)) {
         const adminGroups = await getAdminGroups(req.user.id);
         if (!adminGroups.includes(gid)) return res.status(403).json({ error: "Forbidden" });
     }

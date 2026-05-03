@@ -1,5 +1,20 @@
 import { query } from "../config/db.js";
 
+function isTruthyFlag(value) {
+  return ["1", "true", "t", "yes", "on"].includes(String(value || "").trim().toLowerCase());
+}
+
+export function isPlatformAdminUser(user) {
+  const roleLower = String(user?.role || "").trim().toLowerCase();
+  return (
+    roleLower === "admin" ||
+    roleLower === "super_admin" ||
+    roleLower === "superadmin" ||
+    isTruthyFlag(user?.is_admin) ||
+    isTruthyFlag(user?.super_admin)
+  );
+}
+
 function parseJsonMaybe(value, fallback) {
   if (typeof value !== "string") return value ?? fallback;
   try {
@@ -68,7 +83,7 @@ export async function resolveAssignedViewForSheet(sheetId, userId, requestedView
 }
 
 export async function checkSheetAccess(sheetId, user) {
-  if (user.role === "admin") return true;
+  if (isPlatformAdminUser(user)) return true;
   const rows = await query(
     `SELECT 1
        FROM sheets s

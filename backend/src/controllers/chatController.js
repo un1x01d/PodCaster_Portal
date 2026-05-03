@@ -1,19 +1,22 @@
 import { createHash } from "crypto";
 import { query } from "../config/db.js";
 import { isEnglishLocale, normalizeLocale, translateDashboardItems } from "../utils/dashboardLocalization.js";
-import { checkSheetAccess, hasReportSourceOwnerAccess, loadSheetPermissionSets } from "../utils/authorization.js";
-import { estimateOpenAiCostUsd, recordAiUsage, reserveAiQueryForSheet } from "../utils/aiQuota.js";
+import { checkSheetAccess, hasReportSourceOwnerAccess, isPlatformAdminUser, loadSheetPermissionSets } from "../utils/authorization.js";
+import { estimateOpenAiCostUsd, recordAiUsage, reserveAiQueryForSheet, reserveAiQueryForUser } from "../utils/aiQuota.js";
 export { checkSheetAccess } from "../utils/authorization.js";
 
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10);
-const CHAT_MAX_ROWS = Number.parseInt(process.env.CHAT_MAX_ROWS || "50000", 10);
+const CHAT_MAX_ROWS = Math.min(100000, Number.parseInt(process.env.CHAT_MAX_ROWS || "50000", 10));
+const CHAT_SQL_AGG_MAX_ROWS = Math.min(300000, Number.parseInt(process.env.CHAT_SQL_AGG_MAX_ROWS || "120000", 10));
 const CHAT_AUDIO_MAX_CHARS = Number.parseInt(process.env.CHAT_AUDIO_MAX_CHARS || "8000", 10);
+const CHAT_AUDIO_SAFE_CHUNK_CHARS = Number.parseInt(process.env.CHAT_AUDIO_SAFE_CHUNK_CHARS || "2500", 10);
+const CHAT_AUDIO_FIRST_CHUNK_CHARS = Number.parseInt(process.env.CHAT_AUDIO_FIRST_CHUNK_CHARS || "420", 10);
 const CHAT_TTS_SETTINGS_KEY = "chat_tts_settings";
 const CHAT_TTS_DEFAULTS = {
   voices: { default: "nova", es: "shimmer", uk: "nova", ru: "nova" },
-  models: { en: "tts-1", default: "tts-1-hd" },
+  models: { en: "tts-1", default: "tts-1" },
   speed: { default: 0.9 },
 };
 
@@ -192,20 +195,30 @@ function formatValue(v, locale = "en", col = "", forSpeech = false) {
  * PERF-01: Server-Side Math
  * Executes heavy calculations in PostgreSQL instead of Node.js memory.
  */
-function buildRowFilterWhereClause(rowFiltersList = [], startParamIdx = 1) {
+function buildRowFilterWhereClause(rowFiltersList = [], startParamIdx = 1, actualHeaders = []) {
   const normalized = Array.isArray(rowFiltersList) ? rowFiltersList.filter((f) => f && typeof f === "object") : [];
   if (!normalized.length) return { sql: "", params: [] };
   const filterClauses = [];
   const params = [];
   let paramIdx = startParamIdx;
 
+  const headersList = Array.isArray(actualHeaders) ? actualHeaders : [];
+  const resolveColumnKey = (requested) => {
+      if (!headersList.length) return requested;
+      const exact = headersList.find((h) => h === requested);
+      if (exact) return exact;
+      const lowerRequested = String(requested).toLowerCase().trim();
+      return headersList.find((h) => String(h).toLowerCase().trim() === lowerRequested) || requested;
+  };
+
   normalized.forEach((filters) => {
     const entries = Object.entries(filters).filter(([k]) => !!k);
     if (!entries.length) return;
     const groupPredicates = entries.map(([k, v]) => {
+      const resolvedKey = resolveColumnKey(k);
       const keyIdx = paramIdx++;
       const valIdx = paramIdx++;
-      params.push(String(k), String(v));
+      params.push(String(resolvedKey), String(v));
       return `(row_data->>$${keyIdx}) = $${valIdx}`;
     });
     filterClauses.push(`(${groupPredicates.join(" AND ")})`);
@@ -250,7 +263,7 @@ function normalizeActiveDashboardFilters(headers = [], activeFilters = {}) {
   return out;
 }
 
-async function computeSqlAggregation({ sheetId, user, operation, targetColumn, groupBy, filters = [], rowFiltersList = [], allowedColumns = null, limit = 5, locale = "en", tabName = null }) {
+async function computeSqlAggregation({ sheetId, user, operation, targetColumn, groupBy, filters = [], rowFiltersList = [], allowedColumns = null, limit = 5, locale = "en", tabName = null, actualHeaders = [] }) {
     const op = String(operation || "none").toLowerCase();
     const lang = String(locale || "en").toLowerCase();
     const isUk = lang.startsWith("uk");
@@ -272,7 +285,7 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
     }
 
     // Apply RBAC row filters in SQL
-    const rowFilterSql = buildRowFilterWhereClause(rowFiltersList, params.length + 1);
+    const rowFilterSql = buildRowFilterWhereClause(rowFiltersList, params.length + 1, actualHeaders);
     if (rowFilterSql.sql) {
       where += rowFilterSql.sql;
       params.push(...rowFilterSql.params);
@@ -714,6 +727,15 @@ export async function computeLargeDatasetAggregateFallback({
     rowFiltersList,
   });
   const scopedParams = [sheetId, ...whereParams];
+  const scopedCountRows = await query(`SELECT COUNT(*)::int AS c FROM sheet_rows ${where}`, scopedParams);
+  const scopedCount = Number(scopedCountRows?.[0]?.c || 0);
+  if (scopedCount > CHAT_SQL_AGG_MAX_ROWS) {
+    return {
+      answer: `Dataset is too large for direct aggregate fallback (${scopedCount} rows > ${CHAT_SQL_AGG_MAX_ROWS}). Narrow filters and retry.`,
+      previewRows: [],
+      chart: null,
+    };
+  }
   const inferredOperation = inferAggregateOperationFromMessage(message, { operation: operation || ai?.operation });
   const bucket = inferAggregateBucketFromMessage(message, { operation: operation || ai?.operation });
   const directOp = ["count", "sum", "avg", "max", "min", "top_n"].includes(inferredOperation) ? inferredOperation : null;
@@ -766,6 +788,7 @@ export async function computeLargeDatasetAggregateFallback({
       limit: ai?.limit,
       locale,
       tabName,
+      actualHeaders: headers
     });
     if (agg) {
       return {
@@ -897,12 +920,16 @@ async function computeDeterministicAnswer(operation, rows, targetColumn, groupBy
   
   // --- Financial Ratio & Analysis Engine (Loaded from DB) ---
   const { ratios } = await loadSemanticBrain();
+  const rowHeaders = Object.keys(rows?.[0] || {});
 
-  const matchedRatio = ratios.find(r => r.match.test(q));
+  const matchedRatio = ratios.find((r) => r?.match?.test?.(q));
   if (matchedRatio) {
-    const resolvedCols = await Promise.all(matchedRatio.cols.map(c => resolveColumn(headers, c, rows.slice(0, 10))));
-    if (resolvedCols.every(c => !!c)) {
-        const sums = resolvedCols.map(c => rows.reduce((acc, r) => acc + (toNum(r[c]) || 0), 0));
+    const ratioCols = Array.isArray(matchedRatio.cols) ? matchedRatio.cols : [];
+    const resolvedCols = await Promise.all(
+      ratioCols.map((c) => resolveColumn(rowHeaders, c, rows.slice(0, 10)))
+    );
+    if (resolvedCols.length > 0 && resolvedCols.every((c) => !!c)) {
+        const sums = resolvedCols.map((c) => rows.reduce((acc, r) => acc + (toNum(r[c]) || 0), 0));
         if (sums.every(s => s !== 0 || matchedRatio.key === "rainy_day")) {
             const result = matchedRatio.calc(sums);
             let ans = "";
@@ -1828,6 +1855,12 @@ function naturalizeNumbersForTTS(text = "", locale = "en") {
     out = out.replace(/\bRevenue\b/gi, "Виторг");
     out = out.replace(/\btab\b/gi, "вкладка");
     out = out.replace(/\$([\d,.\s]+)\b/g, "$1 доларів");
+    out = out
+      .replace(/\s*:\s*/g, ". ")
+      .replace(/\s*=\s*/g, " дорівнює ")
+      .replace(/[()]/g, " ")
+      .replace(/(?<=\d)\s*-\s*(?=\d)/g, " мінус ")
+      .replace(/(?<=\d)\s*\/\s*(?=\d)/g, " поділити на ");
   } else if (lang === "ru") {
     // Keep percentage decimals explicit for speech (including sub-1% values).
     out = out.replace(/([+-]?(?:\d+(?:[.,]\d+)?|[.,]\d+))%/g, (m, numRaw) => `${normalizePercentToken(numRaw)} процента`);
@@ -1844,6 +1877,12 @@ function naturalizeNumbersForTTS(text = "", locale = "en") {
     out = out.replace(/\bRevenue\b/gi, "Выручка");
     out = out.replace(/\btab\b/gi, "вкладка");
     out = out.replace(/\$([\d,.\s]+)\b/g, "$1 долларов");
+    out = out
+      .replace(/\s*:\s*/g, ". ")
+      .replace(/\s*=\s*/g, " равно ")
+      .replace(/[()]/g, " ")
+      .replace(/(?<=\d)\s*-\s*(?=\d)/g, " минус ")
+      .replace(/(?<=\d)\s*\/\s*(?=\d)/g, " разделить на ");
   } else {
     // English defaults
     out = out.replace(/\bvs\b/gi, "versus");
@@ -1871,11 +1910,17 @@ function naturalizeNumbersForTTS(text = "", locale = "en") {
     });
     
     out = out.replace(/([+-]?(?:\d+(?:[.,]\d+)?|[.,]\d+))%/g, (m, numRaw) => `${normalizePercentToken(numRaw)} percent`);
-    out = out.replace(/\(\+/g, "(plus ");
-    out = out.replace(/\(\-/g, "(minus ");
+    out = out.replace(/\(\+/g, " plus ");
+    out = out.replace(/\(\-/g, " minus ");
+    out = out
+      .replace(/\s*:\s*/g, ". ")
+      .replace(/\s*=\s*/g, " equals ")
+      .replace(/[()]/g, " ")
+      .replace(/(?<=\d)\s*-\s*(?=\d)/g, " minus ")
+      .replace(/(?<=\d)\s*\/\s*(?=\d)/g, " divided by ");
   }
 
-  return out;
+  return out.replace(/\s+/g, " ").trim();
 }
 
 function getSlavicPlural(n, forms) {
@@ -2025,13 +2070,43 @@ export async function getChatAudio(req, res) {
   if (!apiKey || !text) return res.status(400).json({ error: "missing_params" });
 
   try {
-    const audioBuffer = await synthesizeChatAudioBuffer({ text, locale });
-    if (!audioBuffer || !audioBuffer.length) {
-      return res.status(502).json({ error: "tts_empty_response" });
+    let reservation = null;
+    try {
+      reservation = await reserveAiQueryForUser({ user: req.user, kind: "chat_audio" });
+    } catch (_) {
+      reservation = null;
     }
+    const { cleanedText, model, voice, speed } = await buildChatTtsConfig({ text, locale });
+    const safeMax = Math.max(500, Math.min(CHAT_AUDIO_MAX_CHARS, CHAT_AUDIO_SAFE_CHUNK_CHARS));
+    const chunks = splitTextForTts(cleanedText, safeMax);
+    if (!chunks.length) return res.status(413).json({ error: "text_too_large" });
+
     res.setHeader("Content-Type", "audio/mpeg");
-    res.setHeader("Content-Length", String(audioBuffer.length));
-    return res.status(200).send(audioBuffer);
+    res.setHeader("Transfer-Encoding", "chunked");
+    res.setHeader("Cache-Control", "no-store");
+
+    let wroteAny = false;
+    for (const chunk of chunks) {
+      const part = await synthesizeTtsChunk({ text: chunk, model, voice, speed, apiKey });
+      if (part?.length) {
+        wroteAny = true;
+        res.write(part);
+      }
+    }
+    if (!wroteAny) {
+      if (!res.headersSent) return res.status(502).json({ error: "tts_empty_response" });
+      res.destroy();
+      return;
+    }
+    await recordAiUsage({
+      reservation,
+      provider: "openai",
+      model,
+      promptTokens: 0,
+      completionTokens: 0,
+      textChars: String(cleanedText || "").length,
+    }).catch(() => {});
+    return res.end();
   } catch (e) {
     const errorCode = e?.code || "internal_server_error";
     const status = errorCode === "text_too_large" ? 413 : errorCode === "tts_timeout" ? 504 : errorCode === "tts_upstream_error" ? 502 : 500;
@@ -2039,56 +2114,82 @@ export async function getChatAudio(req, res) {
     if (e?.message && errorCode === "tts_upstream_error") {
       payload.message = String(e.message).slice(0, 300);
     }
+    console.error("[chat_audio] failed", {
+      error: errorCode,
+      message: String(e?.message || ""),
+      locale: String(locale || ""),
+      text_length: String(text || "").length,
+    });
+    if (res.headersSent) {
+      try { res.destroy(); } catch (_) {}
+      return;
+    }
     return res.status(status).json(payload);
   }
 }
 
-export async function synthesizeChatAudioBuffer({ text, locale }) {
-  let speechText = text;
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey || !speechText) {
-    const err = new Error("missing_params");
-    err.code = "missing_params";
-    throw err;
-  }
-  if (String(speechText).length > CHAT_AUDIO_MAX_CHARS) {
-    const err = new Error("text_too_large");
-    err.code = "text_too_large";
-    throw err;
+function splitTextForTts(text, maxChars) {
+  const content = String(text || "").trim();
+  if (!content) return [];
+  if (content.length <= maxChars) return [content];
+
+  const chunks = [];
+  const sentenceParts = content.split(/(?<=[.!?])\s+/);
+  let current = "";
+
+  const pushCurrent = () => {
+    const normalized = String(current || "").trim();
+    if (normalized) chunks.push(normalized);
+    current = "";
+  };
+
+  for (const partRaw of sentenceParts) {
+    const part = String(partRaw || "").trim();
+    if (!part) continue;
+
+    if (part.length > maxChars) {
+      pushCurrent();
+      for (let i = 0; i < part.length; i += maxChars) {
+        chunks.push(part.slice(i, i + maxChars));
+      }
+      continue;
+    }
+
+    const candidate = current ? `${current} ${part}` : part;
+    if (candidate.length <= maxChars) {
+      current = candidate;
+    } else {
+      pushCurrent();
+      current = part;
+    }
   }
 
-  // Strip Markdown markers before TTS
-  speechText = String(speechText).replace(/\*/g, "");
+  pushCurrent();
+  return chunks;
+}
 
-  const ttsCfg = await loadChatTtsSettings();
-  const lang = (locale || "en").split("-")[0].toLowerCase();
-  const voice = String(ttsCfg?.voices?.[lang] || ttsCfg?.voices?.default || "nova");
-  const model = String(lang === "en"
-    ? (ttsCfg?.models?.en || "tts-1")
-    : (ttsCfg?.models?.[lang] || ttsCfg?.models?.default || "tts-1-hd"));
-  const speedNum = Number(ttsCfg?.speed?.[lang] ?? ttsCfg?.speed?.default ?? 0.9);
-  const speed = Number.isFinite(speedNum) && speedNum > 0 ? speedNum : 0.9;
-  
-  let cleanedText = naturalizeNumbersForTTS(speechText, locale);
-  
-  if (lang === "uk" || lang === "ru") {
-      // Convert all remaining digits to Cyrillic words to force native accent
-      cleanedText = expandFinancialTextPhonetically(cleanedText, lang);
-  }
+function splitTextForTtsStreaming(text, maxChars, firstChunkChars) {
+  const chunks = splitTextForTts(text, maxChars);
+  if (!chunks.length) return [];
+  const firstMax = Math.max(120, Math.min(maxChars, Number(firstChunkChars || 0)));
+  const firstChunk = String(chunks[0] || "");
+  if (firstChunk.length <= firstMax) return chunks;
+  return [firstChunk.slice(0, firstMax), firstChunk.slice(firstMax), ...chunks.slice(1)].filter(Boolean);
+}
 
+async function synthesizeTtsChunk({ text, model, voice, speed, apiKey }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
-
   try {
     const response = await fetch(`${OPENAI_BASE_URL}/audio/speech`, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       signal: controller.signal,
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         model,
-        input: cleanedText, 
+        input: text,
         voice,
-        speed
+        speed,
       }),
     });
     if (!response.ok) {
@@ -2107,6 +2208,51 @@ export async function synthesizeChatAudioBuffer({ text, locale }) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export async function synthesizeChatAudioBuffer({ text, locale }) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey || !text) {
+    const err = new Error("missing_params");
+    err.code = "missing_params";
+    throw err;
+  }
+  const { cleanedText, model, voice, speed } = await buildChatTtsConfig({ text, locale });
+
+  const safeMax = Math.max(500, Math.min(CHAT_AUDIO_MAX_CHARS, CHAT_AUDIO_SAFE_CHUNK_CHARS));
+    const chunks = splitTextForTtsStreaming(cleanedText, safeMax, CHAT_AUDIO_FIRST_CHUNK_CHARS);
+  if (!chunks.length) {
+    const err = new Error("text_too_large");
+    err.code = "text_too_large";
+    throw err;
+  }
+  const audioParts = [];
+  for (const chunk of chunks) {
+    // Concatenated MP3 buffers are valid for playback in browsers.
+    const part = await synthesizeTtsChunk({ text: chunk, model, voice, speed, apiKey });
+    if (part?.length) audioParts.push(part);
+  }
+  return Buffer.concat(audioParts);
+}
+
+async function buildChatTtsConfig({ text, locale }) {
+  const speechText = String(text || "")
+    .replace(/\*/g, "")
+    .replace(/[()]/g, " ");
+  const ttsCfg = await loadChatTtsSettings();
+  const lang = (locale || "en").split("-")[0].toLowerCase();
+  const voice = String(ttsCfg?.voices?.[lang] || ttsCfg?.voices?.default || "nova");
+  const model = String(lang === "en"
+    ? (ttsCfg?.models?.en || "tts-1")
+    : (ttsCfg?.models?.[lang] || ttsCfg?.models?.default || "tts-1"));
+  const speedNum = Number(ttsCfg?.speed?.[lang] ?? ttsCfg?.speed?.default ?? 0.9);
+  const speed = Number.isFinite(speedNum) && speedNum > 0 ? speedNum : 0.9;
+
+  let cleanedText = naturalizeNumbersForTTS(speechText, locale);
+  if (lang === "uk" || lang === "ru") {
+    cleanedText = expandFinancialTextPhonetically(cleanedText, lang);
+  }
+  return { cleanedText, model, voice, speed };
 }
 
 export async function chatQuery(req, res) {
@@ -2296,7 +2442,8 @@ export async function chatQuery(req, res) {
                 targetColumn: resolvedCrossColumn,
                 rowFiltersList: targetAccess?.rowFiltersList || [],
                 allowedColumns: targetAccess?.headers || [],
-                locale
+                locale,
+                actualHeaders: targetAccess?.headers || []
             });
             // Extract numeric value from "Total X: $Y" or similar
             const val = res?.answer ? parseFloat(res.answer.replace(/[^\d.-]/g, "")) : 0;
@@ -2341,7 +2488,8 @@ export async function chatQuery(req, res) {
             allowedColumns: aiHeaders || [],
             limit: ai?.limit,
             locale,
-            tabName: selectedTab
+            tabName: selectedTab,
+            actualHeaders: baseHeaders
         });
     }
 
@@ -2456,7 +2604,7 @@ async function loadAccessibleRows(sheetId, user, activeTab = null, rowLimit = nu
   if (!sheetRes.length) return { headers: [], tabs: [], rows: [], rowFiltersList: [], forbidden: true };
   const sheet = sheetRes[0];
 
-  const hasFullAccess = (user.role === "admin" || await hasReportSourceOwnerAccess(sheetId, user.id));
+  const hasFullAccess = (isPlatformAdminUser(user) || await hasReportSourceOwnerAccess(sheetId, user.id));
 
   let validCols = null;
   let rowFiltersList = [];

@@ -599,6 +599,7 @@ export default function App() {
   const [pendingViewName, setPendingViewName] = useState("");
   const [viewLevel, setViewLevel] = useState("revision");
   const [showColumnSelector, setShowColumnSelector] = useState(false);
+  const [editingViewId, setEditingViewId] = useState(null);
   const [visibleColumns, setVisibleColumns] = useState([]); // columns to save
   const [secondaryVisibleColumns, setSecondaryVisibleColumns] = useState([]);
   const activeViewConfig = useMemo(() => {
@@ -1446,6 +1447,9 @@ export default function App() {
 
   const hydrateSheetContext = async (sid, options = {}) => {
     if (!sid) return;
+    if (String(sid) !== String(sheetId)) {
+      setSelectedViewId("");
+    }
     const {
       preferredTab = null,
       preserveFilters = false,
@@ -2154,7 +2158,23 @@ export default function App() {
   };
   // Effect to load view config
   useEffect(() => {
-    if (!selectedViewId) return;
+    if (!selectedViewId) {
+      setColumnFilters({});
+      setSortConfig(null);
+      setVisibleColumns([]);
+      setSecondaryVisibleColumns([]);
+      resetPivot();
+      resetSummary();
+      setTrendsOn(false);
+      setTrendsDateKey("");
+      setTrendsValueKey("");
+      setTrendGranularity("month");
+      setYearsBack(5);
+      setSecondarySheetId("");
+      setSecondaryTab(null);
+      setSecondarySortConfig(null);
+      return;
+    }
     const view = views.find(v => String(v.id) === String(selectedViewId));
     if (!view || !view.config) return;
 
@@ -2170,6 +2190,13 @@ export default function App() {
     }
 
     if (c.sortConfig) setSortConfig(c.sortConfig);
+    if (c.activeTab !== undefined && c.activeTab !== null) {
+      const nextTab = String(c.activeTab || "").trim();
+      if (nextTab) {
+        setActiveTab(nextTab);
+        localStorage.setItem("activeTab", nextTab);
+      }
+    }
     if (Array.isArray(c.visibleColumns)) setVisibleColumns(c.visibleColumns);
     if (Array.isArray(c.splitContext?.secondaryVisibleColumns)) {
       setSecondaryVisibleColumns(c.splitContext.secondaryVisibleColumns);
@@ -2212,6 +2239,14 @@ export default function App() {
     }
 
   }, [selectedViewId, views]);
+
+  useEffect(() => {
+    if (!selectedViewId) return;
+    const hasSelectedView = (views || []).some((v) => String(v.id) === String(selectedViewId));
+    if (!hasSelectedView) {
+      setSelectedViewId("");
+    }
+  }, [views, selectedViewId]);
 
   useEffect(() => {
     if (!sheetId || !token || !user) {
@@ -2459,6 +2494,7 @@ export default function App() {
                       setPendingViewName={setPendingViewName}
                       setShowColumnSelector={setShowColumnSelector}
                       setSaveViewConfigOverride={setSaveViewConfigOverride}
+                      setEditingViewId={setEditingViewId}
                       sortedData={sortedData}
                       headers={headers}
                       displayHeaders={displayHeaders}
@@ -2627,17 +2663,20 @@ export default function App() {
             <div className="rounded-xl border border-slate-200 bg-white max-w-xl w-full max-h-[82vh] flex flex-col shadow-2xl animate-in zoom-in-95 duration-200">
               <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
                 <div>
-                  <h2 className="text-base font-semibold text-slate-900 tracking-tight">Configure View</h2>
-                  <p className="text-slate-500 text-[11px] mt-0.5">Select scope and save the locked selection.</p>
+                  <h2 className="text-base font-semibold text-slate-900 tracking-tight">{editingViewId ? "Edit View" : "Configure View"}</h2>
+                  <p className="text-slate-500 text-[11px] mt-0.5">{editingViewId ? "Update this view and save changes." : "Select scope and save the locked selection."}</p>
                 </div>
                 <button 
-                  onClick={() => setShowColumnSelector(false)}
+                  onClick={() => {
+                    setShowColumnSelector(false);
+                    setEditingViewId(null);
+                  }}
                   className="w-8 h-8 rounded-md hover:bg-slate-100 flex items-center justify-center text-slate-400 transition-colors"
                 >✕</button>
               </div>
               <div className="p-4 space-y-3 overflow-auto">
                 <p className="text-[11px] text-slate-600">
-                  The selected columns or area are saved as the locked view selection.
+                  {editingViewId ? "Save changes to the currently selected view." : "The selected columns or area are saved as the locked view selection."}
                 </p>
 
                 <div className="space-y-2.5">
@@ -2653,21 +2692,23 @@ export default function App() {
                     />
                   </div>
 
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Scope</label>
-                    <select
-                      value={viewLevel}
-                      onChange={(e) => setViewLevel(e.target.value)}
-                      className="input-premium w-full py-1.5 text-[11px] font-semibold"
-                    >
-                      {user?.role === "admin" && (
-                        <option value="global">Global (All Files)</option>
-                      )}
-                      <option value="source">This Report Source (All Files)</option>
-                      <option value="file">This File (All Revisions)</option>
-                      <option value="revision">This Revision Only</option>
-                    </select>
-                  </div>
+                  {!editingViewId && (
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Scope</label>
+                      <select
+                        value={viewLevel}
+                        onChange={(e) => setViewLevel(e.target.value)}
+                        className="input-premium w-full py-1.5 text-[11px] font-semibold"
+                      >
+                        {user?.role === "admin" && (
+                          <option value="global">Global (All Files)</option>
+                        )}
+                        <option value="source">This Report Source (All Files)</option>
+                        <option value="file">This File (All Revisions)</option>
+                        <option value="revision">This Revision Only</option>
+                      </select>
+                    </div>
+                  )}
                 </div>
               </div>
               <div className="flex gap-2 justify-end px-4 py-2.5 border-t border-slate-200 bg-slate-50">
@@ -2678,6 +2719,7 @@ export default function App() {
                     setPendingViewName("");
                     setViewLevel("revision");
                     setSaveViewConfigOverride(null);
+                    setEditingViewId(null);
                   }}
                 >
                   Cancel
@@ -2693,6 +2735,7 @@ export default function App() {
                       }
                       const config = {
                         columnFilters: serializableColumnFilters,
+                        activeTab: saveViewConfigOverride?.activeTab ?? (activeTab || null),
                         sortConfig,
                         visibleColumns: Array.isArray(saveViewConfigOverride?.visibleColumns)
                           ? saveViewConfigOverride.visibleColumns
@@ -2721,11 +2764,19 @@ export default function App() {
                         trendGranularity,
                         yearsBack,
                       };
-                      await axios.post(
-                        `${API}/views`,
-                        { name: pendingViewName, sheetId, config, level: viewLevel },
-                        { headers: { Authorization: `Bearer ${token}` } }
-                      );
+                      if (editingViewId) {
+                        await axios.put(
+                          `${API}/views/${editingViewId}`,
+                          { name: pendingViewName, config },
+                          { headers: { Authorization: `Bearer ${token}` } }
+                        );
+                      } else {
+                        await axios.post(
+                          `${API}/views`,
+                          { name: pendingViewName, sheetId, config, level: viewLevel },
+                          { headers: { Authorization: `Bearer ${token}` } }
+                        );
+                      }
                       const res = await axios.get(`${API}/views/${sheetId}`, {
                         headers: { Authorization: `Bearer ${token}` },
                       });
@@ -2734,14 +2785,15 @@ export default function App() {
                       setPendingViewName("");
                       setViewLevel("revision");
                       setSaveViewConfigOverride(null);
-                      alert("View saved successfully!");
+                      setEditingViewId(null);
+                      alert(editingViewId ? "View updated successfully!" : "View saved successfully!");
                     } catch (e) {
                       console.error("Save view failed:", e);
-                      alert("Failed to save view");
+                      alert(editingViewId ? "Failed to update view" : "Failed to save view");
                     }
                   }}
                 >
-                  Save View
+                  {editingViewId ? "Update View" : "Save View"}
                 </button>
               </div>
             </div>

@@ -1,6 +1,6 @@
 import express from "express";
 import {
-    createView, duplicateView, listViews, deleteView, getViewsForSheet,
+    createView, duplicateView, updateView, listViews, deleteView, getViewsForSheet,
     createViewUserPerm, deleteViewUserPerm, getUserViewPerms
 } from "../controllers/viewController.js";
 import { auth } from "../middleware/auth.js";
@@ -20,6 +20,7 @@ router.get("/views/user-permissions/:userId", asyncHandler(getUserViewPerms));
 
 // Parameterised routes last — these catch any remaining /views/:id patterns
 router.post("/views/:id/duplicate", asyncHandler(duplicateView));
+router.put("/views/:id", asyncHandler(updateView));
 router.delete("/views/:id", asyncHandler(deleteView));
 router.get("/views/:sheetId", asyncHandler(getViewsForSheet)); // For Dashboard/User
 

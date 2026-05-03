@@ -9,6 +9,36 @@ import {
   decryptSettingValue,
 } from "./common.js";
 
+const SFTP_TMP_PREFIX = "storage-sftp-";
+
+function shellQuote(value) {
+  const raw = String(value ?? "");
+  return `'${raw.replaceAll("'", `'\\''`)}'`;
+}
+
+function safeAskpassScript(secretValue) {
+  return `#!/bin/sh\nprintf '%s\\n' ${shellQuote(String(secretValue || ""))}\n`;
+}
+
+function cleanupStaleSftpTempArtifacts() {
+  try {
+    const root = os.tmpdir();
+    const now = Date.now();
+    const entries = fs.readdirSync(root, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.startsWith(SFTP_TMP_PREFIX)) continue;
+      const target = path.join(root, entry.name);
+      try {
+        const st = fs.statSync(target);
+        const ageMs = now - Number(st.mtimeMs || st.ctimeMs || now);
+        if (ageMs > 60 * 60 * 1000) {
+          fs.rmSync(target, { recursive: true, force: true });
+        }
+      } catch {}
+    }
+  } catch {}
+}
+
 function sanitizeSftpSourceRef(sourceRef) {
   const text = trimString(sourceRef);
   if (!text) throw new Error("sftp_source_ref_required");
@@ -16,8 +46,9 @@ function sanitizeSftpSourceRef(sourceRef) {
   if (/[\u0000-\u001f\u007f]/.test(text)) throw new Error("sftp_source_ref_invalid");
   if (/^\-/.test(text)) throw new Error("sftp_source_ref_invalid");
   if (/\.\./.test(text)) throw new Error("sftp_source_ref_invalid");
-  if (/[`$;&|<>]/.test(text)) throw new Error("sftp_source_ref_invalid");
+  if (/[`$;&|<>\\]/.test(text)) throw new Error("sftp_source_ref_invalid");
   if (/[\r\n\t]/.test(text)) throw new Error("sftp_source_ref_invalid");
+  if (!/^[A-Za-z0-9._/\- ]+$/.test(text)) throw new Error("sftp_source_ref_invalid");
   return text;
 }
 
@@ -31,6 +62,7 @@ function buildSshAuthContext(cfg) {
   const username = trimString(cfg?.username);
   const port = parsePositiveInt(cfg?.port) || 22;
   if (!host || !username) return null;
+  cleanupStaleSftpTempArtifacts();
 
   const args = [
     "-o", "BatchMode=no", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10",
@@ -42,7 +74,7 @@ function buildSshAuthContext(cfg) {
   if (trimString(cfg?.authMode, "password") === "ssh_key") {
     const privateKey = trimString(decryptSettingValue(String(cfg?.privateKey || "")));
     if (!privateKey) return null;
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "storage-sftp-"));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), SFTP_TMP_PREFIX));
     const keyPath = path.join(tmpDir, "id_rsa");
     fs.writeFileSync(keyPath, privateKey, { mode: 0o600 });
     cleanup.push(() => {
@@ -53,7 +85,7 @@ function buildSshAuthContext(cfg) {
     const passphrase = trimString(decryptSettingValue(String(cfg?.passphrase || "")));
     if (passphrase) {
       const scriptPath = path.join(tmpDir, "askpass.sh");
-      fs.writeFileSync(scriptPath, `#!/bin/sh\nprintf '%s\\n' "${passphrase.replaceAll("\"", "\\\"")}"\n`, { mode: 0o700 });
+      fs.writeFileSync(scriptPath, safeAskpassScript(passphrase), { mode: 0o700 });
       cleanup.push(() => {
         try { fs.unlinkSync(scriptPath); } catch {}
       });
@@ -64,9 +96,9 @@ function buildSshAuthContext(cfg) {
   } else {
     const password = trimString(decryptSettingValue(String(cfg?.password || "")));
     if (!password) return null;
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "storage-sftp-"));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), SFTP_TMP_PREFIX));
     const scriptPath = path.join(tmpDir, "askpass.sh");
-    fs.writeFileSync(scriptPath, `#!/bin/sh\nprintf '%s\\n' "${password.replaceAll("\"", "\\\"")}"\n`, { mode: 0o700 });
+    fs.writeFileSync(scriptPath, safeAskpassScript(password), { mode: 0o700 });
     cleanup.push(() => {
       try { fs.unlinkSync(scriptPath); } catch {}
       try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
@@ -80,11 +112,11 @@ function buildSshAuthContext(cfg) {
   return { host, username, target: `${username}@${host}`, port, args, env, cleanup };
 }
 
-async function runSshCommand(cfg, remoteArgs, timeoutMs = PROVIDER_TIMEOUT_MS) {
+async function runSshCommand(cfg, remoteCommand, timeoutMs = PROVIDER_TIMEOUT_MS) {
   const ctx = buildSshAuthContext(cfg);
   if (!ctx) return { ok: false, error: "sftp_not_configured" };
   try {
-    const proc = spawn("ssh", [...ctx.args, ctx.target, ...remoteArgs], { env: ctx.env, stdio: ["ignore", "pipe", "pipe"] });
+    const proc = spawn("ssh", [...ctx.args, ctx.target, String(remoteCommand || "")], { env: ctx.env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     const timeout = setTimeout(() => proc.kill("SIGKILL"), timeoutMs);
@@ -108,10 +140,9 @@ async function runSshCommand(cfg, remoteArgs, timeoutMs = PROVIDER_TIMEOUT_MS) {
 }
 
 export async function listSftpEntries(cfg, currentPath) {
-  const pathArg = trimString(currentPath, trimString(cfg?.remotePath, ".") || ".");
-  const result = await runSshCommand(cfg, [
-    "find", pathArg, "-mindepth", "1", "-maxdepth", "1", "-printf", "%y\\t%P\\t%p\\t%s\\t%TY-%Tm-%TdT%TH:%TM:%TS\\n",
-  ]);
+  const pathArg = sanitizeSftpSourceRef(trimString(currentPath, trimString(cfg?.remotePath, ".") || "."));
+  const command = `LC_ALL=C find -- ${shellQuote(pathArg)} -mindepth 1 -maxdepth 1 -printf '%y\\t%P\\t%p\\t%s\\t%TY-%Tm-%TdT%TH:%TM:%TS\\n'`;
+  const result = await runSshCommand(cfg, command);
   if (!result.ok) {
     const text = `${result.stdout || ""}\n${result.stderr || ""}`.trim();
     throw new Error(`sftp_list_failed: ${text.slice(0, 400)}`);
@@ -133,7 +164,7 @@ export async function listSftpEntries(cfg, currentPath) {
 
 export async function fetchSftpMetadata(cfg, sourceRef) {
   const filePath = sanitizeSftpSourceRef(sourceRef);
-  const result = await runSshCommand(cfg, ["stat", "-c", "%Y\\t%s\\t%n", filePath]);
+  const result = await runSshCommand(cfg, `LC_ALL=C stat -c '%Y\\t%s\\t%n' -- ${shellQuote(filePath)}`);
   if (!result.ok) {
     const text = `${result.stdout || ""}\n${result.stderr || ""}`.trim();
     throw new Error(`sftp_metadata_failed: ${text.slice(0, 400)}`);

@@ -29,7 +29,7 @@ import {
     listGroups, createGroup, provisionGroupDatabase, updateGroup, deleteGroup, getGroupMembers, updateGroupMembers, getGroupSheets,
     addUserToGroup, removeUserFromGroup, toggleGroupAdmin,
     getUserKpiOverrides, setUserKpiOverrides,
-    listAuditLogs
+    listAuditLogs, getAiUsageSummary
 } from "../controllers/userController.js";
 import {
     getSftpStorageSetting, setSftpStorageSetting, testSftpStorageSetting,
@@ -136,5 +136,6 @@ router.get("/users/me/kpi-overrides", asyncHandler(getUserKpiOverrides));
 router.put("/users/me/kpi-overrides", asyncHandler(setUserKpiOverrides));
 router.get("/users/me/metrics-exposure", asyncHandler(getMyMetricsExposureSetting));
 router.get("/audit-logs", asyncHandler(listAuditLogs));
+router.get("/admin/ai-usage-summary", asyncHandler(getAiUsageSummary));
 
 export default router;

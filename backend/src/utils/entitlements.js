@@ -23,10 +23,36 @@ export const DEFAULT_GROUP_ENTITLEMENTS = {
 };
 
 export function normalizeGroupEntitlements(value = {}) {
-  const raw = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  const rawFeatures = raw.features && typeof raw.features === "object" && !Array.isArray(raw.features)
-    ? raw.features
+  let raw = value;
+  if (typeof raw === "string") {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      raw = {};
+    }
+  }
+  raw = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  let rawFeatures = raw.features;
+  if (typeof rawFeatures === "string") {
+    try {
+      rawFeatures = JSON.parse(rawFeatures);
+    } catch {
+      rawFeatures = {};
+    }
+  }
+  rawFeatures = rawFeatures && typeof rawFeatures === "object" && !Array.isArray(rawFeatures)
+    ? rawFeatures
     : {};
+  const normalizedFeatures = Object.fromEntries(
+    Object.entries(rawFeatures).map(([key, rawValue]) => {
+      if (typeof rawValue === "string") {
+        const normalized = rawValue.trim().toLowerCase();
+        if (["false", "0", "no", "off", ""].includes(normalized)) return [key, false];
+        if (["true", "1", "yes", "on"].includes(normalized)) return [key, true];
+      }
+      return [key, rawValue === false ? false : !!rawValue];
+    })
+  );
   return {
     ...DEFAULT_GROUP_ENTITLEMENTS,
     ...raw,
@@ -47,7 +73,7 @@ export function normalizeGroupEntitlements(value = {}) {
       : Math.max(64, Number.parseInt(raw.maxImportParseMemoryMb, 10) || 64),
     features: {
       ...DEFAULT_GROUP_ENTITLEMENTS.features,
-      ...rawFeatures,
+      ...normalizedFeatures,
     },
   };
 }

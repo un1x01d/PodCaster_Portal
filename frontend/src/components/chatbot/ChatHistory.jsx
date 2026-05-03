@@ -528,11 +528,12 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
         }
         window._stopPlayback = false;
         const slavicLang = (locale || "en").split("-")[0].toLowerCase();
-        const speechText = opts?.slavicSafe
+        const speechText = (opts?.slavicSafe
             ? String(text || "")
             : ((slavicLang === "ru" || slavicLang === "uk")
                 ? normalizeSlavicPronunciation(normalizeSlavicSpeechNumbers(text, slavicLang), slavicLang)
-                : text);
+                : text))
+            .replace(/[()]/g, " ");
         const localeMap = { 'es': 'es-ES', 'uk': 'uk-UA', 'ru': 'ru-RU', 'en': 'en-US' };
         const targetLang = localeMap[locale] || locale || 'en-US';
         const utterance = new SpeechSynthesisUtterance(speechText);

@@ -26,14 +26,15 @@ function normalizePositiveInt(value, fallback, min, max) {
 export function normalizeDlpSettings(raw = {}) {
     const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
     const mode = String(source.mode || DEFAULT_DLP_SETTINGS.mode).trim().toLowerCase();
+    const normalizedMode = mode === "warn" || mode === "block" || mode === "mask" ? mode : DEFAULT_DLP_SETTINGS.mode;
     return {
-        mode: mode === "warn" || mode === "block" ? mode : DEFAULT_DLP_SETTINGS.mode,
+        mode: normalizedMode,
         checkSsn: source.checkSsn !== false,
         checkCreditCard: source.checkCreditCard !== false,
         checkEmail: source.checkEmail !== false,
         checkPhone: source.checkPhone !== false,
         checkIban: source.checkIban !== false,
-        maskDetectedColumns: source.maskDetectedColumns === true,
+        maskDetectedColumns: normalizedMode === "mask" || source.maskDetectedColumns === true,
         maxCellsScanned: normalizePositiveInt(source.maxCellsScanned, DEFAULT_DLP_SETTINGS.maxCellsScanned, 1000, 500000),
         maxFindings: normalizePositiveInt(source.maxFindings, DEFAULT_DLP_SETTINGS.maxFindings, 1, 1000),
     };
