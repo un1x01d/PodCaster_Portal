@@ -491,6 +491,8 @@ export default function DashboardHome({
   trendsOn,
   chatSection = null,
   insightSection = null,
+  focusReviewQueue = false,
+  onOpenWorkspace = null,
   locale,
   copy = DASHBOARD_COPY_EN,
 }) {
@@ -524,6 +526,7 @@ export default function DashboardHome({
   const [kpiEditorOpen, setKpiEditorOpen] = React.useState({});
   const [kpiOverridesLoaded, setKpiOverridesLoaded] = React.useState(false);
   const [reviewBusyId, setReviewBusyId] = React.useState("");
+  const reviewQueueRef = React.useRef(null);
   const [topCategoriesConfig, setTopCategoriesConfig] = React.useState({
     title: "",
     categoryColumn: "",
@@ -2081,7 +2084,7 @@ export default function DashboardHome({
     return rows.sort((a, b) => new Date(b.uploadedAt || 0) - new Date(a.uploadedAt || 0));
   }, [explicitReportSources, reportSourceImports]);
 
-  const intakeRows = React.useMemo(() => allImportRows.slice(0, 8), [allImportRows]);
+  const fileRows = React.useMemo(() => allImportRows.slice(0, 8), [allImportRows]);
   const reviewRows = React.useMemo(() => allImportRows.filter((row) => row.status === "pending_approval"), [allImportRows]);
 
   const totalImports = React.useMemo(() => (
@@ -2118,12 +2121,19 @@ export default function DashboardHome({
     return "bg-blue-50 text-blue-700";
   };
 
-  const intakeStats = [
+  const sourceStats = [
     ["Active sources", explicitReportSources.length.toLocaleString("en-US"), "Durable financial sources"],
     ["File revisions", totalImports.toLocaleString("en-US"), "Versioned uploads and imports"],
     ["Review required", reviewRows.length.toLocaleString("en-US"), "Imports held before publishing"],
     ["Current source fields", headers.length.toLocaleString("en-US"), "Detected columns in active source"],
   ];
+
+  React.useEffect(() => {
+    if (!focusReviewQueue) return;
+    window.requestAnimationFrame(() => {
+      reviewQueueRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, [focusReviewQueue]);
 
   return (
     <div className="flex-1 min-h-0 bg-[#f6f8fb] relative">
@@ -2135,21 +2145,31 @@ export default function DashboardHome({
               Review sources, revisions, and publishing.
             </h2>
             <p className="mt-2 max-w-2xl text-sm font-semibold leading-6 text-slate-500">
-              Welcome {user?.name?.split(' ')[0] || user?.email?.split('@')[0]}. Review intake, schema drift, source rules, and published revisions before numbers reach reporting.
+              Welcome {user?.name?.split(' ')[0] || user?.email?.split('@')[0]}. Review files, column changes, source rules, and published versions before numbers reach reporting.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            <Link
-              to="/workspace"
-              className="inline-flex items-center justify-center rounded-md bg-blue-600 px-4 py-2 text-sm font-black text-white shadow-sm shadow-blue-200 transition-all duration-150 hover:-translate-y-px hover:bg-blue-700 hover:shadow focus:outline-none focus:ring-2 focus:ring-blue-200"
-            >
-              {ui.openWorkspace}
-            </Link>
+            {onOpenWorkspace ? (
+              <button
+                type="button"
+                onClick={onOpenWorkspace}
+                className="inline-flex items-center justify-center rounded-md bg-blue-600 px-4 py-2 text-sm font-black text-white shadow-sm shadow-blue-200 transition-all duration-150 hover:-translate-y-px hover:bg-blue-700 hover:shadow focus:outline-none focus:ring-2 focus:ring-blue-200"
+              >
+                {ui.openWorkspace}
+              </button>
+            ) : (
+              <Link
+                to="/workspace"
+                className="inline-flex items-center justify-center rounded-md bg-blue-600 px-4 py-2 text-sm font-black text-white shadow-sm shadow-blue-200 transition-all duration-150 hover:-translate-y-px hover:bg-blue-700 hover:shadow focus:outline-none focus:ring-2 focus:ring-blue-200"
+              >
+                {ui.openWorkspace}
+              </Link>
+            )}
           </div>
         </div>
 
         <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          {intakeStats.map(([label, value, caption]) => (
+          {sourceStats.map(([label, value, caption]) => (
             <div key={label} className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
               <div className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">{label}</div>
               <div className="mt-2 text-2xl font-black text-slate-950">{value}</div>
@@ -2162,7 +2182,7 @@ export default function DashboardHome({
           <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
             <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
               <div>
-                <h3 className="text-sm font-black text-slate-950">Intake & review queue</h3>
+                <h3 className="text-sm font-black text-slate-950">Files & review queue</h3>
                 <p className="mt-0.5 text-xs font-semibold text-slate-500">Imported financial files, revision state, schema checks, and publish status</p>
               </div>
               <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-black text-emerald-700">
@@ -2179,7 +2199,7 @@ export default function DashboardHome({
                   </tr>
                 </thead>
                 <tbody>
-                  {intakeRows.length ? intakeRows.map((row) => (
+                  {fileRows.length ? fileRows.map((row) => (
                     <tr key={row.id} className="border-b border-slate-100 last:border-b-0 hover:bg-blue-50/40">
                       <td className="px-4 py-3 text-sm font-black text-slate-900">{row.source}</td>
                       <td className="px-4 py-3 text-sm font-semibold text-slate-600">{row.latestFile}</td>
@@ -2203,7 +2223,7 @@ export default function DashboardHome({
             </div>
           </div>
 
-          <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div ref={reviewQueueRef} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm scroll-mt-24">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-black text-slate-950">Review Required</h3>
               <span className="rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-black text-amber-700">{reviewRows.length} waiting</span>

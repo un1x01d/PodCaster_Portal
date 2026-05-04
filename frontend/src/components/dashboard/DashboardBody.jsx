@@ -132,6 +132,8 @@ export default function DashboardBody(props) {
         // Actions
         onDeleteSheet
         ,
+        onOpenFilesHome = () => {},
+        onOpenReviewQueue = () => {},
         onInsightApplyFilter,
         onInsightOpenChart,
         onInsightSaveView,
@@ -1207,6 +1209,10 @@ export default function DashboardBody(props) {
         }
     }, []);
 
+    const buildRowSignatureForDiff = React.useCallback((row, columns) => (
+        JSON.stringify((columns || []).map((col) => [String(col), normalizeCellForDiff(row?.[col])]))
+    ), [normalizeCellForDiff]);
+
     const sortRowsForDiff = React.useCallback((rows, cfg) => {
         if (!cfg?.key || !cfg?.direction || !Array.isArray(rows)) return rows;
         const key = cfg.key;
@@ -1295,7 +1301,7 @@ export default function DashboardBody(props) {
                     params.sort_order = secondarySortConfig.direction;
                 }
                 appendFiltersParam(params, secondaryColumnFilters);
-                params.limit = Math.max(1000, Array.isArray(filteredSecondaryData) ? filteredSecondaryData.length : 0);
+                params.limit = Math.max(1000, Array.isArray(secondaryData) ? secondaryData.length : 0);
                 const res = await axios.get(`${API}/sheets/${secondaryCompareSheetId}/data`, {
                     headers: { Authorization: `Bearer ${token}` },
                     params,
@@ -1310,7 +1316,7 @@ export default function DashboardBody(props) {
         };
         run();
         return () => { cancelled = true; };
-    }, [API, token, secondaryCompareSheetId, secondaryTab, secondarySortConfig, secondaryColumnFilters, filteredSecondaryData, appendFiltersParam, normalizeRowsFromResponse]);
+    }, [API, token, secondaryCompareSheetId, secondaryTab, secondarySortConfig, secondaryColumnFilters, secondaryData, appendFiltersParam, normalizeRowsFromResponse]);
 
     const primarySortedCompareRows = React.useMemo(
         () => sortRowsForDiff(primaryCompareRows, sortConfig),
@@ -1387,9 +1393,22 @@ export default function DashboardBody(props) {
     const primaryDiffCellSet = React.useMemo(() => {
         const changed = new Set(splitPaneDiffSets.primary);
         if (primaryCompareSheetId && primarySortedCompareRows.length && Array.isArray(sortedData) && sortedData.length) {
+            const columns = displayHeaders || [];
+            const exactBaselineRows = new Map();
+            primarySortedCompareRows.forEach((row) => {
+                const signature = buildRowSignatureForDiff(row, columns);
+                exactBaselineRows.set(signature, (exactBaselineRows.get(signature) || 0) + 1);
+            });
             sortedData.forEach((row, rowIndex) => {
+                const signature = buildRowSignatureForDiff(row, columns);
+                const exactCount = exactBaselineRows.get(signature) || 0;
+                if (exactCount > 0) {
+                    if (exactCount === 1) exactBaselineRows.delete(signature);
+                    else exactBaselineRows.set(signature, exactCount - 1);
+                    return;
+                }
                 const baseRow = primarySortedCompareRows[rowIndex] || {};
-                (displayHeaders || []).forEach((col) => {
+                columns.forEach((col) => {
                     const curr = normalizeCellForDiff(row?.[col]);
                     const prev = normalizeCellForDiff(baseRow?.[col]);
                     if (curr !== prev) changed.add(`${rowIndex}::${col}`);
@@ -1397,7 +1416,7 @@ export default function DashboardBody(props) {
             });
         }
         return changed;
-    }, [splitPaneDiffSets.primary, primaryCompareSheetId, sortedData, primarySortedCompareRows, displayHeaders, normalizeCellForDiff]);
+    }, [splitPaneDiffSets.primary, primaryCompareSheetId, sortedData, primarySortedCompareRows, displayHeaders, normalizeCellForDiff, buildRowSignatureForDiff]);
 
     const primaryMissingColumns = React.useMemo(() => {
         if (!primaryCompareSheetId) return [];
@@ -1419,9 +1438,22 @@ export default function DashboardBody(props) {
                 allowed.has(String(row?.[col] ?? ""))
             )));
         if (secondaryCompareSheetId && secondarySortedCompareRows.length && filteredRows.length) {
+            const columns = activeSecondaryFields || [];
+            const exactBaselineRows = new Map();
+            secondarySortedCompareRows.forEach((row) => {
+                const signature = buildRowSignatureForDiff(row, columns);
+                exactBaselineRows.set(signature, (exactBaselineRows.get(signature) || 0) + 1);
+            });
             filteredRows.forEach((row, rowIndex) => {
+                const signature = buildRowSignatureForDiff(row, columns);
+                const exactCount = exactBaselineRows.get(signature) || 0;
+                if (exactCount > 0) {
+                    if (exactCount === 1) exactBaselineRows.delete(signature);
+                    else exactBaselineRows.set(signature, exactCount - 1);
+                    return;
+                }
                 const baseRow = secondarySortedCompareRows[rowIndex] || {};
-                (activeSecondaryFields || []).forEach((col) => {
+                columns.forEach((col) => {
                     const curr = normalizeCellForDiff(row?.[col]);
                     const prev = normalizeCellForDiff(baseRow?.[col]);
                     if (curr !== prev) changed.add(`${rowIndex}::${col}`);
@@ -1429,7 +1461,7 @@ export default function DashboardBody(props) {
             });
         }
         return changed;
-    }, [splitPaneDiffSets.secondary, secondaryCompareSheetId, secondaryData, secondaryColumnFilters, secondarySortedCompareRows, activeSecondaryFields, normalizeCellForDiff]);
+    }, [splitPaneDiffSets.secondary, secondaryCompareSheetId, secondaryData, secondaryColumnFilters, secondarySortedCompareRows, activeSecondaryFields, normalizeCellForDiff, buildRowSignatureForDiff]);
 
     const secondaryMissingColumns = React.useMemo(() => {
         if (!secondaryCompareSheetId) return [];
@@ -1939,16 +1971,20 @@ export default function DashboardBody(props) {
                                         type="button"
                                         className="left-menu-action"
                                         onClick={() => {
-                                            navigate("/");
+                                            navigate("/workspace/files");
+                                            onOpenFilesHome();
+                                            setMenuOpen(false);
                                         }}
                                     >
-                                        Intake Home
+                                        Files Home
                                     </button>
                                     <button
                                         type="button"
                                         className="left-menu-action"
                                         onClick={() => {
-                                            navigate("/");
+                                            navigate("/workspace/review");
+                                            onOpenReviewQueue();
+                                            setMenuOpen(false);
                                         }}
                                     >
                                         Review queue

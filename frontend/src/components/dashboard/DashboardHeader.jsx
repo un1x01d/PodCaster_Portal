@@ -136,7 +136,7 @@ export default function DashboardHeader({
                 <Link to="/" className="inline-flex items-center">
                     <img
                         src="/assets/tform-logo.png"
-                        alt="tforn - Turn Financial Outputs into Real Numbers"
+                        alt="TFORN - Turn Financial Outputs into Real Numbers"
                         className="h-16 w-auto max-w-[280px] object-contain lg:h-20 lg:max-w-[420px]"
                     />
                 </Link>
