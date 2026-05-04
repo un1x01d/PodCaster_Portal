@@ -2066,7 +2066,7 @@ export async function getDlpSetting(req, res) {
 
 export async function setDlpSetting(req, res) {
     if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
-    assertAllowedKeys(req.body || {}, ["mode", "checkSsn", "checkCreditCard", "checkEmail", "checkPhone", "checkIban", "maskDetectedColumns", "maxCellsScanned", "maxFindings"]);
+    assertAllowedKeys(req.body || {}, ["enabled", "mode", "checkSsn", "checkCreditCard", "checkEmail", "checkPhone", "checkIban", "maskDetectedColumns", "maxCellsScanned", "maxFindings"]);
     const next = normalizeDlpSettings(req.body || {});
     await query(
         `INSERT INTO app_settings (key, value, updated_at)

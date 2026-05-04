@@ -948,7 +948,7 @@ test("AI spending features are default-off and visible in admin runtime controls
   assert.doesNotMatch(uiSource, /Storage Options/);
   assert.ok(uiSource.indexOf("Autosync Check Interval") > uiSource.indexOf("Data Source Integrations"));
   assert.doesNotMatch(uiSource, /Pricing Profile/);
-  assert.match(uiSource, /getAiModelPricing\(model\)/);
+  assert.match(uiSource, /getAiModelPricing\(model(?:, [^)]+)?\)/);
   assert.doesNotMatch(uiSource, /chatEnabled !== false/);
   assert.match(adminSource, /const AI_FEATURE_RUNTIME_DEFAULTS = \{\s+globalAiDisabled: false,\s+chatEnabled: false,\s+chatAudioEnabled: false,\s+dashboardTranslationEnabled: false,\s+insightAiEnabled: false,/);
   assert.match(adminSource, /const AI_MODEL_PRICING = \{/);
@@ -1207,6 +1207,7 @@ test("system settings endpoints use platform admin helper consistently", async (
 test("DLP settings default to feature-based rules and support column masking workflow", async () => {
   const dlp = await import(`../src/utils/dlp.js?t=${Date.now()}_dlp_defaults`);
   const normalized = dlp.normalizeDlpSettings({});
+  assert.equal(normalized.enabled, true);
   assert.equal(normalized.mode, "block");
   assert.equal(normalized.maskDetectedColumns, false);
 
@@ -1220,6 +1221,10 @@ test("DLP settings default to feature-based rules and support column masking wor
   assert.ok(Array.isArray(scan.findings));
   assert.ok(scan.findings.length >= 2);
   assert.deepEqual(new Set(scan.maskedColumns.Main || []), new Set(["SSN", "Card"]));
+
+  const disabledScan = dlp.scanRowsForDlp(sheets, { enabled: false, checkSsn: true, checkCreditCard: true });
+  assert.equal(disabledScan.findings.length, 0);
+  assert.equal(disabledScan.scannedCells, 0);
 
   const masked = dlp.applyDlpColumnMasking(sheets, scan.maskedColumns);
   assert.equal(masked.Main[0].SSN, "[REDACTED]");

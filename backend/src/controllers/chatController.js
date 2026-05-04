@@ -5,6 +5,7 @@ import { checkSheetAccess, hasReportSourceOwnerAccess, isPlatformAdminUser, load
 import { estimateOpenAiCostUsd, recordAiUsage, reserveAiQueryForSheet, resolveAiGroupIdForSheet } from "../utils/aiQuota.js";
 import { isAiGloballyDisabled, loadAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
 import { groupHasFeature } from "../utils/entitlements.js";
+import { resolveChatCompletionProviderConfig } from "../utils/llmProvider.js";
 import { buildChatCompletionRequestBody, extractOpenAiAssistantText, getOpenAiResponseDiagnostics, minCompletionTokensForModel } from "../utils/openAiCompat.js";
 import {
   buildSheetSemanticProfile,
@@ -15,7 +16,6 @@ import {
 export { checkSheetAccess } from "../utils/authorization.js";
 
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
-const OPENAI_MODEL = String(process.env.OPENAI_MODEL || "gpt-5-nano").trim();
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10);
 const CHAT_MAX_ROWS = Math.min(100000, Number.parseInt(process.env.CHAT_MAX_ROWS || "50000", 10));
 const CHAT_SQL_AGG_MAX_ROWS = Math.min(300000, Number.parseInt(process.env.CHAT_SQL_AGG_MAX_ROWS || "120000", 10));
@@ -1627,10 +1627,8 @@ function compactSemanticProfileForPrompt(profile) {
 }
 
 async function callOpenAI({ message, schemaProfile, sampleRows, headers, conversationHistory, locale, dateFormatHints, maxOutputTokens = 800, runtime = null }) {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const { provider, model, baseUrl, apiKey } = resolveChatCompletionProviderConfig(runtime);
   if (!apiKey) throw new Error("no_api_key");
-  const model = String(runtime?.openaiModel || OPENAI_MODEL);
-  const baseUrl = String(runtime?.openaiBaseUrl || OPENAI_BASE_URL).replace(/\/+$/, "");
   const timeoutMs = Number(runtime?.openaiTimeoutMs || OPENAI_TIMEOUT_MS);
   const temperature = Number(runtime?.openaiTemperature);
   const safeTemperature = Number.isFinite(temperature) ? Math.max(0, Math.min(2, temperature)) : 0.1;
@@ -1734,6 +1732,7 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
   let resp;
   try {
     const requestBody = buildChatCompletionRequestBody({
+      provider,
       model,
       maxCompletionTokens: effectiveMaxTokens,
       responseFormat: { type: "json_object" },
@@ -1774,7 +1773,7 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
     outputPer1M: outputCostPer1M,
   });
   console.info("[ai_metrics]", JSON.stringify({
-    provider: "openai",
+    provider,
     endpoint: "chat.completions",
     model,
     latency_ms: Date.now() - startedAt,
@@ -1791,7 +1790,7 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
       completionTokens,
       totalTokens,
       estimatedCostUsd,
-      provider: "openai",
+      provider,
       model,
     },
   };
@@ -2332,7 +2331,7 @@ export async function synthesizeChatAudioBuffer({ text, locale, runtime = null }
 
   const controller = new AbortController();
   const timeoutMs = Number(runtime?.openaiTimeoutMs || OPENAI_TIMEOUT_MS);
-  const baseUrl = String(runtime?.openaiBaseUrl || OPENAI_BASE_URL).replace(/\/+$/, "");
+  const baseUrl = OPENAI_BASE_URL;
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {

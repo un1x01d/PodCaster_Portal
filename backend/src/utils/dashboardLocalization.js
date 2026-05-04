@@ -1,7 +1,6 @@
 import { isAiGloballyDisabled, loadAiRuntimeSettings } from "./aiRuntimeSettings.js";
+import { resolveChatCompletionProviderConfig } from "./llmProvider.js";
 import { buildChatCompletionRequestBody, extractOpenAiAssistantText, minCompletionTokensForModel } from "./openAiCompat.js";
-const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
-const OPENAI_MODEL = String(process.env.OPENAI_MODEL || "gpt-5-nano").trim();
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "25000", 10);
 const TRANSLATION_CACHE = new Map();
 const TRANSLATION_IN_FLIGHT = new Map();
@@ -150,9 +149,8 @@ function setCachedTranslation(cacheKey, value) {
 }
 
 async function callOpenAITranslation({ locale, items, context }) {
-  const apiKey = process.env.OPENAI_API_KEY;
   if (!Array.isArray(items)) return [];
-  if (!apiKey || !items.length || isEnglishLocale(locale)) {
+  if (!items.length || isEnglishLocale(locale)) {
     return items.map((item) => ({ key: item.key, text: item.text }));
   }
 
@@ -169,8 +167,10 @@ async function callOpenAITranslation({ locale, items, context }) {
   if (runtime?.dashboardTranslationEnabled !== true) {
     return items.map((item) => ({ key: item.key, text: item.text }));
   }
-  const model = String(runtime?.translationOpenaiModel || runtime?.openaiModel || OPENAI_MODEL);
-  const baseUrl = String(runtime?.openaiBaseUrl || OPENAI_BASE_URL).replace(/\/+$/, "");
+  const { provider, model, baseUrl, apiKey } = resolveChatCompletionProviderConfig(runtime, runtime?.translationOpenaiModel);
+  if (!apiKey) {
+    return items.map((item) => ({ key: item.key, text: item.text }));
+  }
   const timeoutMs = Number(runtime?.openaiTimeoutMs || OPENAI_TIMEOUT_MS);
   const temperature = Number(runtime?.translationTemperature);
   const maxOutputTokens = Number(runtime?.translationMaxOutputTokens);
@@ -212,6 +212,7 @@ async function callOpenAITranslation({ locale, items, context }) {
     };
 
     const requestBody = buildChatCompletionRequestBody({
+      provider,
       model,
       maxCompletionTokens: minCompletionTokensForModel(model, maxOutputTokens, 512, 512),
       responseFormat: { type: "json_object" },

@@ -143,6 +143,12 @@ const AI_MODEL_PRICING = {
   "gpt-4.1-nano": { openaiInputCostPer1M: 0.10, openaiOutputCostPer1M: 0.40 },
   "gpt-4.1-mini": { openaiInputCostPer1M: 0.40, openaiOutputCostPer1M: 1.60 },
   "gpt-4.1": { openaiInputCostPer1M: 2.00, openaiOutputCostPer1M: 8.00 },
+  "gemini-2.5-flash": { openaiInputCostPer1M: 0, openaiOutputCostPer1M: 0 },
+  "gemini-2.5-pro": { openaiInputCostPer1M: 0, openaiOutputCostPer1M: 0 },
+  "gemini-1.5-flash": { openaiInputCostPer1M: 0, openaiOutputCostPer1M: 0 },
+  "llama3.2": { openaiInputCostPer1M: 0, openaiOutputCostPer1M: 0 },
+  "llama3.1": { openaiInputCostPer1M: 0, openaiOutputCostPer1M: 0 },
+  "mistral": { openaiInputCostPer1M: 0, openaiOutputCostPer1M: 0 },
 };
 function getAiModelPricing(model) {
   return AI_MODEL_PRICING[String(model || "").trim()] || AI_MODEL_PRICING["gpt-5-nano"];
@@ -164,9 +170,33 @@ const AI_FEATURE_RUNTIME_DEFAULTS = {
   dashboardTranslationEnabled: false,
   insightAiEnabled: false,
 };
+const AI_PROVIDER_RUNTIME_DEFAULTS = {
+  aiProvider: "openai",
+};
+const AI_PROVIDER_CONFIG_DEFAULTS = {
+  openai: { model: "gpt-5-nano", baseUrl: "https://api.openai.com/v1", inputCostPer1M: 0.05, outputCostPer1M: 0.40 },
+  gemini: { model: "gemini-2.5-flash", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", inputCostPer1M: 0, outputCostPer1M: 0 },
+  ollama: { model: "llama3.2", baseUrl: "http://localhost:11434/v1", inputCostPer1M: 0, outputCostPer1M: 0 },
+};
+function normalizeAiProviderConfigMap(value = {}) {
+  const raw = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const next = {};
+  Object.entries(AI_PROVIDER_CONFIG_DEFAULTS).forEach(([provider, defaults]) => {
+    const current = raw[provider] && typeof raw[provider] === "object" ? raw[provider] : {};
+    next[provider] = {
+      model: String(current.model || defaults.model),
+      baseUrl: String(current.baseUrl || defaults.baseUrl),
+      inputCostPer1M: Number(current.inputCostPer1M ?? defaults.inputCostPer1M),
+      outputCostPer1M: Number(current.outputCostPer1M ?? defaults.outputCostPer1M),
+    };
+  });
+  return next;
+}
 const AI_RUNTIME_PRESETS = {
   micro: {
     aiRuntimePreset: "micro",
+    ...AI_PROVIDER_RUNTIME_DEFAULTS,
+    providerConfigs: AI_PROVIDER_CONFIG_DEFAULTS,
     ...AI_FEATURE_RUNTIME_DEFAULTS,
     ...BUSINESS_CLASSIFICATION_RUNTIME_DEFAULTS,
     chatMaxInputChars: 1500,
@@ -194,6 +224,8 @@ const AI_RUNTIME_PRESETS = {
   },
   tiny: {
     aiRuntimePreset: "tiny",
+    ...AI_PROVIDER_RUNTIME_DEFAULTS,
+    providerConfigs: AI_PROVIDER_CONFIG_DEFAULTS,
     ...AI_FEATURE_RUNTIME_DEFAULTS,
     ...BUSINESS_CLASSIFICATION_RUNTIME_DEFAULTS,
     chatMaxInputChars: 3000,
@@ -221,6 +253,8 @@ const AI_RUNTIME_PRESETS = {
   },
   low: {
     aiRuntimePreset: "low",
+    ...AI_PROVIDER_RUNTIME_DEFAULTS,
+    providerConfigs: AI_PROVIDER_CONFIG_DEFAULTS,
     ...AI_FEATURE_RUNTIME_DEFAULTS,
     ...BUSINESS_CLASSIFICATION_RUNTIME_DEFAULTS,
     chatMaxInputChars: 6000,
@@ -248,6 +282,8 @@ const AI_RUNTIME_PRESETS = {
   },
   mid: {
     aiRuntimePreset: "mid",
+    ...AI_PROVIDER_RUNTIME_DEFAULTS,
+    providerConfigs: AI_PROVIDER_CONFIG_DEFAULTS,
     ...AI_FEATURE_RUNTIME_DEFAULTS,
     ...BUSINESS_CLASSIFICATION_RUNTIME_DEFAULTS,
     chatMaxInputChars: 12000,
@@ -275,6 +311,8 @@ const AI_RUNTIME_PRESETS = {
   },
   high: {
     aiRuntimePreset: "high",
+    ...AI_PROVIDER_RUNTIME_DEFAULTS,
+    providerConfigs: AI_PROVIDER_CONFIG_DEFAULTS,
     ...AI_FEATURE_RUNTIME_DEFAULTS,
     ...BUSINESS_CLASSIFICATION_RUNTIME_DEFAULTS,
     chatMaxInputChars: 24000,
@@ -465,6 +503,7 @@ export default function UserManagement({ token, user, sheetId }) {
   const [insightTranslationCacheSaving, setInsightTranslationCacheSaving] = useState(false);
   const [insightTranslationCacheSaved, setInsightTranslationCacheSaved] = useState(false);
   const [dlpSettings, setDlpSettings] = useState({
+    enabled: true,
     mode: "block",
     checkSsn: true,
     checkCreditCard: true,
@@ -1623,6 +1662,7 @@ export default function UserManagement({ token, user, sheetId }) {
       });
       const data = res?.data || {};
       setDlpSettings({
+        enabled: data.enabled !== false,
         mode: data.mode || "block",
         checkSsn: data.checkSsn !== false,
         checkCreditCard: data.checkCreditCard !== false,
@@ -1691,10 +1731,19 @@ export default function UserManagement({ token, user, sheetId }) {
       });
       if (requestSeq !== aiRuntimeRequestSeqRef.current) return;
       const data = res?.data || {};
+      const aiProvider = String(data.aiProvider || AI_RUNTIME_PRESETS.mid.aiProvider || "openai").toLowerCase();
+      const providerConfigs = normalizeAiProviderConfigMap(data.providerConfigs || AI_RUNTIME_PRESETS.mid.providerConfigs);
       const openaiModel = String(data.openaiModel || AI_RUNTIME_PRESETS.mid.openaiModel);
-      const modelPricing = getAiModelPricing(openaiModel);
+      const fallbackModelPricing = getAiModelPricing(openaiModel);
+      const activeProviderConfig = providerConfigs[aiProvider] || {};
+      const modelPricing = {
+        openaiInputCostPer1M: Number(activeProviderConfig.inputCostPer1M ?? fallbackModelPricing.openaiInputCostPer1M),
+        openaiOutputCostPer1M: Number(activeProviderConfig.outputCostPer1M ?? fallbackModelPricing.openaiOutputCostPer1M),
+      };
       setAiRuntimeSettings({
         aiRuntimePreset: String(data.aiRuntimePreset || AI_RUNTIME_PRESETS.mid.aiRuntimePreset),
+        aiProvider,
+        providerConfigs,
         globalAiDisabled: data.globalAiDisabled === true,
         chatEnabled: data.chatEnabled === true,
         chatAudioEnabled: data.chatAudioEnabled === true,
@@ -1872,6 +1921,7 @@ export default function UserManagement({ token, user, sheetId }) {
     setDlpSettingsSaved(false);
     try {
       const payload = {
+        enabled: dlpSettings.enabled !== false,
         mode: ["block", "warn", "mask"].includes(dlpSettings.mode) ? dlpSettings.mode : "block",
         checkSsn: dlpSettings.checkSsn !== false,
         checkCreditCard: dlpSettings.checkCreditCard !== false,
@@ -1885,6 +1935,7 @@ export default function UserManagement({ token, user, sheetId }) {
       });
       const data = res?.data || payload;
       setDlpSettings({
+        enabled: data.enabled !== false,
         mode: data.mode || "block",
         checkSsn: data.checkSsn !== false,
         checkCreditCard: data.checkCreditCard !== false,
@@ -1957,13 +2008,36 @@ export default function UserManagement({ token, user, sheetId }) {
     setAiRuntimeSaved(false);
     try {
       const runtimeDraft = aiRuntimeSettingsRef.current || aiRuntimeSettings || {};
+      const selectedAiProvider = String(runtimeDraft.aiProvider || AI_RUNTIME_PRESETS.mid.aiProvider || "openai").trim().toLowerCase();
       const selectedOpenAiModel = String(runtimeDraft.openaiModel || "").trim() || AI_RUNTIME_PRESETS.mid.openaiModel;
-      const selectedModelPricing = getAiModelPricing(selectedOpenAiModel);
+      const providerConfigs = normalizeAiProviderConfigMap(runtimeDraft.providerConfigs || AI_RUNTIME_PRESETS.mid.providerConfigs);
+      const fallbackSelectedModelPricing = getAiModelPricing(selectedOpenAiModel);
+      const selectedModelPricing = {
+        openaiInputCostPer1M: Number(providerConfigs[selectedAiProvider]?.inputCostPer1M ?? fallbackSelectedModelPricing.openaiInputCostPer1M),
+        openaiOutputCostPer1M: Number(providerConfigs[selectedAiProvider]?.outputCostPer1M ?? fallbackSelectedModelPricing.openaiOutputCostPer1M),
+      };
+      providerConfigs[selectedAiProvider] = {
+        ...providerConfigs[selectedAiProvider],
+        model: selectedOpenAiModel,
+        baseUrl: String(runtimeDraft.openaiBaseUrl || providerConfigs[selectedAiProvider]?.baseUrl || AI_RUNTIME_PRESETS.mid.openaiBaseUrl).trim(),
+        inputCostPer1M: selectedModelPricing.openaiInputCostPer1M,
+        outputCostPer1M: selectedModelPricing.openaiOutputCostPer1M,
+      };
       const next = preset && AI_RUNTIME_PRESETS[preset]
-        ? { ...AI_RUNTIME_PRESETS[preset] }
+        ? {
+            ...AI_RUNTIME_PRESETS[preset],
+            aiProvider: selectedAiProvider,
+            providerConfigs,
+            openaiModel: selectedOpenAiModel,
+            openaiBaseUrl: String(runtimeDraft.openaiBaseUrl || "").trim() || AI_RUNTIME_PRESETS.mid.openaiBaseUrl,
+            businessClassificationModel: String(runtimeDraft.businessClassificationModel || "").trim() || selectedOpenAiModel,
+            translationOpenaiModel: String(runtimeDraft.translationOpenaiModel || "").trim() || selectedOpenAiModel,
+          }
         : {
             chatEnabled: runtimeDraft.chatEnabled === true,
             aiRuntimePreset: String(runtimeDraft.aiRuntimePreset || preset || "mid").toLowerCase(),
+            aiProvider: selectedAiProvider,
+            providerConfigs,
             globalAiDisabled: runtimeDraft.globalAiDisabled === true,
             chatAudioEnabled: runtimeDraft.chatAudioEnabled === true,
             dashboardTranslationEnabled: runtimeDraft.dashboardTranslationEnabled === true,
@@ -1999,7 +2073,12 @@ export default function UserManagement({ token, user, sheetId }) {
             chatAudioTtsVoice: String(runtimeDraft.chatAudioTtsVoice || "").trim() || AI_RUNTIME_PRESETS.mid.chatAudioTtsVoice,
             chatAudioTtsSpeed: Number.parseFloat(String(runtimeDraft.chatAudioTtsSpeed || "").trim()) || AI_RUNTIME_PRESETS.mid.chatAudioTtsSpeed,
           };
-      const savedPricingForModel = getAiModelPricing(next.openaiModel);
+      const fallbackSavedPricingForModel = getAiModelPricing(next.openaiModel);
+      const savedProviderConfigForModel = next.providerConfigs?.[next.aiProvider] || {};
+      const savedPricingForModel = {
+        openaiInputCostPer1M: Number(savedProviderConfigForModel.inputCostPer1M ?? fallbackSavedPricingForModel.openaiInputCostPer1M),
+        openaiOutputCostPer1M: Number(savedProviderConfigForModel.outputCostPer1M ?? fallbackSavedPricingForModel.openaiOutputCostPer1M),
+      };
       next.openaiInputCostPer1M = savedPricingForModel.openaiInputCostPer1M;
       next.openaiOutputCostPer1M = savedPricingForModel.openaiOutputCostPer1M;
       const res = await axios.patch(`${API}/admin/settings/ai-runtime`, { ...next, ...integrationScopeParams }, {
@@ -2007,10 +2086,19 @@ export default function UserManagement({ token, user, sheetId }) {
       });
       if (requestSeq !== aiRuntimeRequestSeqRef.current) return;
       const data = res?.data || next;
+      const savedAiProvider = String(data.aiProvider || next.aiProvider || "openai").toLowerCase();
+      const savedProviderConfigs = normalizeAiProviderConfigMap(data.providerConfigs || next.providerConfigs);
       const savedOpenAiModel = String(data.openaiModel || next.openaiModel);
-      const savedModelPricing = getAiModelPricing(savedOpenAiModel);
+      const fallbackSavedModelPricing = getAiModelPricing(savedOpenAiModel);
+      const savedActiveProviderConfig = savedProviderConfigs[savedAiProvider] || {};
+      const savedModelPricing = {
+        openaiInputCostPer1M: Number(savedActiveProviderConfig.inputCostPer1M ?? fallbackSavedModelPricing.openaiInputCostPer1M),
+        openaiOutputCostPer1M: Number(savedActiveProviderConfig.outputCostPer1M ?? fallbackSavedModelPricing.openaiOutputCostPer1M),
+      };
       setAiRuntimeSettings({
         aiRuntimePreset: String(data.aiRuntimePreset || next.aiRuntimePreset || "mid"),
+        aiProvider: savedAiProvider,
+        providerConfigs: savedProviderConfigs,
         globalAiDisabled: data.globalAiDisabled === true,
         chatEnabled: data.chatEnabled === true,
         chatAudioEnabled: data.chatAudioEnabled === true,
@@ -2058,7 +2146,17 @@ export default function UserManagement({ token, user, sheetId }) {
 
   const applyAiRuntimePreset = (preset) => {
     if (!preset || !AI_RUNTIME_PRESETS[preset]) return;
-    setAiRuntimeSettings((prev) => ({ ...prev, ...AI_RUNTIME_PRESETS[preset], aiRuntimePreset: preset }));
+    setAiRuntimeSettings((prev) => ({
+      ...prev,
+      ...AI_RUNTIME_PRESETS[preset],
+      aiRuntimePreset: preset,
+      aiProvider: prev.aiProvider || AI_RUNTIME_PRESETS[preset].aiProvider,
+      providerConfigs: normalizeAiProviderConfigMap(prev.providerConfigs || AI_RUNTIME_PRESETS[preset].providerConfigs),
+      openaiModel: prev.openaiModel || AI_RUNTIME_PRESETS[preset].openaiModel,
+      openaiBaseUrl: prev.openaiBaseUrl || AI_RUNTIME_PRESETS[preset].openaiBaseUrl,
+      businessClassificationModel: prev.businessClassificationModel || AI_RUNTIME_PRESETS[preset].businessClassificationModel,
+      translationOpenaiModel: prev.translationOpenaiModel || AI_RUNTIME_PRESETS[preset].translationOpenaiModel,
+    }));
   };
 
   const saveTwoFactorTotpSetting = async () => {
@@ -4028,8 +4126,8 @@ export default function UserManagement({ token, user, sheetId }) {
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">DLP Rules</div>
-                  <span className={`text-[10px] font-semibold ${dlpSettings.configured ? "text-emerald-600" : "text-slate-400"}`}>
-                    {dlpSettings.configured ? "Configured" : "Not configured"}
+                  <span className={`text-[10px] font-semibold ${dlpSettings.enabled === false ? "text-red-600" : dlpSettings.configured ? "text-emerald-600" : "text-slate-400"}`}>
+                    {dlpSettings.enabled === false ? "Disabled" : dlpSettings.configured ? "Configured" : "Not configured"}
                   </span>
                 </div>
                 <button
@@ -4042,6 +4140,14 @@ export default function UserManagement({ token, user, sheetId }) {
               </div>
               {dlpSettingsOpen && (
                 <>
+                  <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 border border-slate-200 rounded-md px-2 py-1">
+                    <input
+                      type="checkbox"
+                      checked={dlpSettings.enabled !== false}
+                      onChange={(e) => setDlpSettings((prev) => ({ ...prev, enabled: e.target.checked }))}
+                    />
+                    DLP Enabled
+                  </label>
                   <div className="grid grid-cols-3 gap-2">
                     {["block", "warn", "mask"].map((mode) => (
                       <label key={mode} className="inline-flex items-center gap-2 text-[10px] font-semibold text-slate-700 border border-slate-200 rounded-md px-2 py-1">

@@ -4,11 +4,10 @@ import { isEnglishLocale, normalizeLocale, translateDashboardCards } from "../ut
 import { checkSheetAccess, hasReportSourceOwnerAccess, loadSheetPermissionSets } from "../utils/authorization.js";
 import { synthesizeChatAudioBuffer } from "./chatController.js";
 import { isAiGloballyDisabled, loadAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
+import { resolveChatCompletionProviderConfig } from "../utils/llmProvider.js";
 import { buildChatCompletionRequestBody, extractOpenAiAssistantText, minCompletionTokensForModel } from "../utils/openAiCompat.js";
 
 const INSIGHT_MAX_ROWS = Number.parseInt(process.env.INSIGHT_MAX_ROWS || "300000", 10);
-const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
-const OPENAI_MODEL = String(process.env.OPENAI_MODEL || "gpt-5-nano").trim();
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10);
 // Compatibility caps retained for regression guards.
 const INSIGHT_AI_MAX_SERIES_POINTS = Number.parseInt(process.env.INSIGHT_AI_MAX_SERIES_POINTS || "18", 10);
@@ -351,14 +350,13 @@ function buildLegacyInsightPromptEnvelope({ metricCol, dateCol, series, context 
 }
 
 async function callInsightRag({ metricCol, dateCol, categoryCol, series, categoryDeltas = [], attentionTitles = [], locale = "en" }) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return null;
   const runtime = await loadAiRuntimeSettings(null);
   if (isAiGloballyDisabled(runtime)) return null;
   if (runtime?.insightAiEnabled !== true) return null;
+  const { provider, model, baseUrl, apiKey } = resolveChatCompletionProviderConfig(runtime);
+  if (!apiKey) return null;
   const maxSeriesPoints = Number(runtime?.insightAiMaxSeriesPoints || INSIGHT_AI_MAX_SERIES_POINTS);
   const maxPromptChars = Number(runtime?.insightAiMaxPromptChars || INSIGHT_AI_MAX_PROMPT_CHARS);
-  const baseUrl = String(runtime?.openaiBaseUrl || OPENAI_BASE_URL).replace(/\/+$/, "");
   const compactSeries = compactInsightSeries(series, maxSeriesPoints);
   const compactDeltas = (Array.isArray(categoryDeltas) ? categoryDeltas : []).slice(0, 10).map((d) => ({
     key: truncateText(d?.key, 80),
@@ -411,7 +409,6 @@ async function callInsightRag({ metricCol, dateCol, categoryCol, series, categor
 
   const system = "You generate deterministic dashboard insights from supplied data only. No invented values.";
   const user = `Return JSON only. Build 3 forecast periods and 3 concise recommendations.\n\n${userContent}`;
-  const model = String(runtime?.openaiModel || OPENAI_MODEL);
   const timeoutMs = Number(runtime?.openaiTimeoutMs || OPENAI_TIMEOUT_MS);
   const temperature = Number(runtime?.openaiTemperature);
   const safeTemperature = Number.isFinite(temperature) ? Math.max(0, Math.min(2, temperature)) : 0.1;
@@ -421,6 +418,7 @@ async function callInsightRag({ metricCol, dateCol, categoryCol, series, categor
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const requestBody = buildChatCompletionRequestBody({
+      provider,
       model,
       temperature: safeTemperature,
       maxCompletionTokens,

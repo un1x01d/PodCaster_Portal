@@ -1,9 +1,37 @@
 import { query } from "../config/db.js";
+import { defaultBaseUrlForProvider, defaultModelForProvider, normalizeAiProvider } from "./llmProvider.js";
 
 const AI_RUNTIME_SETTINGS_KEY = "ai_runtime_settings";
+const DEFAULT_AI_PROVIDER = normalizeAiProvider(process.env.AI_PROVIDER || process.env.LLM_PROVIDER || "openai");
+const AI_PROVIDER_KEYS = ["openai", "gemini", "ollama"];
+
+function defaultProviderConfigs() {
+  return {
+    openai: {
+      model: defaultModelForProvider("openai"),
+      baseUrl: defaultBaseUrlForProvider("openai"),
+      inputCostPer1M: Number.parseFloat(process.env.OPENAI_INPUT_COST_PER_1M || "0.05") || 0.05,
+      outputCostPer1M: Number.parseFloat(process.env.OPENAI_OUTPUT_COST_PER_1M || "0.40") || 0.40,
+    },
+    gemini: {
+      model: defaultModelForProvider("gemini"),
+      baseUrl: defaultBaseUrlForProvider("gemini"),
+      inputCostPer1M: Number.parseFloat(process.env.GEMINI_INPUT_COST_PER_1M || "0") || 0,
+      outputCostPer1M: Number.parseFloat(process.env.GEMINI_OUTPUT_COST_PER_1M || "0") || 0,
+    },
+    ollama: {
+      model: defaultModelForProvider("ollama"),
+      baseUrl: defaultBaseUrlForProvider("ollama"),
+      inputCostPer1M: Number.parseFloat(process.env.OLLAMA_INPUT_COST_PER_1M || "0") || 0,
+      outputCostPer1M: Number.parseFloat(process.env.OLLAMA_OUTPUT_COST_PER_1M || "0") || 0,
+    },
+  };
+}
 
 const DEFAULTS = {
   aiRuntimePreset: "mid",
+  aiProvider: DEFAULT_AI_PROVIDER,
+  providerConfigs: defaultProviderConfigs(),
   globalAiDisabled: false,
   chatEnabled: false,
   chatAudioEnabled: false,
@@ -14,7 +42,7 @@ const DEFAULTS = {
   chatHistoryWindowMessages: 8,
   dashboardTranslateMaxItems: 200,
   dashboardTranslateMaxCharsPerItem: 500,
-  businessClassificationModel: String(process.env.OPENAI_BUSINESS_CLASSIFICATION_MODEL || process.env.OPENAI_MODEL || "gpt-5-nano"),
+  businessClassificationModel: String(process.env.OPENAI_BUSINESS_CLASSIFICATION_MODEL || defaultModelForProvider(DEFAULT_AI_PROVIDER)),
   businessClassificationApplyUploads: true,
   businessClassificationApplyEmailIngest: true,
   businessClassificationApplyAutosync: true,
@@ -22,14 +50,14 @@ const DEFAULTS = {
   businessClassificationMaxPromptChars: 12000,
   businessClassificationMaxOutputTokens: 512,
   llmMaxOutputTokens: 800,
-  openaiModel: String(process.env.OPENAI_MODEL || "gpt-5-nano"),
-  openaiBaseUrl: String(process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, ""),
+  openaiModel: String(defaultModelForProvider(DEFAULT_AI_PROVIDER)),
+  openaiBaseUrl: String(defaultBaseUrlForProvider(DEFAULT_AI_PROVIDER)).replace(/\/+$/, ""),
   openaiTimeoutMs: Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10) || 60000,
   openaiTemperature: Number.parseFloat(process.env.OPENAI_TEMPERATURE || "0.1") || 0.1,
   openaiMaxOutputTokens: Number.parseInt(process.env.OPENAI_MAX_OUTPUT_TOKENS || "900", 10) || 900,
   openaiInputCostPer1M: Number.parseFloat(process.env.OPENAI_INPUT_COST_PER_1M || "0.05") || 0.05,
   openaiOutputCostPer1M: Number.parseFloat(process.env.OPENAI_OUTPUT_COST_PER_1M || "0.40") || 0.40,
-  translationOpenaiModel: String(process.env.OPENAI_TRANSLATION_MODEL || "gpt-5-nano"),
+  translationOpenaiModel: String(process.env.OPENAI_TRANSLATION_MODEL || defaultModelForProvider(DEFAULT_AI_PROVIDER)),
   translationTemperature: Number.parseFloat(process.env.OPENAI_TRANSLATION_TEMPERATURE || "0") || 0,
   translationMaxOutputTokens: Number.parseInt(process.env.OPENAI_TRANSLATION_MAX_OUTPUT_TOKENS || "512", 10) || 512,
   insightAiMaxSeriesPoints: Number.parseInt(process.env.INSIGHT_AI_MAX_SERIES_POINTS || "18", 10) || 18,
@@ -72,10 +100,43 @@ function toPreset(v, fallback) {
   return fallback;
 }
 
+function normalizeProviderConfigs(raw = {}) {
+  const cfg = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const defaults = defaultProviderConfigs();
+  const out = {};
+  AI_PROVIDER_KEYS.forEach((provider) => {
+    const source = cfg[provider] && typeof cfg[provider] === "object" ? cfg[provider] : {};
+    out[provider] = {
+      model: toModel(source.model, defaults[provider].model),
+      baseUrl: toBaseUrl(source.baseUrl, defaults[provider].baseUrl),
+      inputCostPer1M: toFloat(source.inputCostPer1M, defaults[provider].inputCostPer1M, 0, 1000),
+      outputCostPer1M: toFloat(source.outputCostPer1M, defaults[provider].outputCostPer1M, 0, 1000),
+    };
+  });
+  return out;
+}
+
 export function normalizeAiRuntimeSettings(raw = {}) {
   const cfg = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const aiProvider = normalizeAiProvider(cfg.aiProvider || DEFAULTS.aiProvider);
+  const providerConfigs = normalizeProviderConfigs(cfg.providerConfigs || DEFAULTS.providerConfigs);
+  if (cfg.openaiModel || cfg.openaiBaseUrl || cfg.openaiInputCostPer1M !== undefined || cfg.openaiOutputCostPer1M !== undefined) {
+    providerConfigs[aiProvider] = {
+      ...providerConfigs[aiProvider],
+      model: toModel(cfg.openaiModel, providerConfigs[aiProvider].model),
+      baseUrl: toBaseUrl(cfg.openaiBaseUrl, providerConfigs[aiProvider].baseUrl),
+      inputCostPer1M: toFloat(cfg.openaiInputCostPer1M, providerConfigs[aiProvider].inputCostPer1M, 0, 1000),
+      outputCostPer1M: toFloat(cfg.openaiOutputCostPer1M, providerConfigs[aiProvider].outputCostPer1M, 0, 1000),
+    };
+  }
+  const providerDefaultModel = providerConfigs[aiProvider]?.model || defaultModelForProvider(aiProvider);
+  const providerDefaultBaseUrl = providerConfigs[aiProvider]?.baseUrl || defaultBaseUrlForProvider(aiProvider);
+  const providerInputCost = providerConfigs[aiProvider]?.inputCostPer1M ?? DEFAULTS.openaiInputCostPer1M;
+  const providerOutputCost = providerConfigs[aiProvider]?.outputCostPer1M ?? DEFAULTS.openaiOutputCostPer1M;
   return {
     aiRuntimePreset: toPreset(cfg.aiRuntimePreset, DEFAULTS.aiRuntimePreset),
+    aiProvider,
+    providerConfigs,
     globalAiDisabled: toBool(cfg.globalAiDisabled, DEFAULTS.globalAiDisabled),
     chatEnabled: toBool(cfg.chatEnabled, DEFAULTS.chatEnabled),
     chatAudioEnabled: toBool(cfg.chatAudioEnabled, DEFAULTS.chatAudioEnabled),
@@ -86,7 +147,7 @@ export function normalizeAiRuntimeSettings(raw = {}) {
     chatHistoryWindowMessages: toInt(cfg.chatHistoryWindowMessages, DEFAULTS.chatHistoryWindowMessages, 1, 40),
     dashboardTranslateMaxItems: toInt(cfg.dashboardTranslateMaxItems, DEFAULTS.dashboardTranslateMaxItems, 1, 2000),
     dashboardTranslateMaxCharsPerItem: toInt(cfg.dashboardTranslateMaxCharsPerItem, DEFAULTS.dashboardTranslateMaxCharsPerItem, 10, 10000),
-    businessClassificationModel: toModel(cfg.businessClassificationModel, DEFAULTS.businessClassificationModel),
+    businessClassificationModel: toModel(cfg.businessClassificationModel, providerDefaultModel || DEFAULTS.businessClassificationModel),
     businessClassificationApplyUploads: toBool(cfg.businessClassificationApplyUploads, DEFAULTS.businessClassificationApplyUploads),
     businessClassificationApplyEmailIngest: toBool(cfg.businessClassificationApplyEmailIngest, DEFAULTS.businessClassificationApplyEmailIngest),
     businessClassificationApplyAutosync: toBool(cfg.businessClassificationApplyAutosync, DEFAULTS.businessClassificationApplyAutosync),
@@ -94,14 +155,14 @@ export function normalizeAiRuntimeSettings(raw = {}) {
     businessClassificationMaxPromptChars: toInt(cfg.businessClassificationMaxPromptChars, DEFAULTS.businessClassificationMaxPromptChars, 1000, 50000),
     businessClassificationMaxOutputTokens: toInt(cfg.businessClassificationMaxOutputTokens, DEFAULTS.businessClassificationMaxOutputTokens, 128, 2048),
     llmMaxOutputTokens: toInt(cfg.llmMaxOutputTokens, DEFAULTS.llmMaxOutputTokens, 32, 4096),
-    openaiModel: toModel(cfg.openaiModel, DEFAULTS.openaiModel),
-    openaiBaseUrl: toBaseUrl(cfg.openaiBaseUrl, DEFAULTS.openaiBaseUrl),
+    openaiModel: toModel(cfg.openaiModel, providerDefaultModel || DEFAULTS.openaiModel),
+    openaiBaseUrl: toBaseUrl(cfg.openaiBaseUrl, providerDefaultBaseUrl || DEFAULTS.openaiBaseUrl),
     openaiTimeoutMs: toInt(cfg.openaiTimeoutMs, DEFAULTS.openaiTimeoutMs, 1000, 300000),
     openaiTemperature: toFloat(cfg.openaiTemperature, DEFAULTS.openaiTemperature, 0, 2),
     openaiMaxOutputTokens: toInt(cfg.openaiMaxOutputTokens, DEFAULTS.openaiMaxOutputTokens, 32, 4096),
-    openaiInputCostPer1M: toFloat(cfg.openaiInputCostPer1M, DEFAULTS.openaiInputCostPer1M, 0, 1000),
-    openaiOutputCostPer1M: toFloat(cfg.openaiOutputCostPer1M, DEFAULTS.openaiOutputCostPer1M, 0, 1000),
-    translationOpenaiModel: toModel(cfg.translationOpenaiModel, DEFAULTS.translationOpenaiModel),
+    openaiInputCostPer1M: toFloat(cfg.openaiInputCostPer1M, providerInputCost, 0, 1000),
+    openaiOutputCostPer1M: toFloat(cfg.openaiOutputCostPer1M, providerOutputCost, 0, 1000),
+    translationOpenaiModel: toModel(cfg.translationOpenaiModel, providerDefaultModel || DEFAULTS.translationOpenaiModel),
     translationTemperature: toFloat(cfg.translationTemperature, DEFAULTS.translationTemperature, 0, 2),
     translationMaxOutputTokens: toInt(cfg.translationMaxOutputTokens, DEFAULTS.translationMaxOutputTokens, 32, 4096),
     insightAiMaxSeriesPoints: toInt(cfg.insightAiMaxSeriesPoints, DEFAULTS.insightAiMaxSeriesPoints, 4, 200),

@@ -6,6 +6,7 @@ import validCreditCard from "card-validator";
 export const DLP_SETTINGS_KEY = "dlp_settings";
 
 const DEFAULT_DLP_SETTINGS = {
+    enabled: true,
     mode: "block",
     checkSsn: true,
     checkCreditCard: true,
@@ -28,6 +29,7 @@ export function normalizeDlpSettings(raw = {}) {
     const mode = String(source.mode || DEFAULT_DLP_SETTINGS.mode).trim().toLowerCase();
     const normalizedMode = mode === "warn" || mode === "block" || mode === "mask" ? mode : DEFAULT_DLP_SETTINGS.mode;
     return {
+        enabled: source.enabled !== false,
         mode: normalizedMode,
         checkSsn: source.checkSsn !== false,
         checkCreditCard: source.checkCreditCard !== false,
@@ -47,6 +49,9 @@ function pushFinding(findings, finding, maxFindings) {
 
 export function scanRowsForDlp(sheets, settings) {
     const cfg = normalizeDlpSettings(settings || {});
+    if (cfg.enabled === false) {
+        return { findings: [], scannedCells: 0, capped: false, maskedColumns: {}, disabled: true };
+    }
     const findings = [];
     const maskedColumns = {};
     let scannedCells = 0;

@@ -4,8 +4,7 @@ import {
   getOpenAiResponseDiagnostics,
   minCompletionTokensForModel,
 } from "./openAiCompat.js";
-
-const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
+import { resolveChatCompletionProviderConfig } from "./llmProvider.js";
 
 async function loadRuntimeSettingsForClassification(groupId = null) {
   const mod = await import("./aiRuntimeSettings.js");
@@ -107,7 +106,7 @@ function clampPromptPayload(payload, maxChars) {
   };
 }
 
-function normalizeClassificationResult(raw, model, sourceKind, context = {}) {
+function normalizeClassificationResult(raw, model, sourceKind, context = {}, provider = "openai") {
   const src = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   const confidence = Number(src.confidence);
   const businessType = refineBusinessType(src.businessType || src.business_type || "", context);
@@ -118,7 +117,7 @@ function normalizeClassificationResult(raw, model, sourceKind, context = {}) {
     confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0,
     signals: normalizeStringArray(src.signals, 8, 100),
     suggestedViews: normalizeStringArray(src.suggestedViews || src.suggested_views, 8, 80),
-    source: "openai",
+    source: provider,
     sourceKind,
     model,
     classifiedAt: new Date().toISOString(),
@@ -138,11 +137,10 @@ export async function classifySheetBusinessContext({
   if (globallyDisabled) return null;
   if (!runtime?.businessClassificationEnabled) return null;
   if (!sourceKindEnabled(runtime, sourceKind)) return null;
-  const apiKey = process.env.OPENAI_API_KEY;
+  const providerConfig = resolveChatCompletionProviderConfig(runtime, runtime?.businessClassificationModel);
+  const { provider, model, baseUrl, apiKey } = providerConfig;
   if (!apiKey) return null;
 
-  const model = String(runtime.businessClassificationModel || runtime.openaiModel || process.env.OPENAI_MODEL || "gpt-5-nano").trim();
-  const baseUrl = String(runtime.openaiBaseUrl || OPENAI_BASE_URL).replace(/\/+$/, "");
   const timeoutMs = Number(runtime.openaiTimeoutMs || 60000);
   const maxOutputTokens = minCompletionTokensForModel(model, runtime.businessClassificationMaxOutputTokens, 512, 512);
   const promptPayload = clampPromptPayload({
@@ -180,6 +178,7 @@ export async function classifySheetBusinessContext({
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify(buildChatCompletionRequestBody({
+        provider,
         model,
         responseFormat: { type: "json_object" },
         maxCompletionTokens: maxOutputTokens,
@@ -214,7 +213,7 @@ export async function classifySheetBusinessContext({
     sheetNames,
     headers,
     sampleRows,
-  });
+  }, provider);
 }
 
 export const __businessClassificationTestHooks = {

@@ -1,10 +1,23 @@
+const ISO_START_RE = /^\d{4}-\d{2}-\d{2}/;
+const ISO_FULL_RE = /^\d{4}-\d{2}-\d{2}T/;
+
+export const fmtDateOnly = (v) => {
+  if (v == null) return "";
+  if (typeof v === "string") {
+    const m = v.match(ISO_START_RE);
+    if (m) return m[0];
+  }
+  const dt = new Date(v);
+  if (!Number.isNaN(dt.getTime())) return dt.toISOString().slice(0, 10);
+  return String(v).slice(0, 10);
+};
+
 // Helper for date formatting
 export const renderMaybeDate = (columnName, value) => {
     if (value == null) return "";
     if (typeof value === "string" && value.endsWith("T00:00:00.000Z")) {
         return value.substring(0, value.indexOf("T"));
     }
-    const ISO_FULL_RE = /^\d{4}-\d{2}-\d{2}T/;
     if (typeof value === "string" && ISO_FULL_RE.test(value)) return value.slice(0, 10);
 
     if (value !== "" && !isNaN(Number(value))) {

@@ -2,14 +2,44 @@ import React from "react";
 import StorageOptionCard from "../common/StorageOptionCard.jsx";
 
 const AI_MODEL_OPTIONS = [
-  { value: "gpt-5-nano", label: "gpt-5-nano", openaiInputCostPer1M: 0.05, openaiOutputCostPer1M: 0.40 },
-  { value: "gpt-4.1-nano", label: "gpt-4.1-nano", openaiInputCostPer1M: 0.10, openaiOutputCostPer1M: 0.40 },
-  { value: "gpt-4.1-mini", label: "gpt-4.1-mini", openaiInputCostPer1M: 0.40, openaiOutputCostPer1M: 1.60 },
-  { value: "gpt-4.1", label: "gpt-4.1", openaiInputCostPer1M: 2.00, openaiOutputCostPer1M: 8.00 },
+  { provider: "openai", value: "gpt-5-nano", label: "GPT-5 nano", openaiInputCostPer1M: 0.05, openaiOutputCostPer1M: 0.40 },
+  { provider: "openai", value: "gpt-4.1-nano", label: "GPT-4.1 nano", openaiInputCostPer1M: 0.10, openaiOutputCostPer1M: 0.40 },
+  { provider: "openai", value: "gpt-4.1-mini", label: "GPT-4.1 mini", openaiInputCostPer1M: 0.40, openaiOutputCostPer1M: 1.60 },
+  { provider: "openai", value: "gpt-4.1", label: "GPT-4.1", openaiInputCostPer1M: 2.00, openaiOutputCostPer1M: 8.00 },
+  { provider: "gemini", value: "gemini-2.5-flash", label: "Gemini 2.5 Flash", openaiInputCostPer1M: 0, openaiOutputCostPer1M: 0 },
+  { provider: "gemini", value: "gemini-2.5-pro", label: "Gemini 2.5 Pro", openaiInputCostPer1M: 0, openaiOutputCostPer1M: 0 },
+  { provider: "gemini", value: "gemini-1.5-flash", label: "Gemini 1.5 Flash", openaiInputCostPer1M: 0, openaiOutputCostPer1M: 0 },
+  { provider: "ollama", value: "llama3.2", label: "Llama 3.2", openaiInputCostPer1M: 0, openaiOutputCostPer1M: 0 },
+  { provider: "ollama", value: "llama3.1", label: "Llama 3.1", openaiInputCostPer1M: 0, openaiOutputCostPer1M: 0 },
+  { provider: "ollama", value: "mistral", label: "Mistral", openaiInputCostPer1M: 0, openaiOutputCostPer1M: 0 },
 ];
+const AI_PROVIDER_OPTIONS = [
+  { value: "openai", label: "GPT", model: "gpt-5-nano", baseUrl: "https://api.openai.com/v1" },
+  { value: "gemini", label: "Gemini", model: "gemini-2.5-flash", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai" },
+  { value: "ollama", label: "Ollama", model: "llama3.2", baseUrl: "http://localhost:11434/v1" },
+];
+const AI_PROVIDER_DEFAULTS = Object.fromEntries(AI_PROVIDER_OPTIONS.map((option) => [option.value, option]));
+const AI_PROVIDER_CONFIG_DEFAULTS = Object.fromEntries(AI_PROVIDER_OPTIONS.map((option) => [
+  option.value,
+  {
+    model: option.model,
+    baseUrl: option.baseUrl,
+    inputCostPer1M: getAiModelPricing(option.model).openaiInputCostPer1M,
+    outputCostPer1M: getAiModelPricing(option.model).openaiOutputCostPer1M,
+  },
+]));
 
-function getAiModelPricing(model) {
-  return AI_MODEL_OPTIONS.find((option) => option.value === model) || AI_MODEL_OPTIONS[0];
+function getAiModelPricing(model, provider = "") {
+  const configured = AI_MODEL_OPTIONS.find((option) => option.value === model);
+  if (configured) return configured;
+  if (provider === "ollama" || provider === "gemini") {
+    return { openaiInputCostPer1M: 0, openaiOutputCostPer1M: 0 };
+  }
+  return AI_MODEL_OPTIONS[0];
+}
+
+function normalizeAiProvider(provider) {
+  return AI_PROVIDER_DEFAULTS[String(provider || "").trim().toLowerCase()] ? String(provider).trim().toLowerCase() : "openai";
 }
 
 export default function IntegrationSettingsPanel(props) {
@@ -103,6 +133,83 @@ export default function IntegrationSettingsPanel(props) {
   const bundleTier = String(selectedGroupBundleTier || "").toLowerCase();
   const enterpriseOnlyLocked = !isSuperAdmin && Number(selectedGroupId) > 0 && bundleTier !== "enterprise";
   const enterpriseOnlyStorageKeys = new Set(["sftp", "gcs", "s3", "azure"]);
+  const selectedAiProvider = normalizeAiProvider(aiRuntimeSettings.aiProvider || "openai");
+  const providerConfigs = {
+    ...AI_PROVIDER_CONFIG_DEFAULTS,
+    ...(aiRuntimeSettings.providerConfigs || {}),
+  };
+  const modelOptionsForProvider = (provider = selectedAiProvider, currentModel = "") => {
+    const options = AI_MODEL_OPTIONS.filter((option) => option.provider === provider);
+    const current = String(currentModel || "").trim();
+    if (current && !options.some((option) => option.value === current)) {
+      return [{ provider, value: current, label: current, openaiInputCostPer1M: 0, openaiOutputCostPer1M: 0 }, ...options];
+    }
+    return options;
+  };
+  const updateActiveProviderModel = (model) => {
+    const pricing = getAiModelPricing(model, selectedAiProvider);
+    updateProviderConfig(selectedAiProvider, {
+      model,
+      inputCostPer1M: pricing.openaiInputCostPer1M,
+      outputCostPer1M: pricing.openaiOutputCostPer1M,
+    });
+    setAiRuntimeSettings((prev) => ({
+      ...prev,
+      openaiModel: model,
+      openaiInputCostPer1M: pricing.openaiInputCostPer1M,
+      openaiOutputCostPer1M: pricing.openaiOutputCostPer1M,
+    }));
+  };
+  const updateProviderConfig = (provider, patch = {}) => {
+    const normalized = normalizeAiProvider(provider);
+    setAiRuntimeSettings((prev) => {
+      const previousConfigs = { ...AI_PROVIDER_CONFIG_DEFAULTS, ...(prev.providerConfigs || {}) };
+      const nextConfig = { ...previousConfigs[normalized], ...patch };
+      const next = {
+        ...prev,
+        providerConfigs: {
+          ...previousConfigs,
+          [normalized]: nextConfig,
+        },
+      };
+      if (normalizeAiProvider(prev.aiProvider || selectedAiProvider) === normalized) {
+        next.openaiModel = nextConfig.model;
+        next.openaiBaseUrl = nextConfig.baseUrl;
+        next.openaiInputCostPer1M = nextConfig.inputCostPer1M;
+        next.openaiOutputCostPer1M = nextConfig.outputCostPer1M;
+      }
+      return next;
+    });
+  };
+  const activateProvider = (provider) => {
+    const normalized = normalizeAiProvider(provider);
+    const defaults = AI_PROVIDER_DEFAULTS[normalized] || AI_PROVIDER_DEFAULTS.openai;
+    const config = providerConfigs[normalized] || AI_PROVIDER_CONFIG_DEFAULTS[normalized] || {};
+    const model = String(config.model || defaults.model);
+    const pricing = getAiModelPricing(model, normalized);
+    const inputCost = Number(config.inputCostPer1M ?? pricing.openaiInputCostPer1M);
+    const outputCost = Number(config.outputCostPer1M ?? pricing.openaiOutputCostPer1M);
+    setAiRuntimeSettings((prev) => ({
+      ...prev,
+      aiProvider: normalized,
+      providerConfigs: {
+        ...AI_PROVIDER_CONFIG_DEFAULTS,
+        ...(prev.providerConfigs || {}),
+        [normalized]: {
+          model,
+          baseUrl: String(config.baseUrl || defaults.baseUrl),
+          inputCostPer1M: inputCost,
+          outputCostPer1M: outputCost,
+        },
+      },
+      openaiModel: model,
+      openaiBaseUrl: String(config.baseUrl || defaults.baseUrl),
+      businessClassificationModel: model,
+      translationOpenaiModel: model,
+      openaiInputCostPer1M: inputCost,
+      openaiOutputCostPer1M: outputCost,
+    }));
+  };
 
   return (
     <div className="mb-4 rounded-md border border-slate-200 bg-slate-50 p-4 space-y-3">
@@ -168,32 +275,94 @@ export default function IntegrationSettingsPanel(props) {
             </label>
           </div>
           <div className="grid grid-cols-2 gap-2">
-            <div className="col-span-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Model</div>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Provider</div>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Model</div>
             <select
-              className="input-premium py-1.5 text-[11px] font-semibold col-span-2"
-              value={aiRuntimeSettings.openaiModel || "gpt-5-nano"}
+              className="input-premium py-1.5 text-[11px] font-semibold"
+              value={selectedAiProvider}
               onChange={(e) => {
-                const model = e.target.value;
-                const pricing = getAiModelPricing(model);
-                setAiRuntimeSettings((prev) => ({
-                  ...prev,
-                  openaiModel: model,
-                  openaiInputCostPer1M: pricing.openaiInputCostPer1M,
-                  openaiOutputCostPer1M: pricing.openaiOutputCostPer1M,
-                }));
+                activateProvider(e.target.value);
               }}
             >
-              {AI_MODEL_OPTIONS.map((option) => (
+              {AI_PROVIDER_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>{option.label}</option>
               ))}
             </select>
-            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">OpenAI Timeout (ms)</div>
-            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">OpenAI Temperature</div>
-            <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="1000" max="300000" placeholder="OpenAI Timeout (ms)" value={aiRuntimeSettings.openaiTimeoutMs} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, openaiTimeoutMs: e.target.value }))} />
-            <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="0" max="2" step="0.1" placeholder="OpenAI Temperature" value={aiRuntimeSettings.openaiTemperature} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, openaiTemperature: e.target.value }))} />
-            <div className="col-span-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">OpenAI Base URL</div>
-            <input className="input-premium py-1.5 text-[11px] font-semibold col-span-2" placeholder="OpenAI Base URL" value={aiRuntimeSettings.openaiBaseUrl || ""} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, openaiBaseUrl: e.target.value }))} />
-            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">OpenAI Max Output Tokens</div>
+            {selectedAiProvider === "ollama" ? (
+              <input
+                className="input-premium py-1.5 text-[11px] font-semibold"
+                placeholder="llama3.2"
+                value={aiRuntimeSettings.openaiModel || providerConfigs[selectedAiProvider]?.model || AI_PROVIDER_DEFAULTS[selectedAiProvider].model}
+                onChange={(e) => updateActiveProviderModel(e.target.value)}
+              />
+            ) : (
+              <select
+                className="input-premium py-1.5 text-[11px] font-semibold"
+                value={aiRuntimeSettings.openaiModel || providerConfigs[selectedAiProvider]?.model || AI_PROVIDER_DEFAULTS[selectedAiProvider].model}
+                onChange={(e) => updateActiveProviderModel(e.target.value)}
+              >
+                {modelOptionsForProvider(selectedAiProvider, aiRuntimeSettings.openaiModel).map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            )}
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">LLM Timeout (ms)</div>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">LLM Temperature</div>
+            <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="1000" max="300000" placeholder="LLM Timeout (ms)" value={aiRuntimeSettings.openaiTimeoutMs} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, openaiTimeoutMs: e.target.value }))} />
+            <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="0" max="2" step="0.1" placeholder="LLM Temperature" value={aiRuntimeSettings.openaiTemperature} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, openaiTemperature: e.target.value }))} />
+            <div className="col-span-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Provider Base URL</div>
+            <input className="input-premium py-1.5 text-[11px] font-semibold col-span-2" placeholder="Provider Base URL" value={aiRuntimeSettings.openaiBaseUrl || ""} onChange={(e) => {
+              updateProviderConfig(selectedAiProvider, { baseUrl: e.target.value });
+              setAiRuntimeSettings((prev) => ({ ...prev, openaiBaseUrl: e.target.value }));
+            }} />
+            <div className="col-span-2 mt-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">All Provider Model Configs</div>
+            <div className="col-span-2 overflow-x-auto border-y border-slate-200">
+              <div className="grid min-w-[840px] grid-cols-[90px_150px_150px_minmax(220px,1fr)_90px_90px] gap-2 bg-slate-100/70 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                <div>Provider</div>
+                <div>Preset</div>
+                <div>Model</div>
+                <div>Base URL</div>
+                <div>Input / 1M</div>
+                <div>Output / 1M</div>
+              </div>
+              {AI_PROVIDER_OPTIONS.map((providerOption) => {
+                const providerConfig = providerConfigs[providerOption.value] || AI_PROVIDER_CONFIG_DEFAULTS[providerOption.value];
+                const isActive = selectedAiProvider === providerOption.value;
+                return (
+                  <div key={providerOption.value} className="grid min-w-[840px] grid-cols-[90px_150px_150px_minmax(220px,1fr)_90px_90px] items-center gap-2 border-t border-slate-200 px-2 py-2">
+                    <button
+                      type="button"
+                      className={`text-left text-[11px] font-bold ${isActive ? "text-emerald-700" : "text-slate-700 hover:text-slate-950"}`}
+                      onClick={() => activateProvider(providerOption.value)}
+                    >
+                      {providerOption.label}
+                    </button>
+                    <select
+                      className="input-premium py-1.5 text-[11px] font-semibold"
+                      value={providerConfig.model}
+                      onChange={(e) => {
+                        const model = e.target.value;
+                        const pricing = getAiModelPricing(model, providerOption.value);
+                        updateProviderConfig(providerOption.value, {
+                          model,
+                          inputCostPer1M: pricing.openaiInputCostPer1M,
+                          outputCostPer1M: pricing.openaiOutputCostPer1M,
+                        });
+                      }}
+                    >
+                      {modelOptionsForProvider(providerOption.value, providerConfig.model).map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                    <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="Custom model" value={providerConfig.model || ""} onChange={(e) => updateProviderConfig(providerOption.value, { model: e.target.value })} />
+                    <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="Base URL" value={providerConfig.baseUrl || ""} onChange={(e) => updateProviderConfig(providerOption.value, { baseUrl: e.target.value })} />
+                    <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="0" step="0.0001" placeholder="Input / 1M" value={providerConfig.inputCostPer1M ?? 0} onChange={(e) => updateProviderConfig(providerOption.value, { inputCostPer1M: e.target.value })} />
+                    <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="0" step="0.0001" placeholder="Output / 1M" value={providerConfig.outputCostPer1M ?? 0} onChange={(e) => updateProviderConfig(providerOption.value, { outputCostPer1M: e.target.value })} />
+                  </div>
+                );
+              })}
+            </div>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">LLM Max Output Tokens</div>
             <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Insight Max Series Points</div>
             <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="32" max="4096" placeholder="OpenAI Max Output Tokens" value={aiRuntimeSettings.openaiMaxOutputTokens} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, openaiMaxOutputTokens: e.target.value }))} />
             <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="4" max="200" placeholder="Insight Max Series Points" value={aiRuntimeSettings.insightAiMaxSeriesPoints} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, insightAiMaxSeriesPoints: e.target.value }))} />
@@ -202,11 +371,10 @@ export default function IntegrationSettingsPanel(props) {
             <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="1000" max="200000" placeholder="Insight Max Prompt Chars" value={aiRuntimeSettings.insightAiMaxPromptChars} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, insightAiMaxPromptChars: e.target.value }))} />
             <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="1000" max="100000" placeholder="Chat Audio Max Chars" value={aiRuntimeSettings.chatAudioMaxChars} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, chatAudioMaxChars: e.target.value }))} />
             <div className="col-span-2 mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Business Type Detection</div>
-            <select className="input-premium py-1.5 text-[11px] font-semibold col-span-2" value={aiRuntimeSettings.businessClassificationModel || "gpt-5-nano"} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, businessClassificationModel: e.target.value }))}>
-              <option value="gpt-5-nano">gpt-5-nano</option>
-              <option value="gpt-4.1-nano">gpt-4.1-nano</option>
-              <option value="gpt-4.1-mini">gpt-4.1-mini</option>
-              <option value="gpt-4.1">gpt-4.1</option>
+            <select className="input-premium py-1.5 text-[11px] font-semibold col-span-2" value={aiRuntimeSettings.businessClassificationModel || AI_PROVIDER_DEFAULTS[selectedAiProvider].model} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, businessClassificationModel: e.target.value }))}>
+              {modelOptionsForProvider(selectedAiProvider, aiRuntimeSettings.businessClassificationModel).map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
             </select>
             <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 px-2 py-1 rounded-md border border-slate-200">
               <input type="checkbox" checked={aiRuntimeSettings.businessClassificationApplyUploads !== false} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, businessClassificationApplyUploads: e.target.checked }))} />
@@ -231,11 +399,10 @@ export default function IntegrationSettingsPanel(props) {
             <input className="input-premium py-1.5 text-[11px] font-semibold bg-slate-50 text-slate-500" readOnly value={Number(aiRuntimeSettings.openaiInputCostPer1M || 0).toFixed(4)} />
             <input className="input-premium py-1.5 text-[11px] font-semibold bg-slate-50 text-slate-500" readOnly value={Number(aiRuntimeSettings.openaiOutputCostPer1M || 0).toFixed(4)} />
             <div className="col-span-2 mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Translation Model</div>
-            <select className="input-premium py-1.5 text-[11px] font-semibold col-span-2" value={aiRuntimeSettings.translationOpenaiModel || "gpt-5-nano"} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, translationOpenaiModel: e.target.value }))}>
-              <option value="gpt-5-nano">gpt-5-nano</option>
-              <option value="gpt-4.1-nano">gpt-4.1-nano</option>
-              <option value="gpt-4.1-mini">gpt-4.1-mini</option>
-              <option value="gpt-4.1">gpt-4.1</option>
+            <select className="input-premium py-1.5 text-[11px] font-semibold col-span-2" value={aiRuntimeSettings.translationOpenaiModel || AI_PROVIDER_DEFAULTS[selectedAiProvider].model} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, translationOpenaiModel: e.target.value }))}>
+              {modelOptionsForProvider(selectedAiProvider, aiRuntimeSettings.translationOpenaiModel).map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
             </select>
             <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Translation Temperature</div>
             <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Translation Max Output Tokens</div>

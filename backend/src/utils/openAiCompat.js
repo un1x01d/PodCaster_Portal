@@ -18,21 +18,32 @@ export function minCompletionTokensForModel(model, requested, fallback = 800, gp
 export function buildChatCompletionRequestBody({
   model,
   messages,
+  provider = "openai",
   responseFormat = null,
   maxCompletionTokens = null,
   temperature = null,
 }) {
+  const normalizedProvider = String(provider || "openai").trim().toLowerCase();
+  const isOpenAiProvider = normalizedProvider === "openai";
   const body = {
     model,
     messages,
   };
   const maxTokens = Number(maxCompletionTokens);
   if (Number.isFinite(maxTokens) && maxTokens > 0) {
-    body.max_completion_tokens = Math.floor(maxTokens);
+    if (isOpenAiProvider) {
+      body.max_completion_tokens = Math.floor(maxTokens);
+    } else {
+      body.max_tokens = Math.floor(maxTokens);
+    }
   }
-  if (responseFormat) body.response_format = responseFormat;
+  if (responseFormat) {
+    body.response_format = !isOpenAiProvider && responseFormat?.type === "json_schema"
+      ? { type: "json_object" }
+      : responseFormat;
+  }
 
-  const reasoningEffort = getReasoningEffortForModel(model);
+  const reasoningEffort = isOpenAiProvider ? getReasoningEffortForModel(model) : null;
   if (reasoningEffort) {
     body.reasoning_effort = reasoningEffort;
   } else {

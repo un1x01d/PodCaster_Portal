@@ -34,6 +34,23 @@ test("non-GPT-5 chat completions preserve temperature", () => {
   assert.equal(body.temperature, 0.1);
 });
 
+test("non-OpenAI providers use compatible max_tokens and omit GPT reasoning", () => {
+  const body = buildChatCompletionRequestBody({
+    provider: "ollama",
+    model: "llama3.2",
+    messages: [{ role: "user", content: "Return JSON." }],
+    responseFormat: { type: "json_schema", json_schema: { name: "x", schema: { type: "object" } } },
+    maxCompletionTokens: 100,
+    temperature: 0.1,
+  });
+
+  assert.equal(body.max_completion_tokens, undefined);
+  assert.equal(body.max_tokens, 100);
+  assert.equal(body.reasoning_effort, undefined);
+  assert.equal(body.temperature, 0.1);
+  assert.deepEqual(body.response_format, { type: "json_object" });
+});
+
 test("GPT-5 completion caps are raised to leave room for visible JSON", () => {
   assert.equal(minCompletionTokensForModel("gpt-5-nano", 100, 800, 768), 768);
   assert.equal(minCompletionTokensForModel("gpt-4.1-nano", 100, 800, 768), 100);

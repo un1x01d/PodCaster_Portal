@@ -1,0 +1,119 @@
+import { useState, useEffect, useRef } from "react";
+import axios from "axios";
+import { createSessionMarker, clearStoredAuthTokens, setupAxiosInterceptors } from "../utils/auth";
+
+const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
+
+export function useAuth() {
+  const [user, setUser] = useState(null);
+  const [token, setToken] = useState(() => createSessionMarker());
+  const [authChecking, setAuthChecking] = useState(true);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+
+  const [googleEnabled, setGoogleEnabled] = useState(true);
+  const [dropboxEnabled, setDropboxEnabled] = useState(true);
+  const [oneDriveEnabled, setOneDriveEnabled] = useState(true);
+  const [sftpStorageEnabled, setSftpStorageEnabled] = useState(true);
+  const [gcsStorageEnabled, setGcsStorageEnabled] = useState(true);
+  const [s3StorageEnabled, setS3StorageEnabled] = useState(true);
+  const [azureBlobStorageEnabled, setAzureBlobStorageEnabled] = useState(true);
+  const integrationStatusCheckedRef = useRef("");
+
+  useEffect(() => {
+    setupAxiosInterceptors();
+    clearStoredAuthTokens();
+  }, []);
+
+  useEffect(() => {
+    if (!token) {
+      setAuthChecking(false);
+      setUser(null);
+      return;
+    }
+    setAuthChecking(true);
+    axios.get(`${API}/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => {
+        setUser(r.data);
+        setToken((prev) => prev || createSessionMarker());
+      })
+      .catch(() => {
+        setToken("");
+        setUser(null);
+      })
+      .finally(() => setAuthChecking(false));
+  }, [token]);
+
+  useEffect(() => {
+    if (authChecking) return;
+    if (!user) {
+      integrationStatusCheckedRef.current = "";
+      return;
+    }
+    const statusKey = String(user.id || user.email || "session");
+    if (integrationStatusCheckedRef.current === statusKey) return;
+    integrationStatusCheckedRef.current = statusKey;
+
+    const fetchStatus = (path, setter) => {
+      axios.get(`${API}${path}`)
+        .then((r) => setter(r?.data?.enabled !== false))
+        .catch(() => setter(true));
+    };
+
+    fetchStatus("/auth/google/status", setGoogleEnabled);
+    fetchStatus("/auth/dropbox/status", setDropboxEnabled);
+    fetchStatus("/auth/onedrive/status", setOneDriveEnabled);
+    fetchStatus("/storage/sftp_storage/status", setSftpStorageEnabled);
+    fetchStatus("/storage/gcs_storage/status", setGcsStorageEnabled);
+    fetchStatus("/storage/s3_storage/status", setS3StorageEnabled);
+    fetchStatus("/storage/azure_blob_storage/status", setAzureBlobStorageEnabled);
+  }, [authChecking, user]);
+
+  const handleLogin = async (e) => {
+    if (e) e.preventDefault();
+    try {
+      const res = await axios.post(`${API}/auth/login`, { email, password });
+      clearStoredAuthTokens();
+      setToken(createSessionMarker());
+      setUser(res.data.user);
+      return res.data.user;
+    } catch (err) {
+      alert("Login failed");
+      throw err;
+    }
+  };
+
+  const handleLogout = () => {
+    axios.post(`${API}/auth/logout`).catch(() => {});
+    clearStoredAuthTokens();
+    localStorage.removeItem("sheetId");
+    localStorage.removeItem("activeFilename");
+    localStorage.removeItem("activeTab");
+    localStorage.removeItem("workspaceChartState:v1");
+    setToken("");
+    setUser(null);
+  };
+
+  return {
+    user,
+    setUser,
+    token,
+    setToken,
+    authChecking,
+    email,
+    setEmail,
+    password,
+    setPassword,
+    handleLogin,
+    handleLogout,
+    integrations: {
+      googleEnabled,
+      dropboxEnabled,
+      oneDriveEnabled,
+      sftpStorageEnabled,
+      gcsStorageEnabled,
+      s3StorageEnabled,
+      azureBlobStorageEnabled
+    }
+  };
+}
