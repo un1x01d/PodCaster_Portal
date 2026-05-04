@@ -224,6 +224,9 @@ export async function ensureReportSourcesSchema(db = activePool()) {
   await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS sync_last_synced_at TIMESTAMP;`);
   await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS sync_last_error TEXT;`);
   await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS sync_updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
+  await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS review_required BOOLEAN NOT NULL DEFAULT FALSE;`);
+  await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS review_schema_changes BOOLEAN NOT NULL DEFAULT TRUE;`);
+  await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS review_label_rules JSONB NOT NULL DEFAULT '{}'::jsonb;`);
   await db.query(`ALTER TABLE report_sources ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
   await db.query(`CREATE INDEX IF NOT EXISTS idx_report_sources_created_by ON report_sources(created_by);`);
   await db.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_report_sources_current_sheet_id ON report_sources(current_sheet_id);`);

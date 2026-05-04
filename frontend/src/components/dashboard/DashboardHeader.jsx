@@ -130,14 +130,14 @@ export default function DashboardHeader({
     };
 
     return (
-        <header className="glass border-b border-slate-200/50 px-8 py-2 grid grid-cols-[1fr_auto_1fr] items-center sticky top-0 z-50 shadow-sm backdrop-blur-xl">
+        <header className="border-b border-slate-200/80 bg-white/95 px-5 py-2 grid grid-cols-[auto_1fr_auto] items-center sticky top-0 z-50 shadow-[0_10px_30px_rgba(15,23,42,0.06)] backdrop-blur-xl md:px-8">
             {/* Left: Logo Link */}
             <div className="flex justify-start">
                 <Link to="/" className="inline-flex items-center">
                     <img
                         src="/assets/tform-logo.png"
-                        alt="Logo"
-                        className="h-[104px] w-auto max-w-[780px] object-contain"
+                        alt="tforn - Turn Financial Outputs into Real Numbers"
+                        className="h-16 w-auto max-w-[280px] object-contain lg:h-20 lg:max-w-[420px]"
                     />
                 </Link>
             </div>
@@ -146,16 +146,17 @@ export default function DashboardHeader({
             <div />
 
             {/* Right: User Profile & Actions */}
-            <div className="flex items-center justify-end gap-6">
-                <div className="h-8 w-px bg-slate-200/60 mx-1"></div>
+            <div className="flex items-center justify-end gap-3 lg:gap-4">
+                <div className="hidden h-8 w-px bg-slate-200/80 lg:block"></div>
 
-                    <div className="relative flex-1 max-w-[320px] md:max-w-lg lg:w-[480px]" ref={sourcePickerRef}>
+                    <div className="relative hidden flex-1 max-w-[320px] md:block md:max-w-lg lg:w-[480px]" ref={sourcePickerRef}>
                         <button
                             type="button"
                             onClick={() => setSourcePickerOpen((v) => !v)}
-                            className="w-full h-8 px-3 rounded-[0.6rem] border border-slate-300 bg-white text-slate-900 text-[11px] font-bold shadow-sm hover:border-slate-400 transition-all flex items-center justify-between gap-2 overflow-hidden"
+                            className="w-full h-10 px-3 rounded-lg border border-slate-200 bg-slate-50 text-slate-900 text-[11px] font-bold shadow-sm hover:border-blue-200 hover:bg-white transition-all flex items-center justify-between gap-2 overflow-hidden"
                             title={selectedPickerLabel}
                         >
+                            <span className="shrink-0 text-slate-400" aria-hidden="true">⌕</span>
                             <span className="truncate text-left">{trunc(selectedPickerLabel, 90)}</span>
                             <span className={`opacity-50 shrink-0 text-[10px] transition-transform ${sourcePickerOpen ? "rotate-180" : ""}`}>▼</span>
                         </button>
@@ -325,7 +326,7 @@ export default function DashboardHeader({
                     {user?.role === 'admin' && (
                         <a
                             href="/users"
-                            className="w-10 h-10 rounded-2xl bg-indigo-600 border border-indigo-500 text-white hover:bg-indigo-700 hover:scale-105 transition-all flex items-center justify-center shadow-lg shadow-indigo-200 shrink-0"
+                            className="w-10 h-10 rounded-xl bg-slate-950 border border-slate-800 text-white hover:bg-blue-700 hover:scale-105 transition-all flex items-center justify-center shadow-lg shadow-slate-200 shrink-0"
                             title="Administration"
                         >
                             <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.1a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
@@ -337,7 +338,7 @@ export default function DashboardHeader({
                             <button
                                 type="button"
                                 onClick={() => setLanguageMenuOpen((v) => !v)}
-                                className="flex items-center gap-2 h-8 px-2.5 rounded-lg bg-white border border-slate-200 text-slate-600 hover:text-slate-900 hover:border-slate-300 transition-all shadow-sm"
+                                className="flex items-center gap-2 h-10 px-2.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-600 hover:text-slate-900 hover:border-blue-200 hover:bg-white transition-all shadow-sm"
                                 title={ui.language}
                             >
                                 {(() => {
@@ -400,7 +401,7 @@ export default function DashboardHeader({
                         <div className="text-sm font-bold text-slate-900 truncate max-w-[120px]">
                             {user.name || user.email.split('@')[0]}
                         </div>
-                        <div className="text-[10px] font-bold text-indigo-500 uppercase tracking-widest leading-none mt-1">
+                        <div className="text-[10px] font-bold text-blue-600 uppercase tracking-widest leading-none mt-1">
                             {user.role}
                         </div>
                     </div>
@@ -408,7 +409,7 @@ export default function DashboardHeader({
                     <div className="group relative">
                         <button
                             onClick={onLogout}
-                            className="w-10 h-10 rounded-2xl bg-white border border-slate-200 text-slate-400 hover:text-red-500 hover:bg-red-50 hover:border-red-100 transition-all flex items-center justify-center shadow-sm"
+                            className="w-10 h-10 rounded-xl bg-white border border-slate-200 text-slate-400 hover:text-red-500 hover:bg-red-50 hover:border-red-100 transition-all flex items-center justify-center shadow-sm"
                             title={ui.signOut}
                         >
                             <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">

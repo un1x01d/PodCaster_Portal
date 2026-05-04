@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
-import { BrowserRouter as Router, Routes, Route, Link, useLocation } from "react-router-dom";
+import { BrowserRouter as Router, Routes, Route, Link, Navigate, useLocation } from "react-router-dom";
 import axios from "axios";
 
 import UserManagement from "./UserManagement";
@@ -147,19 +147,646 @@ async function loadPdfModules() {
   return pdfModulesPromise;
 }
 
-/**
- * Footer - Small static footer for all pages.
- */
-function Footer() {
+function Icon({ name, className = "h-5 w-5" }) {
+  const common = {
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 2,
+    strokeLinecap: "round",
+    strokeLinejoin: "round",
+  };
+
+  const paths = {
+    shield: (
+      <>
+        <path d="M12 3 19 6v5c0 4.8-3 8.2-7 10-4-1.8-7-5.2-7-10V6l7-3Z" />
+        <path d="m9 12 2 2 4-5" />
+      </>
+    ),
+    upload: (
+      <>
+        <path d="M12 16V4" />
+        <path d="m7 9 5-5 5 5" />
+        <path d="M4 20h16" />
+      </>
+    ),
+    source: (
+      <>
+        <path d="M4 6h16" />
+        <path d="M4 12h16" />
+        <path d="M4 18h16" />
+        <path d="M8 6v12" />
+      </>
+    ),
+    schema: (
+      <>
+        <path d="M5 5h6v6H5z" />
+        <path d="M13 5h6v6h-6z" />
+        <path d="M5 13h6v6H5z" />
+        <path d="M13 13h6v6h-6z" />
+      </>
+    ),
+    approval: (
+      <>
+        <path d="M7 11.5 10.5 15 17 8.5" />
+        <path d="M4 4h16v16H4z" />
+      </>
+    ),
+    publish: (
+      <>
+        <path d="M5 12h14" />
+        <path d="m13 6 6 6-6 6" />
+        <path d="M5 5v14" />
+      </>
+    ),
+    ai: (
+      <>
+        <path d="M12 3v3" />
+        <path d="M12 18v3" />
+        <path d="M3 12h3" />
+        <path d="M18 12h3" />
+        <path d="m5.6 5.6 2.1 2.1" />
+        <path d="m16.3 16.3 2.1 2.1" />
+        <path d="m18.4 5.6-2.1 2.1" />
+        <path d="m7.7 16.3-2.1 2.1" />
+        <circle cx="12" cy="12" r="3" />
+      </>
+    ),
+    history: (
+      <>
+        <path d="M4 12a8 8 0 1 0 2.3-5.7" />
+        <path d="M4 5v5h5" />
+        <path d="M12 8v5l3 2" />
+      </>
+    ),
+    lock: (
+      <>
+        <rect x="5" y="10" width="14" height="10" rx="2" />
+        <path d="M8 10V7a4 4 0 0 1 8 0v3" />
+      </>
+    ),
+    users: (
+      <>
+        <path d="M16 20v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2" />
+        <circle cx="9.5" cy="7" r="4" />
+        <path d="M22 20v-2a4 4 0 0 0-3-3.87" />
+        <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+      </>
+    ),
+    storage: (
+      <>
+        <ellipse cx="12" cy="5" rx="7" ry="3" />
+        <path d="M5 5v7c0 1.7 3.1 3 7 3s7-1.3 7-3V5" />
+        <path d="M5 12v7c0 1.7 3.1 3 7 3s7-1.3 7-3v-7" />
+      </>
+    ),
+    audit: (
+      <>
+        <path d="M6 3h9l3 3v15H6z" />
+        <path d="M14 3v4h4" />
+        <path d="M9 12h6" />
+        <path d="M9 16h6" />
+        <path d="M9 8h2" />
+      </>
+    ),
+    alert: (
+      <>
+        <path d="M12 9v4" />
+        <path d="M12 17h.01" />
+        <path d="M10.3 4.3 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.3a2 2 0 0 0-3.4 0Z" />
+      </>
+    ),
+    check: (
+      <>
+        <path d="m5 12 4 4L19 6" />
+      </>
+    ),
+  };
+
   return (
-    <footer className="bg-white/40 backdrop-blur-md border-t border-slate-200 py-1.5 px-8 flex flex-col md:flex-row items-center justify-between gap-4 text-[9px] font-black text-slate-400 uppercase tracking-[0.2em] relative z-20">
-      <div>© 2026 tfron · Advanced Data Governance</div>
-      <div className="flex gap-8">
-        <a href="#" className="hover:text-indigo-600 transition-colors">Privacy Policy</a>
-        <a href="#" className="hover:text-indigo-600 transition-colors">Terms & Conditions</a>
-        <Link to="/support" className="hover:text-indigo-600 transition-colors">Support Hub</Link>
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true" {...common}>
+      {paths[name] || paths.source}
+    </svg>
+  );
+}
+
+function Footer() {
+  const links = [
+    ["Product", "#product"],
+    ["Governance", "#governance"],
+    ["Sources", "#sources"],
+    ["Controlled AI", "#controlled-ai"],
+    ["Security", "#governance"],
+    ["Docs", "#workflow"],
+    ["Contact", "/support"],
+  ];
+
+  return (
+    <footer className="relative z-20 border-t border-slate-200 bg-white px-5 py-6 text-slate-500 md:px-8">
+      <div className="mx-auto flex max-w-7xl flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <Link to="/" className="inline-flex items-center text-slate-900" aria-label="tforn home">
+          <img src="/assets/tform-logo.png" alt="tforn - Turn Financial Outputs into Real Numbers" className="h-12 w-auto max-w-[230px] object-contain" />
+        </Link>
+        <nav className="flex flex-wrap gap-x-5 gap-y-2 text-xs font-bold" aria-label="Footer navigation">
+          {links.map(([label, href]) => (
+            <a key={label} href={href} className="hover:text-blue-700">
+              {label}
+            </a>
+          ))}
+        </nav>
       </div>
     </footer>
+  );
+}
+
+function Header() {
+  const navItems = [
+    ["Product", "#product"],
+    ["Workflow", "#workflow"],
+    ["Governance", "#governance"],
+    ["Controlled AI", "#controlled-ai"],
+    ["Sources", "#sources"],
+    ["Pricing", "#pricing"],
+  ];
+
+  return (
+    <header className="sticky top-0 z-50 border-b border-slate-200/80 bg-white/90 backdrop-blur-xl">
+      <div className="mx-auto flex min-h-20 max-w-7xl items-center justify-between gap-4 px-5 py-2 md:px-8 lg:min-h-[7rem]">
+        <Link to="/" className="flex min-w-0 items-center" aria-label="tforn home">
+          <img
+            src="/assets/tform-logo.png"
+            alt="tforn - Turn Financial Outputs into Real Numbers"
+            className="h-14 w-auto max-w-[230px] object-contain sm:h-16 sm:max-w-[300px] lg:h-[104px] lg:max-w-[520px]"
+          />
+        </Link>
+        <nav className="hidden items-center gap-6 text-sm font-bold text-slate-600 lg:flex" aria-label="Primary navigation">
+          {navItems.map(([label, href]) => (
+            <a key={label} href={href} className="hover:text-blue-700">
+              {label}
+            </a>
+          ))}
+        </nav>
+        <div className="flex shrink-0 items-center gap-2 sm:gap-3">
+          <Link to="/login" className="hidden rounded-md px-3 py-2 text-sm font-bold text-slate-700 hover:text-blue-700 sm:inline-flex">
+            Sign in
+          </Link>
+          <Link
+            to="/support"
+            className="inline-flex h-10 items-center justify-center rounded-md bg-blue-600 px-4 text-sm font-black text-white shadow-sm shadow-blue-200 transition-colors hover:bg-blue-700"
+          >
+            Book demo
+          </Link>
+        </div>
+      </div>
+    </header>
+  );
+}
+
+function Badge({ children, tone = "blue" }) {
+  const tones = {
+    blue: "border-blue-200 bg-blue-50 text-blue-700",
+    green: "border-emerald-200 bg-emerald-50 text-emerald-700",
+    amber: "border-amber-200 bg-amber-50 text-amber-700",
+    slate: "border-slate-200 bg-slate-50 text-slate-700",
+  };
+
+  return (
+    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-black ${tones[tone] || tones.blue}`}>
+      {children}
+    </span>
+  );
+}
+
+function ProductMockup() {
+  return (
+    <figure className="relative mx-auto w-full max-w-[820px]">
+      <div className="absolute -inset-5 rounded-[2rem] bg-blue-100/60 blur-3xl" aria-hidden="true" />
+      <img
+        src="/assets/landing-hero-product.png"
+        alt="tforn financial intake portal showing an intake queue, approved revisions, schema review, field mapping, AI controls, access controls, and audit trail"
+        className="relative w-full rounded-[1.35rem] border border-slate-200 bg-white object-cover shadow-2xl shadow-slate-300/80"
+      />
+      <figcaption className="sr-only">
+        A realistic tforn product view focused on governed financial spreadsheet intake instead of BI dashboards.
+      </figcaption>
+    </figure>
+  );
+}
+
+function SectionHeading({ eyebrow, title, body, centered = false }) {
+  return (
+    <div className={centered ? "mx-auto max-w-3xl text-center" : "max-w-3xl"}>
+      {eyebrow && <div className="text-xs font-black uppercase tracking-[0.22em] text-blue-600">{eyebrow}</div>}
+      <h2 className="mt-3 text-3xl font-black tracking-tight text-slate-950 md:text-4xl">{title}</h2>
+      {body && <p className="mt-4 text-base font-semibold leading-8 text-slate-600">{body}</p>}
+    </div>
+  );
+}
+
+function Hero() {
+  return (
+    <section id="product" className="relative overflow-hidden border-b border-slate-200 bg-gradient-to-b from-slate-50 via-white to-slate-50 px-5 py-14 md:px-8 lg:py-20">
+      <div className="absolute left-1/2 top-0 h-72 w-[48rem] -translate-x-1/2 rounded-full bg-blue-100/55 blur-3xl" />
+      <div className="relative mx-auto grid max-w-7xl gap-12 lg:grid-cols-[0.92fr_1.08fr] lg:items-center">
+        <div>
+          <Badge tone="blue">Managed financial-output intake</Badge>
+          <h1 className="mt-6 max-w-3xl text-4xl font-black tracking-tight text-slate-950 sm:text-5xl lg:text-6xl">
+            Turn financial outputs into real numbers.
+          </h1>
+          <p className="mt-6 max-w-2xl text-lg font-semibold leading-8 text-slate-600">
+            Govern recurring spreadsheets, imports, revisions, schema changes, review rules, permissions, and AI usage so financial outputs become traceable numbers your team can trust.
+          </p>
+          <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+            <Link
+              to="/support"
+              className="inline-flex h-12 items-center justify-center rounded-md bg-blue-600 px-6 text-sm font-black text-white shadow-lg shadow-blue-200 transition-colors hover:bg-blue-700"
+            >
+              Book a demo
+            </Link>
+            <a
+              href="#workflow"
+              className="inline-flex h-12 items-center justify-center rounded-md border border-slate-300 bg-white px-6 text-sm font-black text-slate-800 shadow-sm transition-colors hover:border-blue-200 hover:text-blue-700"
+            >
+              See the workflow
+            </a>
+          </div>
+          <p className="mt-6 max-w-xl text-sm font-black leading-6 text-slate-500">
+            Built for client, vendor, department, and connected-source financial spreadsheet intake.
+          </p>
+        </div>
+        <ProductMockup />
+      </div>
+    </section>
+  );
+}
+
+function FeatureCard({ icon, title, body }) {
+  return (
+    <article className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm transition-shadow hover:shadow-md">
+      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
+        <Icon name={icon} />
+      </div>
+      <h3 className="mt-4 text-lg font-black text-slate-950">{title}</h3>
+      <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">{body}</p>
+    </article>
+  );
+}
+
+function WorkflowStep({ icon, title, body }) {
+  return (
+    <div className="relative rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-50 text-blue-700">
+        <Icon name={icon} />
+      </div>
+      <h3 className="mt-4 text-sm font-black text-slate-950">{title}</h3>
+      <p className="mt-2 text-xs font-semibold leading-5 text-slate-600">{body}</p>
+    </div>
+  );
+}
+
+function SourceCard({ title, body, icon = "storage" }) {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex items-center gap-3">
+        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
+          <Icon name={icon} className="h-4 w-4" />
+        </div>
+        <h3 className="text-sm font-black text-slate-950">{title}</h3>
+      </div>
+      <p className="mt-3 text-xs font-semibold leading-5 text-slate-600">{body}</p>
+    </div>
+  );
+}
+
+function GovernanceCard({ title, body, icon }) {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white text-blue-700 shadow-sm">
+          <Icon name={icon} className="h-4 w-4" />
+        </div>
+        <div>
+          <h3 className="text-sm font-black text-slate-950">{title}</h3>
+          <p className="mt-1 text-xs font-semibold leading-5 text-slate-600">{body}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ComparisonTable() {
+  const rows = [
+    ["Recurring source identity", "Missing", "Assumed", "Included"],
+    ["File revision history", "Limited", "After load", "Included"],
+    ["Schema change detection", "Missing", "Partial", "Included"],
+    ["Approval workflow", "Manual", "External", "Included"],
+    ["Field meaning memory", "Missing", "Partial", "Included"],
+    ["Controlled AI usage", "Risky", "External", "Included"],
+    ["Safe answers from approved data", "Missing", "After prep", "Included"],
+    ["Multi-source intake", "Partial", "Connector-led", "Included"],
+    ["Admin governance", "Manual", "Report-level", "Included"],
+  ];
+
+  const stateClass = (value, column) => {
+    if (column === "managed") return "bg-emerald-50 text-emerald-700";
+    if (value === "Missing" || value === "Manual" || value === "Risky") return "bg-slate-100 text-slate-500";
+    return "bg-amber-50 text-amber-700";
+  };
+
+  return (
+    <section className="bg-white px-5 py-16 md:px-8" id="comparison">
+      <div className="mx-auto max-w-7xl">
+        <SectionHeading
+          title="Not another spreadsheet viewer. Not another BI dashboard."
+          body="BI is powerful after financial data is trusted. tforn handles the messy step that turns spreadsheet outputs into real numbers first."
+        />
+        <div className="mt-8 overflow-hidden rounded-xl border border-slate-200 shadow-sm">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[780px] border-collapse bg-white text-left">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50">
+                  <th className="px-4 py-4 text-xs font-black uppercase tracking-[0.16em] text-slate-500">Capability</th>
+                  <th className="px-4 py-4 text-xs font-black uppercase tracking-[0.16em] text-slate-500">Random file upload</th>
+                  <th className="px-4 py-4 text-xs font-black uppercase tracking-[0.16em] text-slate-500">BI dashboard</th>
+                  <th className="px-4 py-4 text-xs font-black uppercase tracking-[0.16em] text-blue-700">Managed intake portal</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(([capability, random, bi, managed]) => (
+                  <tr key={capability} className="border-b border-slate-100 last:border-b-0">
+                    <th className="px-4 py-4 text-sm font-black text-slate-900">{capability}</th>
+                    <td className="px-4 py-4"><span className={`rounded-full px-2.5 py-1 text-xs font-black ${stateClass(random, "random")}`}>{random}</span></td>
+                    <td className="px-4 py-4"><span className={`rounded-full px-2.5 py-1 text-xs font-black ${stateClass(bi, "bi")}`}>{bi}</span></td>
+                    <td className="px-4 py-4">
+                      <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-black ${stateClass(managed, "managed")}`}>
+                        <Icon name="check" className="h-3.5 w-3.5" />
+                        {managed}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function CTASection() {
+  return (
+    <section className="bg-slate-950 px-5 py-16 text-white md:px-8">
+      <div className="mx-auto flex max-w-7xl flex-col gap-8 lg:flex-row lg:items-center lg:justify-between">
+        <div className="max-w-3xl">
+          <h2 className="text-3xl font-black tracking-tight md:text-4xl">Make every recurring financial spreadsheet traceable, reviewable, and safe to use.</h2>
+          <p className="mt-4 text-base font-semibold leading-8 text-slate-300">
+            Stop treating client, vendor, and department financial files like random uploads. Turn financial outputs into real numbers your team can trust.
+          </p>
+        </div>
+        <div className="flex flex-col gap-3 sm:flex-row lg:shrink-0">
+          <Link to="/support" className="inline-flex h-12 items-center justify-center rounded-md bg-white px-6 text-sm font-black text-slate-950 hover:bg-slate-100">
+            Book a demo
+          </Link>
+          <a href="#workflow" className="inline-flex h-12 items-center justify-center rounded-md border border-white/25 px-6 text-sm font-black text-white hover:bg-white/10">
+            Explore the workflow
+          </a>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ProductLandingPage() {
+  const painCards = [
+    ["Random files create unreliable numbers", "When every upload is treated as a one-off file, finance teams lose source identity, history, and confidence in the output.", "upload"],
+    ["Headers change without warning", "Vendors rename fields, clients add columns, departments change formats, and financial reporting breaks downstream.", "schema"],
+    ["AI needs financial guardrails", "Loose chat over files can invent fields, misuse dates, or calculate from unapproved financial data.", "ai"],
+    ["Review decisions get buried", "Publish decisions, access rules, and revision context often live in email threads instead of the financial data workflow.", "approval"],
+  ];
+
+  const workflowSteps = [
+    ["Receive file", "Capture files from uploads, storage providers, email, and scheduled syncs.", "upload"],
+    ["Match to report source", "Tie every recurring file to a durable source with owner and identity.", "source"],
+    ["Detect schema changes", "Flag renamed columns, missing fields, new headers, and format drift.", "schema"],
+    ["Review before publish", "Hold risky imports for customer admin review before they become the active source revision.", "approval"],
+    ["Publish controlled source", "Release only approved revisions with permissions and lineage.", "publish"],
+    ["Answer safely", "Let AI assist only inside source controls and deterministic financial calculation rules.", "ai"],
+  ];
+
+  const features = [
+    ["Governed report sources", "Turn repeated uploads into durable financial sources with labels, owners, versions, review rules, and access controls.", "shield"],
+    ["Revision history", "Track every upload as a version, compare revisions, and trace where each number came from.", "history"],
+    ["Schema change detection", "Detect renamed columns, missing fields, new headers, and format drift before bad data becomes a financial output.", "schema"],
+    ["Financial context memory", "Confirm whether a source is revenue, expenses, cash flow, sales, operations, or service-provider data once, then remember it.", "source"],
+    ["Controlled AI", "Use AI for classification, field meaning, translation, and safe answers while deterministic backend logic handles financial calculations.", "ai"],
+    ["Team and client governance", "Control users, bundles, max users, max sources, imports, integrations, views, permissions, and AI availability.", "users"],
+    ["Multi-source intake", "Collect files from uploads, Google Drive, Dropbox, OneDrive, SFTP, GCS, S3, Azure Blob, email workflows, and autosync.", "storage"],
+    ["Safe answers from approved data", "Prevent answers from unapproved revisions, missing date columns, invented fields, or ambiguous financial structure.", "lock"],
+  ];
+
+  const sources = [
+    "Manual upload",
+    "Google Drive",
+    "Dropbox",
+    "OneDrive",
+    "SFTP",
+    "Google Cloud Storage",
+    "Amazon S3",
+    "Azure Blob",
+    "Email import",
+    "Autosync workflows",
+  ];
+
+  const governance = [
+    ["User and role management", "Give admins clear control over who can import, review, publish, query, and share.", "users"],
+    ["Source ownership", "Assign durable ownership to client, vendor, department, and connected-source files.", "source"],
+    ["Plan and bundle limits", "Manage max users, max report sources, imports, integrations, and views.", "lock"],
+    ["Storage integration controls", "Enable or disable provider access across uploads, SFTP, cloud storage, and email.", "storage"],
+    ["AI feature controls", "Control source-level availability, usage logging, and blocked-answer rules.", "ai"],
+    ["Audit and revision history", "Keep publish decisions, changes, imports, access, and answer context traceable.", "audit"],
+  ];
+
+  const useCases = [
+    ["Agencies receiving client performance files", "Client exports become governed financial outputs with revision history, schema checks, and approved field meanings."],
+    ["Finance teams collecting monthly reports", "Recurring close packages can be reviewed, approved, and traced before numbers reach reporting."],
+    ["Operations teams receiving vendor spreadsheets", "Vendor format drift is caught before operational costs, margins, or service numbers are trusted."],
+    ["RevOps teams managing sales and pipeline extracts", "Pipeline and revenue files keep source identity, access rules, and approved revisions."],
+    ["Service providers maintaining client reporting sources", "Each client file lands in a controlled source instead of disappearing into email threads."],
+    ["Internal teams standardizing department uploads", "Departments keep flexibility while admins govern publication, permissions, AI availability, and real-number outputs."],
+  ];
+
+  return (
+    <div className="min-h-full bg-slate-50 text-slate-900">
+      <Header />
+      <main>
+        <Hero />
+
+        <section className="bg-white px-5 py-16 md:px-8">
+          <div className="mx-auto max-w-7xl">
+            <SectionHeading title="Spreadsheets are not the problem. Uncontrolled financial intake is." />
+            <div className="mt-8 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+              {painCards.map(([title, body, icon]) => (
+                <FeatureCard key={title} title={title} body={body} icon={icon} />
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section id="workflow" className="bg-slate-50 px-5 py-16 md:px-8">
+          <div className="mx-auto max-w-7xl">
+            <SectionHeading
+              title="The governance layer before BI."
+              body="Create durable financial report sources, track every revision, detect schema changes, approve data, control access, and let AI operate only inside defined rules."
+            />
+            <div className="mt-8 grid gap-4 md:grid-cols-2 lg:grid-cols-6">
+              {workflowSteps.map(([title, body, icon]) => (
+                <WorkflowStep key={title} title={title} body={body} icon={icon} />
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="bg-white px-5 py-16 md:px-8">
+          <div className="mx-auto max-w-7xl">
+            <SectionHeading title="Everything recurring financial spreadsheets need before analysis." />
+            <div className="mt-8 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+              {features.map(([title, body, icon]) => (
+                <FeatureCard key={title} title={title} body={body} icon={icon} />
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section id="controlled-ai" className="bg-slate-50 px-5 py-16 md:px-8">
+          <div className="mx-auto max-w-7xl">
+            <SectionHeading
+              title="AI assistance without AI risk."
+              body="AI can help classify sheets, understand financial field meaning, explain approved data, and translate source context. But it does not get to freely invent calculations, dates, or fields. Admin controls and backend guardrails decide what can be answered."
+            />
+            <div className="mt-8 grid gap-6 lg:grid-cols-2">
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
+                    <Icon name="lock" />
+                  </div>
+                  <h3 className="text-xl font-black text-slate-950">Admin AI Controls</h3>
+                </div>
+                <div className="mt-5 grid gap-3">
+                  {[
+                    "Enable AI per source",
+                    "Restrict unapproved revisions",
+                    "Require date-like columns for date questions",
+                    "Block unknown fields",
+                    "Log AI usage",
+                  ].map((item) => (
+                    <div key={item} className="flex items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-700">
+                      <Icon name="check" className="h-4 w-4 text-emerald-600" />
+                      {item}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <h3 className="text-xl font-black text-slate-950">Safe answer example</h3>
+                <div className="mt-5 rounded-lg border border-slate-200 bg-slate-50 p-4">
+                  <div className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">User asks</div>
+                  <p className="mt-2 text-base font-black text-slate-900">What changed in revenue this month?</p>
+                </div>
+                <div className="mt-4 grid gap-2">
+                  {[
+                    "Is the source approved?",
+                    "Is there a real date-like column?",
+                    "Is Revenue a confirmed field?",
+                    "Are revisions available for comparison?",
+                  ].map((check) => (
+                    <div key={check} className="flex items-center gap-3 text-sm font-bold text-slate-700">
+                      <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                      {check}
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-5 rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm font-black text-emerald-800">
+                  Answer allowed from approved revision v12.
+                </div>
+                <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm font-black text-amber-800">
+                  Blocked: No confirmed date-like column found.
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="sources" className="bg-white px-5 py-16 md:px-8">
+          <div className="mx-auto max-w-7xl">
+            <SectionHeading
+              title="Bring every recurring financial file into one governed intake layer."
+              body="No matter where files come from, they land in a controlled source with labels, revisions, access rules, review history, and real-number traceability."
+            />
+            <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+              {sources.map((source) => (
+                <SourceCard
+                  key={source}
+                  title={source}
+                  body="Map each import to a governed financial source with versioning and review."
+                  icon={source.includes("Email") ? "audit" : source.includes("upload") ? "upload" : "storage"}
+                />
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section id="governance" className="bg-slate-50 px-5 py-16 md:px-8">
+          <div className="mx-auto grid max-w-7xl gap-8 lg:grid-cols-[0.78fr_1.22fr] lg:items-start">
+            <div>
+              <SectionHeading title="Built for admins, teams, and client-facing workflows." />
+              <p className="mt-5 text-base font-semibold leading-8 text-slate-600">
+                Give teams enough flexibility to work with messy financial files while keeping admins in control of what gets published, queried, or shared.
+              </p>
+              <div className="mt-6 rounded-xl border border-blue-200 bg-blue-50 p-5 text-sm font-black leading-6 text-blue-800">
+                tforn turns financial outputs into real numbers by making recurring spreadsheets governed, versioned, approved, and AI-ready before they ever reach BI.
+              </div>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              {governance.map(([title, body, icon]) => (
+                <GovernanceCard key={title} title={title} body={body} icon={icon} />
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <ComparisonTable />
+
+        <section className="bg-slate-50 px-5 py-16 md:px-8">
+          <div className="mx-auto max-w-7xl">
+            <SectionHeading title="Designed for teams drowning in recurring financial spreadsheets." />
+            <div className="mt-8 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {useCases.map(([title, body]) => (
+                <article key={title} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                  <h3 className="text-base font-black text-slate-950">{title}</h3>
+                  <p className="mt-3 text-sm font-semibold leading-6 text-slate-600">{body}</p>
+                </article>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section id="pricing" className="border-y border-slate-200 bg-white px-5 py-12 md:px-8">
+          <div className="mx-auto flex max-w-7xl flex-col gap-4 rounded-2xl border border-slate-200 bg-slate-50 p-6 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h2 className="text-2xl font-black text-slate-950">Enterprise financial intake, priced by governed scale.</h2>
+              <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">Package by users, sources, imports, integrations, views, storage controls, and AI availability.</p>
+            </div>
+            <Link to="/support" className="inline-flex h-11 shrink-0 items-center justify-center rounded-md bg-blue-600 px-5 text-sm font-black text-white hover:bg-blue-700">
+              Talk to sales
+            </Link>
+          </div>
+        </section>
+
+        <CTASection />
+      </main>
+    </div>
   );
 }
 
@@ -1545,7 +2172,6 @@ export default function App() {
     } else {
       formData.append("report_source_name", String(newReportSourceName).trim());
     }
-
     const inferredTotal = Number(uploadFile?.size || 0);
     setUploadProgressOpen(true);
     setUploadProgressLoaded(0);
@@ -1587,7 +2213,7 @@ export default function App() {
         return;
       }
       if (res.data?.status === "pending_approval") {
-        setUploadProgressError("Uploaded and waiting for approval.");
+        setUploadProgressError("Uploaded and held for review before publishing.");
         setUploadDisplayName("");
         setReportSourceName("");
         refreshReportSources();
@@ -1653,7 +2279,7 @@ export default function App() {
         return;
       }
       if (res.data?.status === "pending_approval") {
-        alert("Imported from Google Drive and waiting for approval.");
+        alert("Imported from Google Drive and held for review before publishing.");
         setUploadDisplayName("");
         setReportSourceName("");
         refreshReportSources();
@@ -1711,7 +2337,7 @@ export default function App() {
         return;
       }
       if (res.data?.status === "pending_approval") {
-        alert("Imported from Dropbox and waiting for approval.");
+        alert("Imported from Dropbox and held for review before publishing.");
         setUploadDisplayName("");
         setReportSourceName("");
         refreshReportSources();
@@ -1768,7 +2394,7 @@ export default function App() {
         return;
       }
       if (res.data?.status === "pending_approval") {
-        alert("Imported from OneDrive and waiting for approval.");
+        alert("Imported from OneDrive and held for review before publishing.");
         setUploadDisplayName("");
         setReportSourceName("");
         refreshReportSources();
@@ -2401,21 +3027,15 @@ export default function App() {
                       }}
                     />
                   ) : (
-                    <AuthScreen
-                      email={email}
-                      setEmail={setEmail}
-                      password={password}
-                      setPassword={setPassword}
-                      onSubmit={handleLogin}
-                      onGoogleLogin={handleGoogleLogin}
-                      onSamlLogin={handleSamlLogin}
-                      googleEnabled={googleEnabled}
-                    />
+                    <ProductLandingPage />
                   )
                 ) : (
                   <DashboardHome
                     user={user}
                     myFiles={myFiles}
+                    reportSources={reportSources}
+                    reportSourceImports={reportSourceImports}
+                    refreshReportSources={refreshReportSources}
                     sheetId={sheetId}
                     activeFilename={activeFilename}
                     tabs={tabs}
@@ -2461,6 +3081,26 @@ export default function App() {
                   />
                 )}
 
+              </ErrorBoundary>
+            } />
+            <Route path="/login" element={
+              <ErrorBoundary>
+                {authChecking ? (
+                  <div className="min-h-screen w-full flex items-center justify-center bg-[#fafafa]">
+                    <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Loading workspace...</div>
+                  </div>
+                ) : !user ? (
+                  <AuthScreen
+                    email={email}
+                    setEmail={setEmail}
+                    password={password}
+                    setPassword={setPassword}
+                    onSubmit={handleLogin}
+                    onGoogleLogin={handleGoogleLogin}
+                    onSamlLogin={handleSamlLogin}
+                    googleEnabled={googleEnabled}
+                  />
+                ) : <Navigate to="/" replace />}
               </ErrorBoundary>
             } />
             <Route path="/support" element={<SupportScreen />} />

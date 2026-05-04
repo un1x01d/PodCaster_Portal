@@ -120,7 +120,9 @@ html, body, #root {
 
 /* Left-side actions menu (scoped) */
 .left-side-menu {
-  background: #001f3f;
+  background:
+    radial-gradient(circle at top left, rgba(20, 184, 166, 0.18), transparent 30%),
+    linear-gradient(180deg, #061827 0%, #082337 52%, #061827 100%);
   color: #ffffff;
 }
 
@@ -132,16 +134,16 @@ html, body, #root {
 }
 
 .left-menu-close {
-  color: #e2e8f0;
+  color: #d7f7ff;
   font-weight: 700;
   width: 1.7rem;
   height: 1.7rem;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 0.4rem;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  background: rgba(15, 23, 42, 0.35);
+  border-radius: 0.6rem;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.07);
   font-size: 0.72rem;
   line-height: 1;
   padding: 0;
@@ -155,9 +157,9 @@ html, body, #root {
 }
 
 .left-menu-group {
-  border-top: 1px solid rgba(255, 255, 255, 0.18);
-  padding-top: 0.55rem;
-  margin-top: 0.55rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  padding-top: 0.65rem;
+  margin-top: 0.65rem;
 }
 
 .left-menu-section-toggle {
@@ -169,7 +171,7 @@ html, body, #root {
   font-weight: 700;
   font-size: 0.82rem;
   padding: 0.36rem 0.48rem;
-  border-radius: 0.6rem;
+  border-radius: 0.7rem;
 }
 
 .left-menu-section-toggle:hover,
@@ -222,18 +224,18 @@ html, body, #root {
 .left-menu-action {
   width: 100%;
   text-align: left;
-  border-radius: 0.6rem;
-  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.14);
   color: #ffffff;
   font-weight: 700;
   font-size: 0.76rem;
-  background: rgba(255, 255, 255, 0.08);
-  padding: 0.4rem 0.52rem;
+  background: rgba(255, 255, 255, 0.07);
+  padding: 0.48rem 0.6rem;
 }
 
 .left-menu-action:hover,
 .left-menu-action:focus-visible {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(20, 184, 166, 0.16);
   outline: none;
 }
 
@@ -249,13 +251,13 @@ html, body, #root {
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
-  border-radius: 0.6rem;
-  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.14);
   color: #ffffff;
   font-weight: 700;
   font-size: 0.76rem;
-  background: rgba(255, 255, 255, 0.08);
-  padding: 0.4rem 0.52rem;
+  background: rgba(255, 255, 255, 0.07);
+  padding: 0.48rem 0.6rem;
   cursor: pointer;
 }
 

@@ -684,7 +684,7 @@ export default function DashboardBody(props) {
                 return;
             }
             if (res.data?.status === "pending_approval") {
-                alert(`Imported from ${meta.label} and waiting for approval.`);
+                alert(`Imported from ${meta.label} and held for review before publishing.`);
                 refreshReportSources();
                 closeStoragePicker(provider);
                 return;
@@ -1184,6 +1184,17 @@ export default function DashboardBody(props) {
         return [];
     }, []);
 
+    const appendFiltersParam = React.useCallback((params, filters) => {
+        if (!filters || Object.keys(filters).length === 0) return;
+        const serializableFilters = {};
+        Object.entries(filters).forEach(([col, val]) => {
+            serializableFilters[col] = val instanceof Set ? Array.from(val) : val;
+        });
+        if (Object.keys(serializableFilters).length > 0) {
+            params.filters = JSON.stringify(serializableFilters);
+        }
+    }, []);
+
     const normalizeCellForDiff = React.useCallback((val) => {
         if (val === null || val === undefined) return "";
         if (typeof val === "string") return val.trim();
@@ -1246,7 +1257,14 @@ export default function DashboardBody(props) {
             try {
                 const params = {};
                 if (activeTab) params.tab = activeTab;
-                const res = await axios.get(`${API}/sheets/${primaryCompareSheetId}`, {
+                if (selectedViewId) params.viewId = selectedViewId;
+                if (sortConfig?.key) {
+                    params.sort_by = sortConfig.key;
+                    params.sort_order = sortConfig.direction;
+                }
+                appendFiltersParam(params, columnFilters);
+                params.limit = Math.max(1000, Array.isArray(sortedData) ? sortedData.length : 0);
+                const res = await axios.get(`${API}/sheets/${primaryCompareSheetId}/data`, {
                     headers: { Authorization: `Bearer ${token}` },
                     params,
                 });
@@ -1260,7 +1278,7 @@ export default function DashboardBody(props) {
         };
         run();
         return () => { cancelled = true; };
-    }, [API, token, primaryCompareSheetId, activeTab, normalizeRowsFromResponse]);
+    }, [API, token, primaryCompareSheetId, activeTab, selectedViewId, sortConfig, columnFilters, sortedData, appendFiltersParam, normalizeRowsFromResponse]);
 
     useEffect(() => {
         let cancelled = false;
@@ -1272,7 +1290,13 @@ export default function DashboardBody(props) {
             try {
                 const params = {};
                 if (secondaryTab) params.tab = secondaryTab;
-                const res = await axios.get(`${API}/sheets/${secondaryCompareSheetId}`, {
+                if (secondarySortConfig?.key) {
+                    params.sort_by = secondarySortConfig.key;
+                    params.sort_order = secondarySortConfig.direction;
+                }
+                appendFiltersParam(params, secondaryColumnFilters);
+                params.limit = Math.max(1000, Array.isArray(filteredSecondaryData) ? filteredSecondaryData.length : 0);
+                const res = await axios.get(`${API}/sheets/${secondaryCompareSheetId}/data`, {
                     headers: { Authorization: `Bearer ${token}` },
                     params,
                 });
@@ -1286,7 +1310,7 @@ export default function DashboardBody(props) {
         };
         run();
         return () => { cancelled = true; };
-    }, [API, token, secondaryCompareSheetId, secondaryTab, normalizeRowsFromResponse]);
+    }, [API, token, secondaryCompareSheetId, secondaryTab, secondarySortConfig, secondaryColumnFilters, filteredSecondaryData, appendFiltersParam, normalizeRowsFromResponse]);
 
     const primarySortedCompareRows = React.useMemo(
         () => sortRowsForDiff(primaryCompareRows, sortConfig),
@@ -1362,7 +1386,7 @@ export default function DashboardBody(props) {
 
     const primaryDiffCellSet = React.useMemo(() => {
         const changed = new Set(splitPaneDiffSets.primary);
-        if (primaryCompareSheetId && Array.isArray(sortedData) && sortedData.length) {
+        if (primaryCompareSheetId && primarySortedCompareRows.length && Array.isArray(sortedData) && sortedData.length) {
             sortedData.forEach((row, rowIndex) => {
                 const baseRow = primarySortedCompareRows[rowIndex] || {};
                 (displayHeaders || []).forEach((col) => {
@@ -1394,7 +1418,7 @@ export default function DashboardBody(props) {
             : rows.filter((row) => activeFilters.every(([col, allowed]) => (
                 allowed.has(String(row?.[col] ?? ""))
             )));
-        if (secondaryCompareSheetId && filteredRows.length) {
+        if (secondaryCompareSheetId && secondarySortedCompareRows.length && filteredRows.length) {
             filteredRows.forEach((row, rowIndex) => {
                 const baseRow = secondarySortedCompareRows[rowIndex] || {};
                 (activeSecondaryFields || []).forEach((col) => {
@@ -1886,10 +1910,10 @@ export default function DashboardBody(props) {
             <aside
                 id="dashboard-left-menu"
                 aria-label="Dashboard actions menu"
-                className={`left-side-menu h-full shrink-0 sticky top-0 self-start overflow-y-auto shadow-xl border-r border-blue-800 transition-all duration-200 ${menuOpen ? "w-[17rem] p-3" : "w-14 p-2"}`}
+                className={`left-side-menu h-full shrink-0 sticky top-0 self-start overflow-y-auto shadow-xl border-r border-slate-900 transition-all duration-200 ${menuOpen ? "w-[17rem] p-3" : "w-14 p-2"}`}
             >
                 <div className={`flex items-center ${menuOpen ? "justify-between mb-3" : "justify-center mb-2"}`}>
-                    {menuOpen && <h2 className="left-menu-heading">Menu</h2>}
+                    {menuOpen && <h2 className="left-menu-heading">Workspace</h2>}
                     <button
                         type="button"
                         onClick={() => setMenuOpen((v) => !v)}
@@ -1906,7 +1930,7 @@ export default function DashboardBody(props) {
                     <div id="dashboard-left-menu-content">
                         <div className="left-menu-group">
                             <button className="left-menu-section-toggle" onClick={() => toggleMenu("view")} aria-expanded={expandedMenus.view}>
-                                <span>View</span>
+                                        <span>Govern</span>
                                 <span>{expandedMenus.view ? "▾" : "▸"}</span>
                             </button>
                             {expandedMenus.view && (
@@ -1918,7 +1942,16 @@ export default function DashboardBody(props) {
                                             navigate("/");
                                         }}
                                     >
-                                        Client Views Home
+                                        Intake Home
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="left-menu-action"
+                                        onClick={() => {
+                                            navigate("/");
+                                        }}
+                                    >
+                                        Review queue
                                     </button>
                                     <button
                                         type="button"
@@ -1928,10 +1961,10 @@ export default function DashboardBody(props) {
                                             setMenuOpen(false);
                                         }}
                                     >
-                                        Refresh Data
+                                        Refresh Source
                                     </button>
                                     <button className="left-menu-action left-menu-toggle-row" onClick={() => setInsightsOn((p) => !p)}>
-                                        <span>Insights</span>
+                                        <span>Controlled AI</span>
                                         <span className="left-menu-state">{insightsOn ? "ON" : "OFF"}</span>
                                     </button>
 
@@ -1951,7 +1984,7 @@ export default function DashboardBody(props) {
 
                         <div className="left-menu-group">
                             <button className="left-menu-section-toggle" onClick={() => toggleMenu("data")} aria-expanded={expandedMenus.data}>
-                                <span>Upload & Import</span>
+                                <span>Sources & Imports</span>
                                 <span>{expandedMenus.data ? "▾" : "▸"}</span>
                             </button>
                             {expandedMenus.data && (
@@ -2803,8 +2836,8 @@ export default function DashboardBody(props) {
                 />
             )}
 
-            <div className={`flex flex-col flex-1 min-h-0 bg-slate-50`}>
-                <div id="split-container" className={`m-4 bg-white rounded-2xl shadow-2xl border border-gray-200 focus:ring-slate-100 relative z-0 flex-1 flex overflow-hidden ${comparisonOn ? 'flex-row gap-0' : 'flex-col'} ${hasChart ? 'min-h-[750px]' : 'min-h-[600px]'}`} style={comparisonOn ? { height: '650px' } : {}}>
+            <div className={`flex flex-col flex-1 min-h-0 bg-[#f6f8fb]`}>
+                <div id="split-container" className={`m-4 bg-white rounded-2xl shadow-[0_24px_70px_rgba(15,23,42,0.12)] border border-slate-200 focus:ring-slate-100 relative z-0 flex-1 flex overflow-hidden ${comparisonOn ? 'flex-row gap-0' : 'flex-col'} ${hasChart ? 'min-h-[750px]' : 'min-h-[600px]'}`} style={comparisonOn ? { height: '650px' } : {}}>
                     {comparisonOn && splitDragging && (
                         <div
                             className="pointer-events-none absolute top-0 bottom-0 z-[60] w-0"
@@ -2820,8 +2853,11 @@ export default function DashboardBody(props) {
                         className={`flex flex-col h-full min-h-0 min-w-0 ${comparisonOn ? '' : 'flex-1'}`}
                         style={comparisonOn ? { width: `${splitWidth}%`, flex: `0 0 ${splitWidth}%` } : {}}
                     >
-                        <div className="sticky top-0 bg-slate-50/95 backdrop-blur border-b border-slate-200 z-30 px-3 py-2 shrink-0">
-                            <div className="mb-1 text-[11px] font-bold text-slate-700">Primary Sheet</div>
+                        <div className="sticky top-0 bg-white/95 backdrop-blur border-b border-slate-200 z-30 px-3 py-3 shrink-0">
+                            <div className="mb-1 flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">
+                                <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                                Primary financial source
+                            </div>
                             <div className="flex flex-col gap-1">
                                 <div className="flex items-start justify-between gap-2">
                                     <div className="flex items-center gap-2 min-w-0 flex-wrap">

@@ -474,6 +474,9 @@ function detectColumns(headers, rows) {
 export default function DashboardHome({
   user,
   myFiles = [],
+  reportSources = [],
+  reportSourceImports = {},
+  refreshReportSources = () => {},
   sheetId,
   activeFilename,
   tabs = [],
@@ -520,6 +523,7 @@ export default function DashboardHome({
   const [kpiDraftOverrides, setKpiDraftOverrides] = React.useState({});
   const [kpiEditorOpen, setKpiEditorOpen] = React.useState({});
   const [kpiOverridesLoaded, setKpiOverridesLoaded] = React.useState(false);
+  const [reviewBusyId, setReviewBusyId] = React.useState("");
   const [topCategoriesConfig, setTopCategoriesConfig] = React.useState({
     title: "",
     categoryColumn: "",
@@ -2025,23 +2029,233 @@ export default function DashboardHome({
     return [...ordered, ...missing];
   }, [cardsWithOverrides, topCardsOrder]);
 
+  const explicitReportSources = React.useMemo(() => (
+    (reportSources || []).filter((source) => source && !source.is_inferred)
+  ), [reportSources]);
+
+  const allImportRows = React.useMemo(() => {
+    const rows = [];
+    explicitReportSources.forEach((source) => {
+      const imports = [...(reportSourceImports[String(source.id)] || [])]
+        .sort((a, b) => new Date(b.uploaded_at || b.created_at || 0) - new Date(a.uploaded_at || a.created_at || 0));
+      if (!imports.length) {
+        rows.push({
+          id: `source-${source.id}`,
+          importId: "",
+          sourceId: source.id,
+          source: source.name || `Report source ${source.id}`,
+          latestFile: "No revision yet",
+          revision: "New",
+          status: "needs_source",
+          statusLabel: "Needs source",
+          schema: "Waiting",
+          uploadedAt: "",
+        });
+        return;
+      }
+      imports.forEach((item) => {
+        const status = String(item?.status || "").trim().toLowerCase() || "unknown";
+        const statusLabel = status === "published"
+          ? "Published"
+          : status === "pending_approval"
+            ? "Review required"
+            : status === "rejected"
+              ? "Rejected"
+              : status === "superseded"
+                ? "Superseded"
+                : "Review";
+        rows.push({
+        id: item?.id || `${source.id}:${item?.sheet_id || item?.import_version || rows.length}`,
+        importId: item?.id || "",
+        sourceId: source.id,
+        source: source.name || `Report source ${source.id}`,
+        latestFile: item?.file_label || item?.display_name || item?.original_filename || item?.filename || "Untitled import",
+        revision: item?.import_version ? `v${item.import_version}` : "New",
+        status,
+        statusLabel,
+        schema: item?.schema_status || "tracked",
+        uploadedAt: item?.uploaded_at || item?.created_at || "",
+        });
+      });
+    });
+    return rows.sort((a, b) => new Date(b.uploadedAt || 0) - new Date(a.uploadedAt || 0));
+  }, [explicitReportSources, reportSourceImports]);
+
+  const intakeRows = React.useMemo(() => allImportRows.slice(0, 8), [allImportRows]);
+  const reviewRows = React.useMemo(() => allImportRows.filter((row) => row.status === "pending_approval"), [allImportRows]);
+
+  const totalImports = React.useMemo(() => (
+    Object.values(reportSourceImports || {}).reduce((sum, imports) => sum + (Array.isArray(imports) ? imports.length : 0), 0)
+  ), [reportSourceImports]);
+
+  const publishedImports = React.useMemo(() => (
+    allImportRows.filter((row) => row.status === "published").length
+  ), [allImportRows]);
+
+  const handleReviewAction = React.useCallback(async (row, action) => {
+    if (!row?.importId || reviewBusyId) return;
+    setReviewBusyId(`${action}:${row.importId}`);
+    try {
+      await api.post(`/report-source-imports/${row.importId}/${action}`);
+      await refreshReportSources?.();
+    } catch (error) {
+      alert(error?.response?.data?.error || `Failed to ${action} import`);
+    } finally {
+      setReviewBusyId("");
+    }
+  }, [reviewBusyId, refreshReportSources]);
+
+  const canReviewImports = React.useMemo(() => {
+    const role = String(user?.role || "").toLowerCase();
+    return role === "admin" || role === "super_admin" || role === "superadmin" || !!user?.is_admin || !!user?.super_admin || !!user?.is_group_admin || !!user?.group_admin;
+  }, [user]);
+
+  const statusBadgeClass = (status) => {
+    if (status === "published") return "bg-emerald-50 text-emerald-700";
+    if (status === "pending_approval") return "bg-amber-50 text-amber-700";
+    if (status === "rejected") return "bg-rose-50 text-rose-700";
+    if (status === "superseded") return "bg-slate-100 text-slate-500";
+    return "bg-blue-50 text-blue-700";
+  };
+
+  const intakeStats = [
+    ["Active sources", explicitReportSources.length.toLocaleString("en-US"), "Durable financial sources"],
+    ["File revisions", totalImports.toLocaleString("en-US"), "Versioned uploads and imports"],
+    ["Review required", reviewRows.length.toLocaleString("en-US"), "Imports held before publishing"],
+    ["Current source fields", headers.length.toLocaleString("en-US"), "Detected columns in active source"],
+  ];
+
   return (
-    <div className="flex-1 min-h-0 bg-slate-50 relative">
-      <div className="p-5 md:p-7 bg-gradient-to-b from-slate-100 to-blue-50/60">
-      <div className="rounded-lg p-5 md:p-7 border border-slate-200 bg-white shadow-sm">
+    <div className="flex-1 min-h-0 bg-[#f6f8fb] relative">
+      <div className="p-5 md:p-7 bg-[radial-gradient(circle_at_top_left,rgba(37,99,235,0.10),transparent_34%),linear-gradient(180deg,#f8fafc_0%,#eef6f8_100%)]">
+      <div className="rounded-2xl p-5 md:p-7 border border-slate-200 bg-white shadow-[0_24px_70px_rgba(15,23,42,0.08)]">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
-            <h2 className="text-2xl md:text-3xl font-bold text-slate-900 tracking-tight">
-              Hello {user?.name?.split(' ')[0] || user?.email?.split('@')[0]}!
+            <h2 className="text-2xl md:text-3xl font-black text-slate-950 tracking-tight">
+              Review sources, revisions, and publishing.
             </h2>
+            <p className="mt-2 max-w-2xl text-sm font-semibold leading-6 text-slate-500">
+              Welcome {user?.name?.split(' ')[0] || user?.email?.split('@')[0]}. Review intake, schema drift, source rules, and published revisions before numbers reach reporting.
+            </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <Link
               to="/workspace"
-              className="inline-flex items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 shadow-sm transition-all duration-150 hover:-translate-y-px hover:border-slate-400 hover:bg-slate-50 hover:shadow focus:outline-none focus:ring-2 focus:ring-slate-200"
+              className="inline-flex items-center justify-center rounded-md bg-blue-600 px-4 py-2 text-sm font-black text-white shadow-sm shadow-blue-200 transition-all duration-150 hover:-translate-y-px hover:bg-blue-700 hover:shadow focus:outline-none focus:ring-2 focus:ring-blue-200"
             >
               {ui.openWorkspace}
             </Link>
+          </div>
+        </div>
+
+        <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {intakeStats.map(([label, value, caption]) => (
+            <div key={label} className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+              <div className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">{label}</div>
+              <div className="mt-2 text-2xl font-black text-slate-950">{value}</div>
+              <div className="mt-1 text-xs font-bold text-slate-500">{caption}</div>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-4 grid gap-4 xl:grid-cols-[1.35fr_0.65fr]">
+          <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
+              <div>
+                <h3 className="text-sm font-black text-slate-950">Intake & review queue</h3>
+                <p className="mt-0.5 text-xs font-semibold text-slate-500">Imported financial files, revision state, schema checks, and publish status</p>
+              </div>
+              <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-black text-emerald-700">
+                {publishedImports} published
+              </span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[680px] text-left">
+                <thead className="border-b border-slate-100 bg-white">
+                  <tr>
+                    {["Source", "File", "Revision", "Publish state", "Schema"].map((head) => (
+                      <th key={head} className="px-4 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{head}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {intakeRows.length ? intakeRows.map((row) => (
+                    <tr key={row.id} className="border-b border-slate-100 last:border-b-0 hover:bg-blue-50/40">
+                      <td className="px-4 py-3 text-sm font-black text-slate-900">{row.source}</td>
+                      <td className="px-4 py-3 text-sm font-semibold text-slate-600">{row.latestFile}</td>
+                      <td className="px-4 py-3 text-xs font-black text-slate-500">{row.revision}</td>
+                      <td className="px-4 py-3">
+                        <span className={`rounded-full px-2.5 py-1 text-[11px] font-black ${statusBadgeClass(row.status)}`}>
+                          {row.statusLabel}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-xs font-black capitalize text-slate-500">{String(row.schema || "").replace(/_/g, " ")}</td>
+                    </tr>
+                  )) : (
+                    <tr>
+                      <td colSpan="5" className="px-4 py-8 text-center text-sm font-semibold text-slate-500">
+                        No governed financial sources yet. Open the workspace to create a source and upload the first revision.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-black text-slate-950">Review Required</h3>
+              <span className="rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-black text-amber-700">{reviewRows.length} waiting</span>
+            </div>
+            <div className="mt-4 space-y-3">
+              {reviewRows.length ? reviewRows.slice(0, 4).map((row) => {
+                const publishBusy = reviewBusyId === `publish:${row.importId}`;
+                const rejectBusy = reviewBusyId === `reject:${row.importId}`;
+                return (
+                  <div key={`review-${row.id}`} className="rounded-lg border border-amber-200 bg-amber-50/60 p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="truncate text-xs font-black text-slate-900">{row.source}</div>
+                        <div className="mt-1 truncate text-xs font-semibold text-slate-600">{row.latestFile} · {row.revision}</div>
+                      </div>
+                      <span className="shrink-0 rounded-full bg-white px-2 py-0.5 text-[10px] font-black text-amber-700">Review</span>
+                    </div>
+                    {canReviewImports && (
+                      <div className="mt-3 grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          disabled={!!reviewBusyId}
+                          onClick={() => handleReviewAction(row, "reject")}
+                          className={`rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[11px] font-black text-slate-600 hover:bg-slate-50 ${reviewBusyId ? "opacity-60 cursor-not-allowed" : ""}`}
+                        >
+                          {rejectBusy ? "Rejecting..." : "Reject"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!!reviewBusyId}
+                          onClick={() => handleReviewAction(row, "publish")}
+                          className={`rounded-md bg-emerald-600 px-2 py-1.5 text-[11px] font-black text-white hover:bg-emerald-700 ${reviewBusyId ? "opacity-60 cursor-not-allowed" : ""}`}
+                        >
+                          {publishBusy ? "Publishing..." : "Publish"}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              }) : (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                  <div className="text-xs font-black text-slate-900">No imports waiting for review</div>
+                  <div className="mt-1 text-xs font-semibold leading-5 text-slate-500">
+                    Files held by review rules appear here before they become the published revision.
+                  </div>
+                </div>
+              )}
+              <div className="rounded-lg border border-blue-200 bg-blue-50 p-3">
+                <div className="text-xs font-black text-blue-900">Controlled answers</div>
+                <div className="mt-1 text-xs font-semibold leading-5 text-blue-800">AI output should use published revisions only; pending imports stay in review.</div>
+              </div>
+            </div>
           </div>
         </div>
 

@@ -12,6 +12,7 @@ import {
     getSheetData,
     getUniqueValues,
     listReportSources,
+    updateReportSourceReviewPolicy,
     updateReportSourceAutosync,
     getReportSourceImports,
     listImportJobs,
@@ -64,6 +65,7 @@ router.get("/sheets/active", asyncHandler(getActiveSheet));
 router.get("/my-sheets", asyncHandler(listMySheets));
 router.get("/sheets/all", asyncHandler(listAllSheets)); // For admin
 router.get("/report-sources", asyncHandler(listReportSources));
+router.patch("/report-sources/:id/review-policy", asyncHandler(updateReportSourceReviewPolicy));
 router.patch("/report-sources/:id/autosync", asyncHandler(updateReportSourceAutosync));
 router.get("/report-sources/:id/imports", asyncHandler(getReportSourceImports));
 router.get("/import-jobs", asyncHandler(listImportJobs));

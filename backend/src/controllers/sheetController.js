@@ -236,7 +236,9 @@ async function resolveOrCreateEmailReportSource(client, { groupId, recipientAddr
     const sourceRef = normalizeEmailAddress(recipientAddress);
     const sourceName = sanitizeReportSourceName(customerName || sourceRef || `Customer ${groupId}`);
     const existing = await client.query(
-        `SELECT rs.id, rs.name, rs.current_sheet_id, s.headers AS current_headers
+        `SELECT rs.id, rs.name, rs.current_sheet_id,
+                rs.review_required, rs.review_schema_changes, rs.review_label_rules,
+                s.headers AS current_headers
            FROM report_sources rs
            LEFT JOIN sheets s ON s.id = rs.current_sheet_id
           WHERE rs.sync_provider = 'email'
@@ -251,6 +253,9 @@ async function resolveOrCreateEmailReportSource(client, { groupId, recipientAddr
         return {
             id: row.id,
             name: row.name,
+            reviewRequired: !!row.review_required,
+            reviewSchemaChanges: row.review_schema_changes !== false,
+            reviewLabelRules: normalizeReviewLabelRules(row.review_label_rules),
             previousSheetId: row.current_sheet_id || null,
             previousHeaders: typeof row.current_headers === "string" ? JSON.parse(row.current_headers) : (row.current_headers || []),
             isNew: false,
@@ -282,6 +287,9 @@ async function resolveOrCreateEmailReportSource(client, { groupId, recipientAddr
     return {
         id: inserted.rows[0].id,
         name: inserted.rows[0].name,
+        reviewRequired: false,
+        reviewSchemaChanges: true,
+        reviewLabelRules: {},
         previousSheetId: null,
         previousHeaders: [],
         isNew: true,
@@ -434,7 +442,24 @@ async function canWriteToReportSource(client, user, reportSourceId) {
         `SELECT 1
          FROM report_sources rs
          WHERE rs.id = $1
-           AND rs.created_by = $2
+           AND (
+             rs.created_by = $2
+             OR EXISTS (
+               SELECT 1
+                 FROM user_groups admin_ug
+                WHERE admin_ug.user_id = $2
+                  AND admin_ug.is_admin = TRUE
+                  AND (
+                    admin_ug.group_id = rs.sync_group_id
+                    OR EXISTS (
+                      SELECT 1
+                        FROM user_groups creator_ug
+                       WHERE creator_ug.user_id = rs.created_by
+                         AND creator_ug.group_id = admin_ug.group_id
+                    )
+                  )
+             )
+           )
          LIMIT 1`,
         [reportSourceId, userId]
     );
@@ -490,7 +515,9 @@ async function resolveReportSourceForUpload(client, { reportSourceId, reportSour
     const sourceId = Number.parseInt(reportSourceId, 10);
     if (Number.isInteger(sourceId) && sourceId > 0) {
         const source = await client.query(
-            `SELECT rs.id, rs.name, rs.created_by, rs.current_sheet_id, rs.sync_group_id, s.headers AS current_headers
+            `SELECT rs.id, rs.name, rs.created_by, rs.current_sheet_id, rs.sync_group_id,
+                    rs.review_required, rs.review_schema_changes, rs.review_label_rules,
+                    s.headers AS current_headers
              FROM report_sources rs
              LEFT JOIN sheets s ON s.id = rs.current_sheet_id
              WHERE rs.id = $1`,
@@ -503,7 +530,8 @@ async function resolveReportSourceForUpload(client, { reportSourceId, reportSour
         }
         const row = source.rows[0];
         const userId = Number(user?.id || 0);
-        if (!isPlatformAdminUser(user) && row.created_by !== userId) {
+        const canWrite = row.created_by === userId || await canWriteToReportSource(client, user, sourceId);
+        if (!canWrite) {
             const err = new Error("report_source_forbidden");
             err.statusCode = 403;
             throw err;
@@ -512,6 +540,9 @@ async function resolveReportSourceForUpload(client, { reportSourceId, reportSour
             id: row.id,
             name: row.name,
             syncGroupId: row.sync_group_id || null,
+            reviewRequired: !!row.review_required,
+            reviewSchemaChanges: row.review_schema_changes !== false,
+            reviewLabelRules: normalizeReviewLabelRules(row.review_label_rules),
             previousSheetId: row.current_sheet_id || null,
             previousHeaders: typeof row.current_headers === "string" ? JSON.parse(row.current_headers) : (row.current_headers || []),
             isNew: false,
@@ -539,6 +570,9 @@ async function resolveReportSourceForUpload(client, { reportSourceId, reportSour
         id: inserted.rows[0].id,
         name: inserted.rows[0].name,
         syncGroupId: Number.parseInt(user?.customer_group_id ?? user?.group_id, 10) || null,
+        reviewRequired: false,
+        reviewSchemaChanges: true,
+        reviewLabelRules: {},
         previousSheetId: null,
         previousHeaders: [],
         isNew: true,
@@ -553,7 +587,9 @@ async function loadReportSourceForImport(client, reportSourceId) {
         throw err;
     }
     const source = await client.query(
-        `SELECT rs.id, rs.name, rs.current_sheet_id, rs.sync_group_id, s.headers AS current_headers
+        `SELECT rs.id, rs.name, rs.current_sheet_id, rs.sync_group_id,
+                rs.review_required, rs.review_schema_changes, rs.review_label_rules,
+                s.headers AS current_headers
          FROM report_sources rs
          LEFT JOIN sheets s ON s.id = rs.current_sheet_id
          WHERE rs.id = $1
@@ -570,6 +606,9 @@ async function loadReportSourceForImport(client, reportSourceId) {
         id: row.id,
         name: row.name,
         syncGroupId: row.sync_group_id || null,
+        reviewRequired: !!row.review_required,
+        reviewSchemaChanges: row.review_schema_changes !== false,
+        reviewLabelRules: normalizeReviewLabelRules(row.review_label_rules),
         previousSheetId: row.current_sheet_id || null,
         previousHeaders: typeof row.current_headers === "string" ? JSON.parse(row.current_headers) : (row.current_headers || []),
         isNew: false,
@@ -644,10 +683,6 @@ const XLSX_WORKER_MIN_MEMORY_MB = Number.parseInt(process.env.XLSX_WORKER_MIN_ME
 const XLSX_WORKER_MAX_MEMORY_MB = Number.parseInt(process.env.XLSX_WORKER_MAX_MEMORY_MB || "8192", 10);
 
 function uploadRequiresApproval(req) {
-    const requested = req.body?.approval_required ?? req.body?.approvalRequired;
-    if (requested !== undefined) {
-        return ["1", "true", "yes", "on"].includes(String(requested || "").trim().toLowerCase());
-    }
     return ["1", "true", "yes", "on"].includes(String(process.env.IMPORT_REQUIRE_APPROVAL || "").trim().toLowerCase());
 }
 
@@ -661,6 +696,39 @@ function uploadUsesDbQueue(req) {
 
 function parseBooleanLike(value) {
     return ["1", "true", "yes", "on"].includes(String(value || "").trim().toLowerCase());
+}
+
+function normalizeReviewLabelRules(value) {
+    const parsed = parseJsonMaybe(value, value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+        Object.entries(parsed)
+            .map(([label, enabled]) => [String(label || "").trim(), !!enabled])
+            .filter(([label]) => !!label)
+            .slice(0, 100)
+    );
+}
+
+function resolveReviewPolicy(reportSource, fileLabel, schemaStatus, explicitRequest = false) {
+    const labelRules = normalizeReviewLabelRules(reportSource?.reviewLabelRules ?? reportSource?.review_label_rules);
+    const label = String(fileLabel || "").trim();
+    const labelRequiresReview = label && Object.prototype.hasOwnProperty.call(labelRules, label)
+        ? !!labelRules[label]
+        : false;
+    const sourceRequiresReview = !!(reportSource?.reviewRequired ?? reportSource?.review_required);
+    const schemaReviewEnabled = (reportSource?.reviewSchemaChanges ?? reportSource?.review_schema_changes) !== false;
+    const schemaRequiresReview = schemaReviewEnabled && String(schemaStatus || "").toLowerCase() === "changed";
+    const envRequiresReview = !!explicitRequest;
+    return {
+        required: sourceRequiresReview || labelRequiresReview || schemaRequiresReview || envRequiresReview,
+        reasons: {
+            source: sourceRequiresReview,
+            label: labelRequiresReview,
+            schema: schemaRequiresReview,
+            environment: envRequiresReview,
+        },
+        labelRules,
+    };
 }
 
 function parsePositiveIntLike(value) {
@@ -1155,6 +1223,8 @@ async function executeImportFromParsedWorkbook({
         const versionedFilename = await getVersionedFilename(client, reportSource.id, originalName);
         const headerDiff = buildHeaderDiff(reportSource.previousHeaders, headers);
         const schemaStatus = getSchemaStatus(headerDiff);
+        const reviewPolicy = resolveReviewPolicy(reportSource, fileLabel, schemaStatus, approvalRequired);
+        const reviewRequired = !!reviewPolicy.required;
         const versionRes = await client.query(
             "SELECT COALESCE(MAX(import_version), 0)::int + 1 AS next_version FROM report_source_imports WHERE report_source_id = $1 AND file_label = $2",
             [reportSource.id, fileLabel]
@@ -1169,7 +1239,7 @@ async function executeImportFromParsedWorkbook({
             [
                 sheetId,
                 JSON.stringify(headers),
-                !approvalRequired,
+                !reviewRequired,
                 versionedFilename,
                 displayName,
                 null,
@@ -1221,7 +1291,7 @@ async function executeImportFromParsedWorkbook({
             nextHeaders: headers,
         });
 
-        const importStatus = approvalRequired ? "pending_approval" : "published";
+        const importStatus = reviewRequired ? "pending_approval" : "published";
         const importRes = await client.query(
             `INSERT INTO report_source_imports
                (report_source_id, sheet_id, import_version, file_label, original_filename, imported_by,
@@ -1247,7 +1317,7 @@ async function executeImportFromParsedWorkbook({
         );
         const importId = importRes.rows[0].id;
 
-        if (!approvalRequired) {
+        if (!reviewRequired) {
             await client.query(
                 `UPDATE report_sources
                     SET current_sheet_id = $1,
@@ -1282,10 +1352,12 @@ async function executeImportFromParsedWorkbook({
             source_version: sourceVersion,
             schema_status: schemaStatus,
             schema_diff: headerDiff,
+            review_required: reviewRequired,
+            review_reasons: reviewPolicy.reasons,
             semantic_profile: semanticProfile,
             headers,
             rows: totalRows,
-            active: !approvalRequired,
+            active: !reviewRequired,
             filename: versionedFilename,
             display_name: displayName,
             tabs: sheetNames
@@ -2538,16 +2610,20 @@ export async function listReportSources(req, res) {
     if (isPlatformAdminUser(req.user)) {
         const rows = await query(
             `SELECT rs.id, rs.name, rs.current_sheet_id, rs.is_inferred,
+                    rs.review_required, rs.review_schema_changes, rs.review_label_rules,
                     rs.sync_enabled, rs.sync_provider, rs.sync_source_ref,
                     rs.sync_group_id, rs.sync_user_id, rs.sync_display_name,
                     rs.sync_file_label, rs.sync_remote_marker, rs.sync_last_attempted_marker,
                     rs.sync_remote_modified_at, rs.sync_last_checked_at, rs.sync_last_synced_at,
                     rs.sync_last_error,
                     rs.created_at, rs.updated_at,
-                    COALESCE(import_counts.import_count, 0)::int AS import_count
+                    COALESCE(import_counts.import_count, 0)::int AS import_count,
+                    COALESCE(import_counts.file_labels, '[]'::jsonb) AS file_labels
              FROM report_sources rs
              LEFT JOIN (
-               SELECT report_source_id, COUNT(*) AS import_count
+               SELECT report_source_id,
+                      COUNT(*) AS import_count,
+                      jsonb_agg(DISTINCT file_label) FILTER (WHERE file_label IS NOT NULL AND TRIM(file_label) <> '') AS file_labels
                FROM report_source_imports
                GROUP BY report_source_id
              ) import_counts ON import_counts.report_source_id = rs.id
@@ -2559,23 +2635,42 @@ export async function listReportSources(req, res) {
 
     const rows = await query(
         `SELECT DISTINCT rs.id, rs.name, rs.current_sheet_id, rs.is_inferred,
+                rs.review_required, rs.review_schema_changes, rs.review_label_rules,
                 rs.sync_enabled, rs.sync_provider, rs.sync_source_ref,
                 rs.sync_group_id, rs.sync_user_id, rs.sync_display_name,
                 rs.sync_file_label, rs.sync_remote_marker, rs.sync_last_attempted_marker,
                 rs.sync_remote_modified_at, rs.sync_last_checked_at, rs.sync_last_synced_at,
                 rs.sync_last_error,
                 rs.created_at, rs.updated_at,
-                COALESCE(import_counts.import_count, 0)::int AS import_count
+                COALESCE(import_counts.import_count, 0)::int AS import_count,
+                COALESCE(import_counts.file_labels, '[]'::jsonb) AS file_labels
          FROM report_sources rs
          LEFT JOIN sheets s ON s.id = rs.current_sheet_id
          LEFT JOIN report_source_imports rsi ON rsi.sheet_id = s.id
          LEFT JOIN (
-           SELECT report_source_id, COUNT(*) AS import_count
+           SELECT report_source_id,
+                  COUNT(*) AS import_count,
+                  jsonb_agg(DISTINCT file_label) FILTER (WHERE file_label IS NOT NULL AND TRIM(file_label) <> '') AS file_labels
            FROM report_source_imports
            GROUP BY report_source_id
          ) import_counts ON import_counts.report_source_id = rs.id
          WHERE (
            rs.created_by = $1
+           OR EXISTS (
+             SELECT 1
+               FROM user_groups admin_ug
+              WHERE admin_ug.user_id = $1
+                AND admin_ug.is_admin = TRUE
+                AND (
+                  admin_ug.group_id = rs.sync_group_id
+                  OR EXISTS (
+                    SELECT 1
+                      FROM user_groups creator_ug
+                     WHERE creator_ug.user_id = rs.created_by
+                       AND creator_ug.group_id = admin_ug.group_id
+                  )
+                )
+           )
            OR EXISTS (
              SELECT 1
              FROM views v
@@ -2596,6 +2691,71 @@ export async function listReportSources(req, res) {
         pagination.hasPagination ? [req.user.id, pagination.limit, pagination.offset] : [req.user.id]
     );
     res.json(rows);
+}
+
+export async function updateReportSourceReviewPolicy(req, res) {
+    const sourceId = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(sourceId) || sourceId <= 0) {
+        return res.status(400).json({ error: "invalid_report_source_id" });
+    }
+
+    const reviewRequired = parseBooleanLike(req.body?.review_required ?? req.body?.reviewRequired);
+    const reviewSchemaChanges = req.body?.review_schema_changes === undefined && req.body?.reviewSchemaChanges === undefined
+        ? true
+        : parseBooleanLike(req.body?.review_schema_changes ?? req.body?.reviewSchemaChanges);
+    const reviewLabelRules = normalizeReviewLabelRules(req.body?.review_label_rules ?? req.body?.reviewLabelRules);
+
+    const client = await getClient();
+    try {
+        await client.query("BEGIN");
+        const sourceRes = await client.query(
+            `SELECT id
+               FROM report_sources
+              WHERE id = $1
+              FOR UPDATE`,
+            [sourceId]
+        );
+        if (!sourceRes.rows.length) {
+            await client.query("ROLLBACK");
+            return res.status(404).json({ error: "not_found" });
+        }
+
+        const canManage = await userCanApproveReportSource(client, req.user, sourceId);
+        if (!canManage) {
+            await client.query("ROLLBACK");
+            return res.status(403).json({ error: "Forbidden" });
+        }
+
+        const updated = await client.query(
+            `UPDATE report_sources
+                SET review_required = $2,
+                    review_schema_changes = $3,
+                    review_label_rules = $4::jsonb,
+                    updated_at = CURRENT_TIMESTAMP
+              WHERE id = $1
+              RETURNING id, name, review_required, review_schema_changes, review_label_rules, updated_at`,
+            [sourceId, reviewRequired, reviewSchemaChanges, JSON.stringify(reviewLabelRules)]
+        );
+
+        await client.query("COMMIT");
+        await writeAuditLog({
+            req,
+            action: "report_source.review_policy_updated",
+            resourceType: "report_source",
+            resourceId: sourceId,
+            metadata: {
+                review_required: reviewRequired,
+                review_schema_changes: reviewSchemaChanges,
+                review_label_rules: reviewLabelRules,
+            },
+        });
+        return res.json(updated.rows[0]);
+    } catch (err) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw err;
+    } finally {
+        client.release();
+    }
 }
 
 export async function updateReportSourceAutosync(req, res) {
@@ -2661,10 +2821,19 @@ export async function getReportSourceImports(req, res) {
     const isPlatformAdmin = isPlatformAdminUser(req.user);
     const [source] = await query("SELECT current_sheet_id FROM report_sources WHERE id = $1", [sourceId]);
     if (!source) return res.status(404).json({ error: "not_found" });
+    let canManageSource = isPlatformAdmin;
+    if (!canManageSource) {
+        const client = await getClient();
+        try {
+            canManageSource = await canWriteToReportSource(client, req.user, sourceId);
+        } finally {
+            client.release();
+        }
+    }
     if (source.current_sheet_id) {
         const hasAccess = await checkSheetAccess(source.current_sheet_id, req.user);
-        if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
-    } else if (!isPlatformAdmin) {
+        if (!hasAccess && !canManageSource) return res.status(403).json({ error: "Forbidden" });
+    } else if (!canManageSource) {
         return res.status(403).json({ error: "Forbidden" });
     }
     const rows = await query(

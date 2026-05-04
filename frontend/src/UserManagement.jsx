@@ -16,6 +16,29 @@ import {
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
 
+const normalizeReviewLabelRules = (value) => {
+  let parsed = value;
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      parsed = {};
+    }
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  return Object.fromEntries(
+    Object.entries(parsed)
+      .map(([label, enabled]) => [String(label || "").trim(), !!enabled])
+      .filter(([label]) => !!label)
+  );
+};
+
+const normalizeSourceLabels = (source) => {
+  const labels = Array.isArray(source?.file_labels) ? source.file_labels : [];
+  const syncLabel = String(source?.sync_file_label || "").trim();
+  return Array.from(new Set([...labels, syncLabel].map((label) => String(label || "").trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+};
+
 /** ---------------------------
  * Local templates (frontend-only)
  * --------------------------- */
@@ -29,7 +52,7 @@ const CUSTOMER_FEATURE_OPTIONS = [
   ["dashboardTranslationAi", "Dashboard Translation AI"],
   ["exports", "Exports"],
   ["imports", "Imports"],
-  ["approvalFlow", "Approvals"],
+  ["approvalFlow", "Review rules"],
   ["auditLogs", "Audit logs"],
   ["sso", "SSO / SAML"],
   ["googleDrive", "Google Drive"],
@@ -590,6 +613,7 @@ export default function UserManagement({ token, user, sheetId }) {
 
   // report source selection drives the current sheet used by existing permission enforcement
   const [reportSources, setReportSources] = useState([]);
+  const [reviewPolicySavingId, setReviewPolicySavingId] = useState("");
   const [groupSheetHeaders, setGroupSheetHeaders] = useState([]);
 
   // Templates (now scoped by group)
@@ -834,6 +858,35 @@ export default function UserManagement({ token, user, sheetId }) {
       setReportSources(Array.isArray(res.data) ? res.data : []);
     } catch (e) {
       console.error("fetchReportSources failed", e);
+    }
+  };
+
+  const saveReviewPolicy = async (source, patch = {}) => {
+    if (!canManageIntegrations || !source?.id || reviewPolicySavingId) return;
+    const currentRules = normalizeReviewLabelRules(source.review_label_rules);
+    const nextPolicy = {
+      review_required: patch.review_required !== undefined ? !!patch.review_required : !!source.review_required,
+      review_schema_changes: patch.review_schema_changes !== undefined ? !!patch.review_schema_changes : source.review_schema_changes !== false,
+      review_label_rules: patch.review_label_rules !== undefined ? normalizeReviewLabelRules(patch.review_label_rules) : currentRules,
+    };
+    const sourceId = String(source.id);
+    setReviewPolicySavingId(sourceId);
+    setReportSources((prev) => (prev || []).map((item) => (
+      String(item.id) === sourceId ? { ...item, ...nextPolicy } : item
+    )));
+    try {
+      const res = await axios.patch(`${API}/report-sources/${source.id}/review-policy`, nextPolicy, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const updated = res.data || {};
+      setReportSources((prev) => (prev || []).map((item) => (
+        String(item.id) === sourceId ? { ...item, ...nextPolicy, ...updated } : item
+      )));
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to save review rules");
+      fetchReportSources();
+    } finally {
+      setReviewPolicySavingId("");
     }
   };
 
@@ -3008,6 +3061,11 @@ export default function UserManagement({ token, user, sheetId }) {
       .filter((source) => source && !source.is_inferred && source.current_sheet_id)
       .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
   }, [reportSources]);
+  const reviewSourceOptions = useMemo(() => {
+    return (reportSources || [])
+      .filter((source) => source && !source.is_inferred && source.id)
+      .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+  }, [reportSources]);
   const selectedReportSource = useMemo(() => {
     return reportSourceOptions.find((source) => String(source.id) === String(selectedReportSourceId)) || null;
   }, [reportSourceOptions, selectedReportSourceId]);
@@ -4336,6 +4394,110 @@ export default function UserManagement({ token, user, sheetId }) {
         </div>
         {!collapsedSections.integrations && (
         <>
+        <div className="mb-4 rounded-md border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-col gap-2 border-b border-slate-200 pb-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h4 className="text-sm font-semibold text-slate-900">Review Rules</h4>
+              <p className="mt-1 max-w-2xl text-xs font-medium leading-5 text-slate-500">
+                Customer admins decide when a source revision must be reviewed before it becomes the published version. Super admins can manage any source they can see.
+              </p>
+            </div>
+            <span className="shrink-0 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+              Source publish control
+            </span>
+          </div>
+
+          {!canManageIntegrations ? (
+            <div className="mt-4 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs font-medium text-slate-500">
+              Review rules are available to customer admins and super admins.
+            </div>
+          ) : reviewSourceOptions.length ? (
+            <div className="mt-4 space-y-3">
+              {reviewSourceOptions.map((source) => {
+                const sourceId = String(source.id);
+                const saving = reviewPolicySavingId === sourceId;
+                const labelRules = normalizeReviewLabelRules(source.review_label_rules);
+                const sourceLabels = normalizeSourceLabels(source);
+                return (
+                  <div key={`review-policy-${sourceId}`} className="rounded-md border border-slate-200 bg-slate-50 p-3">
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-semibold text-slate-900">{source.name || `Source ${sourceId}`}</div>
+                        <div className="mt-1 text-[11px] font-medium text-slate-500">
+                          {Number(source.import_count || 0).toLocaleString("en-US")} revisions tracked
+                        </div>
+                      </div>
+                      <div className="grid gap-2 sm:grid-cols-2 lg:min-w-[440px]">
+                        <label className={`flex items-start gap-2 rounded-md border border-slate-200 bg-white p-2 text-xs font-semibold text-slate-700 ${saving ? "opacity-60" : ""}`}>
+                          <input
+                            type="checkbox"
+                            className="mt-0.5 h-4 w-4 rounded border-slate-300 text-amber-600 focus:ring-amber-200"
+                            checked={!!source.review_required}
+                            disabled={saving}
+                            onChange={(e) => saveReviewPolicy(source, { review_required: e.target.checked })}
+                          />
+                          <span>
+                            Hold every revision
+                            <span className="block pt-0.5 text-[10px] font-medium leading-4 text-slate-500">Use for sensitive or externally supplied sources.</span>
+                          </span>
+                        </label>
+                        <label className={`flex items-start gap-2 rounded-md border border-slate-200 bg-white p-2 text-xs font-semibold text-slate-700 ${saving ? "opacity-60" : ""}`}>
+                          <input
+                            type="checkbox"
+                            className="mt-0.5 h-4 w-4 rounded border-slate-300 text-amber-600 focus:ring-amber-200"
+                            checked={source.review_schema_changes !== false}
+                            disabled={saving}
+                            onChange={(e) => saveReviewPolicy(source, { review_schema_changes: e.target.checked })}
+                          />
+                          <span>
+                            Hold schema changes
+                            <span className="block pt-0.5 text-[10px] font-medium leading-4 text-slate-500">Renamed, missing, or new fields stop before publish.</span>
+                          </span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 rounded-md border border-slate-200 bg-white p-2">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Label-specific holds</div>
+                        {saving && <div className="text-[10px] font-semibold text-amber-700">Saving...</div>}
+                      </div>
+                      {sourceLabels.length ? (
+                        <div className="flex flex-wrap gap-2">
+                          {sourceLabels.map((label) => {
+                            const checked = !!labelRules[label];
+                            const nextRules = { ...labelRules, [label]: !checked };
+                            return (
+                              <label key={`${sourceId}-${label}`} className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${checked ? "border-amber-300 bg-amber-50 text-amber-800" : "border-slate-200 bg-slate-50 text-slate-600"} ${saving ? "opacity-60" : ""}`}>
+                                <input
+                                  type="checkbox"
+                                  className="h-3.5 w-3.5 rounded border-slate-300 text-amber-600 focus:ring-amber-200"
+                                  checked={checked}
+                                  disabled={saving}
+                                  onChange={() => saveReviewPolicy(source, { review_label_rules: nextRules })}
+                                />
+                                <span>{label}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="text-[11px] font-medium text-slate-500">
+                          Labels appear after the first import. Source and schema-change rules still apply now.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="mt-4 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs font-medium text-slate-500">
+              No governed sources yet. Create a source from the workspace to configure review rules.
+            </div>
+          )}
+        </div>
+
         <IntegrationSettingsPanel
           canManageIntegrations={canManageIntegrations}
           isSuperAdmin={isSuperAdmin}
