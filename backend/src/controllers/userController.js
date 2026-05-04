@@ -34,6 +34,7 @@ const ENABLE_STORAGE_USAGE_METRICS = String(process.env.ENABLE_STORAGE_USAGE_MET
 const CUSTOMER_INVITE_BASE_URL = String(process.env.CUSTOMER_INVITE_BASE_URL || "").trim();
 const INSIGHT_TRANSLATION_CACHE_SETTINGS_KEY = "insight_translation_cache_settings";
 const AUTOSYNC_POLL_INTERVAL_SETTINGS_KEY = "autosync_poll_interval_settings";
+export const REVISION_COMPARE_SETTINGS_KEY = "revision_compare_settings";
 const METRICS_EXPOSURE_SETTINGS_KEY = "metrics_exposure_settings";
 const EMAIL_INGEST_SETTINGS_KEY = "email_ingest_settings";
 const EMAIL_INGEST_ALLOWLIST_KEY = "email_ingest_allowlist";
@@ -49,6 +50,11 @@ const DEFAULT_INSIGHT_TRANSLATION_CACHE_TTL_MINUTES = Number.isFinite(RAW_INSIGH
 const DEFAULT_TOTP_ISSUER = String(process.env.TWO_FACTOR_TOTP_ISSUER || "Data Insights Portal").trim() || "Data Insights Portal";
 const DEFAULT_TOTP_DIGITS = normalize2faDigits(process.env.TWO_FACTOR_TOTP_DIGITS || 6, 6);
 const DEFAULT_TOTP_PERIOD = normalize2faPeriod(process.env.TWO_FACTOR_TOTP_PERIOD || 30, 30);
+const REVISION_COMPARE_MAX_ROWS_CAP = 100000;
+const DEFAULT_REVISION_COMPARE_MAX_ROWS = Math.min(
+    REVISION_COMPARE_MAX_ROWS_CAP,
+    Math.max(1000, Number.parseInt(process.env.REVISION_COMPARE_MAX_ROWS || "100000", 10) || 100000)
+);
 
 function normalizeRole(value, fallback = "user") {
     const normalized = String(value || fallback).trim().toLowerCase();
@@ -1827,6 +1833,17 @@ function normalizeAutosyncPollIntervalSettings(raw = {}) {
     return { intervalMinutes };
 }
 
+export function normalizeRevisionCompareSettings(raw = {}) {
+    const maxRowsRaw = Number.parseInt(
+        raw?.maxRows ?? raw?.maxCompareRows ?? raw?.revisionCompareMaxRows ?? DEFAULT_REVISION_COMPARE_MAX_ROWS,
+        10
+    );
+    const maxRows = Number.isFinite(maxRowsRaw)
+        ? Math.min(REVISION_COMPARE_MAX_ROWS_CAP, Math.max(1000, maxRowsRaw))
+        : DEFAULT_REVISION_COMPARE_MAX_ROWS;
+    return { maxRows };
+}
+
 export function normalizeEmailIngestSettings(raw = {}) {
     const routingMode = String(raw?.routingMode || raw?.routeMode || "catch_all").trim().toLowerCase() === "default_routing"
         ? "default_routing"
@@ -2115,6 +2132,34 @@ export async function setAutosyncPollIntervalSetting(req, res) {
         metadata: next,
     });
     return res.json({ success: true, ...next });
+}
+
+export async function getRevisionCompareSetting(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [REVISION_COMPARE_SETTINGS_KEY]);
+    const current = normalizeRevisionCompareSettings(rows?.[0]?.value || {});
+    return res.json({ ...current, configured: rows.length > 0, maxAllowedRows: REVISION_COMPARE_MAX_ROWS_CAP });
+}
+
+export async function setRevisionCompareSetting(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    assertAllowedKeys(req.body || {}, ["maxRows", "maxCompareRows", "revisionCompareMaxRows"]);
+    const next = normalizeRevisionCompareSettings(req.body || {});
+    await query(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+         ON CONFLICT (key)
+         DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+        [REVISION_COMPARE_SETTINGS_KEY, JSON.stringify(next)]
+    );
+    await writeAuditLog({
+        req,
+        action: "revision_compare.settings_updated",
+        resourceType: "app_settings",
+        resourceId: REVISION_COMPARE_SETTINGS_KEY,
+        metadata: next,
+    });
+    return res.json({ success: true, configured: true, maxAllowedRows: REVISION_COMPARE_MAX_ROWS_CAP, ...next });
 }
 
 export async function getEmailIngestSetting(req, res) {

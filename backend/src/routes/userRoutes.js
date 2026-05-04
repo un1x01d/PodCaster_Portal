@@ -27,6 +27,7 @@ import {
     getTwoFactorTotpSetting, setTwoFactorTotpSetting,
     getSmsOtpSetting, setSmsOtpSetting,
     getAutosyncPollIntervalSetting, setAutosyncPollIntervalSetting,
+    getRevisionCompareSetting, setRevisionCompareSetting,
     getEmailIngestSetting, setEmailIngestSetting,
     getUserGroups,
     listGroups, createGroup, provisionGroupDatabase, updateGroup, deleteGroup, getGroupMembers, updateGroupMembers, getGroupSheets,
@@ -107,6 +108,8 @@ router.get("/admin/settings/sms-otp", asyncHandler(getSmsOtpSetting));
 router.patch("/admin/settings/sms-otp", asyncHandler(setSmsOtpSetting));
 router.get("/admin/settings/autosync-interval", asyncHandler(getAutosyncPollIntervalSetting));
 router.patch("/admin/settings/autosync-interval", asyncHandler(setAutosyncPollIntervalSetting));
+router.get("/admin/settings/revision-compare", asyncHandler(getRevisionCompareSetting));
+router.patch("/admin/settings/revision-compare", asyncHandler(setRevisionCompareSetting));
 router.get("/admin/settings/email-ingest", asyncHandler(getEmailIngestSetting));
 router.patch("/admin/settings/email-ingest", asyncHandler(setEmailIngestSetting));
 router.get("/admin/settings/sftp-storage", asyncHandler(getSftpStorageSetting));

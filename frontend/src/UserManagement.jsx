@@ -483,6 +483,9 @@ export default function UserManagement({ token, user, sheetId }) {
   const [autosyncInterval, setAutosyncInterval] = useState({ intervalMinutes: 5 });
   const [autosyncIntervalSaving, setAutosyncIntervalSaving] = useState(false);
   const [autosyncIntervalSaved, setAutosyncIntervalSaved] = useState(false);
+  const [revisionCompareSettings, setRevisionCompareSettings] = useState({ maxRows: 100000, maxAllowedRows: 100000 });
+  const [revisionCompareSaving, setRevisionCompareSaving] = useState(false);
+  const [revisionCompareSaved, setRevisionCompareSaved] = useState(false);
   const [aiRuntimeSettings, setAiRuntimeSettingsState] = useState({ ...AI_RUNTIME_PRESETS.mid });
   const aiRuntimeSettingsRef = useRef(aiRuntimeSettings);
   const setAiRuntimeSettings = useCallback((updater) => {
@@ -1661,6 +1664,23 @@ export default function UserManagement({ token, user, sheetId }) {
       console.error("fetchAutosyncIntervalSetting failed", e);
     }
   };
+
+  const fetchRevisionCompareSetting = async () => {
+    if (!isSuperAdmin) return;
+    try {
+      const res = await axios.get(`${API}/admin/settings/revision-compare`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || {};
+      setRevisionCompareSettings({
+        maxRows: Number(data.maxRows || 100000),
+        maxAllowedRows: Number(data.maxAllowedRows || 100000),
+      });
+    } catch (e) {
+      console.error("fetchRevisionCompareSetting failed", e);
+    }
+  };
+
   const fetchAiRuntimeSetting = async () => {
     if (!isSuperAdmin) return;
     const requestSeq = ++aiRuntimeRequestSeqRef.current;
@@ -1905,6 +1925,31 @@ export default function UserManagement({ token, user, sheetId }) {
       setAutosyncIntervalSaving(false);
     }
   };
+
+  const saveRevisionCompareSetting = async () => {
+    if (!isSuperAdmin || revisionCompareSaving) return;
+    setRevisionCompareSaving(true);
+    setRevisionCompareSaved(false);
+    try {
+      const payload = {
+        maxRows: Number.parseInt(String(revisionCompareSettings.maxRows || "").trim(), 10) || 100000,
+      };
+      const res = await axios.patch(`${API}/admin/settings/revision-compare`, payload, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setRevisionCompareSettings({
+        maxRows: Number(res?.data?.maxRows || payload.maxRows),
+        maxAllowedRows: Number(res?.data?.maxAllowedRows || 100000),
+      });
+      setRevisionCompareSaved(true);
+      setTimeout(() => setRevisionCompareSaved(false), 1800);
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to save revision compare settings");
+    } finally {
+      setRevisionCompareSaving(false);
+    }
+  };
+
   const saveAiRuntimeSetting = async (preset = null) => {
     if (!isSuperAdmin || aiRuntimeSaving) return;
     const requestSeq = ++aiRuntimeRequestSeqRef.current;
@@ -2331,6 +2376,7 @@ export default function UserManagement({ token, user, sheetId }) {
       fetchDlpSetting();
       fetchMetricsExposureSetting();
       fetchAutosyncIntervalSetting();
+      fetchRevisionCompareSetting();
       fetchAiRuntimeSetting();
       fetchAiUsageSummary();
     }
@@ -2363,6 +2409,7 @@ export default function UserManagement({ token, user, sheetId }) {
     fetchDlpSetting();
     fetchMetricsExposureSetting();
     fetchAutosyncIntervalSetting();
+    fetchRevisionCompareSetting();
     fetchAiRuntimeSetting();
     fetchAiUsageSummary();
   }, [token, canManageIntegrations, selectedGroupId, groups, isSuperAdmin]);
@@ -4321,6 +4368,35 @@ export default function UserManagement({ token, user, sheetId }) {
                 className={`btn-premium text-white w-full py-2 ${invitePolicySaved ? "bg-emerald-600 hover:bg-emerald-600" : "bg-slate-800"} ${invitePolicySaving ? "opacity-60 cursor-not-allowed" : ""}`}
               >
                 {invitePolicySaving ? "Saving..." : invitePolicySaved ? "Saved" : "Save Invitation Policy"}
+              </button>
+            </div>
+            <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Revision Compare</div>
+                <span className="rounded-md border border-blue-100 bg-blue-50 px-2 py-1 text-[10px] font-semibold text-blue-700">
+                  Up to {Number(revisionCompareSettings.maxAllowedRows || 100000).toLocaleString("en-US")} rows
+                </span>
+              </div>
+              <input
+                className="input-premium"
+                type="number"
+                min="1000"
+                max={Number(revisionCompareSettings.maxAllowedRows || 100000)}
+                step="1000"
+                placeholder="Max rows"
+                value={revisionCompareSettings.maxRows}
+                onChange={(e) => setRevisionCompareSettings((prev) => ({ ...prev, maxRows: e.target.value }))}
+              />
+              <div className="text-[10px] text-slate-500">
+                Controls how many rows a revision-to-revision file comparison can load. Default is 100,000.
+              </div>
+              <button
+                type="button"
+                onClick={saveRevisionCompareSetting}
+                disabled={revisionCompareSaving}
+                className={`btn-premium text-white w-full py-2 ${revisionCompareSaved ? "bg-emerald-600 hover:bg-emerald-600" : "bg-slate-800"} ${revisionCompareSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+              >
+                {revisionCompareSaving ? "Saving..." : revisionCompareSaved ? "Saved" : "Save Revision Compare Settings"}
               </button>
             </div>
             <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">

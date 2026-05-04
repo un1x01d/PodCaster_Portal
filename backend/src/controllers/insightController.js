@@ -8,8 +8,7 @@ import { buildChatCompletionRequestBody, extractOpenAiAssistantText, minCompleti
 
 const INSIGHT_MAX_ROWS = Number.parseInt(process.env.INSIGHT_MAX_ROWS || "300000", 10);
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
-const OPENAI_MODEL = process.env.OPENAI_MODEL;
-if (!OPENAI_MODEL) throw new Error("OPENAI_MODEL is required");
+const OPENAI_MODEL = String(process.env.OPENAI_MODEL || "gpt-5-nano").trim();
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10);
 // Compatibility caps retained for regression guards.
 const INSIGHT_AI_MAX_SERIES_POINTS = Number.parseInt(process.env.INSIGHT_AI_MAX_SERIES_POINTS || "18", 10);

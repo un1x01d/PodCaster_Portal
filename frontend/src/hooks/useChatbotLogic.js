@@ -53,18 +53,7 @@ function getInitialSystemMessage(copy = {}) {
 }
 
 function restoreMessagesFromStorage(key) {
-  if (!key || typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return null;
-    return parsed
-      .filter((m) => m && typeof m.text === "string" && (m.type === "user" || m.type === "bot"))
-      .map((m) => ({ ...m, timestamp: m.timestamp ? new Date(m.timestamp) : new Date() }));
-  } catch (_) {
-    return null;
-  }
+  return null;
 }
 
 export function useChatbotLogic({
@@ -93,6 +82,17 @@ export function useChatbotLogic({
   const prevLocaleRef = useRef(locale);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      Object.keys(window.localStorage)
+        .filter((key) => key.startsWith("dashboardChat:"))
+        .forEach((key) => window.localStorage.removeItem(key));
+    } catch (_) {
+      // no-op: private mode or locked-down storage
+    }
+  }, []);
+
+  useEffect(() => {
     // Only reset if it's a real change, not the initial mount
     const sheetChanged = prevSheetRef.current !== sheetId;
     const tabChanged = prevTabRef.current !== activeTab;
@@ -118,16 +118,6 @@ export function useChatbotLogic({
       setMessages(restored && restored.length ? restored : [getInitialSystemMessage(copy)]);
     }
   }, [headers, messages.length, sheetId, activeTab, copy.chatInitialMessage]);
-
-  useEffect(() => {
-    const key = makeChatStorageKey(sheetId, activeTab);
-    if (!key || typeof window === "undefined" || !Array.isArray(messages) || messages.length === 0) return;
-    try {
-      window.localStorage.setItem(key, JSON.stringify(messages));
-    } catch (_) {
-      // no-op: ignore storage quota or private mode failures
-    }
-  }, [messages, sheetId, activeTab]);
 
   // Update initial message when copy/language changes
   useEffect(() => {
@@ -194,14 +184,6 @@ export function useChatbotLogic({
       isSystem: true,
     }];
     setMessages(reset);
-    const key = makeChatStorageKey(sheetId, activeTab);
-    if (key && typeof window !== "undefined") {
-      try {
-        window.localStorage.setItem(key, JSON.stringify(reset));
-      } catch (_) {
-        // no-op
-      }
-    }
   }, [copy.chatResetMessage, sheetId, activeTab]);
 
   const applyChatActions = useCallback((actions = {}, meta = null) => {

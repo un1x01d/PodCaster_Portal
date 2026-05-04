@@ -572,7 +572,7 @@ export async function exchangeGoogleCode(req, res) {
     return res.status(400).json({ error: "google_code_invalid_or_expired" });
   }
   setAuthCookie(req, res, token);
-  return res.json({ token });
+  return res.json({ success: true });
 }
 
 export async function listGoogleDriveFiles(req, res) {

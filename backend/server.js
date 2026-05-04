@@ -55,6 +55,32 @@ const corsOpts = {
 };
 app.use(cors(corsOpts));
 app.options("*", cors(corsOpts));
+
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()");
+  res.setHeader(
+    "Content-Security-Policy",
+    [
+      "default-src 'self'",
+      "base-uri 'self'",
+      "object-src 'none'",
+      "frame-ancestors 'none'",
+      "script-src 'self'",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: blob: https:",
+      "font-src 'self' data:",
+      "connect-src 'self' http://localhost:* https: ws://localhost:* wss:",
+      "media-src 'self' blob:",
+      "form-action 'self'",
+    ].join("; ")
+  );
+  next();
+});
+
 app.use(express.json());
 app.use(ensureCsrfCookie);
 app.use(csrfProtect);

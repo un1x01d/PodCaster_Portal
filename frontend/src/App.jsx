@@ -1,22 +1,40 @@
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { Suspense, lazy, useState, useEffect, useRef, useMemo } from "react";
 import { BrowserRouter as Router, Routes, Route, Link, Navigate, useLocation } from "react-router-dom";
 import axios from "axios";
 
-import UserManagement from "./UserManagement";
-import SpreadsheetChatbot from "./SpreadsheetChatbot";
 import ErrorBoundary from "./ErrorBoundary";
-import DashboardBody from "./components/dashboard/DashboardBody";
 import DashboardHeader from "./components/dashboard/DashboardHeader";
-import DashboardHome from "./components/dashboard/DashboardHome";
-import InsightFeed from "./components/dashboard/InsightFeed";
 import Modal from "./components/common/Modal";
 import ChangePasswordModal from "./components/common/ChangePasswordModal";
+import SourceProviderIcon from "./components/common/SourceProviderIcon";
 import { useDashboardI18n } from "./hooks/useDashboardI18n";
 import { looksLikeDateColumn } from "./utils/dateColumns";
 
 import "./index.css";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
+const SESSION_ACTIVE_TOKEN = "cookie-session";
+const createSessionMarker = () => `${SESSION_ACTIVE_TOKEN}:${Date.now()}`;
+const themeTextClass = "text-[hsl(var(--primary))]";
+const themeHoverTextClass = "hover:text-[hsl(var(--primary))]";
+const themeBorderClass = "border-[hsl(var(--primary)/0.24)]";
+const themeHoverBorderClass = "hover:border-[hsl(var(--primary)/0.24)]";
+const themeSoftClass = "border-[hsl(var(--primary)/0.24)] bg-[hsl(var(--primary)/0.10)] text-[hsl(var(--primary))]";
+const themeGlowClass = "bg-[hsl(var(--accent)/0.14)]";
+const primaryActionClass = "inline-flex items-center justify-center rounded-xl bg-[hsl(var(--primary))] px-6 text-sm font-black text-[hsl(var(--primary-foreground))] shadow-[0_14px_30px_hsl(var(--primary)/0.24)] ring-1 ring-[hsl(var(--primary)/0.24)] transition-all duration-200 hover:-translate-y-0.5 hover:bg-[hsl(var(--foreground))] hover:shadow-[0_18px_36px_hsl(var(--foreground)/0.22)] active:translate-y-0";
+const secondaryActionClass = "inline-flex items-center justify-center rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-6 text-sm font-black text-[hsl(var(--foreground))] shadow-[0_10px_24px_hsl(var(--foreground)/0.08)] ring-1 ring-white transition-all duration-200 hover:-translate-y-0.5 hover:border-[hsl(var(--primary)/0.38)] hover:text-[hsl(var(--primary))] hover:shadow-[0_14px_30px_hsl(var(--foreground)/0.12)] active:translate-y-0";
+const formLabelClass = "ml-0.5 text-[10px] font-black uppercase tracking-[0.14em] text-slate-500 transition-colors group-focus-within:text-[hsl(var(--primary))]";
+const formFieldClass = "mt-1 h-12 w-full rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-4 text-sm font-bold text-[hsl(var(--foreground))] shadow-[0_8px_22px_hsl(var(--foreground)/0.06),inset_0_1px_0_rgba(255,255,255,0.95)] transition-all placeholder:text-xs placeholder:font-semibold placeholder:text-slate-400 hover:border-slate-400 hover:shadow-[0_10px_26px_hsl(var(--foreground)/0.08),inset_0_1px_0_rgba(255,255,255,0.95)] focus:border-[hsl(var(--primary)/0.70)] focus:bg-white focus:outline-none focus:ring-4 focus:ring-[hsl(var(--primary)/0.10)]";
+const formTextareaClass = "mt-1 w-full resize-none rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-4 py-3 text-sm font-bold leading-5 text-[hsl(var(--foreground))] shadow-[0_8px_22px_hsl(var(--foreground)/0.06),inset_0_1px_0_rgba(255,255,255,0.95)] transition-all placeholder:text-xs placeholder:font-semibold placeholder:leading-5 placeholder:text-slate-400 hover:border-slate-400 hover:shadow-[0_10px_26px_hsl(var(--foreground)/0.08),inset_0_1px_0_rgba(255,255,255,0.95)] focus:border-[hsl(var(--primary)/0.70)] focus:outline-none focus:ring-4 focus:ring-[hsl(var(--primary)/0.10)]";
+const publicPageClass = "min-h-screen w-full bg-gradient-to-b from-white via-slate-50 to-white px-5 py-8 text-slate-950 md:px-8";
+const publicPanelClass = "rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_24px_70px_hsl(var(--foreground)/0.10)] md:p-7";
+const publicMiniPanelClass = "border-t border-slate-300 py-4 transition-colors duration-200 hover:border-[hsl(var(--primary)/0.28)]";
+const publicMutedPanelClass = "rounded-xl border border-slate-200 bg-slate-50/70 p-4 shadow-sm";
+const DashboardBody = lazy(() => import("./components/dashboard/DashboardBody"));
+const DashboardHome = lazy(() => import("./components/dashboard/DashboardHome"));
+const InsightFeed = lazy(() => import("./components/dashboard/InsightFeed"));
+const SpreadsheetChatbot = lazy(() => import("./SpreadsheetChatbot"));
+const UserManagement = lazy(() => import("./UserManagement"));
 axios.defaults.withCredentials = true;
 axios.defaults.xsrfCookieName = "csrf_token";
 axios.defaults.xsrfHeaderName = "x-csrf-token";
@@ -31,24 +49,33 @@ function readCookie(name) {
   return hit ? decodeURIComponent(hit.slice(prefix.length)) : "";
 }
 
-function readStoredAuthToken() {
-  if (typeof window === "undefined") return "";
-  return String(
-    window.localStorage.getItem("token")
-    || window.localStorage.getItem("authToken")
-    || window.localStorage.getItem("jwt")
-    || window.localStorage.getItem("jwtToken")
-    || ""
-  ).trim();
+function clearStoredAuthTokens() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem("token");
+  window.localStorage.removeItem("authToken");
+  window.localStorage.removeItem("jwt");
+  window.localStorage.removeItem("jwtToken");
+}
+
+function stripSessionMarkerBearer(headers) {
+  if (!headers) return;
+  const raw = headers.Authorization ?? headers.authorization ?? "";
+  const value = String(raw || "").trim();
+  if (
+    !value.startsWith(`Bearer ${SESSION_ACTIVE_TOKEN}:`)
+    && !["Bearer", "Bearer null", "Bearer undefined"].includes(value)
+  ) return;
+  if (typeof headers.delete === "function") {
+    headers.delete("Authorization");
+    headers.delete("authorization");
+  }
+  delete headers.Authorization;
+  delete headers.authorization;
 }
 
 axios.interceptors.request.use((config) => {
+  stripSessionMarkerBearer(config.headers);
   const method = String(config.method || "get").toUpperCase();
-  const authToken = readStoredAuthToken();
-  if (authToken) {
-    config.headers = config.headers || {};
-    config.headers.Authorization = `Bearer ${authToken}`;
-  }
   if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
     const token = readCookie("csrf_token");
     if (token) {
@@ -170,6 +197,74 @@ function Icon({ name, className = "h-5 w-5" }) {
         <path d="M4 20h16" />
       </>
     ),
+    email: (
+      <>
+        <rect x="3" y="5" width="18" height="14" rx="2" />
+        <path d="m4 7 8 6 8-6" />
+      </>
+    ),
+    googleDrive: (
+      <>
+        <path d="M10 4h4l7 12-2 4h-4L8 8l2-4Z" />
+        <path d="M10 4 3 16l2 4h4l7-12" />
+        <path d="M5 20h14" />
+      </>
+    ),
+    oneDrive: (
+      <>
+        <path d="M8.5 18h8a4 4 0 0 0 .8-7.9 5.5 5.5 0 0 0-10.5-1.7A4.8 4.8 0 0 0 8.5 18Z" />
+        <path d="M6.8 8.4A4.5 4.5 0 0 0 4 16.5" />
+      </>
+    ),
+    dropbox: (
+      <>
+        <path d="m7 4 5 3-5 3-5-3 5-3Z" />
+        <path d="m17 4 5 3-5 3-5-3 5-3Z" />
+        <path d="m7 12 5 3-5 3-5-3 5-3Z" />
+        <path d="m17 12 5 3-5 3-5-3 5-3Z" />
+        <path d="m12 17 5 3-5 3-5-3 5-3Z" />
+      </>
+    ),
+    sftp: (
+      <>
+        <rect x="4" y="10" width="16" height="10" rx="2" />
+        <path d="M8 10V7a4 4 0 0 1 8 0v3" />
+        <path d="M8 15h5" />
+        <path d="m13 13 3 2-3 2" />
+      </>
+    ),
+    bucket: (
+      <>
+        <path d="M6 8h12l-1.4 12H7.4L6 8Z" />
+        <path d="M8 8V5h8v3" />
+        <path d="M9 12h6" />
+        <path d="M9.5 16h5" />
+      </>
+    ),
+    connector: (
+      <>
+        <path d="M8 12h8" />
+        <path d="M7 8h2v8H7a4 4 0 0 1 0-8Z" />
+        <path d="M17 8h-2v8h2a4 4 0 0 0 0-8Z" />
+        <path d="M12 5v3" />
+        <path d="M12 16v3" />
+      </>
+    ),
+    spreadsheet: (
+      <>
+        <path d="M5 3h11l3 3v15H5z" />
+        <path d="M16 3v4h4" />
+        <path d="M8 11h8" />
+        <path d="M8 15h8" />
+        <path d="M11 9v8" />
+      </>
+    ),
+    folder: (
+      <>
+        <path d="M3 7h7l2 2h9v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+        <path d="M3 7V5a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v2" />
+      </>
+    ),
     source: (
       <>
         <path d="M4 6h16" />
@@ -285,6 +380,7 @@ function Footer() {
     ["Controlled AI", "#controlled-ai"],
     ["Security", "#security"],
     ["Docs", "#workflow"],
+    ["Pricing", "/pricing"],
     ["Contact", "/support"],
   ];
 
@@ -296,9 +392,15 @@ function Footer() {
         </Link>
         <nav className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-bold" aria-label="Footer navigation">
           {links.map(([label, href]) => (
-            <a key={label} href={href} className="hover:text-blue-700">
-              {label}
-            </a>
+            href.startsWith("/") ? (
+              <Link key={label} to={href} className={themeHoverTextClass}>
+                {label}
+              </Link>
+            ) : (
+              <a key={label} href={href} className={themeHoverTextClass}>
+                {label}
+              </a>
+            )
           ))}
         </nav>
       </div>
@@ -308,12 +410,12 @@ function Footer() {
 
 function Header({ user = null }) {
   const navItems = [
-    ["Product", "#product"],
-    ["Workflow", "#workflow"],
-    ["Controls", "#controls"],
-    ["Controlled AI", "#controlled-ai"],
-    ["Sources", "#sources"],
-    ["Pricing", "#pricing"],
+    ["Product", "/#product"],
+    ["Workflow", "/#workflow"],
+    ["Controls", "/#controls"],
+    ["Controlled AI", "/#controlled-ai"],
+    ["Sources", "/#sources"],
+    ["Pricing", "/pricing"],
   ];
 
   return (
@@ -328,18 +430,18 @@ function Header({ user = null }) {
         </Link>
         <nav className="hidden items-center gap-6 text-sm font-bold text-slate-600 lg:flex" aria-label="Primary navigation">
           {navItems.map(([label, href]) => (
-            <a key={label} href={href} className="hover:text-blue-700">
+            <Link key={label} to={href} className={themeHoverTextClass}>
               {label}
-            </a>
+            </Link>
           ))}
         </nav>
         <div className="flex shrink-0 items-center gap-2 sm:gap-3">
-          <Link to={user ? "/workspace" : "/login"} className="hidden rounded-md px-3 py-2 text-sm font-bold text-slate-700 hover:text-blue-700 sm:inline-flex">
+          <Link to={user ? "/workspace" : "/login"} className={`hidden rounded-lg px-3 py-2 text-sm font-bold text-slate-700 ${themeHoverTextClass} sm:inline-flex`}>
             {user ? "Workspace" : "Sign in"}
           </Link>
           <Link
             to="/demo"
-            className="inline-flex h-10 items-center justify-center rounded-md bg-blue-600 px-4 text-sm font-black text-white shadow-sm shadow-blue-200 transition-colors hover:bg-blue-700"
+            className={`${primaryActionClass} h-10 px-4`}
           >
             Book demo
           </Link>
@@ -349,9 +451,28 @@ function Header({ user = null }) {
   );
 }
 
+function ScrollToHash() {
+  const location = useLocation();
+
+  useEffect(() => {
+    if (!location.hash) {
+      window.scrollTo({ top: 0, behavior: "auto" });
+      return;
+    }
+    const id = decodeURIComponent(location.hash.slice(1));
+    const scrollToTarget = () => {
+      const target = document.getElementById(id);
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+    window.setTimeout(scrollToTarget, 0);
+  }, [location.pathname, location.hash]);
+
+  return null;
+}
+
 function Badge({ children, tone = "blue" }) {
   const tones = {
-    blue: "border-blue-200 bg-blue-50 text-blue-700",
+    blue: themeSoftClass,
     green: "border-emerald-200 bg-emerald-50 text-emerald-700",
     amber: "border-amber-200 bg-amber-50 text-amber-700",
     slate: "border-slate-200 bg-slate-50 text-slate-700",
@@ -367,7 +488,7 @@ function Badge({ children, tone = "blue" }) {
 function ProductMockup() {
   return (
     <figure className="relative mx-auto w-full max-w-[820px]">
-      <div className="absolute -inset-5 rounded-[2rem] bg-blue-100/60 blur-3xl" aria-hidden="true" />
+      <div className={`absolute -inset-5 rounded-[2rem] ${themeGlowClass} blur-3xl`} aria-hidden="true" />
       <img
         src="/assets/landing-hero-product.png"
         alt="TFORN file control portal showing a file queue, reviewed versions, column checks, field labels, AI rules, access controls, and history"
@@ -383,7 +504,7 @@ function ProductMockup() {
 function SectionHeading({ eyebrow, title, body, centered = false }) {
   return (
     <div className={centered ? "mx-auto max-w-3xl text-center" : "max-w-3xl"}>
-      {eyebrow && <div className="text-xs font-black uppercase tracking-[0.22em] text-blue-600">{eyebrow}</div>}
+      {eyebrow && <div className={`text-xs font-black uppercase tracking-[0.22em] ${themeTextClass}`}>{eyebrow}</div>}
       <h2 className="mt-3 text-3xl font-black tracking-tight text-slate-950 md:text-4xl">{title}</h2>
       {body && <p className="mt-4 text-base font-semibold leading-8 text-slate-600">{body}</p>}
     </div>
@@ -393,32 +514,32 @@ function SectionHeading({ eyebrow, title, body, centered = false }) {
 function Hero() {
   return (
     <section id="product" className="relative overflow-hidden border-b border-slate-200 bg-gradient-to-b from-slate-50 via-white to-slate-50 px-5 py-14 md:px-8 lg:py-20">
-      <div className="absolute left-1/2 top-0 h-72 w-[48rem] -translate-x-1/2 rounded-full bg-blue-100/55 blur-3xl" />
+      <div className={`absolute left-1/2 top-0 h-72 w-[48rem] -translate-x-1/2 rounded-full ${themeGlowClass} blur-3xl`} />
       <div className="relative mx-auto grid max-w-7xl gap-12 lg:grid-cols-[0.92fr_1.08fr] lg:items-center">
         <div>
-          <Badge tone="blue">Controlled file sharing</Badge>
+          <Badge tone="blue">The spreadsheet trust layer</Badge>
           <h1 className="mt-6 max-w-3xl text-4xl font-black tracking-tight text-slate-950 sm:text-5xl lg:text-6xl">
-            Share recurring financial files users can trust.
+            The last spreadsheet your clients have to chase.
           </h1>
           <p className="mt-6 max-w-2xl text-lg font-semibold leading-8 text-slate-600">
-            Give clients, teams, and stakeholders controlled access to recurring spreadsheets with source history, versions, permissions, and answers tied to the right file.
+            TFORN turns recurring customer uploads into polished, permissioned pages where every stakeholder sees the right numbers, the latest version, and the story behind the changes.
           </p>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
             <Link
               to="/demo"
-              className="inline-flex h-12 items-center justify-center rounded-md bg-blue-600 px-6 text-sm font-black text-white shadow-lg shadow-blue-200 transition-colors hover:bg-blue-700"
+              className={`${primaryActionClass} h-12`}
             >
               Book a demo
             </Link>
             <a
               href="#workflow"
-              className="inline-flex h-12 items-center justify-center rounded-md border border-slate-300 bg-white px-6 text-sm font-black text-slate-800 shadow-sm transition-colors hover:border-blue-200 hover:text-blue-700"
+              className={`${secondaryActionClass} h-12`}
             >
               See the workflow
             </a>
           </div>
           <p className="mt-6 max-w-xl text-sm font-black leading-6 text-slate-500">
-            Built for sharing client, vendor, department, and connected financial spreadsheets without losing control.
+            Fewer attachments. Fewer version debates. More confidence in every number you share.
           </p>
         </div>
         <ProductMockup />
@@ -429,11 +550,12 @@ function Hero() {
 
 function FeatureCard({ icon, title, body }) {
   return (
-    <article className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm transition-shadow hover:shadow-md">
-      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
-        <Icon name={icon} />
+    <article className={`border-t border-slate-300 py-5 transition-colors duration-200 ${themeHoverBorderClass}`}>
+      <div className={`flex items-center gap-3 ${themeTextClass}`}>
+        <Icon name={icon} className="h-6 w-6 shrink-0" />
+        <div className="h-px flex-1 bg-slate-200" aria-hidden="true" />
       </div>
-      <h3 className="mt-4 text-lg font-black text-slate-950">{title}</h3>
+      <h3 className="mt-5 text-lg font-black text-slate-950">{title}</h3>
       <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">{body}</p>
     </article>
   );
@@ -441,9 +563,10 @@ function FeatureCard({ icon, title, body }) {
 
 function WorkflowStep({ icon, title, body }) {
   return (
-    <div className="relative rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-50 text-blue-700">
-        <Icon name={icon} />
+    <div className="border-t border-slate-300 py-5">
+      <div className={`flex items-center gap-3 ${themeTextClass}`}>
+        <Icon name={icon} className="h-5 w-5 shrink-0" />
+        <div className="h-px flex-1 bg-slate-200" aria-hidden="true" />
       </div>
       <h3 className="mt-4 text-sm font-black text-slate-950">{title}</h3>
       <p className="mt-2 text-xs font-semibold leading-5 text-slate-600">{body}</p>
@@ -451,14 +574,17 @@ function WorkflowStep({ icon, title, body }) {
   );
 }
 
+function LandingSourceIcon({ icon }) {
+  const wideIcon = icon === "quickbooks";
+  return <SourceProviderIcon provider={icon || "upload"} className={`${wideIcon ? "h-5 w-16" : "h-5 w-5"} shrink-0`} />;
+}
+
 function SourceCard({ title, body, icon = "storage" }) {
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+    <div className={`border-t border-slate-300 py-4 transition-colors duration-200 ${themeHoverBorderClass}`}>
       <div className="flex items-center gap-3">
-        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
-          <Icon name={icon} className="h-4 w-4" />
-        </div>
-        <h3 className="text-sm font-black text-slate-950">{title}</h3>
+        <LandingSourceIcon icon={icon} title={title} />
+        <h3 className="min-w-0 text-sm font-black text-slate-950">{title}</h3>
       </div>
       <p className="mt-3 text-xs font-semibold leading-5 text-slate-600">{body}</p>
     </div>
@@ -467,11 +593,9 @@ function SourceCard({ title, body, icon = "storage" }) {
 
 function GovernanceCard({ title, body, icon }) {
   return (
-    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+    <div className={`border-t border-slate-300 py-4 transition-colors duration-200 ${themeHoverBorderClass}`}>
       <div className="flex items-start gap-3">
-        <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white text-blue-700 shadow-sm">
-          <Icon name={icon} className="h-4 w-4" />
-        </div>
+        <Icon name={icon} className={`mt-0.5 h-5 w-5 shrink-0 ${themeTextClass}`} />
         <div>
           <h3 className="text-sm font-black text-slate-950">{title}</h3>
           <p className="mt-1 text-xs font-semibold leading-5 text-slate-600">{body}</p>
@@ -483,16 +607,13 @@ function GovernanceCard({ title, body, icon }) {
 
 function ComparisonTable() {
   const rows = [
-    ["Know where each file belongs", "Upload only", "Assumed upstream", "Project based", "Source based"],
-    ["Keep every version", "File history", "After modeling", "Row or file history", "Source versions"],
-    ["Catch column changes", "Manual", "Usually upstream", "Manual checks", "Built for this"],
-    ["Review before use", "Email or manual", "Outside BI", "Task approvals", "Per source or label"],
-    ["Remember what fields mean", "Notes", "Semantic model", "Manual columns", "Saved per source"],
-    ["Share files with users", "Links or email", "Dashboard access", "Workspace sharing", "Controlled source sharing"],
-    ["Control AI answers", "Generic", "BI controls", "Add-on", "Source rules"],
-    ["Use only reviewed data", "Manual", "Needs clean data", "Manual", "Configurable"],
-    ["Bring files from many places", "Uploads", "Strong connectors", "Strong app links", "File connectors"],
-    ["Admin controls", "Basic", "Strong BI permissions", "Workspace permissions", "Customer and super admin"],
+    ["Best for", "Passing along a file", "Publishing a static report", "Editing in a sheet", "Delivering a trusted client view"],
+    ["Customer upload", "One-off handoff", "Already finalized", "Mixed with edits", "Becomes the reviewed source"],
+    ["Outside stakeholders", "Get another copy", "See a snapshot", "May edit", "See only what is approved"],
+    ["Current version", "Easy to lose", "Not the focus", "Can be unclear", "Front and center"],
+    ["When columns change", "Found later", "Usually hidden", "Handled manually", "Flagged before sharing"],
+    ["Questions", "Answered in side threads", "Limited by the published view", "Depends on formulas", "Answered from approved data"],
+    ["Main value", "Fast transfer", "Static presentation", "Sheet collaboration", "Confident delivery"],
   ];
 
   const stateClass = (value, column) => {
@@ -505,19 +626,19 @@ function ComparisonTable() {
     <section className="bg-white px-5 py-16 md:px-8" id="comparison">
       <div className="mx-auto max-w-7xl">
         <SectionHeading
-          title="Share recurring files without losing control."
-          body="BI dashboards are strong once data is ready. Spreadsheet work tools are useful for collaboration. TFORN focuses on turning recurring business files into controlled sources that can be shared with the right users before they feed reports, analysis, or answers."
+          title="Shared spreadsheets need a controlled front door."
+          body="TFORN is for recurring files that customers, clients, partners, lenders, boards, or teams need to trust after review. It keeps the latest version, source history, viewer access, and approved answers in one controlled experience."
         />
-        <div className="mt-8 overflow-hidden rounded-xl border border-slate-200 shadow-sm">
+        <div className="mt-8 border-y border-slate-300">
           <div className="overflow-x-auto">
             <table className="w-full min-w-[980px] border-collapse bg-white text-left">
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50">
                   <th className="px-4 py-4 text-xs font-black uppercase tracking-[0.16em] text-slate-500">What you need</th>
                   <th className="px-4 py-4 text-xs font-black uppercase tracking-[0.16em] text-slate-500">Random file upload</th>
-                  <th className="px-4 py-4 text-xs font-black uppercase tracking-[0.16em] text-slate-500">BI dashboard</th>
+                  <th className="px-4 py-4 text-xs font-black uppercase tracking-[0.16em] text-slate-500">Static report</th>
                   <th className="px-4 py-4 text-xs font-black uppercase tracking-[0.16em] text-slate-500">Spreadsheet work tool</th>
-                  <th className="px-4 py-4 text-xs font-black uppercase tracking-[0.16em] text-blue-700">TFORN</th>
+                  <th className={`px-4 py-4 text-xs font-black uppercase tracking-[0.16em] ${themeTextClass}`}>TFORN</th>
                 </tr>
               </thead>
               <tbody>
@@ -537,7 +658,7 @@ function ComparisonTable() {
           </div>
         </div>
         <p className="mt-4 max-w-3xl text-xs font-semibold leading-5 text-slate-500">
-          This is about primary product fit, not every possible configuration. Some teams can build parts of this with custom process, BI setup, or work-management rules.
+          TFORN is not middleware for reporting tools. It is the controlled destination for reviewed recurring spreadsheets that still need to be shared, revisited, governed, and explained.
         </p>
       </div>
     </section>
@@ -549,16 +670,16 @@ function CTASection() {
     <section className="bg-slate-950 px-5 py-16 text-white md:px-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-8 lg:flex-row lg:items-center lg:justify-between">
         <div className="max-w-3xl">
-          <h2 className="text-3xl font-black tracking-tight md:text-4xl">Share every recurring spreadsheet with control.</h2>
+          <h2 className="text-3xl font-black tracking-tight md:text-4xl">Give every number a place people can trust.</h2>
           <p className="mt-4 text-base font-semibold leading-8 text-slate-300">
-            Stop sending client, vendor, and department files as loose attachments. Share controlled sources with history, permissions, and numbers users can trust.
+            Upload the file, approve the view, and send stakeholders to one clean page instead of one more attachment.
           </p>
         </div>
         <div className="flex flex-col gap-3 sm:flex-row lg:shrink-0">
-          <Link to="/demo" className="inline-flex h-12 items-center justify-center rounded-md bg-white px-6 text-sm font-black text-slate-950 hover:bg-slate-100">
+          <Link to="/demo" className="inline-flex h-12 items-center justify-center rounded-xl bg-white px-6 text-sm font-black text-slate-950 shadow-[0_14px_32px_rgba(255,255,255,0.14)] transition-all duration-200 hover:-translate-y-0.5 hover:bg-slate-100 hover:shadow-[0_18px_40px_rgba(255,255,255,0.18)] active:translate-y-0">
             Book a demo
           </Link>
-          <a href="#workflow" className="inline-flex h-12 items-center justify-center rounded-md border border-white/25 px-6 text-sm font-black text-white hover:bg-white/10">
+          <a href="#workflow" className="inline-flex h-12 items-center justify-center rounded-xl border border-white/30 bg-white/5 px-6 text-sm font-black text-white shadow-[0_14px_32px_rgba(0,0,0,0.16)] transition-all duration-200 hover:-translate-y-0.5 hover:border-white/50 hover:bg-white/10 active:translate-y-0">
             See how it works
           </a>
         </div>
@@ -570,9 +691,9 @@ function CTASection() {
 function FinanceChatMessage({ side, tone, children }) {
   const isUser = side === "user";
   const toneClass = isUser
-    ? "bg-blue-600 text-white shadow-sm"
+    ? "bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] shadow-sm"
     : "border border-slate-200 bg-white text-slate-700";
-  const iconClass = isUser ? "text-white/85" : "text-blue-700";
+  const iconClass = isUser ? "text-white/85" : themeTextClass;
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
@@ -585,60 +706,288 @@ function FinanceChatMessage({ side, tone, children }) {
   );
 }
 
+const PRICING_BUNDLES = [
+  {
+    key: "core",
+    label: "Core",
+    tagline: "Start sharing",
+    audience: "For a small customer workspace sharing a few recurring spreadsheets.",
+    users: "Up to 10 remote users",
+    sources: "Up to 3 shared sheets",
+    tools: "Basic read-only tools",
+    accent: "blue",
+    features: [
+      "A simple place for shared files",
+      "Read-only recipients",
+      "Current version label",
+      "Basic filters and exports",
+    ],
+  },
+  {
+    key: "growth",
+    label: "Growth",
+    tagline: "Regular sharing",
+    audience: "For customers sending recurring monthly files to more outside recipients.",
+    users: "Up to 50 remote users",
+    sources: "Up to 15 shared sheets",
+    tools: "More viewer tools",
+    accent: "green",
+    featured: true,
+    features: [
+      "Everything in Core",
+      "More recurring sheets",
+      "Recipient groups",
+      "Version comparison",
+      "Saved views for repeat use",
+    ],
+  },
+  {
+    key: "enterprise",
+    label: "Enterprise",
+    tagline: "Larger rollout",
+    audience: "For larger customers with many shared sheets, recipient groups, and setup needs.",
+    users: "Up to 250 remote users",
+    sources: "Up to 100 shared sheets",
+    tools: "Expanded viewer tools",
+    accent: "slate",
+    features: [
+      "Everything in Growth",
+      "Higher file and viewer limits",
+      "More workspace structure",
+      "Longer version history",
+      "Finance workflow setup",
+      "Custom rollout planning",
+    ],
+  },
+];
+
+function PricingPlanCard({ plan }) {
+  return (
+    <article className={`relative flex h-full flex-col border-t border-slate-300 py-6 transition-colors duration-200 ${themeHoverBorderClass}`}>
+      <div className={`flex items-center gap-3 ${themeTextClass}`}>
+        <Icon name={plan.key === "enterprise" ? "shield" : plan.key === "growth" ? "approval" : "source"} className="h-6 w-6 shrink-0" />
+        <div className="h-px flex-1 bg-slate-200" aria-hidden="true" />
+        {plan.featured && (
+          <span className="shrink-0 text-[10px] font-black uppercase tracking-[0.16em] text-[hsl(var(--primary))]">
+            Most common
+          </span>
+        )}
+      </div>
+      <div className="mt-5">
+        <div className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">{plan.tagline}</div>
+        <h2 className="mt-4 text-2xl font-black tracking-tight text-slate-950">{plan.label}</h2>
+        <p className="mt-3 text-sm font-semibold leading-6 text-slate-600">{plan.audience}</p>
+      </div>
+      <div className="mt-5 border-y border-slate-200 py-4">
+        <div className="grid gap-3 text-sm">
+          {[plan.users, plan.sources, plan.tools].map((item) => (
+            <div key={item} className="flex items-start gap-2 font-black text-slate-900">
+              <Icon name="check" className={`mt-0.5 h-4 w-4 shrink-0 ${themeTextClass}`} />
+              <span>{item}</span>
+            </div>
+          ))}
+        </div>
+        <p className="mt-4 text-xs font-bold leading-5 text-slate-500">Final pricing depends on workspace needs.</p>
+      </div>
+      <ul className="mt-5 flex-1 space-y-2">
+        {plan.features.map((feature) => (
+          <li key={feature} className="flex gap-2 text-sm font-semibold leading-6 text-slate-700">
+            <Icon name="check" className={`mt-1 h-4 w-4 shrink-0 ${themeTextClass}`} />
+            <span>{feature}</span>
+          </li>
+        ))}
+      </ul>
+      <Link to="/demo" className={`${secondaryActionClass} mt-6 h-11 px-4`}>
+        Discuss {plan.label}
+      </Link>
+    </article>
+  );
+}
+
+function PricingPage({ user = null }) {
+  const comparisonRows = [
+    ["Read-only recipients", "10", "50", "250"],
+    ["Recurring shared sheets", "3", "15", "100"],
+    ["Recipient groups", "Simple", "Multiple", "Advanced"],
+    ["Version comparison", "Basic", "Expanded", "Expanded"],
+    ["Viewer actions", "Basic", "More", "Expanded"],
+    ["Setup support", "Standard", "Standard", "Custom"],
+  ];
+
+  return (
+    <div className="min-h-full bg-slate-50 text-slate-900">
+      <Header user={user} />
+      <main>
+        <section className="relative overflow-hidden border-b border-slate-200 bg-gradient-to-b from-white via-slate-50 to-white px-5 py-14 md:px-8 lg:py-18">
+          <div className={`absolute left-1/2 top-0 h-72 w-[48rem] -translate-x-1/2 rounded-full ${themeGlowClass} blur-3xl`} aria-hidden="true" />
+          <div className="relative mx-auto grid max-w-7xl gap-10 lg:grid-cols-[0.88fr_1.12fr] lg:items-center">
+            <div>
+              <Badge tone="blue">Pricing</Badge>
+              <h1 className="mt-6 max-w-3xl text-4xl font-black tracking-tight text-slate-950 sm:text-5xl">
+                Pricing based on sharing size.
+              </h1>
+              <p className="mt-5 max-w-2xl text-lg font-semibold leading-8 text-slate-600">
+                Choose a bundle by how many remote users need read-only access and how many recurring spreadsheets the customer shares.
+              </p>
+              <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+                <Link to="/demo" className={`${primaryActionClass} h-12`}>
+                  Book pricing demo
+                </Link>
+                <Link to="/support" className={`${secondaryActionClass} h-12`}>
+                  Ask billing question
+                </Link>
+              </div>
+            </div>
+            <figure className="relative">
+              <div className={`absolute -inset-5 rounded-[2rem] ${themeGlowClass} blur-3xl`} aria-hidden="true" />
+              <img
+                src="/assets/landing-hero-product.png"
+                alt="TFORN controlled file sharing workspace with version history, review state, access controls, and AI rules"
+                className="relative w-full rounded-[1.35rem] border border-slate-200 bg-white object-cover shadow-2xl shadow-slate-300/80"
+              />
+            </figure>
+          </div>
+        </section>
+
+        <section className="bg-white px-5 py-16 md:px-8">
+          <div className="mx-auto max-w-7xl">
+            <SectionHeading
+              eyebrow="Bundles"
+              title="Start with the people and files."
+              body="Core covers a small rollout. Growth adds room for regular monthly sharing. Enterprise supports larger customer workspaces."
+            />
+            <div className="mt-8 grid gap-x-10 gap-y-4 lg:grid-cols-3">
+              {PRICING_BUNDLES.map((plan) => (
+                <PricingPlanCard key={plan.key} plan={plan} />
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="bg-slate-50 px-5 py-16 md:px-8">
+          <div className="mx-auto grid max-w-7xl gap-8 lg:grid-cols-[0.78fr_1.22fr] lg:items-start">
+            <div>
+              <SectionHeading
+                eyebrow="What changes by tier"
+                title="What grows by plan."
+                body="The main differences are recipient count, recurring sheets, saved views, version depth, and setup support."
+              />
+              <div className={`mt-6 border-l-4 py-3 pl-4 text-sm font-black leading-6 ${themeBorderClass} ${themeTextClass}`}>
+                <div className="flex items-start gap-3">
+                  <Icon name="shield" className={`mt-0.5 h-5 w-5 shrink-0 ${themeTextClass}`} />
+                  <p>
+                    Higher limits are available. Bundle limits mirror the default recipient and shared sheet counts; larger customer workspaces can be quoted with custom limits.
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="border-y border-slate-300">
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[760px] border-collapse text-left">
+                  <thead>
+                    <tr className="border-b border-slate-200">
+                      <th className="px-4 py-4 text-xs font-black uppercase tracking-[0.16em] text-slate-500">Included</th>
+                      <th className={`px-4 py-4 text-xs font-black uppercase tracking-[0.16em] ${themeTextClass}`}>Core</th>
+                      <th className={`px-4 py-4 text-xs font-black uppercase tracking-[0.16em] ${themeTextClass}`}>Growth</th>
+                      <th className="px-4 py-4 text-xs font-black uppercase tracking-[0.16em] text-slate-700">Enterprise</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {comparisonRows.map(([label, core, growth, enterprise]) => (
+                      <tr key={label} className="border-b border-slate-200 last:border-b-0">
+                        <th className="px-4 py-4 text-sm font-black text-slate-900">{label}</th>
+                        <td className="px-4 py-4 text-sm font-semibold text-slate-600">{core}</td>
+                        <td className="px-4 py-4 text-sm font-semibold text-slate-600">{growth}</td>
+                        <td className="px-4 py-4 text-sm font-semibold text-slate-600">{enterprise}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="bg-white px-5 py-16 md:px-8">
+          <div className="mx-auto max-w-7xl">
+            <SectionHeading
+              eyebrow="Pricing inputs"
+              title="What affects the quote."
+              body="The quote follows the real workload: who needs access, what gets shared, which read-only actions are enabled, and how much setup is needed."
+            />
+            <div className="mt-8 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+              {[
+                ["Recipients", "Outside users who only view the shared data.", "users"],
+                ["Shared sheets", "The recurring files the customer uploads each period.", "source"],
+                ["Allowed actions", "Filters, exports, and approved answers where enabled.", "lock"],
+                ["Setup help", "Support for organizing the first rollout.", "approval"],
+              ].map(([title, body, icon]) => (
+                <FeatureCard key={title} title={title} body={body} icon={icon} />
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <CTASection />
+      </main>
+    </div>
+  );
+}
+
 function ProductLandingPage({ user = null }) {
   const painCards = [
-    ["Shared files lose context", "When files are emailed or uploaded as one-offs, users see numbers without source history, version context, or ownership.", "upload"],
-    ["Columns change without warning", "Vendors rename fields, clients add columns, and department files change shape. Reports can break without anyone noticing.", "schema"],
-    ["AI needs clear rules", "AI can help, but it should not guess fields, dates, or totals from files that have not been reviewed.", "ai"],
-    ["Sharing rules get messy", "Access, review decisions, and file context often live in email threads instead of staying with the shared source.", "approval"],
+    ["Old files keep selling the wrong story", "Once a spreadsheet leaves email, outdated numbers keep showing up in meetings, board packs, and client questions.", "upload"],
+    ["The latest version should be obvious", "Stakeholders should never have to ask whether they are looking at the file your team actually reviewed.", "history"],
+    ["Small column changes create big doubt", "A renamed header or moved metric can make trusted numbers feel questionable at the worst possible time.", "schema"],
+    ["Answers need guardrails", "People need quick explanations, but only from the files and fields they are allowed to see.", "ai"],
   ];
 
   const workflowSteps = [
-    ["Receive file", "Collect files from upload, cloud drives, email, and scheduled imports.", "upload"],
-    ["Match to a source", "Connect each recurring file to the right client, vendor, team, or department.", "source"],
-    ["Check columns", "Spot renamed, missing, or new columns before the file is used.", "schema"],
-    ["Review first", "Hold risky files for review before they become the current version.", "approval"],
-    ["Share the right version", "Give the right users access to the current file source.", "publish"],
-    ["Answer safely", "Let users ask questions only against files they can access.", "ai"],
+    ["Upload", "Bring in the next recurring file.", "upload"],
+    ["Label", "Make the business context clear.", "source"],
+    ["Compare", "Spot structural changes early.", "schema"],
+    ["Approve", "Confirm the version is ready.", "approval"],
+    ["Publish", "Share one trusted destination.", "publish"],
+    ["Answer", "Let approved users explore safely.", "ai"],
   ];
 
   const features = [
-    ["Shared file sources", "Turn repeated uploads into named sources users can access with owners, versions, review rules, and permissions.", "shield"],
-    ["Version history", "Keep every upload as a version, compare files, and see where each number came from.", "history"],
-    ["Column change checks", "Catch renamed, missing, or new columns before bad data is used.", "schema"],
-    ["Business context", "Remember whether a file is about revenue, expenses, cash flow, sales, operations, or client reporting.", "source"],
-    ["Controlled AI", "Ask by text, listen to responses, identify fields, and answer safe questions without guessing.", "ai"],
-    ["Team and client sharing", "Share file sources with users, clients, and teams while controlling views, permissions, and AI access.", "users"],
-    ["Files from many places", "Collect files from uploads, cloud drives, SFTP, cloud storage, email, and automatic syncs.", "storage"],
-    ["Source-level finance analytics", "Show finance movements, file changes, and useful next-step questions from reviewed shared sources without becoming a BI dashboard.", "audit"],
+    ["Recurring file homes", "Give every monthly, weekly, or client package a reliable place to live.", "source"],
+    ["Latest version clarity", "Make the file stakeholders should trust impossible to miss.", "approval"],
+    ["Change explanations", "Call out meaningful movement without asking people to inspect every row.", "history"],
+    ["Read-only delivery", "Give clients and partners access without pulling them into your admin workspace.", "users"],
+    ["Useful viewer tools", "Let people filter, export, and ask approved questions without edit access.", "lock"],
+    ["Finance-aware answers", "Explain movement in shared files while keeping totals tied to source data.", "ai"],
+    ["Language support", "Help distributed teams understand file context and answers across languages.", "audit"],
+    ["Customer-owned sharing", "Keep the decision about what gets shared, when, and with whom in the right hands.", "shield"],
   ];
 
   const sources = [
-    "Manual upload",
-    "Google Drive",
-    "Dropbox",
-    "OneDrive",
-    "SFTP",
-    "Google Cloud Storage",
-    "Amazon S3",
-    "Azure Blob",
-    "Email import",
-    "Autosync workflows",
+    ["Manual uploads", "Drag in one-off or recurring spreadsheets when the file is ready.", "upload"],
+    ["Email intake", "Route spreadsheets that still arrive by email into the reviewed file flow.", "email"],
+    ["Google Drive", "Bring recurring files from customer Drive folders.", "google_drive"],
+    ["OneDrive", "Use Microsoft cloud folders without forcing another handoff.", "onedrive"],
+    ["Dropbox", "Collect spreadsheets from shared Dropbox locations.", "dropbox"],
+    ["SFTP", "Receive scheduled exports through secure file transfer.", "sftp_storage"],
+    ["Google Cloud Storage", "Pull files from Google Cloud Storage buckets.", "gcs_storage"],
+    ["Amazon S3", "Pull files from Amazon S3 buckets.", "s3_storage"],
+    ["Azure Blob Storage", "Import recurring files from Azure Blob containers.", "azure_blob_storage"],
+    ["QuickBooks exports", "Bring recurring accounting exports into the same review flow.", "quickbooks"],
   ];
 
   const controls = [
-    ["User access", "Control who can see each source, upload files, ask questions, and share.", "users"],
-    ["File ownership", "Assign owners for client, vendor, department, and connected files.", "source"],
-    ["Plan limits", "Manage users, file sources, imports, connections, and views.", "lock"],
-    ["Storage controls", "Choose which upload, cloud storage, and email options are allowed.", "storage"],
-    ["AI controls", "Choose which sources can use AI and what answers should be blocked.", "ai"],
-    ["History and audit trail", "Keep changes, reviews, imports, access, and answers easy to trace.", "audit"],
+    ["Audience", "Choose exactly who can see each shared file.", "users"],
+    ["Experience", "Send stakeholders to a polished page, not an internal workspace.", "source"],
+    ["Actions", "Permit only the tools that fit the relationship.", "lock"],
+    ["Context", "Keep review notes and version history beside the numbers.", "history"],
+    ["Timing", "Publish the shared view only after the file is ready.", "approval"],
+    ["Boundaries", "Keep sensitive fields out of views where they do not belong.", "shield"],
   ];
 
   const securityCards = [
-    ["DLP guardrails", "Data loss prevention helps reduce accidental exposure when financial files are shared with users by keeping data tied to permissions, sources, and review history.", "shield"],
-    ["Isolated customer workspaces", "Each customer workspace is kept separate so shared files, users, permissions, and source history stay within the right customer boundary.", "lock"],
-    ["Encrypted uploaded files", "Uploaded files are protected during transfer and stored with encryption, so recurring finance files are not treated like loose attachments.", "storage"],
+    ["Fewer attachments", "Keep sensitive spreadsheets in a controlled portal instead of long email chains.", "shield"],
+    ["Workspace separation", "Keep each customer workspace, file set, recipient list, and permission model separate.", "lock"],
+    ["Encrypted uploads", "Protect files in transfer and at rest, with controls around every shared view.", "storage"],
   ];
 
   const financeChat = [
@@ -647,18 +996,18 @@ function ProductLandingPage({ user = null }) {
     ["user", "Did revenue change because of price, volume, refunds, or missing rows?"],
     ["assistant", "Revenue increased $41.7k: price +$26.4k, volume +$19.8k, refunds -$4.5k."],
     ["user", "Show employee bank details from the payroll file."],
-    ["assistant", "Sensitive fields were masked due to DLP protection. I can summarize payroll totals without exposing bank or tax IDs."],
-    ["user", "Compare this to the vendor rebate file."],
-    ["assistant", "I cannot compare it because the vendor rebate source is not available in this workspace view."],
+    ["assistant", "Sensitive fields are not available in this shared view. I can summarize payroll totals without exposing bank or tax IDs."],
+    ["user", "Compare this to last month's version."],
+    ["assistant", "I can compare reviewed versions that are shared in this view. This answer uses March and April only."],
   ];
 
   const useCases = [
-    ["Agencies sharing client files", "Give client teams controlled access to the right source, version, and review history."],
-    ["Finance teams sharing monthly reports", "Share monthly files with leaders after the source, version, and columns are understood."],
-    ["Operations teams sharing vendor files", "Let users work from vendor spreadsheets while changes in costs, margins, or service numbers stay traceable."],
-    ["RevOps teams sharing sales extracts", "Keep sales and pipeline files organized, permissioned, and easy for teams to trust."],
-    ["Service providers sharing client reporting", "Keep each client file in one controlled workspace instead of email threads."],
-    ["Internal teams sharing department uploads", "Let departments share recurring files while admins control who can see, use, and ask about them."],
+    ["Client reporting", "Give clients one branded place to revisit reviewed monthly files."],
+    ["Finance packages", "Turn period-end spreadsheets into a cleaner delivery experience."],
+    ["Board or lender packs", "Make recurring numbers easy to revisit without digging through inboxes."],
+    ["Department files", "Give internal recipients confidence they are using the approved version."],
+    ["Service reporting", "Move important shared files out of email threads and into a durable page."],
+    ["Recurring exports", "Make repeat spreadsheet sharing feel intentional, traceable, and easier to explain."],
   ];
 
   return (
@@ -669,8 +1018,8 @@ function ProductLandingPage({ user = null }) {
 
         <section className="bg-white px-5 py-16 md:px-8">
           <div className="mx-auto max-w-7xl">
-            <SectionHeading title="Spreadsheets are not the problem. Uncontrolled uploads are." />
-            <div className="mt-8 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            <SectionHeading title="Spreadsheets are not the problem. Spreadsheet chaos is." />
+            <div className="mt-8 grid gap-x-8 gap-y-2 md:grid-cols-2 lg:grid-cols-4">
               {painCards.map(([title, body, icon]) => (
                 <FeatureCard key={title} title={title} body={body} icon={icon} />
               ))}
@@ -681,10 +1030,10 @@ function ProductLandingPage({ user = null }) {
         <section id="workflow" className="bg-slate-50 px-5 py-16 md:px-8">
           <div className="mx-auto max-w-7xl">
             <SectionHeading
-              title="The trust step before reporting."
-              body="Create shared file sources, keep every version, check column changes, review files, control user access, and let AI help only against files each user can see."
+              title="From raw upload to trusted delivery."
+              body="A simple approval path turns each recurring spreadsheet into a clean, controlled page stakeholders can use with confidence."
             />
-            <div className="mt-8 grid gap-4 md:grid-cols-2 lg:grid-cols-6">
+            <div className="mt-8 grid gap-x-6 gap-y-2 md:grid-cols-2 lg:grid-cols-6">
               {workflowSteps.map(([title, body, icon]) => (
                 <WorkflowStep key={title} title={title} body={body} icon={icon} />
               ))}
@@ -694,8 +1043,8 @@ function ProductLandingPage({ user = null }) {
 
         <section className="bg-white px-5 py-16 md:px-8">
           <div className="mx-auto max-w-7xl">
-            <SectionHeading title="Everything recurring spreadsheets need before sharing." />
-            <div className="mt-8 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            <SectionHeading title="What every shared file gets before it reaches the outside world." />
+            <div className="mt-8 grid gap-x-8 gap-y-2 md:grid-cols-2 lg:grid-cols-4">
               {features.map(([title, body, icon]) => (
                 <FeatureCard key={title} title={title} body={body} icon={icon} />
               ))}
@@ -706,27 +1055,25 @@ function ProductLandingPage({ user = null }) {
         <section id="controlled-ai" className="bg-slate-50 px-5 py-16 md:px-8">
           <div className="mx-auto max-w-7xl">
             <SectionHeading
-              title="AI help, with rules."
-              body="Ask by text, listen to responses, and support teams working across languages. AI explains reviewed finance files and finds likely fields, but the numbers still come from the source data. For example: if Revenue is renamed to Net Sales, AI can map it before answering."
+              title="Answers that stay inside the lines."
+              body="Stakeholders can ask questions in plain language and hear the response, while AI stays grounded in approved files, visible fields, source totals, and each user's access."
             />
-            <div className="mt-8 grid gap-6 lg:grid-cols-2">
-              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="mt-8 grid gap-10 lg:grid-cols-2">
+              <div className="border-t border-slate-300 pt-5">
                 <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
-                    <Icon name="lock" />
-                  </div>
-                  <h3 className="text-xl font-black text-slate-950">Controlled AI workspace</h3>
+                  <Icon name="lock" className={`h-6 w-6 shrink-0 ${themeTextClass}`} />
+                  <h3 className="text-xl font-black text-slate-950">AI for shared finance files</h3>
                 </div>
                 <div className="mt-5 grid gap-3">
                   {[
-                    "Ask questions by text and listen to the response",
-                    "AI helps match renamed finance fields",
-                    "Answers use the files your team can access",
-                    "Supports multiple languages",
-                    "Shows source-level finance analytics",
-                    "Keeps the source file visible behind the answer",
+                    "Ask questions by text and listen to the answer",
+                    "Match renamed finance fields without losing trust",
+                    "Use only the shared files each stakeholder can access",
+                    "Support multilingual teams and clients",
+                    "Explain finance movement at the source-file level",
+                    "Keep the original numbers visible behind every answer",
                   ].map((item) => (
-                    <div key={item} className="flex items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-700">
+                    <div key={item} className="flex items-center gap-3 border-t border-slate-200 py-2 text-sm font-bold text-slate-700">
                       <Icon name="check" className="h-4 w-4 text-emerald-600" />
                       {item}
                     </div>
@@ -734,9 +1081,9 @@ function ProductLandingPage({ user = null }) {
                 </div>
               </div>
 
-              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                <h3 className="text-xl font-black text-slate-950">Safe finance answer example</h3>
-                <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <div className="border-t border-slate-300 pt-5">
+                <h3 className="text-xl font-black text-slate-950">An answer with proof behind it</h3>
+                <div className="mt-4 border-y border-slate-200 py-3">
                   <div className="space-y-2">
                     {financeChat.map(([side, text]) => (
                       <FinanceChatMessage key={text} side={side}>
@@ -753,16 +1100,16 @@ function ProductLandingPage({ user = null }) {
         <section id="sources" className="bg-white px-5 py-16 md:px-8">
           <div className="mx-auto max-w-7xl">
             <SectionHeading
-              title="Bring every recurring file into one controlled place."
-              body="No matter where files come from, they land in a named source with labels, versions, access rules, and review history."
+              title="Bring files in from the places they already live."
+              body="TFORN keeps recurring spreadsheets connected to the right source, whether they arrive by upload, inbox, cloud drive, secure transfer, storage bucket, or system export."
             />
-            <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-              {sources.map((source) => (
+            <div className="mt-8 grid gap-x-8 gap-y-2 sm:grid-cols-2 lg:grid-cols-5">
+              {sources.map(([title, body, icon]) => (
                 <SourceCard
-                  key={source}
-                  title={source}
-                  body="Connect each file to the right shared source with versions and review."
-                  icon={source.includes("Email") ? "audit" : source.includes("upload") ? "upload" : "storage"}
+                  key={title}
+                  title={title}
+                  body={body}
+                  icon={icon}
                 />
               ))}
             </div>
@@ -772,15 +1119,15 @@ function ProductLandingPage({ user = null }) {
         <section id="controls" className="bg-slate-50 px-5 py-16 md:px-8">
           <div className="mx-auto grid max-w-7xl gap-8 lg:grid-cols-[0.78fr_1.22fr] lg:items-start">
             <div>
-              <SectionHeading title="Built for controlled sharing with users." />
+              <SectionHeading title="Your team controls the experience." />
               <p className="mt-5 text-base font-semibold leading-8 text-slate-600">
-                Let clients, teams, and stakeholders use recurring financial files while admins control what each user can see, ask about, and share.
+                Clients, partners, and outside stakeholders do not manage files or settings. They see the approved experience your team chooses to publish.
               </p>
-              <div className="mt-6 rounded-xl border border-blue-200 bg-blue-50 p-5 text-sm font-black leading-6 text-blue-800">
-                TFORN turns financial outputs into shared sources with history, permissions, AI answers, and source-level finance analytics.
+              <div className={`mt-6 border-l-4 py-3 pl-4 text-sm font-black leading-6 ${themeBorderClass} ${themeTextClass}`}>
+                TFORN is built for confident delivery first, with optional file-level insight when the data is ready for questions.
               </div>
             </div>
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-x-8 gap-y-2 sm:grid-cols-2">
               {controls.map(([title, body, icon]) => (
                 <GovernanceCard key={title} title={title} body={body} icon={icon} />
               ))}
@@ -791,10 +1138,10 @@ function ProductLandingPage({ user = null }) {
         <section id="security" className="bg-white px-5 py-16 md:px-8">
           <div className="mx-auto max-w-7xl">
             <SectionHeading
-              title="Security for files before they are shared."
-              body="TFORN treats uploaded spreadsheets as controlled business records, not loose files. DLP, workspace isolation, permissions, and encryption help protect sensitive finance data as it moves through sharing, review, reporting, and AI answers."
+              title="A cleaner way to share sensitive numbers."
+              body="Shared views, workspace boundaries, DLP-aware handling, and encrypted file storage help reduce the spread of sensitive spreadsheets."
             />
-            <div className="mt-8 grid gap-4 md:grid-cols-3">
+            <div className="mt-8 grid gap-x-8 gap-y-2 md:grid-cols-3">
               {securityCards.map(([title, body, icon]) => (
                 <GovernanceCard key={title} title={title} body={body} icon={icon} />
               ))}
@@ -806,10 +1153,10 @@ function ProductLandingPage({ user = null }) {
 
         <section className="bg-slate-50 px-5 py-16 md:px-8">
           <div className="mx-auto max-w-7xl">
-            <SectionHeading title="Designed for teams that need to share recurring spreadsheets." />
-            <div className="mt-8 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            <SectionHeading title="Built for the files people keep asking for." />
+            <div className="mt-8 grid gap-x-8 gap-y-2 md:grid-cols-2 lg:grid-cols-3">
               {useCases.map(([title, body]) => (
-                <article key={title} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                <article key={title} className={`border-t border-slate-300 py-5 transition-colors duration-200 ${themeHoverBorderClass}`}>
                   <h3 className="text-base font-black text-slate-950">{title}</h3>
                   <p className="mt-3 text-sm font-semibold leading-6 text-slate-600">{body}</p>
                 </article>
@@ -819,13 +1166,13 @@ function ProductLandingPage({ user = null }) {
         </section>
 
         <section id="pricing" className="border-y border-slate-200 bg-white px-5 py-12 md:px-8">
-          <div className="mx-auto flex max-w-7xl flex-col gap-4 rounded-2xl border border-slate-200 bg-slate-50 p-6 md:flex-row md:items-center md:justify-between">
+          <div className="mx-auto flex max-w-7xl flex-col gap-4 border-y border-slate-300 py-6 md:flex-row md:items-center md:justify-between">
             <div>
-              <h2 className="text-2xl font-black text-slate-950">Pricing built around your file volume and team size.</h2>
-              <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">Plans can include users, shared file sources, imports, storage connections, views, AI access, and source-level finance analytics.</p>
+              <h2 className="text-2xl font-black text-slate-950">Pricing that follows your delivery model.</h2>
+              <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">Plans scale by stakeholders, recurring shared files, saved views, and optional file-level insights.</p>
             </div>
-            <Link to="/demo" className="inline-flex h-11 shrink-0 items-center justify-center rounded-md bg-blue-600 px-5 text-sm font-black text-white hover:bg-blue-700">
-              Talk to sales
+            <Link to="/pricing" className={`${primaryActionClass} h-11 shrink-0 px-5`}>
+              View pricing
             </Link>
           </div>
         </section>
@@ -853,19 +1200,19 @@ function DemoBookingScreen() {
     needs: [],
   });
 
-  const fileSources = ["Manual uploads", "Email", "Google Drive", "OneDrive", "Dropbox", "SFTP", "S3 or cloud storage", "Connected exports"];
+  const fileSources = ["Customer upload", "Current shared view", "Past versions", "Column notes", "Read-only tools"];
   const needs = [
     "Track versions",
-    "Review files before use",
+    "Review files before sharing",
     "Catch column changes",
-    "Control customer access",
-    "Prepare data for BI",
-    "Safer AI answers",
+    "Choose who can view",
+    "Send cleaner data to BI",
+    "Answer finance questions safely",
   ];
   const fitPoints = [
-    ["Recurring files", "Client, vendor, finance, or department spreadsheets that arrive every week or month."],
-    ["Review before use", "Rules for which files can be used, shared, or answered from."],
-    ["Clear source history", "A record of who uploaded what, what changed, and which version is current."],
+    ["Recurring files", "Financial spreadsheets the customer uploads and shares repeatedly."],
+    ["Review before sharing", "A clear step before remote users see the new file."],
+    ["Clear file history", "A record of what changed and which version is current."],
   ];
 
   const updateField = (field, value) => {
@@ -889,7 +1236,7 @@ function DemoBookingScreen() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 px-5 py-8 text-slate-950 md:px-8">
+    <div className={publicPageClass}>
       <div className="mx-auto max-w-7xl">
         <header className="flex items-center justify-between gap-4">
           <Link to="/" className="inline-flex items-center" aria-label="TFORN home">
@@ -899,60 +1246,60 @@ function DemoBookingScreen() {
               className="h-14 w-auto max-w-[260px] object-contain sm:h-16 sm:max-w-[340px]"
             />
           </Link>
-          <Link to="/login" className="hidden rounded-md px-3 py-2 text-sm font-bold text-slate-700 hover:text-blue-700 sm:inline-flex">
+          <Link to="/login" className={`hidden rounded-lg px-3 py-2 text-sm font-bold text-slate-700 ${themeHoverTextClass} sm:inline-flex`}>
             Sign in
           </Link>
         </header>
 
         <main className="grid gap-8 py-10 lg:grid-cols-[0.86fr_1.14fr] lg:items-start lg:py-14">
           <section className="lg:sticky lg:top-8">
-            <p className="text-xs font-black uppercase tracking-[0.22em] text-blue-700">Book a demo</p>
+            <p className={`text-xs font-black uppercase tracking-[0.22em] ${themeTextClass}`}>Book a demo</p>
             <h1 className="mt-4 max-w-2xl text-4xl font-black leading-tight tracking-tight text-slate-950 sm:text-5xl">
-              See how TFORN controls recurring business files before they reach BI.
+              See how TFORN shares recurring business files with control.
             </h1>
             <p className="mt-5 max-w-xl text-base font-semibold leading-8 text-slate-600">
-              Tell us how files arrive today, who needs to review them, and where the trusted numbers go next. We will tailor the demo to your workflow.
+              Tell us what the customer uploads, who needs read-only access, and where the numbers are used next. We will tailor the demo to that flow.
             </p>
 
             <div className="mt-8 grid gap-3">
               {fitPoints.map(([title, body], index) => (
-                <div key={title} className="flex gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-sm font-black text-blue-700">
-                    {index + 1}
-                  </div>
+                <div key={title} className={publicMiniPanelClass}>
+                  <div className="flex gap-3">
+                  <div className={`shrink-0 pt-0.5 text-xs font-black uppercase tracking-[0.18em] ${themeTextClass}`}>0{index + 1}</div>
                   <div>
                     <h2 className="text-sm font-black text-slate-950">{title}</h2>
                     <p className="mt-1 text-sm font-semibold leading-6 text-slate-600">{body}</p>
+                  </div>
                   </div>
                 </div>
               ))}
             </div>
 
-            <div className="mt-6 rounded-xl border border-blue-200 bg-blue-50 p-5">
-              <p className="text-sm font-black text-blue-900">Best fit for teams asking:</p>
-              <p className="mt-2 text-sm font-semibold leading-6 text-blue-800">
+            <div className={`mt-6 rounded-xl border p-5 shadow-[0_14px_30px_hsl(var(--primary)/0.08)] ${themeSoftClass}`}>
+              <p className={`text-sm font-black ${themeTextClass}`}>Best fit for teams asking:</p>
+              <p className={`mt-2 text-sm font-semibold leading-6 ${themeTextClass} opacity-80`}>
                 Which file is current? What changed? Who reviewed it? Can this data be used in reports or answers?
               </p>
             </div>
           </section>
 
-          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_24px_70px_rgba(15,23,42,0.10)] md:p-7">
+          <section className={publicPanelClass}>
             {submitted ? (
-              <div className="flex min-h-[520px] flex-col justify-center rounded-xl border border-emerald-200 bg-emerald-50 p-8 text-center">
+              <div className="flex min-h-[520px] flex-col justify-center rounded-xl border border-[hsl(var(--primary)/0.18)] bg-[hsl(var(--primary)/0.06)] p-8 text-center">
                 <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-emerald-600 text-xl font-black text-white">✓</div>
-                <h2 className="mt-5 text-2xl font-black text-emerald-950">Demo request received</h2>
-                <p className="mx-auto mt-3 max-w-md text-sm font-semibold leading-7 text-emerald-800">
+                <h2 className="mt-5 text-2xl font-black text-slate-950">Demo request received</h2>
+                <p className="mx-auto mt-3 max-w-md text-sm font-semibold leading-7 text-slate-700">
                   We have the details needed to shape the conversation around your file workflow, review needs, and reporting goals.
                 </p>
                 <div className="mt-6 flex flex-col justify-center gap-3 sm:flex-row">
                   <button
                     type="button"
                     onClick={() => setSubmitted(false)}
-                    className="inline-flex h-11 items-center justify-center rounded-md bg-white px-5 text-sm font-black text-emerald-800 shadow-sm hover:bg-emerald-100"
+                    className={`${secondaryActionClass} h-11 px-5`}
                   >
                     Edit request
                   </button>
-                  <Link to="/" className="inline-flex h-11 items-center justify-center rounded-md bg-emerald-700 px-5 text-sm font-black text-white hover:bg-emerald-800">
+                  <Link to="/" className={`${primaryActionClass} h-11 px-5`}>
                     Back to homepage
                   </Link>
                 </div>
@@ -962,7 +1309,7 @@ function DemoBookingScreen() {
                 <div>
                   <h2 className="text-2xl font-black tracking-tight text-slate-950">Tell us about your workflow</h2>
                   <p className="mt-2 text-sm font-semibold leading-6 text-slate-500">
-                    These questions help us avoid a generic demo and show the parts that matter.
+                    These questions help us show the parts that match your sharing process.
                   </p>
                 </div>
 
@@ -975,7 +1322,7 @@ function DemoBookingScreen() {
                   </div>
                 </DemoFormSection>
 
-                <DemoFormSection title="Scale and timing" description="This helps us size the demo around your actual file load.">
+                <DemoFormSection title="Scale and timing" description="This helps us size the demo around your real file flow.">
                   <div className="grid gap-3 sm:grid-cols-3">
                     <DemoSelect
                       label="Team size"
@@ -998,16 +1345,16 @@ function DemoBookingScreen() {
                   </div>
                 </DemoFormSection>
 
-                <DemoFormSection title="File sources" description="Choose every place recurring spreadsheets arrive today.">
+                <DemoFormSection title="Shared file flow" description="Choose what the remote users need to see.">
                   <DemoCheckboxGroup
-                    label="Where do the recurring files come from?"
+                    label="What should be part of the shared page?"
                     options={fileSources}
                     selected={formData.fileSources}
                     onToggle={(value) => toggleListValue("fileSources", value)}
                   />
                 </DemoFormSection>
 
-                <DemoFormSection title="What needs control" description="Pick the problems you want the demo to focus on.">
+                <DemoFormSection title="What needs control" description="Pick the problems the demo should focus on.">
                   <DemoCheckboxGroup
                     label="What do you need to control?"
                     options={needs}
@@ -1022,7 +1369,7 @@ function DemoBookingScreen() {
                       label="How does this work today?"
                       value={formData.currentProcess}
                       onChange={(value) => updateField("currentProcess", value)}
-                      placeholder="Vendors email monthly files."
+                      placeholder="We upload monthly finance files and share a read-only view."
                     />
                     <DemoTextarea
                       label="Where should trusted data go next?"
@@ -1036,7 +1383,7 @@ function DemoBookingScreen() {
                       label="Anything specific you want to see?"
                       value={formData.notes}
                       onChange={(value) => updateField("notes", value)}
-                      placeholder="Files, rules, or integrations."
+                      placeholder="Files, viewers, or finance questions."
                       rows={3}
                     />
                   </div>
@@ -1045,17 +1392,17 @@ function DemoBookingScreen() {
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                   <p className="text-xs font-black uppercase tracking-[0.16em] text-slate-500">Demo focus</p>
                   <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">
-                    We will focus on recurring file sources, versions, review rules, column changes, permissions, and safe answers from reviewed data.
+                    We will focus on the customer upload, current shared view, past versions, column changes, viewer access, and safe finance answers.
                   </p>
                 </div>
 
                 <div className="flex flex-col gap-2 border-t border-slate-200 pt-4 sm:flex-row sm:items-center sm:justify-end">
-                  <Link to="/support" className="inline-flex h-9 items-center justify-center rounded-lg px-3 text-xs font-black text-slate-600 transition-colors hover:bg-slate-100 hover:text-blue-700">
+                  <Link to="/support" className={`${secondaryActionClass} h-10 px-4 text-xs`}>
                     Need support instead?
                   </Link>
                   <button
                     type="submit"
-                    className="inline-flex h-9 items-center justify-center rounded-lg bg-slate-950 px-4 text-xs font-black text-white shadow-sm shadow-slate-300 transition-all hover:-translate-y-0.5 hover:bg-blue-700 hover:shadow-md active:translate-y-0"
+                    className={`${primaryActionClass} h-10 px-5 text-xs`}
                   >
                     Request demo
                   </button>
@@ -1072,14 +1419,14 @@ function DemoBookingScreen() {
 function DemoInput({ label, value, onChange, placeholder, type = "text", required = false }) {
   return (
     <label className="group block">
-      <span className="ml-0.5 text-[10px] font-black uppercase tracking-[0.14em] text-slate-500 transition-colors group-focus-within:text-blue-700">{label}</span>
+      <span className={formLabelClass}>{label}</span>
       <input
         type={type}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
         required={required}
-        className="mt-1 h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-900 shadow-[inset_0_1px_0_rgba(255,255,255,0.9)] transition-all placeholder:text-xs placeholder:font-semibold placeholder:text-slate-300 hover:border-slate-300 focus:border-blue-500/60 focus:bg-white focus:outline-none focus:ring-3 focus:ring-blue-500/10"
+        className={formFieldClass}
       />
     </label>
   );
@@ -1091,21 +1438,21 @@ function DemoSelect({ label, value, onChange, options }) {
 
   return (
     <div className="group relative">
-      <div className="ml-0.5 text-[10px] font-black uppercase tracking-[0.14em] text-slate-500 transition-colors group-focus-within:text-blue-700">{label}</div>
+      <div className={formLabelClass}>{label}</div>
       <button
         type="button"
         onClick={() => setOpen((current) => !current)}
         onBlur={() => window.setTimeout(() => setOpen(false), 120)}
-        className={`mt-1 flex h-10 w-full items-center justify-between gap-2 rounded-lg border bg-white px-3 text-left text-sm font-semibold shadow-[inset_0_1px_0_rgba(255,255,255,0.9)] transition-all ${
+        className={`mt-1 flex h-12 w-full items-center justify-between gap-2 rounded-xl border bg-white px-4 text-left text-sm font-bold shadow-[0_8px_22px_rgba(15,23,42,0.06),inset_0_1px_0_rgba(255,255,255,0.95)] transition-all ${
           open
-            ? "border-blue-500/60 ring-3 ring-blue-500/10"
-            : "border-slate-200 hover:border-slate-300"
+            ? "border-[hsl(var(--primary)/0.70)] ring-4 ring-[hsl(var(--primary)/0.10)]"
+            : "border-slate-300 hover:border-slate-400 hover:shadow-[0_10px_26px_rgba(15,23,42,0.08),inset_0_1px_0_rgba(255,255,255,0.95)]"
         }`}
         aria-haspopup="listbox"
         aria-expanded={open}
       >
         <span className="truncate text-slate-900">{selected}</span>
-        <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-slate-50 text-slate-500 transition-transform ${open ? "rotate-180 text-blue-700" : ""}`}>
+        <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500 transition-transform ${open ? `rotate-180 ${themeTextClass}` : ""}`}>
           <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
             <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z" clipRule="evenodd" />
           </svg>
@@ -1114,7 +1461,7 @@ function DemoSelect({ label, value, onChange, options }) {
 
       {open && (
         <div
-          className="absolute left-0 right-0 top-[calc(100%+0.35rem)] z-40 overflow-hidden rounded-xl border border-slate-200 bg-white p-1 shadow-[0_18px_40px_rgba(15,23,42,0.16)]"
+          className="absolute left-0 right-0 top-[calc(100%+0.35rem)] z-40 overflow-hidden rounded-xl border border-slate-300 bg-white p-1 shadow-[0_18px_40px_rgba(15,23,42,0.18)]"
           role="listbox"
         >
           {options.map((option) => {
@@ -1129,7 +1476,7 @@ function DemoSelect({ label, value, onChange, options }) {
                   setOpen(false);
                 }}
                 className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-xs font-black transition-colors ${
-                  active ? "bg-blue-50 text-blue-800" : "text-slate-700 hover:bg-slate-50 hover:text-blue-800"
+                  active ? "bg-[hsl(var(--primary)/0.10)] text-[hsl(var(--primary))]" : `text-slate-700 hover:bg-slate-100 ${themeHoverTextClass}`
                 }`}
                 role="option"
                 aria-selected={active}
@@ -1148,13 +1495,13 @@ function DemoSelect({ label, value, onChange, options }) {
 function DemoTextarea({ label, value, onChange, placeholder, rows = 3 }) {
   return (
     <label className="group block">
-      <span className="ml-0.5 text-[10px] font-black uppercase tracking-[0.14em] text-slate-500 transition-colors group-focus-within:text-blue-700">{label}</span>
+      <span className={formLabelClass}>{label}</span>
       <textarea
         rows={rows}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
-        className="mt-1 w-full resize-none rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold leading-5 text-slate-900 shadow-[inset_0_1px_0_rgba(255,255,255,0.9)] transition-all placeholder:text-xs placeholder:font-semibold placeholder:leading-5 placeholder:text-slate-300 hover:border-slate-300 focus:border-blue-500/60 focus:outline-none focus:ring-3 focus:ring-blue-500/10"
+        className={formTextareaClass}
       />
     </label>
   );
@@ -1172,8 +1519,8 @@ function DemoCheckboxGroup({ label, options, selected, onToggle }) {
               key={option}
               className={`relative inline-flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-black transition-all ${
                 checked
-                  ? "border-blue-500 bg-blue-600 text-white shadow-sm shadow-blue-200"
-                  : "border-slate-200 bg-white text-slate-700 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-800"
+                  ? "border-[hsl(var(--primary))] bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] shadow-[0_10px_24px_hsl(var(--primary)/0.22)]"
+                  : `border-slate-300 bg-white text-slate-700 shadow-[0_6px_16px_rgba(15,23,42,0.05)] hover:border-[hsl(var(--primary)/0.40)] hover:bg-[hsl(var(--primary)/0.10)] ${themeHoverTextClass}`
               }`}
             >
               <input
@@ -1198,7 +1545,7 @@ function DemoCheckboxGroup({ label, options, selected, onToggle }) {
 
 function DemoFormSection({ title, description, children }) {
   return (
-    <section className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 md:p-4">
+    <section className="border-t border-slate-300 py-4">
       <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h3 className="text-sm font-black text-slate-950">{title}</h3>
@@ -1242,153 +1589,182 @@ function SupportScreen() {
     setSubmitted(true);
   };
 
+  const supportTopics = [
+    ["password", "Password or access", "Sign-in problems, invitations, workspace permissions, or account access."],
+    ["tech", "Workspace support", "File sources, viewer behavior, shared pages, imports, or controlled AI."],
+    ["billing", "Billing or account", "Plan fit, invoice questions, workspace limits, or account updates."],
+    ["other", "General question", "Anything that does not fit the other support paths."],
+  ];
+  const selectedTopic = supportTopics.find(([value]) => value === reason);
+
   return (
-    <div className="min-h-screen w-full bg-slate-50 px-5 py-8 text-slate-950 md:px-8">
-      <div className="mx-auto flex min-h-[calc(100vh-4rem)] max-w-6xl flex-col justify-center gap-8 lg:grid lg:grid-cols-[0.9fr_1.1fr] lg:items-center">
-        <div className="max-w-xl">
+    <div className={publicPageClass}>
+      <div className="mx-auto max-w-7xl">
+        <header className="flex items-center justify-between gap-4">
           <Link to="/" className="inline-flex items-center" aria-label="TFORN home">
             <img
               src="/assets/tform-logo.png"
               alt="TFORN - Turn Financial Outputs into Real Numbers"
-              className="h-20 w-auto max-w-[360px] object-contain sm:h-24 sm:max-w-[440px]"
+              className="h-14 w-auto max-w-[260px] object-contain sm:h-16 sm:max-w-[340px]"
             />
           </Link>
-          <p className="mt-10 text-xs font-black uppercase tracking-[0.22em] text-blue-700">Support</p>
-          <h1 className="mt-3 text-3xl font-black leading-tight tracking-tight text-slate-950 sm:text-4xl">
-            Get help with your TFORN workspace.
-          </h1>
-          <p className="mt-4 text-base font-semibold leading-8 text-slate-600">
-            Send account, access, billing, or workspace questions to the team. Keep file names, source names, and user details in the message when they help explain the issue.
-          </p>
-          <div className="mt-6 grid gap-3 sm:grid-cols-2">
-            <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-              <p className="text-xs font-black uppercase tracking-[0.16em] text-slate-500">Docs</p>
-              <p className="mt-2 text-sm font-bold text-slate-900">Guides for users and admins</p>
-            </div>
-            <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-              <p className="text-xs font-black uppercase tracking-[0.16em] text-slate-500">Status</p>
-              <p className={`mt-2 text-sm font-bold ${serviceStatus === 'online' ? "text-emerald-600" : serviceStatus === 'offline' ? "text-red-600" : "text-slate-700"}`}>
-                {serviceStatus === 'online' ? "Operational" : serviceStatus === 'offline' ? "Connection failed" : "Checking..."}
-              </p>
-            </div>
-          </div>
-        </div>
+          <Link to="/login" className={`hidden rounded-lg px-3 py-2 text-sm font-bold text-slate-700 ${themeHoverTextClass} sm:inline-flex`}>
+            Sign in
+          </Link>
+        </header>
 
-        <div className="w-full rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_24px_70px_rgba(15,23,42,0.10)] md:p-7">
-          <div className="mb-5">
-            <h2 className="text-xl font-black tracking-tight text-slate-950">Contact support</h2>
-            <p className="mt-1 text-sm font-semibold text-slate-500">Choose a topic and send the details.</p>
-          </div>
+        <main className="py-10 lg:py-14">
+          <section className="border-b border-slate-300 pb-10">
+            <div className="grid gap-8 lg:grid-cols-[0.9fr_1.1fr] lg:items-end">
+              <div>
+                <p className={`text-xs font-black uppercase tracking-[0.22em] ${themeTextClass}`}>Contact</p>
+                <h1 className="mt-4 max-w-3xl text-4xl font-black leading-tight tracking-tight text-slate-950 sm:text-5xl">
+                  Tell us what needs attention.
+                </h1>
+              </div>
+              <div>
+                <p className="max-w-2xl text-base font-semibold leading-8 text-slate-600">
+                  Send account, billing, access, or workspace questions with the file names, source names, and user details that help explain the issue.
+                </p>
+                <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs font-black uppercase tracking-[0.14em] text-slate-500">
+                  <span>Status</span>
+                  <span className={serviceStatus === "online" ? "text-emerald-600" : serviceStatus === "offline" ? "text-red-600" : "text-slate-600"}>
+                    {serviceStatus === "online" ? "Operational" : serviceStatus === "offline" ? "Connection failed" : "Checking"}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </section>
 
-        {submitted ? (
-          <div className="flex flex-col items-center justify-center rounded-xl border border-emerald-200 bg-emerald-50 p-5 text-center">
-            <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-full bg-emerald-600 text-base font-black text-white">✓</div>
-            <h3 className="mb-1 text-sm font-black text-emerald-900">Request received</h3>
-            <p className="text-emerald-700/70 font-bold text-[11px] leading-relaxed max-w-xs">
-              Your message has been recorded. The team will review it and respond as soon as possible.
-            </p>
-            <button onClick={() => setSubmitted(false)} className="mt-4 text-xs font-black text-emerald-700 hover:text-emerald-900">Submit another request</button>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-3">
-            <div className="space-y-1">
-              <label className="ml-1 text-xs font-black uppercase tracking-[0.16em] text-slate-500">Reason for contact</label>
-              <select
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-                className="w-full cursor-pointer appearance-none rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-800 transition-all focus:border-blue-500/50 focus:outline-none focus:ring-4 focus:ring-blue-500/10"
-              >
-                <option value="" disabled>Select a topic...</option>
-                <option value="password">Password or access</option>
-                <option value="tech">Workspace support</option>
-                <option value="billing">Billing or account</option>
-                <option value="other">General question</option>
-              </select>
+          <section className="grid gap-10 py-10 lg:grid-cols-[0.82fr_1.18fr] lg:items-start">
+            <div>
+              <div className="flex items-center gap-3">
+                <h2 className="text-xl font-black text-slate-950">Choose a path</h2>
+                <div className="h-px flex-1 bg-slate-200" aria-hidden="true" />
+              </div>
+              <div className="mt-5 border-y border-slate-300">
+                {supportTopics.map(([value, label, body]) => {
+                  const active = reason === value;
+                  return (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setReason(value)}
+                      className={`group flex w-full items-start gap-4 border-b border-slate-200 py-4 text-left last:border-b-0 ${active ? "text-[hsl(var(--primary))]" : "text-slate-800"}`}
+                    >
+                      <span className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full border ${active ? "border-[hsl(var(--primary))] bg-[hsl(var(--primary))]" : "border-slate-300 group-hover:border-[hsl(var(--primary)/0.45)]"}`} />
+                      <span>
+                        <span className="block text-sm font-black">{label}</span>
+                        <span className="mt-1 block text-sm font-semibold leading-6 text-slate-600">{body}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
-            {reason && (
-              <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-                <div className="space-y-2">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <div className="space-y-1">
-                      <label className="ml-1 text-xs font-black uppercase tracking-[0.16em] text-slate-500">Full name</label>
+            <div className="border-y border-slate-300 py-5">
+              {submitted ? (
+                <div className="py-10 text-center">
+                  <div className="mx-auto mb-4 flex h-10 w-10 items-center justify-center rounded-full bg-[hsl(var(--primary))] text-base font-black text-white">✓</div>
+                  <h2 className="text-2xl font-black text-slate-950">Request received</h2>
+                  <p className="mx-auto mt-3 max-w-md text-sm font-semibold leading-7 text-slate-600">
+                    Your message has been recorded. The team will review it and respond as soon as possible.
+                  </p>
+                  <button onClick={() => setSubmitted(false)} className={`${secondaryActionClass} mt-6 h-11 px-5`}>
+                    Submit another request
+                  </button>
+                </div>
+              ) : (
+                <form onSubmit={handleSubmit} className="space-y-5">
+                  <div className="flex items-end justify-between gap-4">
+                    <div>
+                      <h2 className="text-xl font-black tracking-tight text-slate-950">Send the details</h2>
+                      <p className="mt-1 text-sm font-semibold text-slate-500">
+                        {selectedTopic ? selectedTopic[1] : "Select a topic to route the request."}
+                      </p>
+                    </div>
+                    <div className="hidden h-px flex-1 bg-slate-200 sm:block" aria-hidden="true" />
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="group block">
+                      <span className={formLabelClass}>Full name</span>
                       <input
                         type="text"
-                        className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-800 focus:outline-none focus:ring-4 focus:ring-blue-500/10"
+                        className={formFieldClass}
                         placeholder="Jane Doe"
                         value={formData.name}
                         onChange={e => setFormData({ ...formData, name: e.target.value })}
                         required
                       />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="ml-1 text-xs font-black uppercase tracking-[0.16em] text-slate-500">Work email</label>
+                    </label>
+                    <label className="group block">
+                      <span className={formLabelClass}>Work email</span>
                       <input
                         type="email"
-                        className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-800 focus:outline-none focus:ring-4 focus:ring-blue-500/10"
+                        className={formFieldClass}
                         placeholder="jane@company.com"
                         value={formData.email}
                         onChange={e => setFormData({ ...formData, email: e.target.value })}
                         required
                       />
-                    </div>
+                    </label>
                   </div>
-                  <div className="space-y-1">
-                    <label className="ml-1 text-xs font-black uppercase tracking-[0.16em] text-slate-500">Company</label>
+
+                  <label className="group block">
+                    <span className={formLabelClass}>Company</span>
                     <input
                       type="text"
-                      className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-800 focus:outline-none focus:ring-4 focus:ring-blue-500/10"
+                      className={formFieldClass}
                       placeholder="Acme Corp"
                       value={formData.company}
                       onChange={e => setFormData({ ...formData, company: e.target.value })}
                       required
                     />
-                  </div>
-                  <div className="space-y-1 relative">
-                    <div className="flex justify-between items-center px-1">
-                      <label className="text-xs font-black uppercase tracking-[0.16em] text-slate-500">Request details</label>
+                  </label>
+
+                  <label className="group block">
+                    <div className="flex justify-between px-1">
+                      <span className={formLabelClass}>Request details</span>
                       <span className={`text-[10px] font-black uppercase tracking-widest ${formData.message.length > 1900 ? "text-amber-600" : "text-slate-400"}`}>
                         {formData.message.length} / 2000
                       </span>
                     </div>
                     <textarea
-                      rows="4"
+                      rows="6"
                       maxLength="2000"
-                      className="w-full resize-none rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-800 focus:outline-none focus:ring-4 focus:ring-blue-500/10"
-                      placeholder={reason === 'password' ? "Include your workspace, email address, and what changed..." : "Describe the issue or request..."}
+                      className={formTextareaClass}
+                      placeholder={reason === "password" ? "Include your workspace, email address, and what changed..." : "Describe the request, affected users, files, or source names..."}
                       value={formData.message}
                       onChange={e => setFormData({ ...formData, message: e.target.value })}
                       required
-                    ></textarea>
+                    />
+                  </label>
+
+                  {!reason && (
+                    <p className="border-t border-slate-200 pt-3 text-sm font-semibold leading-6 text-slate-500">
+                      Choose a path before sending so the request is routed correctly.
+                    </p>
+                  )}
+
+                  <div className="flex flex-col gap-3 border-t border-slate-200 pt-4 sm:flex-row sm:items-center sm:justify-between">
+                    <Link to="/login" className={`text-xs font-black uppercase tracking-[0.16em] text-slate-500 transition-colors ${themeHoverTextClass}`}>
+                      Back to sign in
+                    </Link>
+                    <button
+                      type="submit"
+                      disabled={!reason}
+                      className={`${primaryActionClass} h-12 px-6 ${!reason ? "cursor-not-allowed opacity-55" : ""}`}
+                    >
+                      Send request
+                    </button>
                   </div>
-                </div>
-
-                <button
-                  type="submit"
-                  className="w-full rounded-md bg-blue-600 py-2.5 text-sm font-black text-white shadow-sm transition-all hover:bg-blue-700 active:scale-[0.99]"
-                >
-                  Send request
-                </button>
-              </form>
-            )}
-
-            {!reason && (
-              <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-center">
-                <p className="text-sm font-semibold leading-6 text-slate-500">
-                  Select a topic to open the support form.
-                </p>
-              </div>
-            )}
-          </div>
-        )}
-
-        <div className="mt-5 border-t border-slate-100 pt-4">
-          <Link to="/login" className="flex items-center justify-center gap-2 text-xs font-black uppercase tracking-[0.16em] text-slate-500 transition-colors hover:text-blue-700">
-            <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
-            Back to sign in
-          </Link>
-        </div>
-        </div>
+                </form>
+              )}
+            </div>
+          </section>
+        </main>
       </div>
     </div>
   );
@@ -1396,7 +1772,7 @@ function SupportScreen() {
 
 function AuthScreen({ email, setEmail, password, setPassword, onSubmit, onGoogleLogin, onSamlLogin, googleEnabled }) {
   return (
-    <div className="min-h-screen w-full bg-slate-50 px-5 py-8 text-slate-950 md:px-8">
+    <div className={publicPageClass}>
       <div className="mx-auto grid min-h-[calc(100vh-4rem)] max-w-6xl gap-8 lg:grid-cols-[1fr_480px] lg:items-center">
         <section className="hidden lg:block">
           <Link to="/" className="inline-flex items-center" aria-label="TFORN home">
@@ -1406,7 +1782,7 @@ function AuthScreen({ email, setEmail, password, setPassword, onSubmit, onGoogle
               className="h-16 w-auto max-w-[320px] object-contain"
             />
           </Link>
-          <p className="mt-12 text-xs font-black uppercase tracking-[0.22em] text-blue-700">Workspace sign in</p>
+          <p className={`mt-12 text-xs font-black uppercase tracking-[0.22em] ${themeTextClass}`}>Workspace sign in</p>
           <h1 className="mt-3 max-w-xl text-4xl font-black leading-tight tracking-tight text-slate-950">
             Continue to your controlled file workspace.
           </h1>
@@ -1415,14 +1791,14 @@ function AuthScreen({ email, setEmail, password, setPassword, onSubmit, onGoogle
           </p>
           <div className="mt-8 grid max-w-xl gap-3 sm:grid-cols-3">
             {["Reviewed files", "Source history", "Admin controls"].map((item) => (
-              <div key={item} className="rounded-xl border border-slate-200 bg-white p-4 text-sm font-black text-slate-800 shadow-sm">
+              <div key={item} className={publicMiniPanelClass}>
                 {item}
               </div>
             ))}
           </div>
         </section>
 
-        <section className="w-full rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_24px_70px_rgba(15,23,42,0.10)] md:p-7">
+        <section className={publicPanelClass}>
           <div className="mb-6 text-center lg:text-left">
             <Link to="/" className="mb-5 inline-flex justify-center lg:hidden" aria-label="TFORN home">
               <img
@@ -1437,35 +1813,35 @@ function AuthScreen({ email, setEmail, password, setPassword, onSubmit, onGoogle
 
         <form onSubmit={onSubmit} className="space-y-2">
           <div className="group space-y-1">
-            <label className="ml-1 text-xs font-black uppercase tracking-[0.16em] text-slate-500 group-focus-within:text-blue-700 transition-colors">Work email</label>
+            <label className={formLabelClass}>Work email</label>
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="name@company.com"
-              className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-800 transition-all placeholder:text-slate-300 focus:border-blue-500/50 focus:outline-none focus:ring-4 focus:ring-blue-500/10"
+              className={formFieldClass}
               required
             />
           </div>
 
           <div className="group space-y-1">
             <div className="flex justify-between items-center px-1">
-              <label className="text-xs font-black uppercase tracking-[0.16em] text-slate-500 group-focus-within:text-blue-700 transition-colors">Password</label>
-              <Link to="/support" className="text-xs font-black text-blue-700 transition-colors hover:text-blue-900">Trouble signing in?</Link>
+              <label className={formLabelClass}>Password</label>
+              <Link to="/support" className={`text-xs font-black ${themeTextClass} transition-colors hover:text-slate-950`}>Trouble signing in?</Link>
             </div>
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••••••"
-              className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-800 transition-all placeholder:text-slate-300 focus:border-blue-500/50 focus:outline-none focus:ring-4 focus:ring-blue-500/10"
+              className={formFieldClass}
               required
             />
           </div>
 
           <button
             type="submit"
-            className="group w-full rounded-md bg-blue-600 py-2.5 text-sm font-black text-white shadow-sm transition-all duration-300 hover:bg-blue-700 active:scale-[0.99]"
+            className={`${primaryActionClass} h-12 w-full`}
           >
             <span className="flex items-center justify-center gap-2">
               Sign in to workspace
@@ -1477,7 +1853,7 @@ function AuthScreen({ email, setEmail, password, setPassword, onSubmit, onGoogle
             type="button"
             onClick={onGoogleLogin}
             disabled={!googleEnabled}
-            className={`w-full flex items-center justify-center gap-2.5 rounded-md border border-slate-200 bg-white py-2.5 text-sm font-bold text-slate-800 shadow-sm transition-all duration-300 hover:border-slate-300 hover:bg-slate-50 active:scale-[0.99] ${!googleEnabled ? "opacity-50 cursor-not-allowed grayscale" : ""}`}
+            className={`${secondaryActionClass} h-12 w-full gap-2.5 ${!googleEnabled ? "opacity-50 cursor-not-allowed grayscale" : ""}`}
           >
             <svg viewBox="0 0 24 24" width="14" height="14">
               <path
@@ -1503,7 +1879,7 @@ function AuthScreen({ email, setEmail, password, setPassword, onSubmit, onGoogle
           <button
             type="button"
             onClick={onSamlLogin}
-            className="w-full flex items-center justify-center gap-2.5 rounded-md border border-slate-200 bg-white py-2.5 text-sm font-bold text-slate-800 shadow-sm transition-all duration-300 hover:border-slate-300 hover:bg-slate-50 active:scale-[0.99]"
+            className={`${secondaryActionClass} h-12 w-full gap-2.5`}
           >
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M12 3l7 4v5c0 5-3.5 8-7 9-3.5-1-7-4-7-9V7l7-4z" />
@@ -1513,7 +1889,7 @@ function AuthScreen({ email, setEmail, password, setPassword, onSubmit, onGoogle
           </button>
         </form>
 
-        <div className="mt-8 rounded-xl border border-slate-200 bg-slate-50 p-4">
+        <div className="mt-8 border-t border-slate-300 py-4">
            <div className="flex items-center gap-2">
               <span className="h-2 w-2 rounded-full bg-emerald-500"></span>
               <span className="text-xs font-black uppercase tracking-[0.16em] text-slate-500">Workspace available</span>
@@ -1540,57 +1916,94 @@ function InviteAcceptScreen({
   onBackToLogin,
 }) {
   return (
-    <div className="min-h-screen w-full flex items-center justify-center p-6 relative bg-[#fafafa] overflow-x-hidden">
-      <div className="absolute top-[-20%] left-[-10%] w-[60%] h-[60%] bg-indigo-500/10 rounded-full blur-[140px] animate-pulse" />
-      <div className="absolute bottom-[-20%] right-[-10%] w-[60%] h-[60%] bg-cyan-500/10 rounded-full blur-[140px] animate-pulse" style={{ animationDelay: "2s" }} />
-      <div className="glass rounded-xl p-5 md:p-7 w-full max-w-[500px] relative z-10 border-white/50 shadow-[0_32px_80px_rgba(0,0,0,0.08)]">
-        <div className="mb-5 text-center">
-          <h2 className="text-xl font-[900] text-slate-900 tracking-tighter mb-1.5">Accept Invitation</h2>
-          <p className="text-slate-500 text-[10px] font-semibold opacity-70 uppercase tracking-wider">
-            Join {inviteInfo?.groupName || "customer workspace"}
-          </p>
-        </div>
-        <div className="space-y-2">
-          <input className="w-full bg-white/40 border border-slate-200 rounded-md px-3 py-1.5 text-[11px] font-bold" value={inviteInfo?.email || ""} disabled />
-          <div className="grid grid-cols-2 gap-2">
-            <input className="w-full bg-white/40 border border-slate-200 rounded-md px-3 py-1.5 text-[11px] font-bold" value={inviteInfo?.firstName || ""} disabled />
-            <input className="w-full bg-white/40 border border-slate-200 rounded-md px-3 py-1.5 text-[11px] font-bold" value={inviteInfo?.lastName || ""} disabled />
-          </div>
-          <input className="w-full bg-white/40 border border-slate-200 rounded-md px-3 py-1.5 text-[11px] font-bold" value={inviteInfo?.company || ""} disabled />
-          <input
-            type="password"
-            value={invitePassword}
-            onChange={(e) => setInvitePassword(e.target.value)}
-            placeholder="Set password"
-            className="w-full bg-white/40 border border-slate-200 rounded-md px-3 py-1.5 text-[11px] font-bold"
-          />
-          <input
-            type="password"
-            value={inviteRepeat}
-            onChange={(e) => setInviteRepeat(e.target.value)}
-            placeholder="Repeat password"
-            className="w-full bg-white/40 border border-slate-200 rounded-md px-3 py-1.5 text-[11px] font-bold"
-          />
-          {!!error && (
-            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-700">
-              {error}
+    <div className={`${publicPageClass} flex items-center justify-center`}>
+      <div className="w-full max-w-5xl">
+        <div className="grid gap-8 lg:grid-cols-[0.9fr_1.1fr] lg:items-center">
+          <section>
+            <Link to="/" className="inline-flex items-center" aria-label="TFORN home">
+              <img
+                src="/assets/tform-logo.png"
+                alt="TFORN - Turn Financial Outputs into Real Numbers"
+                className="h-16 w-auto max-w-[320px] object-contain"
+              />
+            </Link>
+            <p className={`mt-10 text-xs font-black uppercase tracking-[0.22em] ${themeTextClass}`}>Workspace invitation</p>
+            <h1 className="mt-3 max-w-xl text-4xl font-black leading-tight tracking-tight text-slate-950">
+              Finish setting up your secure access.
+            </h1>
+            <p className="mt-4 max-w-xl text-base font-semibold leading-8 text-slate-600">
+              Create your password to join {inviteInfo?.groupName || "the customer workspace"} and access the files shared with your account.
+            </p>
+          </section>
+
+          <section className={publicPanelClass}>
+            <div className="mb-6">
+              <h2 className="text-2xl font-black tracking-tight text-slate-950">Accept invitation</h2>
+              <p className="mt-2 text-sm font-semibold text-slate-500">
+                Review the invited details and set your password.
+              </p>
             </div>
-          )}
-          <button
-            type="button"
-            onClick={onAccept}
-            disabled={loading || !inviteInfo}
-            className={`w-full bg-slate-900 hover:bg-black text-white rounded-md py-1.5 text-[11px] font-[900] ${loading || !inviteInfo ? "opacity-60 cursor-not-allowed" : ""}`}
-          >
-            {loading ? "Accepting..." : "Accept & Continue"}
-          </button>
-          <button
-            type="button"
-            onClick={onBackToLogin}
-            className="w-full rounded-md border border-slate-300 text-slate-700 py-1.5 text-[11px] font-semibold hover:bg-slate-50"
-          >
-            Back to Login
-          </button>
+            <div className="space-y-3">
+              <label className="block">
+                <span className={formLabelClass}>Email</span>
+                <input className={`${formFieldClass} opacity-75`} value={inviteInfo?.email || ""} disabled />
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block">
+                  <span className={formLabelClass}>First name</span>
+                  <input className={`${formFieldClass} opacity-75`} value={inviteInfo?.firstName || ""} disabled />
+                </label>
+                <label className="block">
+                  <span className={formLabelClass}>Last name</span>
+                  <input className={`${formFieldClass} opacity-75`} value={inviteInfo?.lastName || ""} disabled />
+                </label>
+              </div>
+              <label className="block">
+                <span className={formLabelClass}>Company</span>
+                <input className={`${formFieldClass} opacity-75`} value={inviteInfo?.company || ""} disabled />
+              </label>
+              <label className="block">
+                <span className={formLabelClass}>Set password</span>
+                <input
+                  type="password"
+                  value={invitePassword}
+                  onChange={(e) => setInvitePassword(e.target.value)}
+                  placeholder="Set password"
+                  className={formFieldClass}
+                />
+              </label>
+              <label className="block">
+                <span className={formLabelClass}>Repeat password</span>
+                <input
+                  type="password"
+                  value={inviteRepeat}
+                  onChange={(e) => setInviteRepeat(e.target.value)}
+                  placeholder="Repeat password"
+                  className={formFieldClass}
+                />
+              </label>
+              {!!error && (
+                <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-bold text-red-700">
+                  {error}
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={onAccept}
+                disabled={loading || !inviteInfo}
+                className={`${primaryActionClass} h-12 w-full ${loading || !inviteInfo ? "opacity-60 cursor-not-allowed" : ""}`}
+              >
+                {loading ? "Accepting..." : "Accept and continue"}
+              </button>
+              <button
+                type="button"
+                onClick={onBackToLogin}
+                className={`${secondaryActionClass} h-12 w-full`}
+              >
+                Back to sign in
+              </button>
+            </div>
+          </section>
         </div>
       </div>
     </div>
@@ -1639,8 +2052,8 @@ function AuthenticatedAppHeader({
 
 export default function App() {
   const [user, setUser] = useState(null);
-  const [token, setToken] = useState(() => readStoredAuthToken());
-  const [authChecking, setAuthChecking] = useState(() => !!readStoredAuthToken());
+  const [token, setToken] = useState(() => createSessionMarker());
+  const [authChecking, setAuthChecking] = useState(true);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [inviteToken, setInviteToken] = useState("");
@@ -1656,11 +2069,16 @@ export default function App() {
   const [gcsStorageEnabled, setGcsStorageEnabled] = useState(true);
   const [s3StorageEnabled, setS3StorageEnabled] = useState(true);
   const [azureBlobStorageEnabled, setAzureBlobStorageEnabled] = useState(true);
+  const integrationStatusCheckedRef = useRef("");
   const dashboardI18n = useDashboardI18n({ enabled: !!user });
   const [workspaceView, setWorkspaceView] = useState("grid");
 
   const [sheetId, setSheetId] = useState(() => localStorage.getItem("sheetId") || null);
   const [activeFilename, setActiveFilename] = useState(() => localStorage.getItem("activeFilename") || "");
+
+  useEffect(() => {
+    clearStoredAuthTokens();
+  }, []);
 
   const [data, setData] = useState([]);
   const [headers, setHeaders] = useState([]);
@@ -2177,11 +2595,8 @@ export default function App() {
     e.preventDefault();
     try {
       const res = await axios.post(`${API}/auth/login`, { email, password });
-      const authToken = String(res?.data?.token || "").trim();
-      if (authToken) {
-        localStorage.setItem("token", authToken);
-      }
-      setToken(authToken);
+      clearStoredAuthTokens();
+      setToken(createSessionMarker());
       setUser(res.data.user);
     } catch (err) {
       alert("Login failed");
@@ -2213,10 +2628,8 @@ export default function App() {
         token: inviteToken,
         password: invitePassword,
       });
-      const authToken = String(res?.data?.token || "").trim();
-      if (!authToken) throw new Error("invitation_accept_missing_token");
-      localStorage.setItem("token", authToken);
-      setToken(authToken);
+      clearStoredAuthTokens();
+      setToken(createSessionMarker());
       setUser(res?.data?.user || null);
       setInvitePassword("");
       setInviteRepeat("");
@@ -3096,6 +3509,15 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (authChecking) return;
+    if (!user) {
+      integrationStatusCheckedRef.current = "";
+      return;
+    }
+    const statusKey = String(user.id || user.email || "session");
+    if (integrationStatusCheckedRef.current === statusKey) return;
+    integrationStatusCheckedRef.current = statusKey;
+
     axios.get(`${API}/auth/google/status`)
       .then((r) => setGoogleEnabled(r?.data?.enabled !== false))
       .catch(() => setGoogleEnabled(true));
@@ -3117,7 +3539,7 @@ export default function App() {
     axios.get(`${API}/storage/azure_blob_storage/status`)
       .then((r) => setAzureBlobStorageEnabled(r?.data?.enabled !== false))
       .catch(() => setAzureBlobStorageEnabled(true));
-  }, []);
+  }, [API, authChecking, user]);
 
   useEffect(() => {
     if (user) return;
@@ -3152,11 +3574,9 @@ export default function App() {
     const samlError = params.get("saml_error");
     if (samlCode) {
       axios.post(`${API}/auth/saml/exchange`, { code: samlCode })
-        .then((resp) => {
-          const exchangedToken = String(resp?.data?.token || "").trim();
-          if (!exchangedToken) throw new Error("saml_exchange_missing_token");
-          localStorage.setItem("token", exchangedToken);
-          setToken(exchangedToken);
+        .then(() => {
+          clearStoredAuthTokens();
+          setToken(createSessionMarker());
         })
         .catch(() => {
           alert("SAML sign-in failed.");
@@ -3190,11 +3610,9 @@ export default function App() {
     }
     if (googleCode) {
       axios.post(`${API}/auth/google/exchange`, { code: googleCode })
-        .then((resp) => {
-          const exchangedToken = String(resp?.data?.token || "").trim();
-          if (!exchangedToken) throw new Error("google_exchange_missing_token");
-          localStorage.setItem("token", exchangedToken);
-          setToken(exchangedToken);
+        .then(() => {
+          clearStoredAuthTokens();
+          setToken(createSessionMarker());
         })
         .catch(() => {
           alert("Google sign-in failed.");
@@ -3275,7 +3693,7 @@ export default function App() {
     axios.get(`${API}/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
       .then(r => {
         setUser(r.data);
-        setToken((prev) => prev || readStoredAuthToken());
+        setToken((prev) => prev || createSessionMarker());
         const savedSheetId = localStorage.getItem("sheetId");
         const savedTab = localStorage.getItem("activeTab");
         if (savedSheetId && savedSheetId !== "null") {
@@ -3420,10 +3838,7 @@ export default function App() {
   // Handlers for DashboardHeader
   const handleLogout = () => {
     axios.post(`${API}/auth/logout`).catch(() => {});
-    localStorage.removeItem("token");
-    localStorage.removeItem("authToken");
-    localStorage.removeItem("jwt");
-    localStorage.removeItem("jwtToken");
+    clearStoredAuthTokens();
     localStorage.removeItem("sheetId");
     localStorage.removeItem("activeFilename");
     localStorage.removeItem("activeTab");
@@ -3455,6 +3870,7 @@ export default function App() {
    * --------------------------- */
   return (
     <Router>
+      <ScrollToHash />
       <div className="flex flex-col h-screen overflow-hidden premium-gradient font-sans text-slate-900">
 
         <AuthenticatedAppHeader
@@ -3481,6 +3897,11 @@ export default function App() {
         */}
 
         <main className="flex-1 min-h-0 relative flex flex-col overflow-y-auto">
+          <Suspense fallback={
+            <div className="min-h-screen w-full flex items-center justify-center bg-[#fafafa]">
+              <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Loading workspace...</div>
+            </div>
+          }>
           <Routes>
             <Route path="/" element={
               <ErrorBoundary>
@@ -3512,7 +3933,7 @@ export default function App() {
             <Route path="/login" element={
               <ErrorBoundary>
                 {authChecking ? (
-                  <div className="min-h-screen w-full flex items-center justify-center bg-[#fafafa]">
+                  <div className={`${publicPageClass} flex items-center justify-center`}>
                     <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Loading workspace...</div>
                   </div>
                 ) : !user ? (
@@ -3529,6 +3950,7 @@ export default function App() {
                 ) : <Navigate to="/workspace" replace />}
               </ErrorBoundary>
             } />
+            <Route path="/pricing" element={<PricingPage user={user} />} />
             <Route path="/demo" element={<DemoBookingScreen />} />
             <Route path="/support" element={<SupportScreen />} />
             <Route path="/workspace/files" element={
@@ -3891,6 +4313,7 @@ export default function App() {
                 : <div className="p-8 text-center text-gray-500">Access denied. Admin only.</div>
             } />
           </Routes>
+          </Suspense>
 
           {/* GLOBAL MODALS */}
           {user && user.password_reset_required && (

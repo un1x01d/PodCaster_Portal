@@ -1114,7 +1114,9 @@ export default function DashboardBody(props) {
     const [secondaryComparePickerOpen, setSecondaryComparePickerOpen] = useState(false);
     const [primaryCompareExpanded, setPrimaryCompareExpanded] = useState(true);
     const [secondaryCompareExpanded, setSecondaryCompareExpanded] = useState(true);
+    const [primaryCurrentCompareRows, setPrimaryCurrentCompareRows] = useState([]);
     const [primaryCompareRows, setPrimaryCompareRows] = useState([]);
+    const [secondaryCurrentCompareRows, setSecondaryCurrentCompareRows] = useState([]);
     const [secondaryCompareRows, setSecondaryCompareRows] = useState([]);
     const [primarySourceQuery, setPrimarySourceQuery] = useState("");
     const [secondarySourceQuery, setSecondarySourceQuery] = useState("");
@@ -1216,7 +1218,8 @@ export default function DashboardBody(props) {
     const sortRowsForDiff = React.useCallback((rows, cfg) => {
         if (!cfg?.key || !cfg?.direction || !Array.isArray(rows)) return rows;
         const key = cfg.key;
-        const direction = cfg.direction === "descending" ? -1 : 1;
+        const rawDirection = String(cfg.direction || "").toLowerCase();
+        const direction = rawDirection === "desc" || rawDirection === "descending" ? -1 : 1;
         return rows.slice().sort((a, b) => {
             const av = a?.[key];
             const bv = b?.[key];
@@ -1256,71 +1259,99 @@ export default function DashboardBody(props) {
     useEffect(() => {
         let cancelled = false;
         const run = async () => {
-            if (!primaryCompareSheetId) {
+            if (!primaryCompareSheetId || !sheetId) {
+                setPrimaryCurrentCompareRows([]);
                 setPrimaryCompareRows([]);
                 return;
             }
             try {
-                const params = {};
-                if (activeTab) params.tab = activeTab;
-                if (selectedViewId) params.viewId = selectedViewId;
-                if (sortConfig?.key) {
-                    params.sort_by = sortConfig.key;
-                    params.sort_order = sortConfig.direction;
-                }
-                appendFiltersParam(params, columnFilters);
-                params.limit = Math.max(1000, Array.isArray(sortedData) ? sortedData.length : 0);
-                const res = await axios.get(`${API}/sheets/${primaryCompareSheetId}/data`, {
-                    headers: { Authorization: `Bearer ${token}` },
-                    params,
-                });
+                const buildParams = () => {
+                    const params = {};
+                    if (activeTab) params.tab = activeTab;
+                    if (selectedViewId) params.viewId = selectedViewId;
+                    params.compare = "revision";
+                    if (sortConfig?.key) {
+                        params.sort_by = sortConfig.key;
+                        params.sort_order = sortConfig.direction;
+                    }
+                    appendFiltersParam(params, columnFilters);
+                    params.limit = 100000;
+                    return params;
+                };
+                const [currentRes, compareRes] = await Promise.all([
+                    axios.get(`${API}/sheets/${sheetId}/data`, { params: buildParams() }),
+                    axios.get(`${API}/sheets/${primaryCompareSheetId}/data`, { params: buildParams() }),
+                ]);
                 if (!cancelled) {
-                    setPrimaryCompareRows(normalizeRowsFromResponse(res.data));
+                    setPrimaryCurrentCompareRows(normalizeRowsFromResponse(currentRes.data));
+                    setPrimaryCompareRows(normalizeRowsFromResponse(compareRes.data));
                 }
             } catch (e) {
                 console.error("Failed loading primary compare revision:", e);
-                if (!cancelled) setPrimaryCompareRows([]);
+                if (!cancelled) {
+                    setPrimaryCurrentCompareRows([]);
+                    setPrimaryCompareRows([]);
+                }
             }
         };
         run();
         return () => { cancelled = true; };
-    }, [API, token, primaryCompareSheetId, activeTab, selectedViewId, sortConfig, columnFilters, sortedData, appendFiltersParam, normalizeRowsFromResponse]);
+    }, [API, primaryCompareSheetId, sheetId, activeTab, selectedViewId, sortConfig, columnFilters, appendFiltersParam, normalizeRowsFromResponse]);
 
     useEffect(() => {
         let cancelled = false;
         const run = async () => {
-            if (!secondaryCompareSheetId) {
+            if (!secondaryCompareSheetId || !secondarySheetId) {
+                setSecondaryCurrentCompareRows([]);
                 setSecondaryCompareRows([]);
                 return;
             }
             try {
-                const params = {};
-                if (secondaryTab) params.tab = secondaryTab;
-                if (secondarySortConfig?.key) {
-                    params.sort_by = secondarySortConfig.key;
-                    params.sort_order = secondarySortConfig.direction;
-                }
-                appendFiltersParam(params, secondaryColumnFilters);
-                params.limit = Math.max(1000, Array.isArray(secondaryData) ? secondaryData.length : 0);
-                const res = await axios.get(`${API}/sheets/${secondaryCompareSheetId}/data`, {
-                    headers: { Authorization: `Bearer ${token}` },
-                    params,
-                });
+                const buildParams = () => {
+                    const params = {};
+                    if (secondaryTab) params.tab = secondaryTab;
+                    params.compare = "revision";
+                    if (secondarySortConfig?.key) {
+                        params.sort_by = secondarySortConfig.key;
+                        params.sort_order = secondarySortConfig.direction;
+                    }
+                    appendFiltersParam(params, secondaryColumnFilters);
+                    params.limit = 100000;
+                    return params;
+                };
+                const [currentRes, compareRes] = await Promise.all([
+                    axios.get(`${API}/sheets/${secondarySheetId}/data`, { params: buildParams() }),
+                    axios.get(`${API}/sheets/${secondaryCompareSheetId}/data`, { params: buildParams() }),
+                ]);
                 if (!cancelled) {
-                    setSecondaryCompareRows(normalizeRowsFromResponse(res.data));
+                    setSecondaryCurrentCompareRows(normalizeRowsFromResponse(currentRes.data));
+                    setSecondaryCompareRows(normalizeRowsFromResponse(compareRes.data));
                 }
             } catch (e) {
                 console.error("Failed loading secondary compare revision:", e);
-                if (!cancelled) setSecondaryCompareRows([]);
+                if (!cancelled) {
+                    setSecondaryCurrentCompareRows([]);
+                    setSecondaryCompareRows([]);
+                }
             }
         };
         run();
         return () => { cancelled = true; };
-    }, [API, token, secondaryCompareSheetId, secondaryTab, secondarySortConfig, secondaryColumnFilters, secondaryData, appendFiltersParam, normalizeRowsFromResponse]);
+    }, [API, secondaryCompareSheetId, secondarySheetId, secondaryTab, secondarySortConfig, secondaryColumnFilters, appendFiltersParam, normalizeRowsFromResponse]);
+
+    const primarySortedCurrentCompareRows = React.useMemo(
+        () => sortRowsForDiff(primaryCurrentCompareRows, sortConfig),
+        [primaryCurrentCompareRows, sortConfig, sortRowsForDiff]
+    );
 
     const primarySortedCompareRows = React.useMemo(
         () => sortRowsForDiff(primaryCompareRows, sortConfig),
         [primaryCompareRows, sortConfig, sortRowsForDiff]
+    );
+
+    const secondarySortedCurrentCompareRows = React.useMemo(
+        () => sortRowsForDiff(secondaryCurrentCompareRows, secondarySortConfig),
+        [secondaryCurrentCompareRows, secondarySortConfig, sortRowsForDiff]
     );
 
     const secondarySortedCompareRows = React.useMemo(
@@ -1392,14 +1423,14 @@ export default function DashboardBody(props) {
 
     const primaryDiffCellSet = React.useMemo(() => {
         const changed = new Set(splitPaneDiffSets.primary);
-        if (primaryCompareSheetId && primarySortedCompareRows.length && Array.isArray(sortedData) && sortedData.length) {
+        if (primaryCompareSheetId && primarySortedCompareRows.length && primarySortedCurrentCompareRows.length) {
             const columns = displayHeaders || [];
             const exactBaselineRows = new Map();
             primarySortedCompareRows.forEach((row) => {
                 const signature = buildRowSignatureForDiff(row, columns);
                 exactBaselineRows.set(signature, (exactBaselineRows.get(signature) || 0) + 1);
             });
-            sortedData.forEach((row, rowIndex) => {
+            primarySortedCurrentCompareRows.forEach((row, rowIndex) => {
                 const signature = buildRowSignatureForDiff(row, columns);
                 const exactCount = exactBaselineRows.get(signature) || 0;
                 if (exactCount > 0) {
@@ -1416,7 +1447,7 @@ export default function DashboardBody(props) {
             });
         }
         return changed;
-    }, [splitPaneDiffSets.primary, primaryCompareSheetId, sortedData, primarySortedCompareRows, displayHeaders, normalizeCellForDiff, buildRowSignatureForDiff]);
+    }, [splitPaneDiffSets.primary, primaryCompareSheetId, primarySortedCurrentCompareRows, primarySortedCompareRows, displayHeaders, normalizeCellForDiff, buildRowSignatureForDiff]);
 
     const primaryMissingColumns = React.useMemo(() => {
         if (!primaryCompareSheetId) return [];
@@ -1429,7 +1460,7 @@ export default function DashboardBody(props) {
 
     const secondaryDiffCellSet = React.useMemo(() => {
         const changed = new Set(splitPaneDiffSets.secondary);
-        const rows = Array.isArray(secondaryData) ? secondaryData : [];
+        const rows = secondarySortedCurrentCompareRows.length ? secondarySortedCurrentCompareRows : (Array.isArray(secondaryData) ? secondaryData : []);
         const activeFilters = Object.entries(secondaryColumnFilters)
             .filter(([, allowed]) => allowed instanceof Set && allowed.size > 0);
         const filteredRows = !activeFilters.length
@@ -1461,7 +1492,7 @@ export default function DashboardBody(props) {
             });
         }
         return changed;
-    }, [splitPaneDiffSets.secondary, secondaryCompareSheetId, secondaryData, secondaryColumnFilters, secondarySortedCompareRows, activeSecondaryFields, normalizeCellForDiff, buildRowSignatureForDiff]);
+    }, [splitPaneDiffSets.secondary, secondaryCompareSheetId, secondaryData, secondarySortedCurrentCompareRows, secondaryColumnFilters, secondarySortedCompareRows, activeSecondaryFields, normalizeCellForDiff, buildRowSignatureForDiff]);
 
     const secondaryMissingColumns = React.useMemo(() => {
         if (!secondaryCompareSheetId) return [];

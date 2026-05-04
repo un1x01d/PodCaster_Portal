@@ -1,10 +1,6 @@
 import React, { useRef, useEffect } from 'react';
 import { DASHBOARD_COPY_EN } from "../../hooks/useDashboardI18n";
 
-const CHAT_AUDIO_CACHE_NAME = "dashboard-chat-audio-v1";
-const CHAT_AUDIO_RECENT_KEY = "dashboard-chat-audio-recent-v1";
-const CHAT_AUDIO_RECENT_LIMIT = 5;
-
 export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_COPY_EN, locale = "en" }) {
     const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
     const containerRef = useRef(null);
@@ -32,123 +28,6 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
         return out;
     };
 
-    const normalizeCacheText = (text = "") => String(text || "").trim().replace(/\s+/g, " ");
-
-    const getAudioCacheKey = async (text = "", lang = "en") => {
-        const raw = `${String(lang || "en").toLowerCase()}::${normalizeCacheText(text)}`;
-        if (!raw.trim()) return "";
-        if (window.crypto?.subtle?.digest) {
-            const bytes = new TextEncoder().encode(raw);
-            const digest = await window.crypto.subtle.digest("SHA-256", bytes);
-            return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
-        }
-        return raw;
-    };
-
-    const readRecentAudioKeys = () => {
-        try {
-            const raw = window.localStorage.getItem(CHAT_AUDIO_RECENT_KEY);
-            const parsed = JSON.parse(raw || "[]");
-            return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
-        } catch {
-            return [];
-        }
-    };
-
-    const writeRecentAudioKeys = (keys) => {
-        try {
-            window.localStorage.setItem(CHAT_AUDIO_RECENT_KEY, JSON.stringify((keys || []).slice(0, CHAT_AUDIO_RECENT_LIMIT)));
-        } catch {
-            // ignore storage errors
-        }
-    };
-
-    const rememberRecentAudioKey = (key) => {
-        if (!key) return;
-        const next = [key, ...readRecentAudioKeys().filter((item) => item !== key)].slice(0, CHAT_AUDIO_RECENT_LIMIT);
-        writeRecentAudioKeys(next);
-    };
-
-    const cacheAudioBlob = async (cacheKey, blob) => {
-        if (!cacheKey || !blob || typeof caches === "undefined") return;
-        try {
-            const cache = await caches.open(CHAT_AUDIO_CACHE_NAME);
-            await cache.put(
-                new Request(`/__chat_audio_cache__/${encodeURIComponent(cacheKey)}`),
-                new Response(blob, {
-                    headers: {
-                        "Content-Type": "audio/mpeg",
-                        "X-Chat-Audio-Key": cacheKey,
-                    },
-                })
-            );
-            rememberRecentAudioKey(cacheKey);
-        } catch {
-            // ignore cache failures
-        }
-    };
-
-    const readCachedAudioBlob = async (cacheKey) => {
-        if (!cacheKey || typeof caches === "undefined") return null;
-        try {
-            const cache = await caches.open(CHAT_AUDIO_CACHE_NAME);
-            const cached = await cache.match(new Request(`/__chat_audio_cache__/${encodeURIComponent(cacheKey)}`));
-            if (!cached) return null;
-            return await cached.blob();
-        } catch {
-            return null;
-        }
-    };
-
-    const fetchAndCacheAudio = async (text, lang, signal = undefined) => {
-        const cacheKey = await getAudioCacheKey(text, lang);
-        const cachedBlob = await readCachedAudioBlob(cacheKey);
-        if (cachedBlob) return { cacheKey, blob: cachedBlob, fromCache: true };
-
-        const token =
-            localStorage.getItem("token")
-            || localStorage.getItem("authToken")
-            || localStorage.getItem("jwt")
-            || localStorage.getItem("jwtToken")
-            || "";
-        const csrfToken = readCookie("csrf_token");
-        const response = await fetch(`${API}/chat/audio`, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                ...(token ? { Authorization: `Bearer ${token}` } : {}),
-                ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
-            },
-            body: JSON.stringify({ text, locale: lang }),
-            signal,
-            credentials: "include",
-        });
-        if (!response.ok) {
-            if (response.status === 403) setChatAudioEnabled(false);
-            return { cacheKey, blob: null, fromCache: false };
-        }
-        const blob = await response.blob();
-        await cacheAudioBlob(cacheKey, blob);
-        return { cacheKey, blob, fromCache: false };
-    };
-
-    const warmRecentAudioCache = React.useCallback(async () => {
-        const recentBotMessages = [...(messages || [])]
-            .filter((m) => m && m.type === "bot" && !m.isSystem && String(m.text || "").trim())
-            .slice(-CHAT_AUDIO_RECENT_LIMIT);
-        for (const msg of recentBotMessages) {
-            const cacheKey = await getAudioCacheKey(msg.text, locale);
-            const cachedBlob = await readCachedAudioBlob(cacheKey);
-            if (cachedBlob) continue;
-            try {
-                const { blob } = await fetchAndCacheAudio(msg.text, locale);
-                if (blob) continue;
-            } catch {
-                // ignore warm failures
-            }
-        }
-    }, [messages, locale]);
-
     useEffect(() => {
         if (containerRef.current) {
             containerRef.current.scrollTop = containerRef.current.scrollHeight;
@@ -156,18 +35,19 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
     }, [messages]);
 
     useEffect(() => {
-        const token =
-            localStorage.getItem("token")
-            || localStorage.getItem("authToken")
-            || localStorage.getItem("jwt")
-            || localStorage.getItem("jwtToken")
-            || "";
-        if (!token) return;
+        try {
+            window.localStorage?.removeItem("dashboard-chat-audio-recent-v1");
+            if (typeof caches !== "undefined") {
+                caches.delete("dashboard-chat-audio-v1").catch(() => {});
+            }
+        } catch {
+            // no-op: storage cleanup is best effort
+        }
+    }, []);
+
+    useEffect(() => {
         fetch(`${API}/users/me/ai-features`, {
             method: "GET",
-            headers: {
-                ...(token ? { Authorization: `Bearer ${token}` } : {}),
-            },
             credentials: "include",
         })
             .then((res) => (res.ok ? res.json() : null))
@@ -179,10 +59,6 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
                 setChatAudioEnabled(false);
             });
     }, [API]);
-
-    useEffect(() => {
-        warmRecentAudioCache();
-    }, [warmRecentAudioCache]);
 
     const [voices, setVoices] = React.useState([]);
 
@@ -394,22 +270,6 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
         setSpeakingIndex(index);
 
         try {
-            const cacheKey = await getAudioCacheKey(text, locale);
-            const cachedBlob = await readCachedAudioBlob(cacheKey);
-            if (cachedBlob) {
-                const url = URL.createObjectURL(cachedBlob);
-                const audio = new Audio(url);
-                window._currentAudio = audio;
-                window._audioQueue.push(audio);
-                await new Promise((resolve, reject) => {
-                    audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
-                    audio.onerror = () => { URL.revokeObjectURL(url); reject(new Error("cached_audio_failed")); };
-                    audio.play().catch(reject);
-                });
-                if (!window._stopPlayback) setSpeakingIndex(null);
-                return;
-            }
-
             const played = await streamTextToAudio(text);
             if (played === false) {
                 fallbackSpeak(text, index, (localeBase === "ru" || localeBase === "uk") ? { slavicSafe: true } : {});
@@ -428,34 +288,12 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
         window._audioAbortControllers = [];
         const controller = new AbortController();
         window._audioAbortControllers.push(controller);
-        const cacheKey = await getAudioCacheKey(text, locale);
-        const cachedBlob = await readCachedAudioBlob(cacheKey);
-        if (cachedBlob) {
-            const url = URL.createObjectURL(cachedBlob);
-            const audio = new Audio(url);
-            window._currentAudio = audio;
-            window._audioQueue.push(audio);
-            await new Promise((resolve, reject) => {
-                audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
-                audio.onerror = () => { URL.revokeObjectURL(url); reject(new Error("cached_audio_failed")); };
-                audio.play().catch(reject);
-            });
-            return true;
-        }
-
-        const token =
-            localStorage.getItem("token")
-            || localStorage.getItem("authToken")
-            || localStorage.getItem("jwt")
-            || localStorage.getItem("jwtToken")
-            || "";
         const csrfToken = readCookie("csrf_token");
 
         const response = await fetch(`${API}/chat/audio`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
-                ...(token ? { Authorization: `Bearer ${token}` } : {}),
                 ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
             },
             body: JSON.stringify({ text, locale }),
@@ -486,7 +324,6 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
             let started = false;
             let done = false;
             const queue = [];
-            const audioParts = [];
             const maybeEndStream = () => {
                 if (done && !queue.length && !sourceBuffer.updating && mediaSource.readyState === "open") {
                     try { mediaSource.endOfStream(); } catch (_) {}
@@ -508,7 +345,6 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
                 if (value?.length) {
                     const part = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
                     queue.push(part);
-                    audioParts.push(part);
                     flushQueue();
                     if (!started) {
                         started = true;
@@ -533,18 +369,10 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
               new Promise((resolve) => setTimeout(resolve, 15000)),
             ]);
             URL.revokeObjectURL(objectUrl);
-            try {
-                if (audioParts.length > 0) {
-                    await cacheAudioBlob(cacheKey, new Blob(audioParts, { type: "audio/mpeg" }));
-                }
-            } catch {
-                // ignore cache write failures
-            }
             return true;
         }
 
         const blob = await response.blob();
-        await cacheAudioBlob(cacheKey, blob);
         const url = URL.createObjectURL(blob);
         const audio = new Audio(url);
         window._currentAudio = audio;

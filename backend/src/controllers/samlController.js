@@ -333,7 +333,7 @@ export async function exchangeSamlCode(req, res) {
   const token = consumeSamlLoginCode(code);
   if (!token) return res.status(400).json({ error: "invalid_saml_code" });
   setAuthCookie(req, res, token);
-  return res.json({ token });
+  return res.json({ success: true });
 }
 
 export async function getSamlMetadata(req, res) {

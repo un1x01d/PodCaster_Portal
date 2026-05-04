@@ -1,12 +1,19 @@
 import express from "express";
 import multer from "multer";
 import path from "path";
+import fs from "fs";
 import { timingSafeEqual } from "crypto";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { uploadRateLimit } from "../middleware/rateLimit.js";
 import { ingestEmailAttachment } from "../controllers/sheetController.js";
 
 const router = express.Router();
+const UPLOADS_DIR = path.resolve("uploads");
+fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+const UPLOAD_FILE_SIZE_LIMIT_MB = Math.max(
+    1,
+    Number.parseInt(process.env.MAX_UPLOAD_FILE_MB || process.env.MAX_BUFFERED_IMPORT_MB || "50", 10) || 50
+);
 
 const allowedExt = new Set([".xlsx", ".xls", ".csv"]);
 const allowedMime = new Set([
@@ -19,8 +26,8 @@ const allowedMime = new Set([
 ]);
 
 const upload = multer({
-    storage: multer.memoryStorage(),
-    limits: { fileSize: 100 * 1024 * 1024 },
+    dest: UPLOADS_DIR,
+    limits: { fileSize: UPLOAD_FILE_SIZE_LIMIT_MB * 1024 * 1024 },
     fileFilter: (_req, file, cb) => {
         const ext = path.extname(file.originalname || "").toLowerCase();
         if (!allowedExt.has(ext)) {

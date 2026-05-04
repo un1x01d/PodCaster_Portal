@@ -107,23 +107,25 @@ function rowsFromWorksheet(ws) {
 }
 
 try {
-  const { buffer, options } = workerData;
+  const { buffer, filePath, options } = workerData;
   assertWithinMemoryLimit("start");
-  const wb = XLSX.read(buffer, {
-    type: 'buffer',
-    cellDates: true,
-    cellFormula: false,
-    cellHTML: false,
-    cellNF: false,
-    cellStyles: false,
-    cellText: false,
-    bookDeps: false,
-    bookFiles: false,
-    bookProps: false,
-    bookVBA: false,
-    WTF: false,
-    ...options
-  });
+  const workbookOptions = {
+      cellDates: true,
+      cellFormula: false,
+      cellHTML: false,
+      cellNF: false,
+      cellStyles: false,
+      cellText: false,
+      bookDeps: false,
+      bookFiles: false,
+      bookProps: false,
+      bookVBA: false,
+      WTF: false,
+      ...options,
+  };
+  const wb = filePath
+    ? XLSX.readFile(filePath, workbookOptions)
+    : XLSX.read(buffer, { type: 'buffer', ...workbookOptions });
   assertWithinMemoryLimit("after_workbook_read");
   
   const result = {

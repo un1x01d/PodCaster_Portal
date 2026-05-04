@@ -3,13 +3,13 @@
 @tailwind utilities;
 
 :root {
-  /* Premium Palette - Deep Indigo & Cyan */
-  --primary: 230 60% 50%;
+  /* Brand palette - TFORN navy and real-number blue */
+  --primary: 214 63% 36%;
   --primary-foreground: 210 40% 98%;
-  --accent: 190 90% 50%;
+  --accent: 213 100% 52%;
   --accent-foreground: 210 40% 98%;
   --background: 220 33% 98%;
-  --foreground: 224 71% 4%;
+  --foreground: 215 56% 26%;
   --card: 0 0% 100%;
   --card-foreground: 224 71% 4%;
   --border: 214 32% 91%;

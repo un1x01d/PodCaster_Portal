@@ -1,8 +1,7 @@
 import { isAiGloballyDisabled, loadAiRuntimeSettings } from "./aiRuntimeSettings.js";
 import { buildChatCompletionRequestBody, extractOpenAiAssistantText, minCompletionTokensForModel } from "./openAiCompat.js";
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
-const OPENAI_MODEL = process.env.OPENAI_MODEL;
-if (!OPENAI_MODEL) throw new Error("OPENAI_MODEL is required");
+const OPENAI_MODEL = String(process.env.OPENAI_MODEL || "gpt-5-nano").trim();
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "25000", 10);
 const TRANSLATION_CACHE = new Map();
 const TRANSLATION_IN_FLIGHT = new Map();

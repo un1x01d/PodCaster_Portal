@@ -136,7 +136,6 @@ async function finalizeAuthenticatedLogin(req, res, userRow) {
         resourceId: userRow.id,
     });
     return res.json({
-        token,
         user: {
             id: userRow.id,
             email: userRow.email,

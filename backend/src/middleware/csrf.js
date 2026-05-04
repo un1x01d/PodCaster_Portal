@@ -3,8 +3,6 @@ import { randomBytes } from "crypto";
 const CSRF_HEADER = String(process.env.CSRF_HEADER_NAME || "x-csrf-token").toLowerCase();
 const CSRF_COOKIE = String(process.env.CSRF_COOKIE_NAME || "csrf_token");
 const CSRF_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
-const CSRF_BYPASS_BEARER = String(process.env.CSRF_BYPASS_BEARER || "false").toLowerCase() === "true";
-const CSRF_STRICT_MODE = String(process.env.CSRF_STRICT_MODE || "true").toLowerCase() === "true";
 const CSRF_EXEMPT_PATHS = new Set([
   "/auth/login",
   "/auth/logout",
@@ -33,11 +31,6 @@ function parseCookieValue(cookieHeader, name) {
   return decodeURIComponent(hit.slice(prefix.length));
 }
 
-function hasBearerAuth(req) {
-  const header = String(req.headers.authorization || "").trim().toLowerCase();
-  return header.startsWith("bearer ");
-}
-
 export function ensureCsrfCookie(req, res, next) {
   const existing = parseCookieValue(req.headers.cookie, CSRF_COOKIE);
   if (existing) return next();
@@ -58,7 +51,6 @@ export function ensureCsrfCookie(req, res, next) {
 export function csrfProtect(req, res, next) {
   if (!CSRF_METHODS.has(String(req.method || "").toUpperCase())) return next();
   if (CSRF_EXEMPT_PATHS.has(normalizePathname(req.path))) return next();
-  if (!CSRF_STRICT_MODE && CSRF_BYPASS_BEARER && hasBearerAuth(req)) return next();
 
   const cookieToken = parseCookieValue(req.headers.cookie, CSRF_COOKIE);
   const headerToken = String(req.headers[CSRF_HEADER] || "").trim();

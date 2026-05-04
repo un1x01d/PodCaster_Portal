@@ -24,6 +24,8 @@ import {
     getAppSettingValueWithScopedFallback,
     normalizeEmailIngestSenderAllowlist,
     normalizeEmailIngestSettings,
+    normalizeRevisionCompareSettings,
+    REVISION_COMPARE_SETTINGS_KEY,
 } from "./userController.js";
 
 const MAX_UPLOAD_SHEETS = Number.parseInt(
@@ -56,6 +58,28 @@ const IMPORT_JOB_MAX_CLAIMS_PER_TICK = Math.max(1, Number.parseInt(process.env.I
 const IMPORT_JOB_PAYLOAD_TTL_HOURS = Math.max(1, Number.parseInt(process.env.IMPORT_JOB_PAYLOAD_TTL_HOURS || "24", 10) || 24);
 const IMPORT_WORKER_ADVISORY_LOCK_KEY = Number.parseInt(process.env.IMPORT_WORKER_ADVISORY_LOCK_KEY || "814001", 10);
 const AUTOSYNC_WORKER_ADVISORY_LOCK_KEY = Number.parseInt(process.env.AUTOSYNC_WORKER_ADVISORY_LOCK_KEY || "814002", 10);
+
+function isRevisionCompareRequest(queryParams = {}) {
+    const marker = String(
+        queryParams.compare
+        || queryParams.context
+        || queryParams.purpose
+        || queryParams.mode
+        || ""
+    ).trim().toLowerCase();
+    return marker === "revision" || marker === "revision_compare" || marker === "compare_revisions";
+}
+
+async function resolveSheetDataMaxLimit(queryParams = {}) {
+    if (!isRevisionCompareRequest(queryParams)) return MAX_SHEET_DATA_LIMIT;
+    try {
+        const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [REVISION_COMPARE_SETTINGS_KEY]);
+        return normalizeRevisionCompareSettings(rows?.[0]?.value || {}).maxRows;
+    } catch (err) {
+        console.warn("[sheet_data] failed to load revision compare settings:", err?.message || err);
+        return normalizeRevisionCompareSettings({}).maxRows;
+    }
+}
 
 let importWorkerTimer = null;
 let importWorkerRunning = false;
@@ -681,6 +705,11 @@ const XLSX_WORKER_TIMEOUT_MS = Number.parseInt(process.env.XLSX_WORKER_TIMEOUT_M
 const XLSX_WORKER_DEFAULT_MEMORY_MB = Number.parseInt(process.env.XLSX_WORKER_DEFAULT_MEMORY_MB || "8192", 10);
 const XLSX_WORKER_MIN_MEMORY_MB = Number.parseInt(process.env.XLSX_WORKER_MIN_MEMORY_MB || "64", 10);
 const XLSX_WORKER_MAX_MEMORY_MB = Number.parseInt(process.env.XLSX_WORKER_MAX_MEMORY_MB || "8192", 10);
+const BUFFERED_IMPORT_LIMIT_MB = Math.max(
+    1,
+    Number.parseInt(process.env.MAX_BUFFERED_IMPORT_MB || process.env.MAX_UPLOAD_FILE_MB || "50", 10) || 50
+);
+const BUFFERED_IMPORT_LIMIT_BYTES = BUFFERED_IMPORT_LIMIT_MB * 1024 * 1024;
 
 function uploadRequiresApproval(req) {
     return ["1", "true", "yes", "on"].includes(String(process.env.IMPORT_REQUIRE_APPROVAL || "").trim().toLowerCase());
@@ -902,6 +931,18 @@ function normalizeWorkerMemoryLimitMb(value, fallback = XLSX_WORKER_DEFAULT_MEMO
     return Math.min(max, Math.max(min, base));
 }
 
+function assertBufferedImportSizeAllowed(fileSize, parseMemoryLimitMb) {
+    const size = Number(fileSize || 0);
+    const parseLimitBytes = normalizeWorkerMemoryLimitMb(parseMemoryLimitMb) * 1024 * 1024;
+    const maxBytes = Math.min(BUFFERED_IMPORT_LIMIT_BYTES, parseLimitBytes);
+    if (Number.isFinite(size) && size > maxBytes) {
+        const err = new Error("file_too_large");
+        err.statusCode = 413;
+        err.details = { maxMB: Math.max(1, Math.floor(maxBytes / 1024 / 1024)) };
+        throw err;
+    }
+}
+
 async function resolveTenantParseMemoryLimitMb(user) {
     const defaultLimit = normalizeWorkerMemoryLimitMb(null);
     const groupId = Number.parseInt(user?.customer_group_id ?? user?.group_id, 10);
@@ -931,6 +972,11 @@ async function resolveTenantParseMemoryLimitMb(user) {
 function parseWorkbookInWorker(buffer, { memoryLimitMb } = {}) {
     return new Promise((resolve, reject) => {
         const parseMemoryLimitMb = normalizeWorkerMemoryLimitMb(memoryLimitMb);
+        const memoryLimitBytes = parseMemoryLimitMb * 1024 * 1024;
+        if (Buffer.byteLength(buffer || Buffer.alloc(0)) > memoryLimitBytes) {
+            reject(new Error("xlsx_worker_memory_limit_exceeded"));
+            return;
+        }
         const worker = new Worker(XLSX_WORKER_PATH, {
             workerData: { buffer, memoryLimitMb: parseMemoryLimitMb },
             resourceLimits: {
@@ -976,6 +1022,51 @@ function parseWorkbookInWorker(buffer, { memoryLimitMb } = {}) {
     });
 }
 
+async function parseWorkbookFileInWorker(filePath, { memoryLimitMb } = {}) {
+    const parseMemoryLimitMb = normalizeWorkerMemoryLimitMb(memoryLimitMb);
+    const memoryLimitBytes = parseMemoryLimitMb * 1024 * 1024;
+    const stats = await fs.promises.stat(filePath);
+    if (stats.size > memoryLimitBytes) {
+        throw new Error("xlsx_worker_memory_limit_exceeded");
+    }
+    return new Promise((resolve, reject) => {
+        const worker = new Worker(XLSX_WORKER_PATH, {
+            workerData: { filePath, memoryLimitMb: parseMemoryLimitMb },
+            resourceLimits: {
+                maxOldGenerationSizeMb: parseMemoryLimitMb,
+            },
+        });
+        let settled = false;
+        const cleanup = () => {
+            if (settled) return false;
+            settled = true;
+            clearTimeout(timer);
+            worker.removeAllListeners();
+            return true;
+        };
+        const timer = setTimeout(() => {
+            if (!cleanup()) return;
+            worker.terminate().catch(() => {});
+            reject(new Error("xlsx_worker_timeout"));
+        }, XLSX_WORKER_TIMEOUT_MS);
+        worker.once("message", (msg) => {
+            if (!cleanup()) return;
+            if (msg?.success) resolve(msg.result);
+            else reject(new Error(msg?.error || "unreadable_spreadsheet"));
+        });
+        worker.once("error", (err) => {
+            if (!cleanup()) return;
+            reject(err);
+        });
+        worker.once("exit", (code) => {
+            if (!settled && code !== 0) {
+                cleanup();
+                reject(new Error("xlsx_worker_crashed"));
+            }
+        });
+    });
+}
+
 function toImportError(code, statusCode = 400, message = null) {
     const err = new Error(code);
     err.statusCode = statusCode;
@@ -1003,6 +1094,20 @@ async function parseWorkbookBufferOrThrow(fileBuffer, options = {}) {
         );
         mapped.cause = err;
         throw mapped;
+    }
+}
+
+async function parseWorkbookFileOrThrow(filePath, options = {}) {
+    try {
+        return await parseWorkbookFileInWorker(filePath, options);
+    } catch (err) {
+        if (err.message === "xlsx_worker_timeout") {
+            throw toImportError("xlsx_worker_timeout", 400);
+        }
+        if (err.message === "xlsx_worker_memory_limit_exceeded") {
+            throw toImportError("xlsx_worker_memory_limit_exceeded", 413);
+        }
+        throw toImportError("unreadable_spreadsheet", 400);
     }
 }
 
@@ -2059,15 +2164,17 @@ export async function uploadSheet(req, res) {
 
         console.log(`[upload] size=${req.file.size} reportSourceId=${rawReportSourceId || "new"}`);
         const parseMemoryLimitMb = await resolveTenantParseMemoryLimitMb(req.user);
+        assertBufferedImportSizeAllowed(req.file?.size, parseMemoryLimitMb);
+        const shouldQueueImport = uploadUsesDbQueue(req);
 
         let fileBuffer = req.fileBuffer;
-        if (!fileBuffer) {
+        if (!fileBuffer && shouldQueueImport) {
             fileBuffer = await fs.promises.readFile(filePath);
             fs.unlink(filePath, () => {});
             filePath = null;
         }
 
-        if (uploadUsesDbQueue(req)) {
+        if (shouldQueueImport) {
             // Fast path for API latency: enqueue and return; worker finalizes import.
             const resolvedSource = await enqueueDbImportJob({
                 user: req.user,
@@ -2134,7 +2241,9 @@ export async function uploadSheet(req, res) {
             jobClient.release();
         }
 
-        const parsedResult = await parseWorkbookBufferOrThrow(fileBuffer, { memoryLimitMb: parseMemoryLimitMb });
+        const parsedResult = fileBuffer
+            ? await parseWorkbookBufferOrThrow(fileBuffer, { memoryLimitMb: parseMemoryLimitMb })
+            : await parseWorkbookFileOrThrow(filePath, { memoryLimitMb: parseMemoryLimitMb });
         const { responsePayload, importStatus } = await executeImportFromParsedWorkbook({
             parsedResult,
             approvalRequired,
@@ -2146,7 +2255,7 @@ export async function uploadSheet(req, res) {
             originalName,
             user: req.user,
             enforceOwnership: true,
-            fileSizeBytes: Number(req.file?.size || fileBuffer.length || 0),
+            fileSizeBytes: Number(req.file?.size || fileBuffer?.length || 0),
             autosyncConfig,
             classificationSourceKind: autosyncConfig?.enabled ? "autosync" : "manual_upload",
         });
@@ -2189,7 +2298,7 @@ export async function uploadSheet(req, res) {
             }
         }
         if (e?.code === "LIMIT_FILE_SIZE") {
-            return res.status(413).json({ error: "file_too_large", maxMB: 100 });
+            return res.status(413).json({ error: "file_too_large", maxMB: BUFFERED_IMPORT_LIMIT_MB });
         }
         if (e?.statusCode) {
             const body = { error: e.message || "upload_failed" };
@@ -2292,9 +2401,12 @@ export async function ingestEmailAttachment(req, res) {
         }
 
         const parseMemoryLimitMb = await resolveTenantParseMemoryLimitMb({ customer_group_id: targetCustomer.group_id });
-        const fileBuffer = file.buffer || (file.path ? await fs.promises.readFile(file.path) : null);
-        if (!fileBuffer) return res.status(400).json({ error: "file_buffer_missing" });
-        const parsedResult = await parseWorkbookBufferOrThrow(fileBuffer, { memoryLimitMb: parseMemoryLimitMb });
+        assertBufferedImportSizeAllowed(file?.size, parseMemoryLimitMb);
+        const fileBuffer = file.buffer || null;
+        if (!fileBuffer && !file.path) return res.status(400).json({ error: "file_buffer_missing" });
+        const parsedResult = fileBuffer
+            ? await parseWorkbookBufferOrThrow(fileBuffer, { memoryLimitMb: parseMemoryLimitMb })
+            : await parseWorkbookFileOrThrow(file.path, { memoryLimitMb: parseMemoryLimitMb });
 
         const { responsePayload, importStatus } = await executeImportFromParsedWorkbook({
             parsedResult,
@@ -2307,7 +2419,7 @@ export async function ingestEmailAttachment(req, res) {
             originalName,
             user: null,
             enforceOwnership: false,
-            fileSizeBytes: Number(file?.size || fileBuffer.length || 0),
+            fileSizeBytes: Number(file?.size || fileBuffer?.length || 0),
             autosyncConfig: null,
             classificationSourceKind: "email_ingest",
         });
@@ -2360,7 +2472,7 @@ export async function ingestEmailAttachment(req, res) {
             }
         }
         if (e?.code === "LIMIT_FILE_SIZE") {
-            return res.status(413).json({ error: "file_too_large", maxMB: 100 });
+            return res.status(413).json({ error: "file_too_large", maxMB: BUFFERED_IMPORT_LIMIT_MB });
         }
         if (e?.statusCode) {
             const body = { error: e.message || "email_ingest_failed" };
@@ -2369,6 +2481,12 @@ export async function ingestEmailAttachment(req, res) {
             return res.status(e.statusCode).json(body);
         }
         return res.status(500).json({ error: "email_ingest_failed", details: { message: e.message || "email_ingest_failed" } });
+    } finally {
+        const file = req.file
+            || req.files?.file?.[0]
+            || req.files?.attachment?.[0]
+            || (Array.isArray(req.files) ? req.files[0] : null);
+        if (file?.path) fs.unlink(file.path, () => {});
     }
 }
 
@@ -3340,7 +3458,7 @@ export async function getSheetData(req, res) {
     const isPlatformAdmin = isPlatformAdminUser(req.user);
     const isGroupAdmin = await isGroupAdminUser(userId);
     const canBypassViewAssignmentCheck = isPlatformAdmin || isGroupAdmin;
-    const pagination = parsePagination(req.query, { maxLimit: MAX_SHEET_DATA_LIMIT });
+    const pagination = parsePagination(req.query, { maxLimit: await resolveSheetDataMaxLimit(req.query) });
     if (pagination.error) {
         return res.status(400).json({ error: pagination.error });
     }

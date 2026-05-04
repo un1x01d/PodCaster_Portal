@@ -15,8 +15,7 @@ import {
 export { checkSheetAccess } from "../utils/authorization.js";
 
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
-const OPENAI_MODEL = process.env.OPENAI_MODEL;
-if (!OPENAI_MODEL) throw new Error("OPENAI_MODEL is required");
+const OPENAI_MODEL = String(process.env.OPENAI_MODEL || "gpt-5-nano").trim();
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10);
 const CHAT_MAX_ROWS = Math.min(100000, Number.parseInt(process.env.CHAT_MAX_ROWS || "50000", 10));
 const CHAT_SQL_AGG_MAX_ROWS = Math.min(300000, Number.parseInt(process.env.CHAT_SQL_AGG_MAX_ROWS || "120000", 10));
@@ -2244,6 +2243,9 @@ export async function getChatAudio(req, res) {
   const { text, locale, sheetId = null } = req.body;
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey || !text) return res.status(400).json({ error: "missing_params" });
+  if (String(text).length > CHAT_AUDIO_MAX_CHARS) {
+    return res.status(413).json({ error: "text_too_large" });
+  }
   let runtime = null;
   let aiReservation = null;
   if (sheetId) {
