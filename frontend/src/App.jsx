@@ -238,6 +238,7 @@ export default function App() {
   const [reportSources, setReportSources] = useState([]);
   const [reportSourceImports, setReportSourceImports] = useState({});
   const workspaceChartStateRef = useRef(null);
+  const LAST_VIEWED_SHEET_CONTEXT_KEY = "lastViewedSheetContext";
 
 
   // View editor state not owned by useViews.
@@ -872,7 +873,7 @@ export default function App() {
     }
   };
 
-  const applyLoadedRows = (sid, raw, preserveFilters = false, append = false) => {
+  const applyLoadedRows = (sid, raw, preserveFilters = false, append = false, activeTabHint = null) => {
     if (!raw || !Array.isArray(raw)) {
       console.warn("loadData: response is not an array", raw);
       if (!append) {
@@ -897,6 +898,16 @@ export default function App() {
 
     setSheetId(sid);
     localStorage.setItem("sheetId", sid);
+    const persisted = {
+      sheetId: String(sid),
+      activeTab: activeTabHint || activeTab || null,
+      savedAt: Date.now(),
+    };
+    try {
+      localStorage.setItem(LAST_VIEWED_SHEET_CONTEXT_KEY, JSON.stringify(persisted));
+    } catch {
+      // localStorage unavailable
+    }
     if (!preserveFilters && !append) {
       setColumnFilters({});
       setOpenFilterCol(null);
@@ -943,7 +954,7 @@ export default function App() {
 
       const cacheKey = getDataCacheKey(sid, tabName) + "?" + params.toString();
       if (preferCache && !append && isPrimary && tabDataCacheRef.current[cacheKey]) {
-        applyLoadedRows(sid, tabDataCacheRef.current[cacheKey], preserveFilters, false);
+        applyLoadedRows(sid, tabDataCacheRef.current[cacheKey], preserveFilters, false, tabName);
         return;
       }
 
@@ -958,7 +969,7 @@ export default function App() {
 
       if (isPrimary) {
           if (!append) tabDataCacheRef.current[cacheKey] = Array.isArray(raw) ? raw : [];
-          applyLoadedRows(sid, raw, preserveFilters, append);
+          applyLoadedRows(sid, raw, preserveFilters, append, tabName);
       } else {
           let effectiveSecondaryRows = Array.isArray(raw) ? raw : [];
           const secondaryVisibleColumns = activeViewConfig?.splitContext?.secondaryVisibleColumns;
@@ -1475,6 +1486,8 @@ export default function App() {
         setHeaders([]);
         localStorage.removeItem("sheetId");
         localStorage.removeItem("activeFilename");
+        localStorage.removeItem(LAST_VIEWED_SHEET_CONTEXT_KEY);
+        localStorage.removeItem("activeTab");
       }
     } catch (e) {
       console.error(e);
@@ -1758,6 +1771,33 @@ export default function App() {
     }
   }, []);
 
+  const getParsedLastViewedContext = () => {
+    const raw = localStorage.getItem(LAST_VIEWED_SHEET_CONTEXT_KEY);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") return null;
+      const sheetId = String(parsed.sheetId || "").trim();
+      if (!sheetId) return null;
+      return {
+        sheetId,
+        activeTab: parsed.activeTab ? String(parsed.activeTab) : null,
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  const pickLatestSheetIdFromList = (files = []) => {
+    if (!Array.isArray(files) || !files.length) return null;
+    const sorted = [...files].sort((a, b) => {
+      const at = Date.parse(a?.uploaded_at || a?.created_at || 0) || 0;
+      const bt = Date.parse(b?.uploaded_at || b?.created_at || 0) || 0;
+      return bt - at;
+    });
+    return String(sorted[0]?.id || "").trim() || null;
+  };
+
   useEffect(() => {
     if (!token || !user) {
       setMyFiles([]);
@@ -1765,23 +1805,54 @@ export default function App() {
       setReportSourceImports({});
       return;
     }
-    const savedSheetId = localStorage.getItem("sheetId");
-    const savedTab = localStorage.getItem("activeTab");
-    if (savedSheetId && savedSheetId !== "null") {
-      hydrateSheetContext(savedSheetId, {
-        preferredTab: savedTab || null,
-        preserveFilters: false,
-        preferCache: true,
-      });
-    }
 
-    axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => setMyFiles(r.data || []))
-      .catch(e => {
+    (async () => {
+      try {
+        const [mySheetsRes] = await Promise.all([
+          axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } }),
+          refreshReportSources(),
+        ]);
+        const files = Array.isArray(mySheetsRes?.data) ? mySheetsRes.data : [];
+        setMyFiles(files);
+
+        const savedSheetId = localStorage.getItem("sheetId");
+        const savedTab = localStorage.getItem("activeTab");
+        const lastViewed = getParsedLastViewedContext();
+
+        const availableSheetIds = new Set(files.map((f) => String(f?.id)));
+        let targetSheetId = savedSheetId && savedSheetId !== "null" && availableSheetIds.has(String(savedSheetId))
+          ? String(savedSheetId)
+          : null;
+
+        if (!targetSheetId && lastViewed?.sheetId) {
+          if (availableSheetIds.has(String(lastViewed.sheetId))) {
+            targetSheetId = String(lastViewed.sheetId);
+          }
+        }
+
+        if (!targetSheetId) {
+          targetSheetId = pickLatestSheetIdFromList(files);
+          localStorage.removeItem("sheetId");
+          localStorage.removeItem("activeTab");
+          localStorage.removeItem("activeFilename");
+          localStorage.removeItem(LAST_VIEWED_SHEET_CONTEXT_KEY);
+        }
+
+        if (targetSheetId) {
+          const preferredTab = lastViewed?.sheetId === targetSheetId && lastViewed.activeTab
+            ? lastViewed.activeTab
+            : (savedSheetId && savedTab ? savedTab : null);
+          hydrateSheetContext(targetSheetId, {
+            preferredTab,
+            preserveFilters: false,
+            preferCache: true,
+          });
+        }
+      } catch (e) {
         if (user) console.error("Fetch files failed", e);
-      });
-    refreshReportSources();
-  }, [token, user]);
+      }
+    })();
+  }, [token, user, refreshReportSources]);
 
   // Helpers
   const resetPivot = () => {
@@ -2055,7 +2126,7 @@ export default function App() {
                         copy={dashboardI18n.copy}
                       />
                     ) : null}
-                    chatSection={sheetId ? (
+                    chatSection={
                       <SpreadsheetChatbot
                         mode="inline"
                         sheetId={sheetId}
@@ -2070,7 +2141,7 @@ export default function App() {
                         locale={dashboardI18n.locale}
                         copy={dashboardI18n.copy}
                       />
-                    ) : null}
+                    }
                   />
                 )}
               </ErrorBoundary>
@@ -2117,7 +2188,7 @@ export default function App() {
                         copy={dashboardI18n.copy}
                       />
                     ) : null}
-                    chatSection={sheetId ? (
+                    chatSection={
                       <SpreadsheetChatbot
                         mode="inline"
                         sheetId={sheetId}
@@ -2132,7 +2203,7 @@ export default function App() {
                         locale={dashboardI18n.locale}
                         copy={dashboardI18n.copy}
                       />
-                    ) : null}
+                    }
                   />
                 )}
               </ErrorBoundary>
@@ -2315,7 +2386,7 @@ export default function App() {
                           copy={dashboardI18n.copy}
                         />
                       ) : null}
-                      chatSection={sheetId ? (
+                      chatSection={
                         <SpreadsheetChatbot
                           mode="inline"
                           sheetId={sheetId}
@@ -2330,10 +2401,10 @@ export default function App() {
                           locale={dashboardI18n.locale}
                           copy={dashboardI18n.copy}
                         />
-                      ) : null}
+                      }
                     />
                     )}
-                    {workspaceView === "grid" && sheetId && (
+                    {workspaceView === "grid" && (
                     <SpreadsheetChatbot
                       mode="floating"
                       sheetId={sheetId}

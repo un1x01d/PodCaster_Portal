@@ -112,7 +112,8 @@ export function useChatbotLogic({
   }, [sheetId, activeTab, onApplyFilter, copy.chatInitialMessage]);
 
   useEffect(() => {
-    if (messages.length === 0 && headers.length > 0) {
+    const headerCount = Array.isArray(headers) ? headers.length : 0;
+    if (messages.length === 0 && headerCount > 0) {
       const key = makeChatStorageKey(sheetId, activeTab);
       const restored = restoreMessagesFromStorage(key);
       setMessages(restored && restored.length ? restored : [getInitialSystemMessage(copy)]);
@@ -215,7 +216,7 @@ export function useChatbotLogic({
 
   const sendMessage = useCallback(async (rawMessage, meta = null) => {
     const q = String(rawMessage || "").trim();
-    if (!q || !sheetId || isSending) return;
+    if (!q || isSending) return;
     const clearCommand = /^(clear chat|reset chat|очистить чат|очисти чат|скинь чат|сбросить чат|clear)$/i.test(q);
     if (clearCommand) {
       clearMessages();
@@ -229,7 +230,7 @@ export function useChatbotLogic({
 
     try {
       const res = await api.post("/chat/query", {
-        sheetId,
+        sheetId: sheetId || null,
         activeTab: activeTab || null,
         message: q,
         activeFilters: serializeActiveFilters(activeFilters),

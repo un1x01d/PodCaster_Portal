@@ -2367,8 +2367,11 @@ export async function synthesizeChatAudioBuffer({ text, locale, runtime = null }
 export async function chatQuery(req, res) {
   const { sheetId, activeTab = null, message, activeFilters = {}, splitContext = null, activeViewScope = null, conversationHistory = [], locale: rawLocale } = req.body || {};
   const locale = normalizeLocale(rawLocale || "en");
-  const hasAccess = await checkSheetAccess(sheetId, req.user);
-  if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
+  const hasSheet = Boolean(sheetId);
+  if (hasSheet) {
+    const hasAccess = await checkSheetAccess(sheetId, req.user);
+    if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
+  }
   const runtimeGroupId = await resolveAiGroupIdForSheet({ sheetId, user: req.user });
   const runtime = await loadAiRuntimeSettings(runtimeGroupId || null);
   if (isAiGloballyDisabled(runtime)) return res.status(403).json({ error: "global_ai_disabled" });
@@ -2386,19 +2389,68 @@ export async function chatQuery(req, res) {
     return res.status(413).json({ error: "chat_input_too_large", maxChars: Number(runtime.chatMaxInputChars || 12000) });
   }
 
-  // PERF-01: Load only SAMPLE rows for AI context, not all 500k rows
-  const loadedSample = await loadAccessibleRows(sheetId, req.user, null, 100);
-  if (loadedSample?.forbidden) return res.status(403).json({ error: "Forbidden" });
+  try {
+    aiReservation = await reserveAiQueryForSheet({ sheetId, user: req.user, kind: "chat_query" });
+  } catch (err) {
+    return res.status(err.statusCode || 429).json({ error: err.message, ...(err.details || {}) });
+  }
 
-  const baseHeaders = loadedSample.headers || [];
-  const scopedVisibleColumns = normalizeScopeColumns(activeViewScope?.visibleColumns || [], baseHeaders);
-  const aiHeaders = scopedVisibleColumns.length ? scopedVisibleColumns : baseHeaders;
-  const activeDashboardFilters = normalizeActiveDashboardFilters(aiHeaders, activeFilters);
-  const scopedSampleRows = projectRowsToHeaders(loadedSample.rows || [], aiHeaders);
-  const sampleRows = applyFilters(scopedSampleRows, activeDashboardFilters);
-  const tabNames = Array.isArray(loadedSample.tabs) ? loadedSample.tabs : [];
-  const semanticProfile = restrictSemanticProfileToHeaders(loadedSample.semanticProfile, aiHeaders, scopedSampleRows);
-  if (isDateRelatedQuestion(message) && !sheetHasTemporalColumn(aiHeaders, scopedSampleRows, semanticProfile)) {
+  let loadedSample = null;
+  let baseHeaders = [];
+  let aiHeaders = [];
+  let activeDashboardFilters = [];
+  let sampleRows = [];
+  let tabNames = [];
+  let semanticProfile = {};
+  if (hasSheet) {
+    // PERF-01: Load only SAMPLE rows for AI context, not all 500k rows
+    loadedSample = await loadAccessibleRows(sheetId, req.user, null, 100);
+    if (loadedSample?.forbidden) return res.status(403).json({ error: "Forbidden" });
+
+    baseHeaders = loadedSample.headers || [];
+    const scopedVisibleColumns = normalizeScopeColumns(activeViewScope?.visibleColumns || [], baseHeaders);
+    aiHeaders = scopedVisibleColumns.length ? scopedVisibleColumns : baseHeaders;
+    activeDashboardFilters = normalizeActiveDashboardFilters(aiHeaders, activeFilters);
+    const scopedSampleRows = projectRowsToHeaders(loadedSample.rows || [], aiHeaders);
+    sampleRows = applyFilters(scopedSampleRows, activeDashboardFilters);
+    tabNames = Array.isArray(loadedSample.tabs) ? loadedSample.tabs : [];
+    semanticProfile = restrictSemanticProfileToHeaders(loadedSample.semanticProfile, aiHeaders, scopedSampleRows);
+  }
+
+  if (!hasSheet) {
+    const noSheetPrompt = `${message}\n\nNo spreadsheet is currently opened. Reply with usage guidance and safe interpretations of local workspace AI/UX rules only. Do not invent numbers or reference sheet rows.`;
+    let noSheetPlan;
+    try {
+      const aiResult = await callOpenAI({
+        message: noSheetPrompt,
+        headers: [],
+        sampleRows: [],
+        conversationHistory: boundedConversationHistory,
+        locale,
+        dateFormatHints: [],
+        schemaProfile: { available_tabs: [], available_files: [], active_filters: [], split_context: null, semantic_profile: {} },
+        maxOutputTokens: Number(runtime.llmMaxOutputTokens || 800),
+        runtime,
+      });
+      noSheetPlan = normalizeAiPlan(aiResult.plan);
+    } catch (e) {
+      console.error("OpenAI call failed:", e);
+      return res.status(502).json({ error: "ai_unavailable" });
+    }
+
+    return res.json({
+      answer: formatAnswerWithBullets(noSheetPlan?.answer || "AI is ready. Open a spreadsheet to ask data analysis questions."),
+      actions: { reset_filters: false, filters: [], chart: null },
+      preview_rows: [],
+      meta: {
+        operation: "none",
+        locale,
+        noSheetMode: true,
+      },
+    });
+  }
+
+  if (isDateRelatedQuestion(message) && !sheetHasTemporalColumn(aiHeaders, sampleRows, semanticProfile)) {
     const answer = noDateColumnAnswer(locale);
     return res.json({
       answer,
@@ -2411,12 +2463,6 @@ export async function chatQuery(req, res) {
         reason: "missing_temporal_column",
       },
     });
-  }
-
-  try {
-    aiReservation = await reserveAiQueryForSheet({ sheetId, user: req.user, kind: "chat_query" });
-  } catch (err) {
-    return res.status(err.statusCode || 429).json({ error: err.message, ...(err.details || {}) });
   }
   
   // PERF-01: Build Workspace Schema for Cross-Sheet Intelligence
@@ -2456,7 +2502,7 @@ export async function chatQuery(req, res) {
         primary_uploaded_at: splitContext.primaryUploadedAt ? String(splitContext.primaryUploadedAt) : null,
         secondary_uploaded_at: splitContext.secondaryUploadedAt ? String(splitContext.secondaryUploadedAt) : null,
       }
-    : null;
+      : null;
   const allAvailableFiles = workspaceRes.map(f => ({
       id: f.id,
       name: f.display_name || f.filename,

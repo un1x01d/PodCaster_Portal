@@ -78,8 +78,6 @@ export default function SpreadsheetChatbot({
         document.body.style.userSelect = 'none';
     };
 
-    if (!sheetId) return null;
-
     if (inline) {
         return (
             <section className="h-full max-h-full min-h-0 flex flex-col rounded-md border border-slate-200 bg-white shadow-sm overflow-hidden">
@@ -98,15 +96,17 @@ export default function SpreadsheetChatbot({
             {!isOpen && (
                 <button
                     onClick={() => setIsOpen(true)}
-                    className="fixed bottom-5 right-5 w-11 h-11 bg-slate-900 text-white rounded-md shadow-lg z-[120] flex items-center justify-center hover:bg-slate-800 transition-colors"
+                    className="fixed bottom-5 right-5 w-11 h-11 bg-slate-900 text-white rounded-md shadow-lg z-[9999] flex items-center justify-center hover:bg-slate-800 transition-colors"
+                    title="Open Workspace AI assistant"
                 >
                     <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+                    <span className="sr-only">Open Workspace AI assistant</span>
                 </button>
             )}
 
             {isOpen && (
                 <div 
-                    className="fixed bottom-5 right-5 flex flex-col z-[130] shadow-lg overflow-hidden bg-white border border-slate-300 rounded-md"
+                    className="fixed bottom-5 right-5 flex flex-col z-[9999] shadow-lg overflow-hidden bg-white border border-slate-300 rounded-md"
                     style={{ 
                         height: isMinimized ? 'auto' : `${chatSize.height}px`,
                         maxHeight: 'calc(100vh - 40px)',

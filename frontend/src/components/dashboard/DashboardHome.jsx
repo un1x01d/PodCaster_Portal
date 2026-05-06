@@ -2717,7 +2717,7 @@ export default function DashboardHome({
             })}
           </div>
         {chatSection && (
-          <div className="rounded-md border border-slate-200 bg-white p-2 shadow-sm h-[276px] max-h-[42vh] overflow-hidden">
+          <div className="rounded-md border border-slate-200 bg-white p-2 shadow-sm h-[296px] max-h-[42vh] overflow-hidden">
             <div className="h-full min-h-0">{chatSection}</div>
           </div>
         )}
