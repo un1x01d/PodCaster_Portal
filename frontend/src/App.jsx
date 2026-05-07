@@ -1102,16 +1102,22 @@ export default function App() {
     if (String(sid) !== String(sheetId)) {
       setSelectedViewId("");
     }
+    const safeSid = String(sid).trim();
+    if (!safeSid) return;
+    if (String(sheetId) !== safeSid) {
+      setSheetId(safeSid);
+      localStorage.setItem("sheetId", safeSid);
+    }
     const {
       preferredTab = null,
       preserveFilters = false,
       preferCache = true,
     } = options;
-    const tabList = await fetchTabs(sid, { preferredTab, preserveActive: false });
+    const tabList = await fetchTabs(safeSid, { preferredTab, preserveActive: false });
     const resolvedTab = Array.isArray(tabList) && tabList.length
       ? ((preferredTab && tabList.includes(preferredTab)) ? preferredTab : tabList[0])
       : null;
-    await loadData(sid, preserveFilters, resolvedTab, { preferCache });
+    await loadData(safeSid, preserveFilters, resolvedTab, { preferCache });
   };
 
   const refreshReportSources = React.useCallback(() => {
@@ -1790,12 +1796,20 @@ export default function App() {
 
   const pickLatestSheetIdFromList = (files = []) => {
     if (!Array.isArray(files) || !files.length) return null;
-    const sorted = [...files].sort((a, b) => {
+    const prioritized = files.filter((f) => f?.active || f?.is_current_source_version);
+    const candidates = prioritized.length ? prioritized : files;
+    const sorted = [...candidates].sort((a, b) => {
       const at = Date.parse(a?.uploaded_at || a?.created_at || 0) || 0;
       const bt = Date.parse(b?.uploaded_at || b?.created_at || 0) || 0;
       return bt - at;
     });
     return String(sorted[0]?.id || "").trim() || null;
+  };
+
+  const isPreferredSheet = (files = [], sheetId) => {
+    const candidate = (Array.isArray(files) ? files : []).find((f) => String(f?.id || "") === String(sheetId || ""));
+    if (!candidate) return false;
+    return Boolean(candidate.active || candidate.is_current_source_version);
   };
 
   useEffect(() => {
@@ -1823,10 +1837,16 @@ export default function App() {
         let targetSheetId = savedSheetId && savedSheetId !== "null" && availableSheetIds.has(String(savedSheetId))
           ? String(savedSheetId)
           : null;
+        if (targetSheetId && !isPreferredSheet(files, targetSheetId)) {
+          targetSheetId = null;
+        }
 
         if (!targetSheetId && lastViewed?.sheetId) {
           if (availableSheetIds.has(String(lastViewed.sheetId))) {
             targetSheetId = String(lastViewed.sheetId);
+          }
+          if (targetSheetId && !isPreferredSheet(files, targetSheetId)) {
+            targetSheetId = null;
           }
         }
 
@@ -2426,6 +2446,118 @@ export default function App() {
                     />
                     )}
                   </>
+                )}
+              </ErrorBoundary>
+            } />
+            <Route path="/workspace/imports" element={
+              <ErrorBoundary>
+                {authChecking ? (
+                  <div className="min-h-screen w-full flex items-center justify-center bg-[#fafafa]">
+                    <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Loading workspace...</div>
+                  </div>
+                ) : !user ? (
+                  <Navigate to="/login" replace />
+                ) : (
+                  <DashboardBody
+                    user={user} token={token} API={API}
+                    importsOnly
+                    sheetId={sheetId} setSheetId={setSheetId} activeFilename={activeFilename}
+                    file={file} setFile={setFile}
+                    selectedFileName={selectedFileName} setSelectedFileName={setSelectedFileName}
+                    uploadDisplayName={uploadDisplayName}
+                    setUploadDisplayName={setUploadDisplayName}
+                    fileLabel={fileLabel}
+                    setFileLabel={setFileLabel}
+                    reportSourceName={reportSourceName}
+                    setReportSourceName={setReportSourceName}
+                    reportSources={reportSources}
+                    reportSourceImports={reportSourceImports}
+                    handleUpload={handleUpload}
+                    uploadInProgress={uploadProgressOpen}
+                    uploadPercent={uploadProgressPercent}
+                    handleGoogleDriveImport={handleGoogleDriveImport}
+                    handleGoogleConnect={handleGoogleConnect}
+                    handleDropboxImport={handleDropboxImport}
+                    handleDropboxConnect={handleDropboxConnect}
+                    handleOneDriveImport={handleOneDriveImport}
+                    handleOneDriveConnect={handleOneDriveConnect}
+                    dropboxEnabled={dropboxEnabled}
+                    oneDriveEnabled={oneDriveEnabled}
+                    sftpStorageEnabled={sftpStorageEnabled}
+                    gcsStorageEnabled={gcsStorageEnabled}
+                    s3StorageEnabled={s3StorageEnabled}
+                    azureBlobStorageEnabled={azureBlobStorageEnabled}
+                    loadData={loadData}
+                    refreshReportSources={refreshReportSources}
+                    onBusinessClassificationGuess={maybePromptBusinessClassification}
+                    selectedViewId={selectedViewId} setSelectedViewId={setSelectedViewId}
+                    views={views} setViews={setViews}
+                    setPendingViewName={setPendingViewName}
+                    setShowColumnSelector={setShowColumnSelector}
+                    setSaveViewConfigOverride={setSaveViewConfigOverride}
+                    setEditingViewId={setEditingViewId}
+                    sortedData={sortedData}
+                    displayHeaders={displayHeaders}
+                    openFilterCol={openFilterCol} setOpenFilterCol={setOpenFilterCol}
+                    columnFilters={columnFilters} setColumnFilters={setColumnFilters}
+                    sortConfig={sortConfig} requestSort={requestSort}
+                    uniqueValuesByColumn={uniqueValuesByColumn}
+                    pivotOn={pivotOn} setPivotOn={setPivotOn}
+                    pivotRowKey={pivotRowKey} setPivotRowKey={setPivotRowKey}
+                    pivotColKey={pivotColKey} setPivotColKey={setPivotColKey}
+                    pivotValKey={pivotValKey} setPivotValKey={setPivotValKey}
+                    pivotAgg={pivotAgg} setPivotAgg={setPivotAgg}
+                    pivotRows={pivotRows}
+                    pivotHeaders={pivotHeaders}
+                    pieData={pieData}
+                    resetPivot={resetPivot}
+                    pivotChartRef={pivotChartRef}
+                    twoOn={twoOn} setTwoOn={setTwoOn}
+                    condCol1={condCol1} setCondCol1={setCondCol1}
+                    condCol2={condCol2} setCondCol2={setCondCol2}
+                    valueCol={valueCol} setValueCol={setValueCol}
+                    summaryData={summaryData} resetSummary={resetSummary}
+                    trendsOn={trendsOn} setTrendsOn={setTrendsOn}
+                    trendsDateKey={trendsDateKey} setTrendsDateKey={setTrendsDateKey}
+                    trendsValueKey={trendsValueKey} setTrendsValueKey={setTrendsValueKey}
+                    trendGranularity={trendGranularity} setTrendGranularity={setTrendGranularity}
+                    yearsBack={yearsBack} setYearsBack={setYearsBack}
+                    trendsData={trendsData}
+                    trendYearOptions={trendYearOptions}
+                    compareYears={compareYears} setCompareYears={setCompareYears}
+                    maxYear={trendYearOptions[0]}
+                    exportCSV={exportCSV} exportXLSX={exportXLSX} exportPDF={exportPDF}
+                    tableContainerRef={tableContainerRef}
+                    filterAnchorRefs={filterAnchorRefs}
+                    filterBtnRefs={filterBtnRefs}
+                    myFiles={myFiles} loadStored={(id) => { hydrateSheetContext(id, { preserveFilters: false, preferCache: true }); }}
+                    tabs={tabs} setTabs={setTabs}
+                    activeTab={activeTab}
+                    onTabChange={handleTabChange}
+                    tabListCacheRef={tabListCacheRef}
+                    hasRequiredColumns={hasRequiredColumns}
+                    appendCalculatedColumn={appendCalculatedColumn}
+                    onInsightApplyFilter={applyContainsFilter}
+                    onInsightOpenChart={applyChartConfig}
+                    onInsightSaveView={saveInsightView}
+                    onOpenFilesHome={() => setWorkspaceView("home")}
+                    onOpenReviewQueue={() => setWorkspaceView("review")}
+                    fetchUniqueValues={fetchUniqueValues}
+                    onLoadMore={onLoadMore}
+                    isBatchLoading={isBatchLoading}
+                    secondaryData={secondaryData}
+                    secondaryHeaders={secondaryHeaders}
+                    secondarySortConfig={secondarySortConfig}
+                    secondaryIsBatchLoading={secondaryIsBatchLoading}
+                    onLoadMoreSecondary={onLoadMoreSecondary}
+                    secondarySheetId={secondarySheetId}
+                    setSecondarySheetId={setSecondarySheetId}
+                    secondaryTab={secondaryTab}
+                    setSecondaryTab={setSecondaryTab}
+                    workspaceChartStateRef={workspaceChartStateRef}
+                    locale={dashboardI18n.locale}
+                    copy={dashboardI18n.copy}
+                  />
                 )}
               </ErrorBoundary>
             } />

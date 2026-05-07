@@ -9,6 +9,7 @@ import { buildChatCompletionRequestBody, extractOpenAiAssistantText, minCompleti
 
 const INSIGHT_MAX_ROWS = Number.parseInt(process.env.INSIGHT_MAX_ROWS || "300000", 10);
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10);
+const INSIGHT_FEED_MAX_CARDS = Number.parseInt(process.env.INSIGHT_FEED_MAX_CARDS || "4", 10);
 // Compatibility caps retained for regression guards.
 const INSIGHT_AI_MAX_SERIES_POINTS = Number.parseInt(process.env.INSIGHT_AI_MAX_SERIES_POINTS || "18", 10);
 const INSIGHT_AI_MAX_PROMPT_CHARS = Number.parseInt(process.env.INSIGHT_AI_MAX_PROMPT_CHARS || "12000", 10);
@@ -1363,7 +1364,7 @@ async function buildInsights({ rows, headers, settings, context, revisionContext
   const ranked = out
     .map((c) => ({ ...c, score: Number(c.score || 0) }))
     .sort((a, b) => b.score - a.score)
-    .slice(0, 7);
+    .slice(0, Math.max(1, Number.isFinite(INSIGHT_FEED_MAX_CARDS) ? INSIGHT_FEED_MAX_CARDS : 4));
 
   if (!ranked.length) {
     ranked.push({

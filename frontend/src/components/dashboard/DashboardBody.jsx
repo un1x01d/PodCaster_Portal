@@ -1,5 +1,5 @@
 import React, { useState, useRef, useMemo, forwardRef, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { FixedSizeList as List } from "react-window";
 import AutoSizer from "react-virtualized-auto-sizer";
 import axios from "axios";
@@ -16,6 +16,13 @@ import InsightFeed from "./InsightFeed";
 import SourceProviderIcon from "../common/SourceProviderIcon";
 import StorageImportPicker from "../common/StorageImportPicker";
 import { DASHBOARD_COPY_EN } from "../../hooks/useDashboardI18n";
+import {
+  primaryActionClass,
+  secondaryActionClass,
+  publicPageClass,
+  themeTextClass,
+  formLabelClass,
+} from "../../utils/theme";
 
 import { renderMaybeDate, formatSmart } from "../../utils/formatting";
 
@@ -27,6 +34,7 @@ export default function DashboardBody(props) {
         user,
         token,
         API,
+        importsOnly = false,
         sheetId,
         setSheetId,
         file,
@@ -156,6 +164,7 @@ export default function DashboardBody(props) {
 
     const headerRef = useRef(null);
     const secondaryHeaderRef = useRef(null);
+    const leftMenuRef = useRef(null);
     const workspaceChartTouchedRef = useRef(false);
     const chartStateRef = useRef({});
 
@@ -290,11 +299,8 @@ export default function DashboardBody(props) {
     };
 
     const [selectedReportSourceId, setSelectedReportSourceId] = useState("");
-    const [menuOpen, setMenuOpen] = useState(false);
+    const [menuOpen, setMenuOpen] = useState(!importsOnly);
     const [expandedMenus, setExpandedMenus] = useState({
-        view: true,
-        data: false,
-        insights: false,
         charts: false,
         export: false,
         admin: false
@@ -302,6 +308,31 @@ export default function DashboardBody(props) {
     const [insightsOn, setInsightsOn] = useState(false);
     const [selectionModeOn, setSelectionModeOn] = useState(false);
     const [isSelecting, setIsSelecting] = useState(false);
+
+    useEffect(() => {
+        if (importsOnly) {
+            setMenuOpen(false);
+        }
+    }, [importsOnly]);
+
+    useEffect(() => {
+        if (!menuOpen) return;
+
+        const handlePointerDown = (event) => {
+            const menuElement = leftMenuRef.current;
+            if (!menuElement) return;
+
+            if (!menuElement.contains(event.target)) {
+                setMenuOpen(false);
+            }
+        };
+
+        window.addEventListener("pointerdown", handlePointerDown);
+
+        return () => {
+            window.removeEventListener("pointerdown", handlePointerDown);
+        };
+    }, [menuOpen]);
     const [selectionAnchor, setSelectionAnchor] = useState(null);
     const [selectionFocus, setSelectionFocus] = useState(null);
     const [selectedRowIndexes, setSelectedRowIndexes] = useState(() => new Set());
@@ -1948,7 +1979,7 @@ export default function DashboardBody(props) {
     )), []);
 
     // Non-admin users: show welcome screen until sheet is selected
-    if (user.role !== "admin" && !sheetId) {
+    if (!importsOnly && user.role !== "admin" && !sheetId) {
         return (
             <div className="w-full min-h-screen flex items-center justify-center premium-gradient">
                 <div className="glass rounded-[3rem] p-12 w-[32rem] text-center shadow-2xl animate-in zoom-in-95 duration-500">
@@ -1971,6 +2002,7 @@ export default function DashboardBody(props) {
     return (
         <div className="workspace-shell w-full h-full min-h-0 flex bg-slate-50 relative pointer-events-auto overflow-hidden">
             <aside
+                ref={leftMenuRef}
                 id="dashboard-left-menu"
                 aria-label="Dashboard actions menu"
                 className={`left-side-menu h-full shrink-0 sticky top-0 self-start overflow-y-auto shadow-xl border-r border-slate-900 transition-all duration-200 ${menuOpen ? "w-[17rem] p-3" : "w-14 p-2"}`}
@@ -1991,255 +2023,211 @@ export default function DashboardBody(props) {
 
                 {menuOpen && (
                     <div id="dashboard-left-menu-content">
-                        <div className="left-menu-group">
-                            <button className="left-menu-section-toggle" onClick={() => toggleMenu("view")} aria-expanded={expandedMenus.view}>
-                                        <span>Govern</span>
-                                <span>{expandedMenus.view ? "▾" : "▸"}</span>
-                            </button>
-                            {expandedMenus.view && (
-                                <div className="left-menu-submenu">
-                                    <button
-                                        type="button"
-                                        className="left-menu-action"
-                                        onClick={() => {
+                        {!importsOnly && (
+                            <div className="left-menu-group">
+                                <div
+                                    role="button"
+                                    tabIndex={0}
+                                    className="left-menu-text-item"
+                                    onKeyDown={(event) => {
+                                        if (event.key === "Enter" || event.key === " ") {
+                                            event.preventDefault();
                                             navigate("/workspace/files");
                                             onOpenFilesHome();
                                             setMenuOpen(false);
-                                        }}
-                                    >
-                                        Files Home
-                                    </button>
-                                    <button
-                                        type="button"
-                                        className="left-menu-action"
-                                        onClick={() => {
+                                        }
+                                    }}
+                                    onClick={() => {
+                                        navigate("/workspace/files");
+                                        onOpenFilesHome();
+                                        setMenuOpen(false);
+                                    }}
+                                >
+                                    Dashboard
+                                </div>
+                                <div
+                                    role="button"
+                                    tabIndex={0}
+                                    className="left-menu-text-item"
+                                    onKeyDown={(event) => {
+                                        if (event.key === "Enter" || event.key === " ") {
+                                            event.preventDefault();
                                             navigate("/workspace/review");
                                             onOpenReviewQueue();
                                             setMenuOpen(false);
-                                        }}
-                                    >
-                                        Review queue
-                                    </button>
-                                    <button
-                                        type="button"
-                                        className="left-menu-action"
-                                        onClick={() => {
+                                        }
+                                    }}
+                                    onClick={() => {
+                                        navigate("/workspace/review");
+                                        onOpenReviewQueue();
+                                        setMenuOpen(false);
+                                    }}
+                                >
+                                    Review queue
+                                </div>
+                                <div
+                                    role="button"
+                                    tabIndex={0}
+                                    className="left-menu-text-item"
+                                    onKeyDown={(event) => {
+                                        if (event.key === "Enter" || event.key === " ") {
+                                            event.preventDefault();
                                             loadData(sheetId, user.role !== "admin" && selectedViewId);
                                             setMenuOpen(false);
-                                        }}
-                                    >
-                                        Refresh Source
-                                    </button>
-                                    <button className="left-menu-action left-menu-toggle-row" onClick={() => setInsightsOn((p) => !p)}>
-                                        <span>Controlled AI</span>
-                                        <span className="left-menu-state">{insightsOn ? "ON" : "OFF"}</span>
-                                    </button>
-
-                                    <div className="mt-2 border-t border-blue-800/30 pt-2 px-2">
-                                        <button 
-                                            className={`w-full flex items-center justify-between px-2 py-1.5 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${comparisonOn ? 'bg-indigo-600 text-white' : 'text-blue-300 hover:bg-blue-800/40'}`}
-                                            onClick={() => setComparisonOn(!comparisonOn)}
-                                        >
-                                            <span>Split-Screen Mode</span>
-                                            <span>{comparisonOn ? 'ON' : 'OFF'}</span>
-                                        </button>
-
-                                    </div>
+                                        }
+                                    }}
+                                    onClick={() => {
+                                        loadData(sheetId, user.role !== "admin" && selectedViewId);
+                                        setMenuOpen(false);
+                                    }}
+                                >
+                                    Refresh Source
                                 </div>
-                            )}
-                        </div>
-
-                        <div className="left-menu-group">
-                            <button className="left-menu-section-toggle" onClick={() => toggleMenu("data")} aria-expanded={expandedMenus.data}>
-                                <span>Sources & Imports</span>
-                                <span>{expandedMenus.data ? "▾" : "▸"}</span>
-                            </button>
-                            {expandedMenus.data && (
-                                <div className="left-menu-submenu">
-                                    {canImportFromDrive && (
-                                        <div className="left-menu-nested">
-                                                {String(user?.role || "").toLowerCase() === "admin" && (
-                                                    <>
-                                                        <label className="left-menu-file-picker">
-                                                            <input
-                                                                type="file"
-                                                                onChange={(e) => {
-                                                                    const f = e.target.files?.[0];
-                                                                    setFile(f || null);
-                                                                    setSelectedFileName(f?.name || "");
-                                                                    e.target.value = null;
-                                                                }}
-                                                                className="hidden"
-                                                            />
-                                                            <span>📂</span>
-                                                            <span className="truncate">{selectedFileName || "Choose spreadsheet"}</span>
-                                                        </label>
-                                                        <SearchableSelect
-                                                            options={reportSourceOptions}
-                                                            value={selectedReportSourceId}
-                                                            onChange={(e) => {
-                                                                setSelectedReportSourceId(e.target.value);
-                                                            }}
-                                                            placeholder="Report source (optional)"
-                                                            className="w-full"
-                                                            {...leftMenuSelectClasses}
-                                                            panelWidth="100%"
-                                                        />
-
-                                                        {selectedReportSourceId && labelOptions.length > 0 && (
-                                                            <SearchableSelect
-                                                                options={labelOptions}
-                                                                value={isNewLabel ? CREATE_NEW_LABEL_VALUE : fileLabel}
-                                                                onChange={(e) => {
-                                                                    if (e.target.value === CREATE_NEW_LABEL_VALUE) {
-                                                                        setIsNewLabel(true);
-                                                                        setFileLabel("");
-                                                                        return;
-                                                                    }
-                                                                    setIsNewLabel(false);
-                                                                    setFileLabel(e.target.value);
-                                                                }}
-                                                                placeholder="Select Label"
-                                                                className="w-full"
-                                                                {...leftMenuSelectClasses}
-                                                                panelWidth="100%"
-                                                            />
-                                                        )}
-
-                                                        {(!selectedReportSourceId || isNewLabel || labelOptions.length === 0) && (
-                                                            <input
-                                                                type="text"
-                                                                value={fileLabel}
-                                                                onChange={(e) => setFileLabel(e.target.value.replace(/\s+/g, "_"))}
-                                                                placeholder="Label (required)"
-                                                                className="left-menu-action"
-                                                                maxLength={120}
-                                                                required
-                                                            />
-                                                        )}
-
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => {
-                                                                // Use fileLabel for both display_name and file_label.
-                                                                // If no source ID, use fileLabel as the source name too.
-                                                                handleUpload(file, fileLabel, selectedReportSourceId, selectedReportSourceId ? "" : fileLabel, fileLabel);
-                                                                setFileLabel("");
-                                                            }}
-                                                            disabled={uploadInProgress || !file || !fileLabel.trim()}
-                                                            className={`left-menu-action ${uploadInProgress || !file || !fileLabel.trim() ? "left-menu-action-disabled" : ""}`}
-                                                            title={
-                                                                uploadInProgress
-                                                                    ? "Upload in progress"
-                                                                    : !file
-                                                                    ? "Choose a file"
-                                                                    : (!fileLabel.trim())
-                                                                        ? "Enter a label"
-                                                                        : "Upload & Load"
-                                                            }
-                                                        >
-                                                            {uploadInProgress ? `Uploading ${Math.max(0, Math.min(100, uploadPercent))}%` : "Upload & Load"}
-                                                        </button>
-                                                    </>
-                                                )}
-                                                <button
-                                                    type="button"
-                                                    onClick={openDrivePicker}
-                                                    className="left-menu-action inline-flex items-center gap-2"
-                                                >
-                                                    <img
-                                                        src="https://fonts.gstatic.com/s/i/productlogos/drive_2020q4/v8/web-64dp/logo_drive_2020q4_color_2x_web_64dp.png"
-                                                        alt=""
-                                                        aria-hidden="true"
-                                                        className="h-3.5 w-3.5 shrink-0"
-                                                    />
-                                                    <span>Import from Google Drive</span>
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={openDropboxPicker}
-                                                    disabled={!dropboxEnabled}
-                                                    className={`left-menu-action inline-flex items-center gap-2 ${dropboxEnabled ? "" : "left-menu-action-disabled"}`}
-                                                >
-                                                    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" className="shrink-0">
-                                                        <path fill="#0061FF" d="M6 2 0 6l6 4 6-4-6-4Zm12 0-6 4 6 4 6-4-6-4ZM6 10l-6 4 6 4 6-4-6-4Zm12 0-6 4 6 4 6-4-6-4ZM12 14l-6 4 6 4 6-4-6-4Z" />
-                                                    </svg>
-                                                    <span>Import from Dropbox</span>
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={openOneDrivePicker}
-                                                    disabled={!oneDriveEnabled}
-                                                    className={`left-menu-action inline-flex items-center gap-2 ${oneDriveEnabled ? "" : "left-menu-action-disabled"}`}
-                                                >
-                                                    <img src="https://upload.wikimedia.org/wikipedia/commons/e/e7/Microsoft_OneDrive_Icon_%282025_-_present%29.svg" alt="OneDrive" className="h-3.5 w-3.5 shrink-0" />
-                                                    <span>Import from OneDrive</span>
-                                                </button>
-                                                {sftpStorageEnabled && (
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => openStoragePicker("sftp_storage")}
-                                                        className="left-menu-action inline-flex items-center gap-2"
-                                                    >
-                                                        <SourceProviderIcon provider="sftp_storage" className="h-3.5 w-3.5 shrink-0" />
-                                                        <span>Import from SFTP</span>
-                                                    </button>
-                                                )}
-                                                {gcsStorageEnabled && (
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => openStoragePicker("gcs_storage")}
-                                                        className="left-menu-action inline-flex items-center gap-2"
-                                                    >
-                                                        <SourceProviderIcon provider="gcs_storage" className="h-3.5 w-3.5 shrink-0" />
-                                                        <span>Import from Google Cloud Storage</span>
-                                                    </button>
-                                                )}
-                                                {s3StorageEnabled && (
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => openStoragePicker("s3_storage")}
-                                                        className="left-menu-action inline-flex items-center gap-2"
-                                                    >
-                                                        <SourceProviderIcon provider="s3_storage" className="h-3.5 w-3.5 shrink-0" />
-                                                        <span>Import from Amazon S3</span>
-                                                    </button>
-                                                )}
-                                                {azureBlobStorageEnabled && (
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => openStoragePicker("azure_blob_storage")}
-                                                        className="left-menu-action inline-flex items-center gap-2"
-                                                    >
-                                                        <SourceProviderIcon provider="azure_blob_storage" className="h-3.5 w-3.5 shrink-0" />
-                                                        <span>Import from Azure Blob Storage</span>
-                                                    </button>
-                                                )}
-                                            </div>
-                                    )}
+                                <div
+                                    role="button"
+                                    tabIndex={0}
+                                    className="left-menu-text-item left-menu-toggle-row"
+                                    onKeyDown={(event) => {
+                                        if (event.key === "Enter" || event.key === " ") {
+                                            event.preventDefault();
+                                            setInsightsOn((p) => !p);
+                                        }
+                                    }}
+                                    onClick={() => setInsightsOn((p) => !p)}
+                                >
+                                    <span>Controlled AI</span>
+                                    <span className="left-menu-state">{insightsOn ? "ON" : "OFF"}</span>
                                 </div>
-                            )}
-                        </div>
+                                <div
+                                    role="button"
+                                    tabIndex={0}
+                                    className="left-menu-text-item left-menu-toggle-row"
+                                    onKeyDown={(event) => {
+                                        if (event.key === "Enter" || event.key === " ") {
+                                            event.preventDefault();
+                                            setComparisonOn(!comparisonOn);
+                                        }
+                                    }}
+                                    onClick={() => setComparisonOn(!comparisonOn)}
+                                >
+                                    <span>Split-Screen Mode</span>
+                                    <span className="left-menu-state">{comparisonOn ? "ON" : "OFF"}</span>
+                                </div>
+                            </div>
+                        )}
 
+                        {importsOnly ? (
+                            <div className="left-menu-group">
+                                <div
+                                    role="button"
+                                    tabIndex={0}
+                                    className="left-menu-text-item"
+                                    onKeyDown={(event) => {
+                                        if (event.key === "Enter" || event.key === " ") {
+                                            event.preventDefault();
+                                            navigate("/workspace");
+                                            setMenuOpen(false);
+                                        }
+                                    }}
+                                    onClick={() => {
+                                        navigate("/workspace");
+                                        setMenuOpen(false);
+                                    }}
+                                >
+                                    Back to workspace
+                                </div>
+                                <div
+                                    role="button"
+                                    tabIndex={0}
+                                    className="left-menu-text-item left-menu-toggle-row"
+                                    onKeyDown={(event) => {
+                                        if (event.key === "Enter" || event.key === " ") {
+                                            event.preventDefault();
+                                            setInsightsOn((p) => !p);
+                                        }
+                                    }}
+                                    onClick={() => setInsightsOn((p) => !p)}
+                                >
+                                    <span>Controlled AI</span>
+                                    <span className="left-menu-state">{insightsOn ? "ON" : "OFF"}</span>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="left-menu-group">
+                                <div
+                                    role="button"
+                                    tabIndex={0}
+                                    className="left-menu-text-item"
+                                    onKeyDown={(event) => {
+                                        if (event.key === "Enter" || event.key === " ") {
+                                            event.preventDefault();
+                                            navigate("/workspace/imports");
+                                            setMenuOpen(false);
+                                        }
+                                    }}
+                                    onClick={() => {
+                                        navigate("/workspace/imports");
+                                        setMenuOpen(false);
+                                    }}
+                                >
+                                    Import Spreadsheet
+                                </div>
+                            </div>
+                        )}
+
+                        {!importsOnly && (
                         <div className="left-menu-group">
                             <button className="left-menu-section-toggle" onClick={() => toggleMenu("charts")} aria-expanded={expandedMenus.charts}>
                                 <span>Charts and Tools</span>
                                 <span>{expandedMenus.charts ? "▾" : "▸"}</span>
                             </button>
                             {expandedMenus.charts && (
-                                <div className="left-menu-submenu">
-                                    <button className="left-menu-action left-menu-toggle-row" onClick={() => setWorkspacePivotOn((p) => !p)}>
+                            <div className="left-menu-submenu">
+                                    <div
+                                        role="button"
+                                        tabIndex={0}
+                                        className="left-menu-text-item left-menu-toggle-row"
+                                        onKeyDown={(event) => {
+                                            if (event.key === "Enter" || event.key === " ") {
+                                                event.preventDefault();
+                                                setWorkspacePivotOn((p) => !p);
+                                            }
+                                        }}
+                                        onClick={() => setWorkspacePivotOn((p) => !p)}
+                                    >
                                         <span>Pivot Table</span>
                                         <span className="left-menu-state">{pivotOn ? "ON" : "OFF"}</span>
-                                    </button>
-                                    <button className="left-menu-action left-menu-toggle-row" onClick={() => setWorkspaceTwoOn((p) => !p)}>
+                                    </div>
+                                    <div
+                                        role="button"
+                                        tabIndex={0}
+                                        className="left-menu-text-item left-menu-toggle-row"
+                                        onKeyDown={(event) => {
+                                            if (event.key === "Enter" || event.key === " ") {
+                                                event.preventDefault();
+                                                setWorkspaceTwoOn((p) => !p);
+                                            }
+                                        }}
+                                        onClick={() => setWorkspaceTwoOn((p) => !p)}
+                                    >
                                         <span>Two-Condition</span>
                                         <span className="left-menu-state">{twoOn ? "ON" : "OFF"}</span>
-                                    </button>
-                                    <button className="left-menu-action left-menu-toggle-row" onClick={() => setWorkspaceTrendsOn((p) => !p)}>
+                                    </div>
+                                    <div
+                                        role="button"
+                                        tabIndex={0}
+                                        className="left-menu-text-item left-menu-toggle-row"
+                                        onKeyDown={(event) => {
+                                            if (event.key === "Enter" || event.key === " ") {
+                                                event.preventDefault();
+                                                setWorkspaceTrendsOn((p) => !p);
+                                            }
+                                        }}
+                                        onClick={() => setWorkspaceTrendsOn((p) => !p)}
+                                    >
                                         <span>Trends</span>
                                         <span className="left-menu-state">{trendsOn ? "ON" : "OFF"}</span>
-                                    </button>
+                                    </div>
                                     <details className="left-menu-disclosure">
                                         <summary className="left-menu-summary">EBITDA Calculator</summary>
                                         <div className="left-menu-nested">
@@ -2253,7 +2241,9 @@ export default function DashboardBody(props) {
                                 </div>
                             )}
                         </div>
+                        )}
 
+                        {!importsOnly && (
                         <div className="left-menu-group">
                             <button className="left-menu-section-toggle" onClick={() => toggleMenu("export")} aria-expanded={expandedMenus.export}>
                                 <span>Export</span>
@@ -2261,12 +2251,37 @@ export default function DashboardBody(props) {
                             </button>
                             {expandedMenus.export && (
                                 <div className="left-menu-submenu">
-                                    <button className="left-menu-action" onClick={() => { exportCSV(); }}>Export CSV (.csv)</button>
-                                    <button className="left-menu-action" onClick={() => { exportXLSX(); }}>Export Excel (.xlsx)</button>
-                                    <button className="left-menu-action" onClick={() => { exportPDF(); }}>Export PDF (.pdf)</button>
+                                    <div
+                                        role="button"
+                                        tabIndex={0}
+                                        className="left-menu-text-item"
+                                        onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); exportCSV(); } }}
+                                        onClick={() => { exportCSV(); }}
+                                    >
+                                        Export CSV (.csv)
+                                    </div>
+                                    <div
+                                        role="button"
+                                        tabIndex={0}
+                                        className="left-menu-text-item"
+                                        onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); exportXLSX(); } }}
+                                        onClick={() => { exportXLSX(); }}
+                                    >
+                                        Export Excel (.xlsx)
+                                    </div>
+                                    <div
+                                        role="button"
+                                        tabIndex={0}
+                                        className="left-menu-text-item"
+                                        onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); exportPDF(); } }}
+                                        onClick={() => { exportPDF(); }}
+                                    >
+                                        Export PDF (.pdf)
+                                    </div>
                                 </div>
                             )}
                         </div>
+                        )}
 
 
                     </div>
@@ -2849,7 +2864,11 @@ export default function DashboardBody(props) {
                 onImport={(entry) => handleStorageImport("azure_blob_storage", entry)}
             />
 
-            <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-y-auto scroll-smooth" ref={tableContainerRef}>
+            <div
+                className="flex-1 min-w-0 min-h-0 flex flex-col overflow-y-auto scroll-smooth"
+                style={{ display: importsOnly ? "none" : "flex" }}
+                ref={tableContainerRef}
+            >
                 <div className="flex flex-col min-h-full">
 
             {/* Pivot Controls */}
@@ -3842,11 +3861,275 @@ export default function DashboardBody(props) {
                 </div>
             </div>
             </div>
-            {insightsOn && (
+            {importsOnly ? (
+                <div className={`${publicPageClass} min-h-0 h-full flex-1 overflow-y-auto scroll-smooth`}>
+                    <div className="mx-auto max-w-7xl pb-12 pt-6">
+                        <p className={`text-xs font-black uppercase tracking-[0.22em] ${themeTextClass}`}>Import Center</p>
+                        <h2 className="mt-2 text-3xl font-black leading-tight tracking-tight text-slate-950 sm:text-4xl">
+                            Bring files in from your configured sources.
+                        </h2>
+                        <p className="mt-3 max-w-2xl text-base font-semibold leading-8 text-slate-600">
+                            Use a local upload or pull from the connectors you already use. This keeps import behavior consistent with the existing workspace flow.
+                        </p>
+
+                        {canImportFromDrive ? (
+                            <div className="mt-9 border-y border-slate-300">
+                                <section className="border-b border-slate-200 py-6">
+                                    <div className="mb-3 text-xs font-black uppercase tracking-[0.16em] text-slate-500">Source import list</div>
+                                    <h3 className="text-xl font-black text-slate-950">Bring files from all configured sources</h3>
+                                    <p className="mt-1 text-sm font-semibold leading-6 text-slate-600">
+                                        Manual upload and all supported integrations are available from one place.
+                                    </p>
+
+                                    <div className="mt-6 border-t border-slate-200">
+                                        <label className="group block border-b border-slate-200 py-3">
+                                            <span className={formLabelClass}>Report source</span>
+                                            <p className="mt-1 text-[11px] font-medium leading-4 text-slate-500">
+                                                Pick where this file belongs so it appears in the correct report context.
+                                            </p>
+                                            <SearchableSelect
+                                                options={reportSourceOptions}
+                                                value={selectedReportSourceId}
+                                                onChange={(e) => {
+                                                    setSelectedReportSourceId(e.target.value);
+                                                }}
+                                                placeholder="Select (optional)"
+                                                className="w-full mt-1"
+                                                panelWidth="100%"
+                                            />
+                                        </label>
+
+                                        <label className="group block border-b border-slate-200 py-3">
+                                            <span className={formLabelClass}>Label</span>
+                                            <p className="mt-1 text-[11px] font-medium leading-4 text-slate-500">
+                                                Enter or choose a label to identify this import in the workspace and history.
+                                            </p>
+                                            {selectedReportSourceId && labelOptions.length > 0 && !isNewLabel ? (
+                                                <SearchableSelect
+                                                    options={labelOptions}
+                                                    value={fileLabel}
+                                                    onChange={(e) => {
+                                                        if (e.target.value === CREATE_NEW_LABEL_VALUE) {
+                                                            setIsNewLabel(true);
+                                                            setFileLabel("");
+                                                            return;
+                                                        }
+                                                        setIsNewLabel(false);
+                                                        setFileLabel(e.target.value);
+                                                    }}
+                                                    placeholder="Select or create a label"
+                                                    className="w-full mt-1"
+                                                    panelWidth="100%"
+                                                />
+                                            ) : (
+                                                <input
+                                                    type="text"
+                                                    value={fileLabel}
+                                                    onChange={(e) => setFileLabel(e.target.value.replace(/\s+/g, "_"))}
+                                                    placeholder="Label (required)"
+                                                    className="mt-1 h-12 w-full border-0 border-b border-slate-300 bg-transparent px-0 py-2 text-sm font-black text-slate-900 focus:outline-none"
+                                                    maxLength={120}
+                                                    required
+                                                />
+                                            )}
+                                        </label>
+
+                                        <label className="group block border-b border-slate-200 py-3">
+                                            <span className={formLabelClass}>File</span>
+                                            <p className="mt-1 text-[11px] font-medium leading-4 text-slate-500">
+                                                Upload a spreadsheet (CSV/XLS/XLSX) to add a new version for the selected report label.
+                                            </p>
+                                            <span className="relative mt-2 inline-flex w-full items-center justify-between text-sm font-black text-slate-700 transition-colors hover:text-[hsl(var(--primary))]">
+                                                <span className="truncate">{selectedFileName || "Choose spreadsheet"}</span>
+                                                <span className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">Browse</span>
+                                                <input
+                                                    id="import-file-input"
+                                                    type="file"
+                                                    onChange={(e) => {
+                                                        const f = e.target.files?.[0];
+                                                        setFile(f || null);
+                                                        setSelectedFileName(f?.name || "");
+                                                    }}
+                                                    className="absolute inset-0 cursor-pointer opacity-0"
+                                                    aria-label="Choose spreadsheet for import"
+                                                />
+                                            </span>
+                                        </label>
+
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                handleUpload(file, fileLabel, selectedReportSourceId, selectedReportSourceId ? "" : fileLabel, fileLabel);
+                                                setFileLabel("");
+                                            }}
+                                            disabled={uploadInProgress || !file || !fileLabel.trim()}
+                                            className={`group flex w-full items-center justify-between border-b border-slate-200 py-3 text-left text-sm font-black transition-colors ${uploadInProgress || !file || !fileLabel.trim() ? "cursor-not-allowed opacity-50" : "text-slate-700 hover:text-[hsl(var(--primary))]"}`}
+                                        >
+                                            <span>{uploadInProgress ? `Uploading ${Math.max(0, Math.min(100, uploadPercent))}%` : "Upload and load"}</span>
+                                            <span className="text-slate-400 transition-transform group-hover:translate-x-0.5">→</span>
+                                        </button>
+                                    </div>
+                                </section>
+
+                                <section className="border-b border-slate-200 py-6">
+                                    <h3 className="text-xl font-black text-slate-950">Cloud, file, and ingestion sources</h3>
+                                    <p className="mt-1 text-sm font-semibold leading-6 text-slate-600">
+                                        Keep the same workflow for recurring imports and recurring source systems.
+                                    </p>
+                                    <div className="mt-4 border-t border-slate-200">
+                                        <div className="border-b border-slate-200 py-3">
+                                            <button
+                                                type="button"
+                                                onClick={openDrivePicker}
+                                                className="group flex w-full items-center justify-between text-left text-sm font-black text-slate-700 transition-colors hover:text-[hsl(var(--primary))]"
+                                            >
+                                                <span className="inline-flex items-center gap-2">
+                                                    <SourceProviderIcon provider="google_drive" className="h-3.5 w-3.5 shrink-0" />
+                                                    <span>Google Drive</span>
+                                                </span>
+                                                <span className="text-slate-400 transition-transform group-hover:translate-x-0.5">→</span>
+                                            </button>
+                                            <p className="mt-1 text-[11px] font-medium leading-4 text-slate-500">Import spreadsheets directly from any Drive folder and keep your reports synced.</p>
+                                        </div>
+                                        <div className="border-b border-slate-200 py-3">
+                                            <button
+                                                type="button"
+                                                onClick={openDropboxPicker}
+                                                disabled={!dropboxEnabled}
+                                                className={`group flex w-full items-center justify-between text-left text-sm font-black transition-colors ${!dropboxEnabled ? "cursor-not-allowed opacity-50" : "text-slate-700 hover:text-[hsl(var(--primary))]"}`}
+                                            >
+                                                <span className="inline-flex items-center gap-2">
+                                                    <SourceProviderIcon provider="dropbox" className="h-3.5 w-3.5 shrink-0" />
+                                                    <span>Dropbox</span>
+                                                </span>
+                                                <span className="text-slate-400 transition-transform group-hover:translate-x-0.5">→</span>
+                                            </button>
+                                            <p className="mt-1 text-[11px] font-medium leading-4 text-slate-500">Browse linked Dropbox folders and import selected files from shared paths.</p>
+                                        </div>
+                                        <div className="border-b border-slate-200 py-3">
+                                            <button
+                                                type="button"
+                                                onClick={openOneDrivePicker}
+                                                disabled={!oneDriveEnabled}
+                                                className={`group flex w-full items-center justify-between text-left text-sm font-black transition-colors ${!oneDriveEnabled ? "cursor-not-allowed opacity-50" : "text-slate-700 hover:text-[hsl(var(--primary))]"}`}
+                                            >
+                                                <span className="inline-flex items-center gap-2">
+                                                    <SourceProviderIcon provider="onedrive" className="h-3.5 w-3.5 shrink-0" />
+                                                    <span>OneDrive</span>
+                                                </span>
+                                                <span className="text-slate-400 transition-transform group-hover:translate-x-0.5">→</span>
+                                            </button>
+                                            <p className="mt-1 text-[11px] font-medium leading-4 text-slate-500">Import from OneDrive business/personal folders for automated periodic ingest.</p>
+                                        </div>
+                                        <div className="border-b border-slate-200 py-3">
+                                            <button
+                                                type="button"
+                                                onClick={() => openStoragePicker("sftp_storage")}
+                                                disabled={!sftpStorageEnabled}
+                                                className={`group flex w-full items-center justify-between text-left text-sm font-black transition-colors ${!sftpStorageEnabled ? "cursor-not-allowed opacity-50" : "text-slate-700 hover:text-[hsl(var(--primary))]"}`}
+                                            >
+                                                <span className="inline-flex items-center gap-2">
+                                                    <SourceProviderIcon provider="sftp_storage" className="h-3.5 w-3.5 shrink-0" />
+                                                    <span>SFTP</span>
+                                                </span>
+                                                <span className="text-xs font-black uppercase tracking-[0.16em] text-slate-400">{!sftpStorageEnabled ? "Needs admin setup" : "→"}</span>
+                                            </button>
+                                            <p className="mt-1 text-[11px] font-medium leading-4 text-slate-500">Connect to SFTP endpoints and pull in files from approved directories.</p>
+                                        </div>
+                                        <div className="border-b border-slate-200 py-3">
+                                            <button
+                                                type="button"
+                                                onClick={() => openStoragePicker("gcs_storage")}
+                                                disabled={!gcsStorageEnabled}
+                                                className={`group flex w-full items-center justify-between text-left text-sm font-black transition-colors ${!gcsStorageEnabled ? "cursor-not-allowed opacity-50" : "text-slate-700 hover:text-[hsl(var(--primary))]"}`}
+                                            >
+                                                <span className="inline-flex items-center gap-2">
+                                                    <SourceProviderIcon provider="gcs_storage" className="h-3.5 w-3.5 shrink-0" />
+                                                    <span>Google Cloud Storage</span>
+                                                </span>
+                                                <span className="text-xs font-black uppercase tracking-[0.16em] text-slate-400">{!gcsStorageEnabled ? "Needs admin setup" : "→"}</span>
+                                            </button>
+                                            <p className="mt-1 text-[11px] font-medium leading-4 text-slate-500">Import from configured GCS buckets and import objects to your current workspace.</p>
+                                        </div>
+                                        <div className="border-b border-slate-200 py-3">
+                                            <button
+                                                type="button"
+                                                onClick={() => openStoragePicker("s3_storage")}
+                                                disabled={!s3StorageEnabled}
+                                                className={`group flex w-full items-center justify-between text-left text-sm font-black transition-colors ${!s3StorageEnabled ? "cursor-not-allowed opacity-50" : "text-slate-700 hover:text-[hsl(var(--primary))]"}`}
+                                            >
+                                                <span className="inline-flex items-center gap-2">
+                                                    <SourceProviderIcon provider="s3_storage" className="h-3.5 w-3.5 shrink-0" />
+                                                    <span>Amazon S3</span>
+                                                </span>
+                                                <span className="text-xs font-black uppercase tracking-[0.16em] text-slate-400">{!s3StorageEnabled ? "Needs admin setup" : "→"}</span>
+                                            </button>
+                                            <p className="mt-1 text-[11px] font-medium leading-4 text-slate-500">Select from S3 buckets and import versioned files with a standardized header format.</p>
+                                        </div>
+                                        <div className="border-b border-slate-200 py-3">
+                                            <button
+                                                type="button"
+                                                onClick={() => openStoragePicker("azure_blob_storage")}
+                                                disabled={!azureBlobStorageEnabled}
+                                                className={`group flex w-full items-center justify-between text-left text-sm font-black transition-colors ${!azureBlobStorageEnabled ? "cursor-not-allowed opacity-50" : "text-slate-700 hover:text-[hsl(var(--primary))]"}`}
+                                            >
+                                                <span className="inline-flex items-center gap-2">
+                                                    <SourceProviderIcon provider="azure_blob_storage" className="h-3.5 w-3.5 shrink-0" />
+                                                    <span>Azure Blob Storage</span>
+                                                </span>
+                                                <span className="text-xs font-black uppercase tracking-[0.16em] text-slate-400">{!azureBlobStorageEnabled ? "Needs admin setup" : "→"}</span>
+                                            </button>
+                                            <p className="mt-1 text-[11px] font-medium leading-4 text-slate-500">Import files from configured Azure Blob containers on the selected storage scopes.</p>
+                                        </div>
+                                        <div className="border-b border-slate-200 py-3">
+                                            <button
+                                                type="button"
+                                                disabled
+                                                className="group flex w-full items-center justify-between text-left text-sm font-black text-slate-400"
+                                            >
+                                                <span className="inline-flex items-center gap-2">
+                                                    <SourceProviderIcon provider="email" className="h-3.5 w-3.5 shrink-0" />
+                                                    <span>Email intake</span>
+                                                </span>
+                                                <span className="text-xs font-black uppercase tracking-[0.16em]">Needs admin setup</span>
+                                            </button>
+                                            <p className="mt-1 text-[11px] font-medium leading-4 text-slate-500">Let senders upload attachments to designated inboxes for automatic import.</p>
+                                        </div>
+                                        <div className="border-b border-slate-200 py-3">
+                                            <button
+                                                type="button"
+                                                disabled
+                                                className="group flex w-full items-center justify-between text-left text-sm font-black text-slate-400"
+                                            >
+                                                <span className="inline-flex items-center gap-2">
+                                                    <SourceProviderIcon provider="quickbooks" className="h-3.5 w-3.5 shrink-0" />
+                                                    <span>QuickBooks exports</span>
+                                                </span>
+                                                <span className="text-xs font-black uppercase tracking-[0.16em]">Needs admin setup</span>
+                                            </button>
+                                            <p className="mt-1 text-[11px] font-medium leading-4 text-slate-500">Import from configured QuickBooks export outputs once admin enables the integration.</p>
+                                        </div>
+                                    </div>
+                                </section>
+                            </div>
+                        ) : (
+                            <div className="mt-8 rounded-xl border border-rose-200 bg-rose-50 p-5 text-sm font-black text-rose-700">
+                                You do not have permission to access import actions on this account.
+                            </div>
+                        )}
+
+                        <div className="mt-8 flex items-center justify-end gap-3">
+                            <Link to="/workspace" className="text-sm font-black text-slate-700 transition-colors hover:text-[hsl(var(--primary))]">
+                                Back to workspace
+                            </Link>
+                        </div>
+                    </div>
+                </div>
+            ) : insightsOn && (
                 <aside className="w-[22rem] shrink-0 h-full border-l border-slate-200 bg-slate-50 p-3 overflow-y-auto">
                     <InsightFeed
                         sheetId={sheetId}
-                        context="workspace"
+                        context="dashboard"
                         user={user}
                         onApplyFilter={onInsightApplyFilter}
                         onOpenChart={openWorkspaceInsightChart}

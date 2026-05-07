@@ -239,6 +239,23 @@ html, body, #root {
   outline: none;
 }
 
+.left-menu-text-item {
+  width: 100%;
+  text-align: left;
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 0.76rem;
+  padding: 0.2rem 0.05rem;
+  border-radius: 0.5rem;
+  cursor: pointer;
+}
+
+.left-menu-text-item:hover,
+.left-menu-text-item:focus-visible {
+  color: #ffffff;
+  outline: none;
+}
+
 .left-menu-action-disabled,
 .left-menu-action:disabled {
   opacity: 0.52;

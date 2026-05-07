@@ -9,7 +9,8 @@
     "test": "node --test",
     "sync:app-settings": "node scripts/syncAppSettings.js",
     "migrate:tenants": "node scripts/migrateTenantDatabases.js",
-    "backfill:import-sizes": "node scripts/backfillImportSizeMetadata.js"
+    "backfill:import-sizes": "node scripts/backfillImportSizeMetadata.js",
+    "cleanup:all-sheets": "node scripts/cleanupAllReportSourcesSheets.js"
   },
   "dependencies": {
     "@node-saml/node-saml": "^5.1.0",

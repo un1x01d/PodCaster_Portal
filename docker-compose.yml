@@ -53,6 +53,7 @@ services:
         condition: service_healthy
     volumes:
       - ./backend/uploads:/app/uploads
+      - ./backend/scripts:/app/scripts
       - ./backend/src:/app/src
       - ./backend/server.js:/app/server.js
     command: npm start

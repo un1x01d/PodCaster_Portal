@@ -1,5 +1,6 @@
 import { parentPort, workerData } from 'worker_threads';
 import * as XLSX from 'xlsx';
+import fs from 'fs';
 
 const SHEET_NAME_MAX_CHARS = Number.parseInt(process.env.XLSX_SHEET_NAME_MAX_CHARS || "120", 10);
 const memoryLimitMb = Number.parseInt(workerData?.memoryLimitMb || "0", 10);
@@ -106,6 +107,44 @@ function rowsFromWorksheet(ws) {
   });
 }
 
+function parseWorkbookWithFallbacks(sourceBuffer, baseOptions) {
+  const normalized = Buffer.isBuffer(sourceBuffer)
+    ? sourceBuffer
+    : (sourceBuffer instanceof ArrayBuffer ? Buffer.from(new Uint8Array(sourceBuffer)) : Buffer.from(sourceBuffer || ""));
+  const sample = normalized.slice(0, 4096);
+  const isLikelyText = (() => {
+    if (!sample.length) return false;
+    for (let i = 0; i < sample.length; i += 1) {
+      if (sample[i] === 0x00) return false;
+    }
+    const text = sample.toString("utf8");
+    return /<html|<table|<tbody|,|\t|\r|\n/i.test(text);
+  })();
+
+  const attempts = [
+    { type: "buffer", input: normalized },
+    { type: "array", input: new Uint8Array(normalized) },
+  ];
+  if (isLikelyText) {
+    attempts.push({ type: "string", input: normalized.toString("utf8") });
+    attempts.push({ type: "binary", input: normalized.toString("binary") });
+    attempts.push({ type: "base64", input: normalized.toString("base64") });
+  }
+
+  let lastError;
+  for (const attempt of attempts) {
+    try {
+      return XLSX.read(attempt.input, {
+        ...baseOptions,
+        type: attempt.type,
+      });
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error("Unable to parse workbook with available reader modes.");
+}
+
 try {
   const { buffer, filePath, options } = workerData;
   assertWithinMemoryLimit("start");
@@ -123,9 +162,8 @@ try {
       WTF: false,
       ...options,
   };
-  const wb = filePath
-    ? XLSX.readFile(filePath, workbookOptions)
-    : XLSX.read(buffer, { type: 'buffer', ...workbookOptions });
+  const workbookData = filePath ? fs.readFileSync(filePath) : buffer;
+  const wb = parseWorkbookWithFallbacks(workbookData, workbookOptions);
   assertWithinMemoryLimit("after_workbook_read");
   
   const result = {

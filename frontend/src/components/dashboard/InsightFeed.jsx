@@ -345,8 +345,10 @@ export default function InsightFeed({
 
   const loadInsights = React.useCallback(async ({ forceRefresh = false } = {}) => {
     if (!sheetId) {
+      setLoading(false);
       setCards([]);
       setSettings(null);
+      setAvailable({ dateColumns: [], metricColumns: [] });
       setError("");
       return;
     }
@@ -471,7 +473,7 @@ export default function InsightFeed({
           <div className="text-xs text-slate-500">{ui.automaticInsights}</div>
         </div>
         <div className="flex items-center gap-2">
-          {user?.role === "admin" && (
+          {user?.role === "admin" && sheetId && (
             <button
               type="button"
               className="text-xs px-2 py-1 rounded border border-slate-300 text-slate-700 hover:bg-slate-50"
@@ -482,8 +484,11 @@ export default function InsightFeed({
           )}
           <button
             type="button"
-            className="text-xs px-2 py-1 rounded border border-slate-300 text-slate-700 hover:bg-slate-50"
-            onClick={() => loadInsights({ forceRefresh: true })}
+            disabled={!sheetId}
+            className={`text-xs px-2 py-1 rounded border border-slate-300 text-slate-700 ${sheetId ? "hover:bg-slate-50" : "opacity-60 cursor-not-allowed"}`}
+            onClick={() => {
+              if (sheetId) loadInsights({ forceRefresh: true });
+            }}
           >
             {ui.refresh}
           </button>
@@ -559,9 +564,12 @@ export default function InsightFeed({
       )}
 
       <div className="p-4">
+        {!sheetId && !loading && !error && (
+          <div className="text-sm text-slate-500">No sheet loaded. Select a sheet to generate visual summary insights.</div>
+        )}
         {loading && <div className="text-sm text-slate-500">{ui.loadingInsights}</div>}
         {error && <div className="text-sm text-rose-600">{error}</div>}
-        {!loading && !error && displayCards.length === 0 && (
+        {sheetId && !loading && !error && displayCards.length === 0 && (
           <div className="text-sm text-slate-500">{ui.noInsightsYet}</div>
         )}
 

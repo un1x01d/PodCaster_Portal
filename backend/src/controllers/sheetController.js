@@ -1067,6 +1067,55 @@ async function parseWorkbookFileInWorker(filePath, { memoryLimitMb } = {}) {
     });
 }
 
+function parseWorkbookFromBufferWithFallback(fileBuffer, options = {}) {
+    const readOptions = {
+        type: "buffer",
+        cellDates: true,
+        cellFormula: false,
+        cellHTML: false,
+        cellNF: false,
+        cellStyles: false,
+        cellText: false,
+        bookDeps: false,
+        bookFiles: false,
+        bookProps: false,
+        bookVBA: false,
+        WTF: false,
+        ...options,
+    };
+    const normalized = Buffer.isBuffer(fileBuffer)
+        ? fileBuffer
+        : (fileBuffer instanceof ArrayBuffer ? Buffer.from(new Uint8Array(fileBuffer)) : Buffer.from(fileBuffer || ""));
+    const sample = normalized.slice(0, 4096);
+    const likelyText = (() => {
+        if (!sample.length) return false;
+        for (let i = 0; i < sample.length; i += 1) {
+            if (sample[i] === 0x00) return false;
+        }
+        const text = sample.toString("utf8");
+        return /<html|<table|,|\t|\r|\n/i.test(text);
+    })();
+
+    const attempts = [
+        { type: "buffer", value: normalized },
+        { type: "array", value: new Uint8Array(normalized) },
+    ];
+    if (likelyText) {
+        attempts.push({ type: "string", value: normalized.toString("utf8") });
+        attempts.push({ type: "binary", value: normalized.toString("binary") });
+    }
+
+    let parseError;
+    for (const attempt of attempts) {
+        try {
+            return XLSX.read(attempt.value, { ...readOptions, type: attempt.type });
+        } catch (err) {
+            parseError = err;
+        }
+    }
+    throw parseError || new Error("Unable to parse workbook data with fallback readers.");
+}
+
 function toImportError(code, statusCode = 400, message = null) {
     const err = new Error(code);
     err.statusCode = statusCode;
@@ -1076,7 +1125,11 @@ function toImportError(code, statusCode = 400, message = null) {
 
 async function parseWorkbookBufferOrThrow(fileBuffer, options = {}) {
     try {
-        return await parseWorkbookInWorker(fileBuffer, options);
+        const parsed = await parseWorkbookInWorker(fileBuffer, options);
+        if (parsed && Array.isArray(parsed.sheetNames) && parsed.sheetNames.length >= 0) {
+            return parsed;
+        }
+        throw toImportError("empty_parsed_workbook", 400, "Workbook parser returned no sheet data.");
     } catch (err) {
         if (String(err?.message || "") === "xlsx_worker_memory_limit_exceeded") {
             const mapped = toImportError(
@@ -1087,28 +1140,38 @@ async function parseWorkbookBufferOrThrow(fileBuffer, options = {}) {
             mapped.cause = err;
             throw mapped;
         }
-        const mapped = toImportError(
-            "unreadable_spreadsheet",
-            400,
-            "Could not parse file as CSV/XLSX/XML/HTML-table."
-        );
-        mapped.cause = err;
-        throw mapped;
+        const directWorkerErr = err;
+        try {
+            return parseWorkbookFromBufferWithFallback(fileBuffer, options);
+        } catch (directErr) {
+            const message = String(directErr?.message || "").toLowerCase();
+            if (message.includes("password") || message.includes("encrypted")) {
+                const mapped = toImportError(
+                    "unreadable_spreadsheet",
+                    400,
+                    "Uploaded spreadsheet appears encrypted/password-protected or compressed in an unsupported way."
+                );
+                mapped.cause = { worker: directWorkerErr, direct: directErr };
+                mapped.rootError = String(directErr?.message || directErr);
+                throw mapped;
+            }
+            const mapped = toImportError(
+                "unreadable_spreadsheet",
+                400,
+                "Could not parse file as CSV/XLSX/XML/HTML-table."
+            );
+            mapped.cause = { worker: directWorkerErr, direct: directErr };
+            mapped.workerMessage = String(directWorkerErr?.message || "");
+            mapped.directMessage = String(directErr?.message || "");
+            mapped.rootError = String(directErr?.message || directErr);
+            throw mapped;
+        }
     }
 }
 
 async function parseWorkbookFileOrThrow(filePath, options = {}) {
-    try {
-        return await parseWorkbookFileInWorker(filePath, options);
-    } catch (err) {
-        if (err.message === "xlsx_worker_timeout") {
-            throw toImportError("xlsx_worker_timeout", 400);
-        }
-        if (err.message === "xlsx_worker_memory_limit_exceeded") {
-            throw toImportError("xlsx_worker_memory_limit_exceeded", 413);
-        }
-        throw toImportError("unreadable_spreadsheet", 400);
-    }
+    const fileBuffer = await fs.promises.readFile(filePath);
+    return parseWorkbookBufferOrThrow(fileBuffer, options);
 }
 
 async function classifyAndPersistBusinessContext({
@@ -2278,6 +2341,21 @@ export async function uploadSheet(req, res) {
         return res.json(responsePayload);
     } catch (e) {
         console.error("upload failed:", e);
+        if (e?.message === "unreadable_spreadsheet" && req?.file) {
+            const filename = req.file.originalname || "uploaded";
+            const sniff = req.file.buffer
+                ? req.file.buffer.slice(0, 8).toString("hex")
+                : (req.file.path ? `path=${req.file.path}` : "no_buffer");
+            console.error("[upload] unreadable_spreadsheet", {
+                filename,
+                mimetype: req.file.mimetype,
+                size: req.file.size,
+                sniff,
+                workerMessage: e.workerMessage,
+                directMessage: e.directMessage,
+                rootError: e.rootError || null,
+            });
+        }
         if (importJobCreated) {
             try {
                 await query(
