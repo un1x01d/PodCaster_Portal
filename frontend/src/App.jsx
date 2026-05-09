@@ -57,6 +57,7 @@ import { useViews } from "./hooks/useViews";
 import "./index.css";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
+const DEBUG_SPREADSHEET = import.meta.env.DEV;
 const DashboardBody = lazy(() => import("./components/dashboard/DashboardBody"));
 const DashboardHome = lazy(() => import("./components/dashboard/DashboardHome"));
 const InsightFeed = lazy(() => import("./components/dashboard/InsightFeed"));
@@ -182,11 +183,11 @@ export default function App() {
     azureBlobStorageEnabled = true,
   } = auth.integrations || {};
   const sheetData = useSheetData({ token, user });
-  const { 
+  const {
     sheetId, setSheetId, activeFilename, setActiveFilename, 
     data, setData, headers, setHeaders, 
     sortConfig, setSortConfig, columnFilters, setColumnFilters,
-    isBatchLoading, hasMoreData
+    isBatchLoading, setIsBatchLoading, hasMoreData, setHasMoreData
   } = sheetData;
   const viewsHook = useViews({ sheetId, token, user });
   const { 
@@ -213,7 +214,14 @@ export default function App() {
   const [secondarySheetId, setSecondarySheetId] = useState("");
   const [secondaryTab, setSecondaryTab] = useState(null);
 
-  const BATCH_SIZE = 50;
+  const BATCH_SIZE = 200;
+  const primaryLoadOffsetRef = useRef(null);
+  const secondaryLoadOffsetRef = useRef(null);
+  const primaryLoadSeqRef = useRef(0);
+  const secondaryLoadSeqRef = useRef(0);
+  const primaryLatestLoadSeqRef = useRef(0);
+  const secondaryLatestLoadSeqRef = useRef(0);
+  const primaryLoadedContextRef = useRef({ sheet: "", tab: "", view: "" });
 
   // Upload, filtering, and review prompt state owned by the workspace shell.
   const [openFilterCol, setOpenFilterCol] = useState(null);
@@ -335,6 +343,8 @@ export default function App() {
             for (const col of activeCols) {
               const allowed = columnFilters[col];
               if (!allowed) continue;
+              const headerMissing = !headers.includes(col) && !headers.some((h) => String(h || "").trim().toLowerCase() === String(col || "").trim().toLowerCase());
+              if (headerMissing) continue;
 
               // Try exact match first, then fuzzy
               let rowValue = row[col];
@@ -874,26 +884,36 @@ export default function App() {
   };
 
   const applyLoadedRows = (sid, raw, preserveFilters = false, append = false, activeTabHint = null) => {
+    const rows = Array.isArray(raw) ? raw : [];
     if (!raw || !Array.isArray(raw)) {
       console.warn("loadData: response is not an array", raw);
       if (!append) {
         setData([]);
         setHeaders([]);
       }
+      if (append) {
+        setHasMoreData(false);
+        return;
+      }
       return;
     }
     
     if (append) {
-        setData(prev => [...prev, ...raw]);
-        if (raw.length < BATCH_SIZE) setHasMoreData(false);
+        setData(prev => [...prev, ...rows]);
+        if (rows.length === 0) setHasMoreData(false);
     } else {
-        setData(raw);
+        setData(rows);
         const isSameSheet = String(sid) === String(sheetId);
-        const heads = raw.length
-          ? Object.keys(raw[0])
+        const heads = rows.length
+          ? Object.keys(rows[0])
           : ((preserveFilters || isSameSheet) ? headers : []);
         setHeaders(heads);
-        setHasMoreData(raw.length >= BATCH_SIZE);
+        setHasMoreData(rows.length > 0);
+        primaryLoadedContextRef.current = {
+          sheet: String(sid || ""),
+          tab: String(activeTabHint || activeTab || ""),
+          view: String(selectedViewId || ""),
+        };
     }
 
     setSheetId(sid);
@@ -921,6 +941,19 @@ export default function App() {
     const { preferCache = true, limit = BATCH_SIZE, offset = 0, append = false, context = "primary", filters = null } = options;
     
     const isPrimary = context === "primary";
+    const requestSeq = (isPrimary ? primaryLoadSeqRef : secondaryLoadSeqRef).current + 1;
+    if (isPrimary) primaryLoadSeqRef.current = requestSeq;
+    else secondaryLoadSeqRef.current = requestSeq;
+    if (isPrimary) primaryLatestLoadSeqRef.current = requestSeq;
+    else secondaryLatestLoadSeqRef.current = requestSeq;
+
+    if (!append) {
+      if (isPrimary) {
+        setHasMoreData(true);
+      } else {
+        setSecondaryHasMoreData(true);
+      }
+    }
     if (append) {
         if (isPrimary) setIsBatchLoading(true);
         else setSecondaryIsBatchLoading(true);
@@ -951,6 +984,18 @@ export default function App() {
 
       params.append("limit", limit);
       params.append("offset", offset);
+      if (DEBUG_SPREADSHEET) {
+        console.log("[spreadsheet] requesting batch", {
+          context,
+          sid,
+          append,
+          limit,
+          offset,
+          tabName: tabName || null,
+          hasMoreData: isPrimary ? hasMoreData : secondaryHasMoreData,
+          isLoading: isPrimary ? isBatchLoading : secondaryIsBatchLoading,
+        });
+      }
 
       const cacheKey = getDataCacheKey(sid, tabName) + "?" + params.toString();
       if (preferCache && !append && isPrimary && tabDataCacheRef.current[cacheKey]) {
@@ -958,9 +1003,31 @@ export default function App() {
         return;
       }
 
-      const url = `${API}/sheets/${sid}/data?${params.toString()}`;
-      const res = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
+      const sheetDataParams = new URLSearchParams(params.toString());
+      sheetDataParams.append("_ts", Date.now().toString());
+      const url = `${API}/sheets/${sid}/data?${sheetDataParams.toString()}`;
+      const res = await axios.get(url, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
       const raw = res.data;
+      if (requestSeq !== (isPrimary ? primaryLatestLoadSeqRef.current : secondaryLatestLoadSeqRef.current)) {
+        return;
+      }
+      if (DEBUG_SPREADSHEET) {
+        const count = Array.isArray(raw) ? raw.length : 0;
+        console.log("[spreadsheet] received batch", {
+          context,
+          sid,
+          count,
+          append,
+          offset,
+          nextHasMore: count > 0,
+          status: res?.status,
+          code: res?.statusText,
+        });
+      }
       const activeViewConfig = (() => {
         const v = views.find((vv) => String(vv.id) === String(selectedViewId));
         if (!v) return null;
@@ -993,15 +1060,43 @@ export default function App() {
           }
           if (append) {
               setSecondaryData(prev => [...prev, ...effectiveSecondaryRows]);
-              if (effectiveSecondaryRows.length < BATCH_SIZE) setSecondaryHasMoreData(false);
+              if (effectiveSecondaryRows.length === 0) setSecondaryHasMoreData(false);
           } else {
               setSecondaryData(effectiveSecondaryRows);
               setSecondaryHeaders(effectiveSecondaryRows.length ? Object.keys(effectiveSecondaryRows[0]) : []);
-              setSecondaryHasMoreData(effectiveSecondaryRows.length >= BATCH_SIZE);
+              setSecondaryHasMoreData(effectiveSecondaryRows.length > 0);
+          }
+          if (DEBUG_SPREADSHEET) {
+            const count = Array.isArray(raw) ? raw.length : 0;
+            console.log("[spreadsheet] received secondary batch", {
+              context,
+              sid,
+              count,
+              append,
+              offset,
+              nextHasMore: count > 0,
+            });
           }
       }
     } catch (e) {
       console.error(e);
+      if (context === "primary") {
+        if (!append) {
+          setHasMoreData(false);
+          setData([]);
+          setHeaders([]);
+        } else {
+          setHasMoreData(false);
+        }
+      } else {
+        if (!append) {
+          setSecondaryData([]);
+          setSecondaryHeaders([]);
+          setSecondaryHasMoreData(false);
+        } else {
+          setSecondaryHasMoreData(false);
+        }
+      }
     } finally {
       if (isPrimary) setIsBatchLoading(false);
       else setSecondaryIsBatchLoading(false);
@@ -1009,31 +1104,72 @@ export default function App() {
   };
 
   const onLoadMore = () => {
-    if (isBatchLoading || !hasMoreData || !sheetId) return;
-    loadData(sheetId, true, activeTab, { 
+    if (isBatchLoading || !hasMoreData || !sheetId) return Promise.resolve();
+    const nextOffset = data.length;
+    if (primaryLoadOffsetRef.current === nextOffset) return Promise.resolve();
+    if (DEBUG_SPREADSHEET) {
+      console.log("[spreadsheet] onLoadMore", {
+        appendOffset: nextOffset,
+        loaded: data.length,
+      });
+    }
+    primaryLoadOffsetRef.current = nextOffset;
+    const request = loadData(sheetId, true, activeTab, { 
         offset: data.length, 
         append: true,
         preferCache: false 
     });
+    request.finally(() => {
+      primaryLoadOffsetRef.current = null;
+    });
+    return request;
   };
 
   const onLoadMoreSecondary = (filters = null) => {
-    if (secondaryIsBatchLoading || !secondaryHasMoreData || !secondarySheetId) return;
-    loadData(secondarySheetId, true, secondaryTab, {
+    if (secondaryIsBatchLoading || !secondaryHasMoreData || !secondarySheetId) return Promise.resolve();
+    const nextOffset = secondaryData.length;
+    if (secondaryLoadOffsetRef.current === nextOffset) return Promise.resolve();
+    if (DEBUG_SPREADSHEET) {
+      console.log("[spreadsheet] onLoadMoreSecondary", {
+        appendOffset: nextOffset,
+        loaded: secondaryData.length,
+      });
+    }
+    secondaryLoadOffsetRef.current = nextOffset;
+    const request = loadData(secondarySheetId, true, secondaryTab, {
         offset: secondaryData.length,
         append: true,
         context: "secondary",
         preferCache: false,
         filters
     });
+    request.finally(() => {
+      secondaryLoadOffsetRef.current = null;
+    });
+    return request;
   };
 
-  // Re-fetch data when sort, filters, or view changes (Server-side)
+  const requestPrimaryReload = React.useCallback(() => {
+    if (!sheetId) return;
+    primaryLoadedContextRef.current = { sheet: "", tab: "", view: "" };
+    loadData(sheetId, true, activeTab, { preferCache: false });
+  }, [activeTab, loadData, sheetId]);
+
+  // Re-fetch data when spreadsheet context changes.
   useEffect(() => {
-    if (sheetId && user) {
-      loadData(sheetId, true, activeTab, { preferCache: false });
-    }
-  }, [sortConfig, columnFilters, activeTab, selectedViewId]);
+    if (!sheetId || !user) return;
+
+    const loaded = primaryLoadedContextRef.current || {};
+    const sameContext = (
+      String(loaded.sheet || "") === String(sheetId || "")
+      && String(loaded.tab || "") === String(activeTab || "")
+      && String(loaded.view || "") === String(selectedViewId || "")
+    );
+
+    if (sameContext) return;
+
+    loadData(sheetId, true, activeTab, { preferCache: false });
+  }, [sheetId, user, activeTab, selectedViewId]);
 
   // Secondary Data Sync
   useEffect(() => {
@@ -1094,7 +1230,6 @@ export default function App() {
   const handleTabChange = (tabName) => {
     setActiveTab(tabName);
     localStorage.setItem("activeTab", tabName);
-    loadData(sheetId, true, tabName, { preferCache: true });
   };
 
   const hydrateSheetContext = async (sid, options = {}) => {
@@ -1117,7 +1252,6 @@ export default function App() {
     const resolvedTab = Array.isArray(tabList) && tabList.length
       ? ((preferredTab && tabList.includes(preferredTab)) ? preferredTab : tabList[0])
       : null;
-    await loadData(safeSid, preserveFilters, resolvedTab, { preferCache });
   };
 
   const refreshReportSources = React.useCallback(() => {
@@ -1236,6 +1370,7 @@ export default function App() {
         return;
       }
       if (res.data?.status === "pending_approval") {
+        maybePromptBusinessClassification(res.data);
         setUploadProgressError("Uploaded and held for review before publishing.");
         setUploadDisplayName("");
         setReportSourceName("");
@@ -1255,7 +1390,6 @@ export default function App() {
           setActiveTab(res.data.tabs[0]);
           localStorage.setItem("activeTab", res.data.tabs[0]);
         }
-        loadData(res.data.sheetId);
         maybePromptBusinessClassification(res.data);
         // Refresh my files too
         if (token) {
@@ -1302,6 +1436,7 @@ export default function App() {
         return;
       }
       if (res.data?.status === "pending_approval") {
+        maybePromptBusinessClassification(res.data);
         alert("Imported from Google Drive and held for review before publishing.");
         setUploadDisplayName("");
         setReportSourceName("");
@@ -1322,7 +1457,6 @@ export default function App() {
           setActiveTab(res.data.tabs[0]);
           localStorage.setItem("activeTab", res.data.tabs[0]);
         }
-        loadData(res.data.sheetId);
         maybePromptBusinessClassification(res.data);
         if (token) {
           axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } })
@@ -1380,7 +1514,6 @@ export default function App() {
           setActiveTab(res.data.tabs[0]);
           localStorage.setItem("activeTab", res.data.tabs[0]);
         }
-        loadData(res.data.sheetId);
         maybePromptBusinessClassification(res.data);
         if (token) {
           axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } })
@@ -1437,7 +1570,6 @@ export default function App() {
           setActiveTab(res.data.tabs[0]);
           localStorage.setItem("activeTab", res.data.tabs[0]);
         }
-        loadData(res.data.sheetId);
         maybePromptBusinessClassification(res.data);
         if (token) {
           axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } })
@@ -2298,6 +2430,7 @@ export default function App() {
                       s3StorageEnabled={s3StorageEnabled}
                       azureBlobStorageEnabled={azureBlobStorageEnabled}
                       loadData={loadData}
+                      onRequestPrimaryReload={requestPrimaryReload}
                       refreshReportSources={refreshReportSources}
                       onBusinessClassificationGuess={maybePromptBusinessClassification}
                       selectedViewId={selectedViewId} setSelectedViewId={setSelectedViewId}
@@ -2358,11 +2491,13 @@ export default function App() {
                       fetchUniqueValues={fetchUniqueValues}
                       onLoadMore={onLoadMore}
                       isBatchLoading={isBatchLoading}
+                      hasMoreData={hasMoreData}
                       secondaryData={secondaryData}
                       secondaryHeaders={secondaryHeaders}
                       secondarySortConfig={secondarySortConfig}
                       secondaryIsBatchLoading={secondaryIsBatchLoading}
                       onLoadMoreSecondary={onLoadMoreSecondary}
+                      secondaryHasMoreData={secondaryHasMoreData}
                       secondarySheetId={secondarySheetId}
                       setSecondarySheetId={setSecondarySheetId}
                       secondaryTab={secondaryTab}
@@ -2458,7 +2593,7 @@ export default function App() {
                 ) : !user ? (
                   <Navigate to="/login" replace />
                 ) : (
-                  <DashboardBody
+                    <DashboardBody
                     user={user} token={token} API={API}
                     importsOnly
                     sheetId={sheetId} setSheetId={setSheetId} activeFilename={activeFilename}
@@ -2488,6 +2623,7 @@ export default function App() {
                     s3StorageEnabled={s3StorageEnabled}
                     azureBlobStorageEnabled={azureBlobStorageEnabled}
                     loadData={loadData}
+                    onRequestPrimaryReload={requestPrimaryReload}
                     refreshReportSources={refreshReportSources}
                     onBusinessClassificationGuess={maybePromptBusinessClassification}
                     selectedViewId={selectedViewId} setSelectedViewId={setSelectedViewId}
@@ -2545,11 +2681,13 @@ export default function App() {
                     fetchUniqueValues={fetchUniqueValues}
                     onLoadMore={onLoadMore}
                     isBatchLoading={isBatchLoading}
+                    hasMoreData={hasMoreData}
                     secondaryData={secondaryData}
                     secondaryHeaders={secondaryHeaders}
                     secondarySortConfig={secondarySortConfig}
                     secondaryIsBatchLoading={secondaryIsBatchLoading}
                     onLoadMoreSecondary={onLoadMoreSecondary}
+                    secondaryHasMoreData={secondaryHasMoreData}
                     secondarySheetId={secondarySheetId}
                     setSecondarySheetId={setSecondarySheetId}
                     secondaryTab={secondaryTab}

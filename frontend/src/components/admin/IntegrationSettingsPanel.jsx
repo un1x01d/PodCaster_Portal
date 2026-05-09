@@ -206,6 +206,7 @@ export default function IntegrationSettingsPanel(props) {
       openaiBaseUrl: String(config.baseUrl || defaults.baseUrl),
       businessClassificationModel: model,
       translationOpenaiModel: model,
+      insightAiModel: model,
       openaiInputCostPer1M: inputCost,
       openaiOutputCostPer1M: outputCost,
     }));
@@ -404,6 +405,12 @@ export default function IntegrationSettingsPanel(props) {
                 <option key={option.value} value={option.value}>{option.label}</option>
               ))}
             </select>
+            <div className="col-span-2 mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Insight AI Model</div>
+            <select className="input-premium py-1.5 text-[11px] font-semibold col-span-2" value={aiRuntimeSettings.insightAiModel || AI_PROVIDER_DEFAULTS[selectedAiProvider].model} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, insightAiModel: e.target.value }))}>
+              {modelOptionsForProvider(selectedAiProvider, aiRuntimeSettings.insightAiModel).map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
             <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Translation Temperature</div>
             <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Translation Max Output Tokens</div>
             <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="0" max="2" step="0.1" placeholder="Translation Temperature" value={aiRuntimeSettings.translationTemperature} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, translationTemperature: e.target.value }))} />
@@ -455,16 +462,20 @@ export default function IntegrationSettingsPanel(props) {
             ) : (
               <>
                 <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-700">
-                  <div>OpenAI Requests: <span className="font-semibold">{aiUsageSummary?.totals?.queryCount == null ? "Unavailable" : Number(aiUsageSummary.totals.queryCount || 0)}</span></div>
-                  <div>OpenAI Actual Cost: <span className="font-semibold">{aiUsageSummary?.totals?.actualCostUsd == null ? "Unavailable" : `$${Number(aiUsageSummary.totals.actualCostUsd || 0).toFixed(2)}`}</span></div>
-                  <div>Prompt Tokens: <span className="font-semibold">{aiUsageSummary?.totals?.promptTokens == null ? "Unavailable" : Number(aiUsageSummary.totals.promptTokens || 0)}</span></div>
-                  <div>Completion Tokens: <span className="font-semibold">{aiUsageSummary?.totals?.completionTokens == null ? "Unavailable" : Number(aiUsageSummary.totals.completionTokens || 0)}</span></div>
-                  <div>App-Attributed Queries: <span className="font-semibold">{Number(aiUsageSummary?.appLocal?.queryCount || 0)}</span></div>
-                  <div>App Estimate: <span className="font-semibold">${Number(aiUsageSummary?.appLocal?.estimatedCostUsd || 0).toFixed(2)}</span></div>
+                  <div>Queries: <span className="font-semibold">{Number(aiUsageSummary?.totals?.queryCount || aiUsageSummary?.appLocal?.queryCount || 0)}</span></div>
+                  <div>Estimated Cost: <span className="font-semibold">${Number(aiUsageSummary?.totals?.estimatedCostUsd || aiUsageSummary?.appLocal?.estimatedCostUsd || 0).toFixed(2)}</span></div>
+                  <div>Prompt Tokens: <span className="font-semibold">{Number(aiUsageSummary?.totals?.promptTokens || aiUsageSummary?.appLocal?.promptTokens || 0)}</span></div>
+                  <div>Completion Tokens: <span className="font-semibold">{Number(aiUsageSummary?.totals?.completionTokens || aiUsageSummary?.appLocal?.completionTokens || 0)}</span></div>
+                  {aiUsageSummary?.openAi?.source === "openai" ? (
+                    <div>OpenAI Requests: <span className="font-semibold">{Number(aiUsageSummary?.openAi?.queryCount || 0)}</span></div>
+                  ) : null}
+                  {aiUsageSummary?.openAi?.source === "openai" ? (
+                    <div>OpenAI Actual Cost: <span className="font-semibold">${Number(aiUsageSummary?.openAi?.actualCostUsd || 0).toFixed(2)}</span></div>
+                  ) : null}
                 </div>
-                {aiUsageSummary?.openAi?.error ? (
+                {aiUsageSummary?.openAi?.source === "openai" && aiUsageSummary?.openAi?.error ? (
                   <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-semibold text-amber-800">
-                    OpenAI usage unavailable: {aiUsageSummary.openAi.error}
+                    OpenAI usage issue: {aiUsageSummary.openAi.error}
                   </div>
                 ) : null}
                 {Array.isArray(aiUsageSummary?.openAi?.lineItems) && aiUsageSummary.openAi.lineItems.length ? (

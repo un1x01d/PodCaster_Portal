@@ -8,7 +8,8 @@ import { resolveChatCompletionProviderConfig } from "./llmProvider.js";
 
 async function loadRuntimeSettingsForClassification(groupId = null) {
   const mod = await import("./aiRuntimeSettings.js");
-  const runtime = await mod.loadAiRuntimeSettings(groupId || null);
+  const effective = await mod.loadEffectiveAiRuntimeSettings(groupId || null);
+  const runtime = effective?.runtime || await mod.loadAiRuntimeSettings(null);
   return {
     runtime,
     globallyDisabled: mod.isAiGloballyDisabled(runtime),
@@ -134,12 +135,24 @@ export async function classifySheetBusinessContext({
   groupId = null,
 } = {}) {
   const { runtime, globallyDisabled } = await loadRuntimeSettingsForClassification(groupId || null).catch(() => ({ runtime: null, globallyDisabled: false }));
-  if (globallyDisabled) return null;
-  if (!runtime?.businessClassificationEnabled) return null;
-  if (!sourceKindEnabled(runtime, sourceKind)) return null;
+  if (globallyDisabled) {
+    console.info("[business_classification] skipped: global_ai_disabled");
+    return null;
+  }
+  if (!runtime?.businessClassificationEnabled) {
+    console.info("[business_classification] skipped: businessClassificationEnabled=false");
+    return null;
+  }
+  if (!sourceKindEnabled(runtime, sourceKind)) {
+    console.info("[business_classification] skipped: source_kind_disabled", { sourceKind });
+    return null;
+  }
   const providerConfig = resolveChatCompletionProviderConfig(runtime, runtime?.businessClassificationModel);
   const { provider, model, baseUrl, apiKey } = providerConfig;
-  if (!apiKey) return null;
+  if (!apiKey) {
+    console.info("[business_classification] skipped: missing_api_key", { provider });
+    return null;
+  }
 
   const timeoutMs = Number(runtime.openaiTimeoutMs || 60000);
   const maxOutputTokens = minCompletionTokensForModel(model, runtime.businessClassificationMaxOutputTokens, 512, 512);
@@ -165,9 +178,12 @@ export async function classifySheetBusinessContext({
     "Return only valid JSON matching the requested schema.",
     "If the data is not clearly business/operational, set isBusinessData=false and confidence below 0.5.",
     "Do not infer a company identity or regulated status.",
-    "Prefer a specific sheet/business type over a broad domain when headers support it.",
-    "For marketing datasets, distinguish advertising performance, sales performance, lead generation performance, campaign performance, ecommerce sales performance, and marketing analytics when the headers indicate those meanings.",
-    "Examples: ad spend/impressions/clicks/CTR/CPC/ROAS => Advertising Performance; leads/MQL/SQL/CPL => Lead Generation Performance; orders/revenue/deals/pipeline/conversion => Sales Performance.",
+    "Base the decision on repeated evidence across columns and rows, not on a single ambiguous word.",
+    "Prefer precise operational/business functions over broad labels like 'Business', 'Sales', or 'Operations' unless evidence is weak.",
+    "When possible, infer the primary workflow represented by the data (for example finance, billing, logistics, support, HR, inventory, procurement, marketing, project delivery) from metrics, statuses, entities, and time fields.",
+    "Use the dominant signal: if multiple domains appear, pick the one with the strongest consistent column-level evidence.",
+    "If confidence is below 0.6, keep the businessType conservative and explicit (for example 'General Business Operations') and explain signals.",
+    "For suggestedViews, propose practical dashboards that directly match detected metrics and dimensions.",
   ].join(" ");
 
   const controller = new AbortController();

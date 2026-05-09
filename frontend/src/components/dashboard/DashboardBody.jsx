@@ -64,6 +64,7 @@ export default function DashboardBody(props) {
         s3StorageEnabled,
         azureBlobStorageEnabled,
         loadData,
+        onRequestPrimaryReload,
         refreshReportSources = () => {},
         onBusinessClassificationGuess = () => {},
         selectedViewId,
@@ -148,11 +149,13 @@ export default function DashboardBody(props) {
         fetchUniqueValues,
         onLoadMore,
         isBatchLoading,
+        hasMoreData,
         secondaryData,
         secondaryHeaders,
         secondarySortConfig,
         secondaryIsBatchLoading,
         onLoadMoreSecondary,
+        secondaryHasMoreData,
         secondarySheetId,
         setSecondarySheetId,
         secondaryTab,
@@ -287,13 +290,15 @@ export default function DashboardBody(props) {
 
     // Detect near-end of scroll for infinite loading
     const handleItemsRendered = ({ visibleStopIndex }) => {
-        if (visibleStopIndex >= sortedData.length - 15 && onLoadMore && !isBatchLoading) {
+        const prefetchOffset = 20;
+        if (visibleStopIndex >= Math.max(0, sortedData.length - prefetchOffset) && onLoadMore && !isBatchLoading) {
             onLoadMore();
         }
     };
 
     const handleSecondaryItemsRendered = ({ visibleStopIndex }) => {
-        if (visibleStopIndex >= filteredSecondaryData.length - 15 && onLoadMoreSecondary && !secondaryIsBatchLoading) {
+        const prefetchOffset = 20;
+        if (visibleStopIndex >= Math.max(0, filteredSecondaryData.length - prefetchOffset) && onLoadMoreSecondary && !secondaryIsBatchLoading) {
             onLoadMoreSecondary(secondaryColumnFilters);
         }
     };
@@ -396,10 +401,15 @@ export default function DashboardBody(props) {
     const secondaryGridRef = useRef(null);
     const primaryListRef = useRef(null);
     const primaryOuterRef = useRef(null);
+    const secondaryOuterRef = useRef(null);
     const secondaryListRef = useRef(null);
+    const primaryRestoreTokenRef = useRef(0);
+    const secondaryRestoreTokenRef = useRef(0);
     const primaryFieldsRef = useRef([]);
     const secondaryFieldsRef = useRef([]);
     const colWidthsRef = useRef({});
+    const SPREADSHEET_ROW_HEIGHT = 36;
+    const SPREADSHEET_OVERSCAN = 20;
     const splitSnap = useRef({
         getSnappedPct: (containerWidth, targetPx) => {
             const minPx = containerWidth * 0.15;
@@ -734,7 +744,9 @@ export default function DashboardBody(props) {
                     onTabChange(res.data.tabs[0]);
                     localStorage.setItem("activeTab", res.data.tabs[0]);
                 }
-                loadData(res.data.sheetId);
+                if (typeof onRequestPrimaryReload === "function") {
+                    onRequestPrimaryReload();
+                }
                 onBusinessClassificationGuess(res.data);
                 refreshReportSources();
             }
@@ -744,7 +756,7 @@ export default function DashboardBody(props) {
         } finally {
             closeStoragePicker(provider);
         }
-    }, [closeStoragePicker, loadData, onBusinessClassificationGuess, onTabChange, refreshReportSources, setSelectedFileName, setSheetId, setTabs, storagePickers, storageProviderMeta, tabListCacheRef]);
+    }, [closeStoragePicker, onRequestPrimaryReload, onBusinessClassificationGuess, onTabChange, refreshReportSources, setSelectedFileName, setSheetId, setTabs, storagePickers, storageProviderMeta, tabListCacheRef]);
 
     const activeView = views.find((v) => String(v.id) === String(selectedViewId));
 
@@ -1307,6 +1319,7 @@ export default function DashboardBody(props) {
                     }
                     appendFiltersParam(params, columnFilters);
                     params.limit = 100000;
+                    params._ts = Date.now();
                     return params;
                 };
                 const [currentRes, compareRes] = await Promise.all([
@@ -1348,6 +1361,7 @@ export default function DashboardBody(props) {
                     }
                     appendFiltersParam(params, secondaryColumnFilters);
                     params.limit = 100000;
+                    params._ts = Date.now();
                     return params;
                 };
                 const [currentRes, compareRes] = await Promise.all([
@@ -1803,17 +1817,40 @@ export default function DashboardBody(props) {
         setSelectedOneDriveFile(null);
     }, []);
 
-    // Calculate dynamic col widths based on header length
-    const colWidths = React.useMemo(() => {
+    const computeColumnWidths = React.useCallback((fields, rows, options = {}) => {
+        const {
+            minWidth = 140,
+            maxChars = 50,
+            charWidth = 8,
+            padding = 60,
+        } = options;
         const widths = {};
-        if (displayHeaders) {
-            displayHeaders.forEach((h) => {
-                // ~8px per character + some padding for sort/filter icons, min 180px
-                widths[h] = Math.max(180, h.length * 8 + 60);
+        if (!Array.isArray(fields)) return widths;
+        fields.forEach((field) => {
+            const headerChars = String(field || "").length;
+            const headerWidth = Math.max(minWidth, Math.min(maxChars, headerChars) * charWidth + padding);
+            widths[field] = headerWidth;
+        });
+        if (!Array.isArray(rows)) return widths;
+
+        rows.forEach((row) => {
+            fields.forEach((field) => {
+                if (!field || !Object.prototype.hasOwnProperty.call(row || {}, field)) return;
+                const raw = String(row[field] ?? "");
+                const cellWidth = Math.max(minWidth, Math.min(maxChars, raw.length) * charWidth + padding);
+                if (cellWidth > (widths[field] || 0)) {
+                    widths[field] = cellWidth;
+                }
             });
-        }
+        });
+
         return widths;
-    }, [displayHeaders]);
+    }, []);
+
+    // Calculate dynamic col widths based on header + loaded data
+    const colWidths = React.useMemo(() => (
+        computeColumnWidths(activePrimaryFields, sortedData)
+    ), [computeColumnWidths, activePrimaryFields, sortedData]);
 
     useEffect(() => {
         colWidthsRef.current = colWidths || {};
@@ -1835,7 +1872,7 @@ export default function DashboardBody(props) {
 
     // Memoize InnerElement to prevent remounts and issues with ref
     const totalRowWidth = React.useMemo(() => {
-        return activePrimaryFields?.reduce((sum, h) => sum + (colWidths[h] || 180), 0) || 0;
+        return activePrimaryFields?.reduce((sum, h) => sum + (colWidths[h] || 140), 0) || 0;
     }, [activePrimaryFields, colWidths]);
 
     const getColumnIndexFromX = React.useCallback((xOffset) => {
@@ -1843,7 +1880,7 @@ export default function DashboardBody(props) {
         const clampedX = Math.max(0, Math.min(totalRowWidth - 1, xOffset));
         let running = 0;
         for (let i = 0; i < activePrimaryFields.length; i += 1) {
-            running += colWidths[activePrimaryFields[i]] || 180;
+            running += colWidths[activePrimaryFields[i]] || 140;
             if (clampedX < running) return i;
         }
         return activePrimaryFields.length - 1;
@@ -1920,10 +1957,6 @@ export default function DashboardBody(props) {
         };
     }, [isSelecting, sortedData.length, getColumnIndexFromX, queueSelectionFocusUpdate]);
 
-    const secondaryTotalWidth = React.useMemo(() => {
-        return activeSecondaryFields?.reduce((sum, h) => sum + 180, 0) || 0;
-    }, [activeSecondaryFields]);
-
     const uniqueValuesCacheKey = React.useCallback((sid, tabName, col) => (
         `${String(sid || "")}::${tabName ? String(tabName) : "__all__"}::${String(col || "")}`
     ), []);
@@ -1951,6 +1984,40 @@ export default function DashboardBody(props) {
             allowed.has(String(row?.[col] ?? ""))
         )));
     }, [secondaryData, secondaryColumnFilters]);
+
+    const secondaryColWidths = React.useMemo(() => (
+        computeColumnWidths(activeSecondaryFields, filteredSecondaryData)
+    ), [computeColumnWidths, activeSecondaryFields, filteredSecondaryData]);
+
+    const secondaryTotalWidth = React.useMemo(() => (
+        activeSecondaryFields?.reduce((sum, h) => sum + (secondaryColWidths[h] || 140), 0) || 0
+    ), [activeSecondaryFields, secondaryColWidths]);
+
+    const fillPrimaryViewport = React.useCallback(() => {
+        if (!onLoadMore || !sortedData.length || isBatchLoading || !hasMoreData) return;
+        const outer = primaryOuterRef.current;
+        if (!outer) return;
+        if (outer.scrollHeight <= outer.clientHeight + 2) {
+            onLoadMore();
+        }
+    }, [hasMoreData, isBatchLoading, onLoadMore, sortedData.length]);
+
+    const fillSecondaryViewport = React.useCallback(() => {
+        if (!onLoadMoreSecondary || secondaryIsBatchLoading || !secondaryHasMoreData || !filteredSecondaryData.length) return;
+        const outer = secondaryOuterRef.current;
+        if (!outer) return;
+        if (outer.scrollHeight <= outer.clientHeight + 2) {
+            onLoadMoreSecondary(secondaryColumnFilters);
+        }
+    }, [filteredSecondaryData.length, onLoadMoreSecondary, secondaryColumnFilters, secondaryIsBatchLoading, secondaryHasMoreData]);
+
+    React.useEffect(() => {
+        fillPrimaryViewport();
+    }, [fillPrimaryViewport]);
+
+    React.useEffect(() => {
+        fillSecondaryViewport();
+    }, [fillSecondaryViewport]);
 
     const PrimaryOuterElement = React.useMemo(() => forwardRef(({ onScroll, ...rest }, ref) => (
         <div
@@ -2072,12 +2139,16 @@ export default function DashboardBody(props) {
                                     onKeyDown={(event) => {
                                         if (event.key === "Enter" || event.key === " ") {
                                             event.preventDefault();
-                                            loadData(sheetId, user.role !== "admin" && selectedViewId);
+                                            if (typeof onRequestPrimaryReload === "function") {
+                                                onRequestPrimaryReload();
+                                            }
                                             setMenuOpen(false);
                                         }
                                     }}
                                     onClick={() => {
-                                        loadData(sheetId, user.role !== "admin" && selectedViewId);
+                                        if (typeof onRequestPrimaryReload === "function") {
+                                            onRequestPrimaryReload();
+                                        }
                                         setMenuOpen(false);
                                     }}
                                 >
@@ -3278,7 +3349,7 @@ export default function DashboardBody(props) {
                                                     ref={(el) => {
                                                         if (filterAnchorRefs?.current) filterAnchorRefs.current[h] = el;
                                                     }}
-                                                    style={{ width: colWidths[h] || 180, minWidth: colWidths[h] || 180 }}
+                                                    style={{ width: colWidths[h] || 140, minWidth: colWidths[h] || 140 }}
                                                     className={`table-pro-text relative border-r border-slate-200 px-3 py-1.5 text-[11px] text-left cursor-pointer group flex items-center justify-between hover:bg-slate-200 transition-colors text-slate-800 font-bold h-full ${isPrimaryColumnSelected(colIndex) ? "bg-indigo-100" : "bg-slate-100"} ${primaryMissingColumns.includes(h) ? "!bg-rose-50 !text-rose-800 ring-1 ring-inset ring-rose-200" : ""}`}
                                                     onClick={(e) => {
                                                         const isFilterBtn = e.target.closest && e.target.closest(".filter-btn");
@@ -3359,7 +3430,8 @@ export default function DashboardBody(props) {
                                                         outerRef={primaryOuterRef}
                                                         height={height}
                                                         itemCount={sortedData.length}
-                                                        itemSize={36}
+                                                        itemSize={SPREADSHEET_ROW_HEIGHT}
+                                                        overscanCount={SPREADSHEET_OVERSCAN}
                                                         width={width}
                                                         onItemsRendered={handleItemsRendered}
                                                         onScroll={handlePrimaryScroll}
@@ -3372,13 +3444,13 @@ export default function DashboardBody(props) {
                                                             const row = sortedData[index];
                                                             return (
                                                                 <div
-                                                                    style={{ ...style, width: totalRowWidth, minWidth: "100%" }}
-                                                                    className={`flex ${index % 2 === 1 ? "bg-slate-50" : "bg-white"} hover:bg-indigo-50/50 transition-colors border-b border-slate-100 items-center h-8`}
+                                                                    style={{ ...style, width: totalRowWidth, minWidth: "100%", height: SPREADSHEET_ROW_HEIGHT, contain: "strict" }}
+                                                                    className={`flex ${index % 2 === 1 ? "bg-slate-50" : "bg-white"} hover:bg-indigo-50/50 transition-colors border-b border-slate-100 items-center`}
                                                                 >
                                                                     {activePrimaryFields.map((h, colIndex) => (
                                                                         <div
                                                                             key={h}
-                                                                            style={{ width: colWidths[h] || 180, minWidth: colWidths[h] || 180 }}
+                                                                            style={{ width: colWidths[h] || 140, minWidth: colWidths[h] || 140 }}
                                                                             className={`border-r border-slate-100 px-3 text-[11px] text-slate-700 truncate h-full flex items-center ${selectionModeOn ? "cursor-crosshair select-none" : ""} ${isPrimaryCellSelected(index, colIndex) ? "bg-indigo-100 ring-1 ring-inset ring-indigo-300" : ""} ${primaryDiffCellSet.has(`${index}::${h}`) ? "bg-amber-50 ring-1 ring-inset ring-amber-300 font-bold text-slate-900" : ""}`}
                                                                             onMouseDown={(e) => {
                                                                                 if (!selectionModeOn) return;
@@ -3703,7 +3775,7 @@ export default function DashboardBody(props) {
                                                         ref={(el) => {
                                                             if (filterAnchorRefs?.current) filterAnchorRefs.current[`sec_${h}`] = el;
                                                         }}
-                                                        style={{ width: 180, minWidth: 180 }}
+                                                        style={{ width: secondaryColWidths[h] || 140, minWidth: secondaryColWidths[h] || 140 }}
                                                         className={`px-3 py-1.5 text-[11px] font-bold text-slate-700 border-r border-slate-200 truncate h-full flex items-center justify-between group hover:bg-slate-300 transition-colors relative cursor-pointer ${selectionModeOn ? "cursor-crosshair select-none" : ""} ${isSecondaryColumnSelected(colIndex) ? "bg-indigo-100 ring-1 ring-inset ring-indigo-300" : ""} ${secondaryMissingColumns.includes(h) ? "!bg-rose-50 !text-rose-800 ring-1 ring-inset ring-rose-200" : ""}`}
                                                         onClick={(e) => {
                                                             const isFilterBtn = e.target.closest && e.target.closest(".filter-btn");
@@ -3774,9 +3846,11 @@ export default function DashboardBody(props) {
                                                     {({ height, width }) => (
                                                         <List
                                                             ref={secondaryListRef}
+                                                            outerRef={secondaryOuterRef}
                                                             height={height}
                                                             itemCount={filteredSecondaryData.length}
-                                                            itemSize={36}
+                                                            itemSize={SPREADSHEET_ROW_HEIGHT}
+                                                            overscanCount={SPREADSHEET_OVERSCAN}
                                                             width={width}
                                                             onItemsRendered={handleSecondaryItemsRendered}
                                                             onScroll={handleSecondaryScroll}
@@ -3788,11 +3862,14 @@ export default function DashboardBody(props) {
                                                             {({ index, style }) => {
                                                                 const row = filteredSecondaryData[index];
                                                                 return (
-                                                                    <div style={style} className={`flex ${index % 2 === 1 ? "bg-slate-100/30" : "bg-white"} border-b border-slate-100 items-center h-8`}>
+                                                                    <div
+                                                                        style={{ ...style, height: SPREADSHEET_ROW_HEIGHT, contain: "strict" }}
+                                                                        className={`flex ${index % 2 === 1 ? "bg-slate-100/30" : "bg-white"} border-b border-slate-100 items-center`}
+                                                                    >
                                                                         {activeSecondaryFields.map((h, colIndex) => (
                                                                             <div
                                                                                 key={h}
-                                                                                style={{ width: 180, minWidth: 180 }}
+                                                                                style={{ width: secondaryColWidths[h] || 140, minWidth: secondaryColWidths[h] || 140 }}
                                                                                 className={`border-r border-slate-100 px-3 text-[11px] text-slate-600 truncate h-full flex items-center ${selectionModeOn ? "cursor-crosshair select-none" : ""} ${isSecondaryCellSelected(index, colIndex) ? "bg-indigo-100 ring-1 ring-inset ring-indigo-300" : ""} ${secondaryDiffCellSet.has(`${index}::${h}`) ? "bg-amber-50 ring-1 ring-inset ring-amber-300 font-bold text-slate-900" : ""}`}
                                                                                 onMouseDown={(e) => {
                                                                                     if (!selectionModeOn) return;

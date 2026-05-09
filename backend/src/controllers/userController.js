@@ -188,9 +188,9 @@ export async function getAiUsageSummary(req, res) {
         periodMonth,
         source: openAiUsage ? "openai" : "app_local",
         totals: {
-            queryCount: openAiUsage ? Number(openAiUsage.queryCount || 0) : null,
-            promptTokens: openAiUsage ? Number(openAiUsage.promptTokens || 0) : null,
-            completionTokens: openAiUsage ? Number(openAiUsage.completionTokens || 0) : null,
+            queryCount: Number(appTotals.queryCount || 0),
+            promptTokens: Number(appTotals.promptTokens || 0),
+            completionTokens: Number(appTotals.completionTokens || 0),
             actualCostUsd: openAiUsage ? Number(openAiUsage.costUsd || 0) : null,
             estimatedCostUsd: Number(appTotals.estimatedCostUsd.toFixed(6)),
             currency: openAiUsage?.currency || "usd",
@@ -1911,7 +1911,13 @@ export async function getAiFeatureTogglesSetting(req, res) {
 
 export async function setAiFeatureTogglesSetting(req, res) {
     if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
-    assertAllowedKeys(req.body || {}, ["chatEnabled", "dashboardTranslationEnabled", "chatAudioEnabled"]);
+    assertAllowedKeys(req.body || {}, [
+        "chatEnabled",
+        "dashboardTranslationEnabled",
+        "chatAudioEnabled",
+        "insightAiEnabled",
+        "businessClassificationEnabled",
+    ]);
     const next = normalizeAiFeatureToggles(req.body || {});
     await query(
         `INSERT INTO app_settings (key, value, updated_at)
@@ -1937,9 +1943,9 @@ export async function getMyAiFeatureTogglesSetting(req, res) {
 
 export async function getAiRuntimeSetting(req, res) {
     try {
-        const scope = await resolveScopedGroupForIntegrationSettings(req);
-        const current = await loadAiRuntimeSettings(scope.groupId || null);
-        return res.json({ ...current, groupId: scope.groupId || null });
+        if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+        const current = await loadAiRuntimeSettings(null);
+        return res.json({ ...current, groupId: null });
     } catch (err) {
         return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
     }
@@ -1947,30 +1953,37 @@ export async function getAiRuntimeSetting(req, res) {
 
 export async function setAiRuntimeSetting(req, res) {
     try {
-        const scope = await resolveScopedGroupForIntegrationSettings(req);
-        const next = await saveAiRuntimeSettings(scope.groupId || null, req.body || {});
-        if (!scope.groupId) {
-            const featureToggles = normalizeAiFeatureToggles({
-                chatEnabled: next.globalAiDisabled !== true && next.chatEnabled === true,
-                dashboardTranslationEnabled: next.globalAiDisabled !== true && next.dashboardTranslationEnabled === true,
-                chatAudioEnabled: next.globalAiDisabled !== true && next.chatAudioEnabled === true,
-            });
-            await query(
-                `INSERT INTO app_settings (key, value, updated_at)
-                 VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
-                 ON CONFLICT (key)
-                 DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
-                [AI_FEATURE_TOGGLES_SETTINGS_KEY, JSON.stringify(featureToggles)]
-            );
+        if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+        const incoming = req.body && typeof req.body === "object" ? { ...req.body } : {};
+        const aiProvider = String(incoming.aiProvider || "openai").trim().toLowerCase();
+        const providerConfigs = incoming.providerConfigs && typeof incoming.providerConfigs === "object" ? incoming.providerConfigs : {};
+        const providerModel = String(providerConfigs?.[aiProvider]?.model || "").trim();
+        if (providerModel) {
+            incoming.openaiModel = providerModel;
         }
+        const next = await saveAiRuntimeSettings(null, incoming);
+        const featureToggles = normalizeAiFeatureToggles({
+            chatEnabled: next.globalAiDisabled !== true && next.chatEnabled === true,
+            dashboardTranslationEnabled: next.globalAiDisabled !== true && next.dashboardTranslationEnabled === true,
+            chatAudioEnabled: next.globalAiDisabled !== true && next.chatAudioEnabled === true,
+            insightAiEnabled: next.globalAiDisabled !== true && next.insightAiEnabled === true,
+            businessClassificationEnabled: next.globalAiDisabled !== true && next.businessClassificationEnabled === true,
+        });
+        await query(
+            `INSERT INTO app_settings (key, value, updated_at)
+             VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+             ON CONFLICT (key)
+             DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+            [AI_FEATURE_TOGGLES_SETTINGS_KEY, JSON.stringify(featureToggles)]
+        );
         await writeAuditLog({
             req,
             action: "ai_runtime.settings_updated",
             resourceType: "app_settings",
-            resourceId: `ai_runtime_settings:${scope.groupId || "global"}`,
-            metadata: { ...next, groupId: scope.groupId || null },
+            resourceId: "ai_runtime_settings:global",
+            metadata: { ...next, groupId: null },
         });
-        return res.json({ success: true, ...next, groupId: scope.groupId || null });
+        return res.json({ success: true, ...next, groupId: null });
     } catch (err) {
         return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
     }

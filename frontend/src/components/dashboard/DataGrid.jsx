@@ -1,4 +1,4 @@
-import React, { useMemo, forwardRef } from "react";
+import React, { useMemo, forwardRef, useRef, useCallback } from "react";
 import { FixedSizeList as List } from "react-window";
 import AutoSizer from "react-virtualized-auto-sizer";
 import SheetTabBar from "./SheetTabBar";
@@ -31,10 +31,26 @@ export default function DataGrid({
     const minColWidth = 180;
     const totalRowWidth = (displayHeaders?.length || 0) * minColWidth;
 
+    const loadMoreInFlightRef = useRef(false);
+    const queueLoadMore = useCallback(() => {
+        if (loadMoreInFlightRef.current || !onLoadMore || isBatchLoading) return;
+        loadMoreInFlightRef.current = true;
+        const maybePromise = onLoadMore();
+        if (maybePromise && typeof maybePromise.finally === "function") {
+            maybePromise.finally(() => {
+                loadMoreInFlightRef.current = false;
+            });
+        } else {
+            window.setTimeout(() => {
+                loadMoreInFlightRef.current = false;
+            }, 0);
+        }
+    }, [isBatchLoading, onLoadMore]);
+
     // Detect near-end of scroll
     const handleItemsRendered = ({ visibleStopIndex }) => {
-        if (visibleStopIndex >= sortedData.length - 15 && onLoadMore && !isBatchLoading) {
-            onLoadMore();
+        if (visibleStopIndex >= Math.max(0, sortedData.length - 1)) {
+            queueLoadMore();
         }
     };
 
@@ -60,10 +76,15 @@ export default function DataGrid({
                 if (headerRef.current) {
                     headerRef.current.scrollLeft = e.currentTarget.scrollLeft;
                 }
+                const target = e.currentTarget;
+                const nearBottom = target.scrollHeight - target.scrollTop - target.clientHeight <= 192;
+                if (nearBottom) {
+                    queueLoadMore();
+                }
             }}
             {...rest}
         />
-    )), []);
+    )), [queueLoadMore]);
 
     return (
         <div className="m-4 bg-white rounded-2xl shadow-2xl border border-gray-200 focus:ring-slate-100 relative z-0 flex-1 flex flex-col min-h-[500px] overflow-hidden">
@@ -178,10 +199,10 @@ export default function DataGrid({
                                         {({ index, style }) => {
                                             const row = sortedData[index];
                                             return (
-                                                <div
-                                                    style={{ ...style, width: totalRowWidth, minWidth: "100%" }}
-                                                    className={`flex ${index % 2 === 1 ? "bg-slate-50" : "bg-white"} hover:bg-blue-50/80 transition-colors border-b border-slate-200 items-center h-8`}
-                                                >
+                                                        <div
+                                                            style={{ ...style, width: totalRowWidth, minWidth: "100%" }}
+                                                            className={`flex ${index % 2 === 1 ? "bg-slate-50" : "bg-white"} hover:bg-blue-50/80 transition-colors border-b border-slate-200 items-center`}
+                                                        >
                                                     {displayHeaders.map((h) => {
                                                         const val = row[h];
                                                         return (

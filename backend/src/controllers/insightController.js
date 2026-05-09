@@ -3,7 +3,8 @@ import { query } from "../config/db.js";
 import { isEnglishLocale, normalizeLocale, translateDashboardCards } from "../utils/dashboardLocalization.js";
 import { checkSheetAccess, hasReportSourceOwnerAccess, loadSheetPermissionSets } from "../utils/authorization.js";
 import { synthesizeChatAudioBuffer } from "./chatController.js";
-import { isAiGloballyDisabled, loadAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
+import { resolveAiGroupIdForSheet } from "../utils/aiQuota.js";
+import { isAiGloballyDisabled, loadAiRuntimeSettings, loadEffectiveAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
 import { resolveChatCompletionProviderConfig } from "../utils/llmProvider.js";
 import { buildChatCompletionRequestBody, extractOpenAiAssistantText, minCompletionTokensForModel } from "../utils/openAiCompat.js";
 
@@ -354,7 +355,7 @@ async function callInsightRag({ metricCol, dateCol, categoryCol, series, categor
   const runtime = await loadAiRuntimeSettings(null);
   if (isAiGloballyDisabled(runtime)) return null;
   if (runtime?.insightAiEnabled !== true) return null;
-  const { provider, model, baseUrl, apiKey } = resolveChatCompletionProviderConfig(runtime);
+  const { provider, model, baseUrl, apiKey } = resolveChatCompletionProviderConfig(runtime, runtime?.insightAiModel);
   if (!apiKey) return null;
   const maxSeriesPoints = Number(runtime?.insightAiMaxSeriesPoints || INSIGHT_AI_MAX_SERIES_POINTS);
   const maxPromptChars = Number(runtime?.insightAiMaxPromptChars || INSIGHT_AI_MAX_PROMPT_CHARS);
@@ -1575,7 +1576,8 @@ export async function getInsightCardAudio(req, res) {
 
   const narrationText = buildInsightNarrationText({ title, bullets });
   if (!narrationText) return res.status(400).json({ error: "missing_narration_text" });
-  const runtime = await loadAiRuntimeSettings(null);
+  const runtimeGroupId = await resolveAiGroupIdForSheet({ sheetId, user: req.user }).catch(() => null);
+  const { runtime } = await loadEffectiveAiRuntimeSettings(runtimeGroupId || null).catch(() => ({ runtime: {} }));
   if (isAiGloballyDisabled(runtime)) return res.status(403).json({ error: "global_ai_disabled" });
   if (runtime?.chatAudioEnabled !== true) return res.status(403).json({ error: "chat_audio_disabled" });
   const maxChars = Number(runtime?.chatAudioMaxChars || INSIGHT_AUDIO_MAX_CHARS);

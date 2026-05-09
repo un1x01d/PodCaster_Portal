@@ -741,6 +741,7 @@ function normalizeReviewLabelRules(value) {
 function resolveReviewPolicy(reportSource, fileLabel, schemaStatus, explicitRequest = false) {
     const labelRules = normalizeReviewLabelRules(reportSource?.reviewLabelRules ?? reportSource?.review_label_rules);
     const label = String(fileLabel || "").trim();
+    const normalizedLabel = label.toLowerCase();
     const labelRequiresReview = label && Object.prototype.hasOwnProperty.call(labelRules, label)
         ? !!labelRules[label]
         : false;
@@ -1236,13 +1237,13 @@ async function carryForwardBusinessClassificationIfPrompted({
            FROM report_source_imports rsi
            JOIN sheets s ON s.id = rsi.sheet_id
           WHERE rsi.report_source_id = $1
-            AND rsi.file_label = $2
+            AND LOWER(TRIM(COALESCE(rsi.file_label, ''))) = $2
             AND rsi.sheet_id <> $3
             AND COALESCE(s.business_classification_status, 'none') <> 'none'
             AND s.business_classification <> '{}'::jsonb
           ORDER BY rsi.import_version DESC, rsi.created_at DESC
           LIMIT 1`,
-        [sourceId, label, sheetId]
+        [sourceId, normalizedLabel, sheetId]
     );
     if (!priorRows.length) return null;
 
@@ -3536,6 +3537,8 @@ export async function getSheetData(req, res) {
     const isPlatformAdmin = isPlatformAdminUser(req.user);
     const isGroupAdmin = await isGroupAdminUser(userId);
     const canBypassViewAssignmentCheck = isPlatformAdmin || isGroupAdmin;
+    delete req.headers["if-none-match"];
+    delete req.headers["if-modified-since"];
     const pagination = parsePagination(req.query, { maxLimit: await resolveSheetDataMaxLimit(req.query) });
     if (pagination.error) {
         return res.status(400).json({ error: pagination.error });
@@ -3782,7 +3785,9 @@ export async function getSheetData(req, res) {
             });
         }
 
-        res.json(rows);
+        res
+            .set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0, private")
+            .json(rows);
     } catch (e) {
         console.error("Get sheet data failed:", e);
         res.status(500).json({

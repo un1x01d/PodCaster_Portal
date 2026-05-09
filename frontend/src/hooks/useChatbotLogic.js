@@ -68,6 +68,7 @@ export function useChatbotLogic({
   activeTab,
   locale = "en",
   copy = {},
+  applyActionsDefault = true,
 }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
@@ -267,8 +268,8 @@ export function useChatbotLogic({
     const q = input.trim();
     if (!q) return;
     setInput("");
-    await sendMessage(q);
-  }, [input, sendMessage]);
+    await sendMessage(q, { applyActions: !!applyActionsDefault });
+  }, [input, sendMessage, applyActionsDefault]);
 
   // Keep state refs for the event listener to avoid re-binding
   const stateRef = useRef({ sheetId, activeTab, activeFilters, splitContext, activeViewScope, messages, locale });

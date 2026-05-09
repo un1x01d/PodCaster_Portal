@@ -212,6 +212,7 @@ const AI_RUNTIME_PRESETS = {
     openaiInputCostPer1M: 0.05,
     openaiOutputCostPer1M: 0.40,
     translationOpenaiModel: "gpt-5-nano",
+    insightAiModel: "gpt-5-nano",
     translationTemperature: 0,
     translationMaxOutputTokens: 512,
     insightAiMaxSeriesPoints: 6,
@@ -241,6 +242,7 @@ const AI_RUNTIME_PRESETS = {
     openaiInputCostPer1M: 0.05,
     openaiOutputCostPer1M: 0.40,
     translationOpenaiModel: "gpt-5-nano",
+    insightAiModel: "gpt-5-nano",
     translationTemperature: 0,
     translationMaxOutputTokens: 576,
     insightAiMaxSeriesPoints: 12,
@@ -270,6 +272,7 @@ const AI_RUNTIME_PRESETS = {
     openaiInputCostPer1M: 0.05,
     openaiOutputCostPer1M: 0.40,
     translationOpenaiModel: "gpt-5-nano",
+    insightAiModel: "gpt-5-nano",
     translationTemperature: 0,
     translationMaxOutputTokens: 640,
     insightAiMaxSeriesPoints: 12,
@@ -299,6 +302,7 @@ const AI_RUNTIME_PRESETS = {
     openaiInputCostPer1M: 0.05,
     openaiOutputCostPer1M: 0.40,
     translationOpenaiModel: "gpt-5-nano",
+    insightAiModel: "gpt-5-nano",
     translationTemperature: 0,
     translationMaxOutputTokens: 704,
     insightAiMaxSeriesPoints: 18,
@@ -328,6 +332,7 @@ const AI_RUNTIME_PRESETS = {
     openaiInputCostPer1M: 0.05,
     openaiOutputCostPer1M: 0.40,
     translationOpenaiModel: "gpt-5-nano",
+    insightAiModel: "gpt-5-nano",
     translationTemperature: 0,
     translationMaxOutputTokens: 768,
     insightAiMaxSeriesPoints: 32,
@@ -1733,12 +1738,12 @@ export default function UserManagement({ token, user, sheetId }) {
       const data = res?.data || {};
       const aiProvider = String(data.aiProvider || AI_RUNTIME_PRESETS.mid.aiProvider || "openai").toLowerCase();
       const providerConfigs = normalizeAiProviderConfigMap(data.providerConfigs || AI_RUNTIME_PRESETS.mid.providerConfigs);
-      const openaiModel = String(data.openaiModel || AI_RUNTIME_PRESETS.mid.openaiModel);
-      const fallbackModelPricing = getAiModelPricing(openaiModel);
       const activeProviderConfig = providerConfigs[aiProvider] || {};
+      const effectiveModel = String(data.openaiModel || activeProviderConfig.model || "").trim();
+      const effectiveModelPricing = getAiModelPricing(effectiveModel || activeProviderConfig.model);
       const modelPricing = {
-        openaiInputCostPer1M: Number(activeProviderConfig.inputCostPer1M ?? fallbackModelPricing.openaiInputCostPer1M),
-        openaiOutputCostPer1M: Number(activeProviderConfig.outputCostPer1M ?? fallbackModelPricing.openaiOutputCostPer1M),
+        openaiInputCostPer1M: Number(activeProviderConfig.inputCostPer1M ?? effectiveModelPricing.openaiInputCostPer1M),
+        openaiOutputCostPer1M: Number(activeProviderConfig.outputCostPer1M ?? effectiveModelPricing.openaiOutputCostPer1M),
       };
       setAiRuntimeSettings({
         aiRuntimePreset: String(data.aiRuntimePreset || AI_RUNTIME_PRESETS.mid.aiRuntimePreset),
@@ -1762,7 +1767,7 @@ export default function UserManagement({ token, user, sheetId }) {
         dashboardTranslateMaxItems: Number(data.dashboardTranslateMaxItems || AI_RUNTIME_PRESETS.mid.dashboardTranslateMaxItems),
         dashboardTranslateMaxCharsPerItem: Number(data.dashboardTranslateMaxCharsPerItem || AI_RUNTIME_PRESETS.mid.dashboardTranslateMaxCharsPerItem),
         llmMaxOutputTokens: Number(data.llmMaxOutputTokens || AI_RUNTIME_PRESETS.mid.llmMaxOutputTokens),
-        openaiModel,
+        openaiModel: effectiveModel,
         openaiBaseUrl: String(data.openaiBaseUrl || AI_RUNTIME_PRESETS.mid.openaiBaseUrl),
         openaiTimeoutMs: Number(data.openaiTimeoutMs || AI_RUNTIME_PRESETS.mid.openaiTimeoutMs),
         openaiTemperature: Number(data.openaiTemperature || AI_RUNTIME_PRESETS.mid.openaiTemperature),
@@ -1770,6 +1775,7 @@ export default function UserManagement({ token, user, sheetId }) {
         openaiInputCostPer1M: modelPricing.openaiInputCostPer1M,
         openaiOutputCostPer1M: modelPricing.openaiOutputCostPer1M,
         translationOpenaiModel: String(data.translationOpenaiModel || AI_RUNTIME_PRESETS.mid.translationOpenaiModel),
+        insightAiModel: String(data.insightAiModel || AI_RUNTIME_PRESETS.mid.insightAiModel),
         translationTemperature: Number(data.translationTemperature ?? AI_RUNTIME_PRESETS.mid.translationTemperature),
         translationMaxOutputTokens: Number(data.translationMaxOutputTokens || AI_RUNTIME_PRESETS.mid.translationMaxOutputTokens),
         insightAiMaxSeriesPoints: Number(data.insightAiMaxSeriesPoints || AI_RUNTIME_PRESETS.mid.insightAiMaxSeriesPoints),
@@ -2009,16 +2015,20 @@ export default function UserManagement({ token, user, sheetId }) {
     try {
       const runtimeDraft = aiRuntimeSettingsRef.current || aiRuntimeSettings || {};
       const selectedAiProvider = String(runtimeDraft.aiProvider || AI_RUNTIME_PRESETS.mid.aiProvider || "openai").trim().toLowerCase();
-      const selectedOpenAiModel = String(runtimeDraft.openaiModel || "").trim() || AI_RUNTIME_PRESETS.mid.openaiModel;
+      const selectedModel = String(
+        runtimeDraft.providerConfigs?.[selectedAiProvider]?.model ||
+        runtimeDraft.openaiModel ||
+        ""
+      ).trim();
       const providerConfigs = normalizeAiProviderConfigMap(runtimeDraft.providerConfigs || AI_RUNTIME_PRESETS.mid.providerConfigs);
-      const fallbackSelectedModelPricing = getAiModelPricing(selectedOpenAiModel);
+      const fallbackSelectedModelPricing = getAiModelPricing(selectedModel);
       const selectedModelPricing = {
         openaiInputCostPer1M: Number(providerConfigs[selectedAiProvider]?.inputCostPer1M ?? fallbackSelectedModelPricing.openaiInputCostPer1M),
         openaiOutputCostPer1M: Number(providerConfigs[selectedAiProvider]?.outputCostPer1M ?? fallbackSelectedModelPricing.openaiOutputCostPer1M),
       };
       providerConfigs[selectedAiProvider] = {
         ...providerConfigs[selectedAiProvider],
-        model: selectedOpenAiModel,
+        model: selectedModel,
         baseUrl: String(runtimeDraft.openaiBaseUrl || providerConfigs[selectedAiProvider]?.baseUrl || AI_RUNTIME_PRESETS.mid.openaiBaseUrl).trim(),
         inputCostPer1M: selectedModelPricing.openaiInputCostPer1M,
         outputCostPer1M: selectedModelPricing.openaiOutputCostPer1M,
@@ -2028,10 +2038,11 @@ export default function UserManagement({ token, user, sheetId }) {
             ...AI_RUNTIME_PRESETS[preset],
             aiProvider: selectedAiProvider,
             providerConfigs,
-            openaiModel: selectedOpenAiModel,
+            openaiModel: selectedModel,
             openaiBaseUrl: String(runtimeDraft.openaiBaseUrl || "").trim() || AI_RUNTIME_PRESETS.mid.openaiBaseUrl,
-            businessClassificationModel: String(runtimeDraft.businessClassificationModel || "").trim() || selectedOpenAiModel,
-            translationOpenaiModel: String(runtimeDraft.translationOpenaiModel || "").trim() || selectedOpenAiModel,
+            businessClassificationModel: String(runtimeDraft.businessClassificationModel || "").trim() || selectedModel,
+            translationOpenaiModel: String(runtimeDraft.translationOpenaiModel || "").trim() || selectedModel,
+            insightAiModel: String(runtimeDraft.insightAiModel || "").trim() || selectedModel,
           }
         : {
             chatEnabled: runtimeDraft.chatEnabled === true,
@@ -2055,7 +2066,7 @@ export default function UserManagement({ token, user, sheetId }) {
             dashboardTranslateMaxItems: Number.parseInt(String(runtimeDraft.dashboardTranslateMaxItems || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.dashboardTranslateMaxItems,
             dashboardTranslateMaxCharsPerItem: Number.parseInt(String(runtimeDraft.dashboardTranslateMaxCharsPerItem || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.dashboardTranslateMaxCharsPerItem,
             llmMaxOutputTokens: Number.parseInt(String(runtimeDraft.llmMaxOutputTokens || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.llmMaxOutputTokens,
-            openaiModel: selectedOpenAiModel,
+            openaiModel: selectedModel,
             openaiBaseUrl: String(runtimeDraft.openaiBaseUrl || "").trim() || AI_RUNTIME_PRESETS.mid.openaiBaseUrl,
             openaiTimeoutMs: Number.parseInt(String(runtimeDraft.openaiTimeoutMs || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.openaiTimeoutMs,
             openaiTemperature: Number.parseFloat(String(runtimeDraft.openaiTemperature || "").trim()) || AI_RUNTIME_PRESETS.mid.openaiTemperature,
@@ -2063,6 +2074,7 @@ export default function UserManagement({ token, user, sheetId }) {
             openaiInputCostPer1M: selectedModelPricing.openaiInputCostPer1M,
             openaiOutputCostPer1M: selectedModelPricing.openaiOutputCostPer1M,
             translationOpenaiModel: String(runtimeDraft.translationOpenaiModel || "").trim() || AI_RUNTIME_PRESETS.mid.translationOpenaiModel,
+            insightAiModel: String(runtimeDraft.insightAiModel || "").trim() || AI_RUNTIME_PRESETS.mid.insightAiModel,
             translationTemperature: Number.parseFloat(String(runtimeDraft.translationTemperature || "").trim()) || 0,
             translationMaxOutputTokens: Number.parseInt(String(runtimeDraft.translationMaxOutputTokens || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.translationMaxOutputTokens,
             insightAiMaxSeriesPoints: Number.parseInt(String(runtimeDraft.insightAiMaxSeriesPoints || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.insightAiMaxSeriesPoints,
@@ -2088,8 +2100,8 @@ export default function UserManagement({ token, user, sheetId }) {
       const data = res?.data || next;
       const savedAiProvider = String(data.aiProvider || next.aiProvider || "openai").toLowerCase();
       const savedProviderConfigs = normalizeAiProviderConfigMap(data.providerConfigs || next.providerConfigs);
-      const savedOpenAiModel = String(data.openaiModel || next.openaiModel);
-      const fallbackSavedModelPricing = getAiModelPricing(savedOpenAiModel);
+      const savedModel = String(data.openaiModel || next.openaiModel);
+      const fallbackSavedModelPricing = getAiModelPricing(savedModel);
       const savedActiveProviderConfig = savedProviderConfigs[savedAiProvider] || {};
       const savedModelPricing = {
         openaiInputCostPer1M: Number(savedActiveProviderConfig.inputCostPer1M ?? fallbackSavedModelPricing.openaiInputCostPer1M),
@@ -2117,7 +2129,7 @@ export default function UserManagement({ token, user, sheetId }) {
         dashboardTranslateMaxItems: Number(data.dashboardTranslateMaxItems || next.dashboardTranslateMaxItems),
         dashboardTranslateMaxCharsPerItem: Number(data.dashboardTranslateMaxCharsPerItem || next.dashboardTranslateMaxCharsPerItem),
         llmMaxOutputTokens: Number(data.llmMaxOutputTokens || next.llmMaxOutputTokens),
-        openaiModel: savedOpenAiModel,
+        openaiModel: savedModel,
         openaiBaseUrl: String(data.openaiBaseUrl || next.openaiBaseUrl),
         openaiTimeoutMs: Number(data.openaiTimeoutMs || next.openaiTimeoutMs),
         openaiTemperature: Number(data.openaiTemperature || next.openaiTemperature),
@@ -2125,6 +2137,7 @@ export default function UserManagement({ token, user, sheetId }) {
         openaiInputCostPer1M: savedModelPricing.openaiInputCostPer1M,
         openaiOutputCostPer1M: savedModelPricing.openaiOutputCostPer1M,
         translationOpenaiModel: String(data.translationOpenaiModel || next.translationOpenaiModel),
+        insightAiModel: String(data.insightAiModel || next.insightAiModel || AI_RUNTIME_PRESETS.mid.insightAiModel),
         translationTemperature: Number(data.translationTemperature ?? next.translationTemperature),
         translationMaxOutputTokens: Number(data.translationMaxOutputTokens || next.translationMaxOutputTokens),
         insightAiMaxSeriesPoints: Number(data.insightAiMaxSeriesPoints || next.insightAiMaxSeriesPoints),
@@ -2146,16 +2159,18 @@ export default function UserManagement({ token, user, sheetId }) {
 
   const applyAiRuntimePreset = (preset) => {
     if (!preset || !AI_RUNTIME_PRESETS[preset]) return;
+    const presetModel = normalizeAiProviderConfigMap(aiRuntimeSettings.providerConfigs || {})[aiRuntimeSettings.aiProvider || AI_RUNTIME_PRESETS[preset].aiProvider || "openai"]?.model || "";
     setAiRuntimeSettings((prev) => ({
       ...prev,
       ...AI_RUNTIME_PRESETS[preset],
       aiRuntimePreset: preset,
       aiProvider: prev.aiProvider || AI_RUNTIME_PRESETS[preset].aiProvider,
       providerConfigs: normalizeAiProviderConfigMap(prev.providerConfigs || AI_RUNTIME_PRESETS[preset].providerConfigs),
-      openaiModel: prev.openaiModel || AI_RUNTIME_PRESETS[preset].openaiModel,
+      openaiModel: prev.openaiModel || presetModel,
       openaiBaseUrl: prev.openaiBaseUrl || AI_RUNTIME_PRESETS[preset].openaiBaseUrl,
       businessClassificationModel: prev.businessClassificationModel || AI_RUNTIME_PRESETS[preset].businessClassificationModel,
       translationOpenaiModel: prev.translationOpenaiModel || AI_RUNTIME_PRESETS[preset].translationOpenaiModel,
+      insightAiModel: prev.insightAiModel || AI_RUNTIME_PRESETS[preset].insightAiModel,
     }));
   };
 

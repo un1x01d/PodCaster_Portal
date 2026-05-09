@@ -40,6 +40,7 @@ services:
       GEMINI_BASE_URL: ${GEMINI_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai}
       GEMINI_INPUT_COST_PER_1M: ${GEMINI_INPUT_COST_PER_1M:-0}
       GEMINI_OUTPUT_COST_PER_1M: ${GEMINI_OUTPUT_COST_PER_1M:-0}
+      ALLOW_OLLAMA_PROVIDER: ${ALLOW_OLLAMA_PROVIDER:-false}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
       OLLAMA_API_KEY: ${OLLAMA_API_KEY:-ollama}

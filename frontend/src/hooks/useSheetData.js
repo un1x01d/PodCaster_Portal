@@ -150,6 +150,8 @@ export function useSheetData({ token, user }) {
     setColumnFilters,
     isBatchLoading,
     hasMoreData,
+    setIsBatchLoading,
+    setHasMoreData,
     loadData,
     tabs,
     setTabs,

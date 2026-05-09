@@ -1,7 +1,7 @@
 const OPENAI_USAGE_BASE_URL = String(process.env.OPENAI_USAGE_BASE_URL || process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
 
 function getOpenAiUsageApiKey() {
-  return String(process.env.OPENAI_ADMIN_API_KEY || process.env.OPENAI_USAGE_API_KEY || "").trim();
+  return String(process.env.OPENAI_ADMIN_API_KEY || process.env.OPENAI_USAGE_API_KEY || process.env.OPENAI_API_KEY || "").trim();
 }
 
 function createOpenAiUsageError(code, message, statusCode = 503, details = null) {
@@ -73,7 +73,7 @@ async function fetchOpenAiPage(path, range, configureParams = null) {
   if (!apiKey) {
     throw createOpenAiUsageError(
       "openai_usage_api_key_missing",
-      "Set OPENAI_ADMIN_API_KEY or OPENAI_USAGE_API_KEY to an OpenAI admin key with organization usage and costs access.",
+      "Set OPENAI_ADMIN_API_KEY, OPENAI_USAGE_API_KEY, or OPENAI_API_KEY with organization usage/costs access.",
       503
     );
   }
@@ -94,7 +94,7 @@ async function fetchOpenAiPage(path, range, configureParams = null) {
       if (resp.status === 401 || resp.status === 403) {
         throw createOpenAiUsageError(
           "openai_usage_key_unauthorized",
-          `OpenAI usage key cannot access organization costs. Use an OpenAI admin key. ${message}`.trim(),
+          `Configured OpenAI key cannot access organization usage/costs. Provide a key with org usage permissions (OPENAI_ADMIN_API_KEY, OPENAI_USAGE_API_KEY, or OPENAI_API_KEY). ${message}`.trim(),
           502,
           { status: resp.status }
         );

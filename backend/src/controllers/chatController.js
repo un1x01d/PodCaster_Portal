@@ -3,7 +3,7 @@ import { query } from "../config/db.js";
 import { isEnglishLocale, normalizeLocale, translateDashboardItems } from "../utils/dashboardLocalization.js";
 import { checkSheetAccess, hasReportSourceOwnerAccess, isPlatformAdminUser, loadSheetPermissionSets } from "../utils/authorization.js";
 import { estimateOpenAiCostUsd, recordAiUsage, reserveAiQueryForSheet, resolveAiGroupIdForSheet } from "../utils/aiQuota.js";
-import { isAiGloballyDisabled, loadAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
+import { isAiGloballyDisabled, loadAiRuntimeSettings, loadEffectiveAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
 import { groupHasFeature } from "../utils/entitlements.js";
 import { resolveChatCompletionProviderConfig } from "../utils/llmProvider.js";
 import { buildChatCompletionRequestBody, extractOpenAiAssistantText, getOpenAiResponseDiagnostics, minCompletionTokensForModel } from "../utils/openAiCompat.js";
@@ -26,6 +26,14 @@ const CHAT_TTS_DEFAULTS = {
   models: { en: "tts-1", default: "tts-1-hd" },
   speed: { default: 0.9 },
 };
+
+function resolveOpenAIRequestFailureReason(error) {
+  const message = String(error?.message || "");
+  if (message.includes("openai_network_error:")) return "provider_network_error";
+  if (message.includes("openai_request_timeout:")) return "provider_timeout";
+  if (String(error?.code || "").includes("no_api_key")) return "provider_not_configured";
+  return "provider_request_failed";
+}
 
 let SEMANTIC_CACHE = null;
 let RATIO_CACHE = null;
@@ -389,7 +397,13 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
         if (groupBy && !["Year", "Month", "Quarter"].includes(groupBy) && !canUseColumn(groupBy)) return null;
 
         // Common Numeric Casting for target column
-        const valSql = `CAST(NULLIF(regexp_replace(row_data->>$${params.length + 1}, '[^0-9.-]', '', 'g'), '') AS NUMERIC)`;
+        const valSql = `CASE
+            WHEN (row_data->>$${params.length + 1}) ~ '^\\s*[-+]?\\d{1,3}(?:,\\d{3})*(?:\\.\\d+)?\\s*%?\\s*$'
+              OR (row_data->>$${params.length + 1}) ~ '^\\s*[-+]?\\d+(?:\\.\\d+)?\\s*%?\\s*$'
+              OR (row_data->>$${params.length + 1}) ~ '^\\s*[-+]?\\.\\d+\\s*%?\\s*$'
+            THEN CAST(NULLIF(regexp_replace(row_data->>$${params.length + 1}, '[^0-9.+-]', '', 'g'), '') AS NUMERIC)
+            ELSE NULL
+          END`;
         params.push(targetColumn);
 
         if (groupBy && ["sum", "avg", "top_n", "max", "min"].includes(op)) {
@@ -1728,25 +1742,83 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const startedAt = Date.now();
+  const requestUrl = `${baseUrl}/chat/completions`;
+  const providerLabel = String(provider || "openai");
+  const providerModel = String(model || "").trim();
+  console.info("[chat_ai_request] starting", {
+    provider: providerLabel,
+    model: providerModel,
+    resolvedBaseUrl: baseUrl,
+    requestUrl,
+    fallbackUrl: providerLabel === "openai" && OPENAI_BASE_URL && OPENAI_BASE_URL !== baseUrl ? `${OPENAI_BASE_URL}/chat/completions` : null,
+    runtimeHasOpenaiBaseUrl: !!runtime?.openaiBaseUrl,
+    providerConfigHasBaseUrl: !!(runtime?.providerConfigs?.[providerLabel]?.baseUrl),
+  });
+  const fallbackUrl = providerLabel === "openai" && OPENAI_BASE_URL && OPENAI_BASE_URL !== baseUrl
+    ? `${OPENAI_BASE_URL}/chat/completions`
+    : null;
+  const requestUrls = [requestUrl];
+  if (fallbackUrl && fallbackUrl !== requestUrl) requestUrls.push(fallbackUrl);
 
   let resp;
+  const requestBody = buildChatCompletionRequestBody({
+    provider,
+    model,
+    maxCompletionTokens: effectiveMaxTokens,
+    responseFormat: { type: "json_object" },
+    temperature: safeTemperature,
+    messages: [{ role: "system", content: system }, { role: "user", content: JSON.stringify(userPrompt) }],
+  });
+  const requestPayload = JSON.stringify(requestBody);
+
+  let lastError = null;
+  const isAbort = (error) => {
+    const reason = error?.cause?.code || error?.code || error?.name;
+    return reason === "AbortError";
+  };
+
   try {
-    const requestBody = buildChatCompletionRequestBody({
-      provider,
-      model,
-      maxCompletionTokens: effectiveMaxTokens,
-      responseFormat: { type: "json_object" },
-      temperature: safeTemperature,
-      messages: [{ role: "system", content: system }, { role: "user", content: JSON.stringify(userPrompt) }],
-    });
-    resp = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify(requestBody),
-      signal: controller.signal,
-    });
+    for (const targetUrl of requestUrls) {
+      try {
+        resp = await fetch(targetUrl, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+          body: requestPayload,
+          signal: controller.signal,
+        });
+        break;
+      } catch (error) {
+        lastError = error;
+        const reason = error?.cause?.code || error?.code || error?.name || "network_error";
+        if (isAbort(error)) {
+          const timeoutErr = new Error(`openai_request_timeout:${targetUrl}`);
+          timeoutErr.name = "TimeoutError";
+          timeoutErr.code = "openai_timeout";
+          throw timeoutErr;
+        }
+        console.error("OpenAI provider request failed:", {
+          provider: providerLabel,
+          targetUrl,
+          reason,
+          message: String(error?.message || ""),
+        });
+        if (targetUrl !== requestUrls[requestUrls.length - 1]) {
+          continue;
+        }
+        const upstreamErr = new Error(`openai_network_error:${providerLabel}:${targetUrl}:${reason}`);
+        upstreamErr.name = "ProviderNetworkError";
+        upstreamErr.code = "openai_network_error";
+        throw upstreamErr;
+      }
+    }
   } finally {
     clearTimeout(timeout);
+  }
+  if (!resp) {
+    const fallbackErr = new Error(`openai_network_error:${providerLabel}:${fallbackUrl || requestUrl}:no_response`);
+    fallbackErr.name = "ProviderNetworkError";
+    fallbackErr.code = "openai_network_error";
+    throw fallbackErr;
   }
   if (!resp.ok) {
     const text = await resp.text();
@@ -2024,6 +2096,18 @@ function naturalizeNumbersForTTS(text = "", locale = "en") {
     const cents = parseInt(String(centsRaw || "").padEnd(2, "0").slice(0, 2), 10) || 0;
     return cents >= 50 ? units + 1 : units;
   };
+  const spokenSign = (rawNum, ukPlus = "плюс", ukMinus = "мінус", ruMinus = "минус") => {
+    const s = String(rawNum || "").trim();
+    if (s.startsWith("+")) return ukPlus;
+    if (s.startsWith("-")) return lang === "ru" ? ruMinus : ukMinus;
+    return "";
+  };
+  const signWordForLang = (rawNum) => {
+    const s = String(rawNum || "").trim();
+    if (lang === "uk") return s.startsWith("+") ? "плюс" : (s.startsWith("-") ? "мінус" : "");
+    if (lang === "ru") return s.startsWith("+") ? "плюс" : (s.startsWith("-") ? "минус" : "");
+    return s.startsWith("+") ? "plus" : (s.startsWith("-") ? "minus" : "");
+  };
 
   // 1. Strip technical noise and formatting
   out = out.replace(/[•*]/g, ""); // bullets
@@ -2032,8 +2116,17 @@ function naturalizeNumbersForTTS(text = "", locale = "en") {
   out = out.replace(/\bUSD\b/gi, lang === "ru" ? "долларов" : (lang === "uk" ? "доларів" : "dollars"));
 
   if (lang === "uk") {
+    // Force explicit sign speech before numeric tokens.
+    out = out.replace(/\(\s*\+/g, "(плюс ");
+    out = out.replace(/\(\s*-/g, "(мінус ");
+    out = out.replace(/(^|[\s(])\+(\$?\d)/g, "$1плюс $2");
+    out = out.replace(/(^|[\s(])-(\$?\d)/g, "$1мінус $2");
     // Keep percentage decimals explicit for speech (including sub-1% values).
-    out = out.replace(/([+-]?(?:\d+(?:[.,]\d+)?|[.,]\d+))%/g, (m, numRaw) => `${normalizePercentToken(numRaw)} відсотка`);
+    out = out.replace(/([+-]?(?:\d+(?:[.,]\d+)?|[.,]\d+))%/g, (m, numRaw) => {
+      const signWord = spokenSign(numRaw, "плюс", "мінус");
+      const value = normalizePercentToken(String(numRaw).replace(/^[+-]/, ""));
+      return `${signWord ? `${signWord} ` : ""}${value} відсотка`;
+    });
     // Normalize currency without cents for cleaner speech output.
     out = out.replace(/\$([\d,]+)\.(\d{1,2})\b/g, (m, price, centsRaw) => {
       const rounded = roundCurrencyToWhole(price, centsRaw);
@@ -2048,8 +2141,17 @@ function naturalizeNumbersForTTS(text = "", locale = "en") {
     out = out.replace(/\btab\b/gi, "вкладка");
     out = out.replace(/\$([\d,.\s]+)\b/g, "$1 доларів");
   } else if (lang === "ru") {
+    // Force explicit sign speech before numeric tokens.
+    out = out.replace(/\(\s*\+/g, "(плюс ");
+    out = out.replace(/\(\s*-/g, "(минус ");
+    out = out.replace(/(^|[\s(])\+(\$?\d)/g, "$1плюс $2");
+    out = out.replace(/(^|[\s(])-(\$?\d)/g, "$1минус $2");
     // Keep percentage decimals explicit for speech (including sub-1% values).
-    out = out.replace(/([+-]?(?:\d+(?:[.,]\d+)?|[.,]\d+))%/g, (m, numRaw) => `${normalizePercentToken(numRaw)} процента`);
+    out = out.replace(/([+-]?(?:\d+(?:[.,]\d+)?|[.,]\d+))%/g, (m, numRaw) => {
+      const signWord = spokenSign(numRaw, "плюс", "мінус", "минус");
+      const value = normalizePercentToken(String(numRaw).replace(/^[+-]/, ""));
+      return `${signWord ? `${signWord} ` : ""}${value} процента`;
+    });
     // Normalize currency without cents for cleaner speech output.
     out = out.replace(/\$([\d,]+)\.(\d{1,2})\b/g, (m, price, centsRaw) => {
       const rounded = roundCurrencyToWhole(price, centsRaw);
@@ -2089,7 +2191,16 @@ function naturalizeNumbersForTTS(text = "", locale = "en") {
         return `${parseInt(thou, 10)} thousand ${parseInt(rest, 10)}`;
     });
     
-    out = out.replace(/([+-]?(?:\d+(?:[.,]\d+)?|[.,]\d+))%/g, (m, numRaw) => `${normalizePercentToken(numRaw)} percent`);
+    out = out.replace(/([+-]?(?:\d+(?:[.,]\d+)?|[.,]\d+))%/g, (m, numRaw) => {
+      const signWord = signWordForLang(numRaw);
+      const value = normalizePercentToken(String(numRaw).replace(/^[+-]/, ""));
+      return `${signWord ? `${signWord} ` : ""}${value} percent`;
+    });
+    // Force spoken sign for standalone signed values often used in deltas.
+    out = out.replace(/(^|[\s(])([+-])\s*(\d+(?:[.,]\d+)?)(?!\s*percent\b)/gi, (m, pre, sign, value) => {
+      const word = sign === "+" ? "plus" : "minus";
+      return `${pre}${word} ${value}`;
+    });
     out = out.replace(/\(\+/g, "(plus ");
     out = out.replace(/\(\-/g, "(minus ");
   }
@@ -2209,18 +2320,21 @@ function expandFinancialTextPhonetically(text = "", lang = "ru") {
 
     // 3. Handle Percentages (including decimal percentages like 0.19)
     out = out.replace(/([+-]?\d+[.,]\d+)\s?(відсотка|процента)/g, (m, raw, unit) => {
+        const hasPlus = String(raw || "").trim().startsWith("+");
+        const hasMinus = String(raw || "").trim().startsWith("-");
+        const signWord = hasPlus ? "плюс" : (hasMinus ? (lang === "ru" ? "минус" : "мінус") : "");
         const normalized = String(raw || "").replace(",", ".");
         const [intPartRaw, fracPartRaw = ""] = normalized.split(".");
-        const intPart = Number.parseInt(intPartRaw || "0", 10) || 0;
+        const intPart = Number.parseInt(String(intPartRaw || "0").replace(/^[+-]/, ""), 10) || 0;
         const fracPart = (fracPartRaw || "").replace(/[^\d]/g, "").slice(0, 4);
         if (!fracPart) {
             const whole = slavicNumberToWords(intPart, lang, "m");
-            return `${whole} ${unit}`;
+            return `${signWord ? `${signWord} ` : ""}${whole} ${unit}`;
         }
         const fracAsInt = Number.parseInt(fracPart, 10) || 0;
         const fracWords = slavicNumberToWords(fracAsInt, lang, "m");
         const wholeWords = slavicNumberToWords(intPart, lang, "m");
-        return `${wholeWords} ${lang === "ru" ? "целых" : "цілих"} ${fracWords} ${lang === "ru" ? "сотых" : "сотих"} ${unit}`;
+        return `${signWord ? `${signWord} ` : ""}${wholeWords} ${lang === "ru" ? "целых" : "цілих"} ${fracWords} ${lang === "ru" ? "сотых" : "сотих"} ${unit}`;
     });
 
     // 4. Handle integer Percentages
@@ -2246,18 +2360,35 @@ export async function getChatAudio(req, res) {
     return res.status(413).json({ error: "text_too_large" });
   }
   let runtime = null;
+  let globalRuntime = null;
   let aiReservation = null;
   if (sheetId) {
     const hasAccess = await checkSheetAccess(sheetId, req.user);
     if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
-    const runtimeGroupId = await resolveAiGroupIdForSheet({ sheetId, user: req.user });
-    runtime = await loadAiRuntimeSettings(runtimeGroupId || null);
-    if (isAiGloballyDisabled(runtime)) return res.status(403).json({ error: "global_ai_disabled" });
-    if (!runtime.chatAudioEnabled) return res.status(403).json({ error: "chat_audio_disabled" });
-    if (runtimeGroupId) {
-      const rows = await query("SELECT id, entitlements FROM groups WHERE id = $1 LIMIT 1", [runtimeGroupId]);
-      if (rows?.[0] && !groupHasFeature(rows[0], "chatAudioAi")) return res.status(403).json({ error: "feature_not_enabled:chatAudioAi" });
+    const resolvedGroupId = await resolveAiGroupIdForSheet({ sheetId, user: req.user });
+    const tokenGroupId = Number.parseInt(String(req.user?.customer_group_id ?? req.user?.group_id ?? ""), 10);
+    let runtimeGroupId = resolvedGroupId || (Number.isInteger(tokenGroupId) && tokenGroupId > 0 ? tokenGroupId : null);
+    if (!runtimeGroupId) {
+      const membershipRows = await query(
+        `SELECT group_id
+           FROM user_groups
+          WHERE user_id = $1
+          ORDER BY is_admin DESC, group_id ASC
+          LIMIT 1`,
+        [req.user?.id]
+      );
+      const membershipGroupId = Number.parseInt(String(membershipRows?.[0]?.group_id || ""), 10);
+      if (Number.isInteger(membershipGroupId) && membershipGroupId > 0) {
+        runtimeGroupId = membershipGroupId;
+      }
     }
+    const effective = await loadEffectiveAiRuntimeSettings(runtimeGroupId || null);
+    runtime = effective.runtime;
+    globalRuntime = effective.globalRuntime;
+    const effectiveGlobalDisabled = isAiGloballyDisabled(globalRuntime) || isAiGloballyDisabled(runtime);
+    const effectiveChatAudioEnabled = runtime?.chatAudioEnabled === true || globalRuntime?.chatAudioEnabled === true;
+    if (effectiveGlobalDisabled) return res.status(403).json({ error: "global_ai_disabled" });
+    if (!effectiveChatAudioEnabled) return res.status(403).json({ error: "chat_audio_disabled" });
     try {
       aiReservation = await reserveAiQueryForSheet({ sheetId, user: req.user, kind: "chat_audio" });
     } catch (err) {
@@ -2265,17 +2396,18 @@ export async function getChatAudio(req, res) {
     }
   }
   if (!runtime) runtime = await loadAiRuntimeSettings(null);
-  if (isAiGloballyDisabled(runtime)) return res.status(403).json({ error: "global_ai_disabled" });
-  if (!runtime.chatAudioEnabled) return res.status(403).json({ error: "chat_audio_disabled" });
+  if (!globalRuntime) globalRuntime = await loadAiRuntimeSettings(null);
+  const effectiveGlobalDisabled = isAiGloballyDisabled(globalRuntime) || isAiGloballyDisabled(runtime);
+  const effectiveChatAudioEnabled = runtime?.chatAudioEnabled === true || globalRuntime?.chatAudioEnabled === true;
+  if (effectiveGlobalDisabled) return res.status(403).json({ error: "global_ai_disabled" });
+  if (!effectiveChatAudioEnabled) return res.status(403).json({ error: "chat_audio_disabled" });
 
   try {
-    const audioBuffer = await synthesizeChatAudioBuffer({ text, locale, runtime });
-    if (!audioBuffer || !audioBuffer.length) {
+    const streamResult = await synthesizeChatAudioToResponse({ text, locale, runtime, res });
+    if (streamResult !== true) {
       return res.status(502).json({ error: "tts_empty_response" });
     }
-    res.setHeader("Content-Type", "audio/mpeg");
-    res.setHeader("Content-Length", String(audioBuffer.length));
-    return res.status(200).send(audioBuffer);
+    return;
   } catch (e) {
     const errorCode = e?.code || "internal_server_error";
     const status = errorCode === "global_ai_disabled" ? 403 : errorCode === "text_too_large" ? 413 : errorCode === "tts_timeout" ? 504 : errorCode === "tts_upstream_error" ? 502 : 500;
@@ -2284,6 +2416,81 @@ export async function getChatAudio(req, res) {
       payload.message = String(e.message).slice(0, 300);
     }
     return res.status(status).json(payload);
+  }
+}
+
+async function synthesizeChatAudioToResponse({ text, locale, runtime = null, res }) {
+  let speechText = text;
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey || !speechText) {
+    const err = new Error("missing_params");
+    err.code = "missing_params";
+    throw err;
+  }
+  if (isAiGloballyDisabled(runtime)) {
+    const err = new Error("global_ai_disabled");
+    err.code = "global_ai_disabled";
+    throw err;
+  }
+  const maxChars = Number(runtime?.chatAudioMaxChars || CHAT_AUDIO_MAX_CHARS);
+  if (String(speechText).length > maxChars) {
+    const err = new Error("text_too_large");
+    err.code = "text_too_large";
+    throw err;
+  }
+  speechText = String(speechText).replace(/\*/g, "");
+  const ttsCfg = await loadChatTtsSettings();
+  const lang = (locale || "en").split("-")[0].toLowerCase();
+  const runtimeVoice = String(runtime?.chatAudioTtsVoice || "").trim();
+  const runtimeModelEn = String(runtime?.chatAudioTtsModelEn || "").trim();
+  const runtimeModelDefault = String(runtime?.chatAudioTtsModelDefault || "").trim();
+  const voice = String(runtimeVoice || ttsCfg?.voices?.[lang] || ttsCfg?.voices?.default || "nova");
+  const model = String(lang === "en"
+    ? (runtimeModelEn || ttsCfg?.models?.en || "tts-1")
+    : (runtimeModelDefault || ttsCfg?.models?.[lang] || ttsCfg?.models?.default || "tts-1"));
+  const speedNum = Number(runtime?.chatAudioTtsSpeed ?? ttsCfg?.speed?.[lang] ?? ttsCfg?.speed?.default ?? 0.9);
+  const speed = Number.isFinite(speedNum) && speedNum > 0 ? speedNum : 0.9;
+  let cleanedText = naturalizeNumbersForTTS(speechText, locale);
+  if (lang === "uk" || lang === "ru") cleanedText = expandFinancialTextPhonetically(cleanedText, lang);
+
+  const controller = new AbortController();
+  const timeoutMs = Number(runtime?.openaiTimeoutMs || OPENAI_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${OPENAI_BASE_URL}/audio/speech`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({ model, input: cleanedText, voice, speed }),
+    });
+    if (!response.ok) {
+      const message = await response.text().catch(() => "");
+      const err = new Error(message.slice(0, 300) || `upstream_status_${response.status}`);
+      err.code = "tts_upstream_error";
+      throw err;
+    }
+    if (!response.body) return false;
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.status(200);
+    const reader = response.body.getReader();
+    let wroteAny = false;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value?.length) {
+        wroteAny = true;
+        res.write(Buffer.from(value));
+      }
+    }
+    res.end();
+    return wroteAny;
+  } catch (e) {
+    if (e?.code) throw e;
+    const err = new Error(e?.name === "AbortError" ? "tts_timeout" : "internal_server_error");
+    err.code = e?.name === "AbortError" ? "tts_timeout" : "internal_server_error";
+    throw err;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -2372,8 +2579,32 @@ export async function chatQuery(req, res) {
     const hasAccess = await checkSheetAccess(sheetId, req.user);
     if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
   }
-  const runtimeGroupId = await resolveAiGroupIdForSheet({ sheetId, user: req.user });
-  const runtime = await loadAiRuntimeSettings(runtimeGroupId || null);
+  const resolvedGroupId = await resolveAiGroupIdForSheet({ sheetId, user: req.user });
+  const tokenGroupId = Number.parseInt(String(req.user?.customer_group_id ?? req.user?.group_id ?? ""), 10);
+  let runtimeGroupId = resolvedGroupId || (Number.isInteger(tokenGroupId) && tokenGroupId > 0 ? tokenGroupId : null);
+  if (!runtimeGroupId) {
+    const membershipRows = await query(
+      `SELECT group_id
+         FROM user_groups
+        WHERE user_id = $1
+        ORDER BY is_admin DESC, group_id ASC
+        LIMIT 1`,
+      [req.user?.id]
+    );
+    const membershipGroupId = Number.parseInt(String(membershipRows?.[0]?.group_id || ""), 10);
+    if (Number.isInteger(membershipGroupId) && membershipGroupId > 0) {
+      runtimeGroupId = membershipGroupId;
+    }
+  }
+  const { runtime } = await loadEffectiveAiRuntimeSettings(runtimeGroupId || null);
+  console.info("[chat_ai_runtime] resolved", {
+    groupId: runtimeGroupId || null,
+    aiProvider: runtime?.aiProvider || null,
+    openaiModel: runtime?.openaiModel || null,
+    providerModel: runtime?.providerConfigs?.[runtime?.aiProvider || "openai"]?.model || null,
+    openaiBaseUrl: runtime?.openaiBaseUrl || null,
+    providerBaseUrl: runtime?.providerConfigs?.[runtime?.aiProvider || "openai"]?.baseUrl || null,
+  });
   if (isAiGloballyDisabled(runtime)) return res.status(403).json({ error: "global_ai_disabled" });
   if (!runtime.chatEnabled) return res.status(403).json({ error: "chat_disabled" });
   if (runtimeGroupId) {
@@ -2433,10 +2664,12 @@ export async function chatQuery(req, res) {
         runtime,
       });
       noSheetPlan = normalizeAiPlan(aiResult.plan);
-    } catch (e) {
-      console.error("OpenAI call failed:", e);
-      return res.status(502).json({ error: "ai_unavailable" });
-    }
+  } catch (e) {
+    const reason = resolveOpenAIRequestFailureReason(e);
+    const detail = String(e?.message || "").slice(0, 280);
+    console.error("OpenAI call failed:", e);
+    return res.status(502).json({ error: "ai_unavailable", reason, detail });
+  }
 
     return res.json({
       answer: formatAnswerWithBullets(noSheetPlan?.answer || "AI is ready. Open a spreadsheet to ask data analysis questions."),
@@ -2549,8 +2782,10 @@ export async function chatQuery(req, res) {
       estimatedCostUsd: aiResult.usage?.estimatedCostUsd,
     }).catch((err) => console.error("[ai_quota] usage record failed:", err?.message || err));
   } catch (e) {
+    const reason = resolveOpenAIRequestFailureReason(e);
+    const detail = String(e?.message || "").slice(0, 280);
     console.error("OpenAI call failed:", e);
-    return res.status(502).json({ error: "ai_unavailable" }); 
+    return res.status(502).json({ error: "ai_unavailable", reason, detail });
   }
 
   try {

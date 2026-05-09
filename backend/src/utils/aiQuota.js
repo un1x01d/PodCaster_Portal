@@ -27,7 +27,32 @@ function quotaNumber(value) {
 }
 
 async function resolveCustomerGroupForSheet(sheetId, user) {
-  if (!sheetId || String(user?.role || "") === "admin") return null;
+  if (!sheetId) return null;
+  const sheetScopedGroup = await query(
+    `SELECT rs.sync_group_id AS group_id
+       FROM sheets s
+       JOIN report_sources rs ON rs.id = s.report_source_id
+      WHERE s.id = $1
+        AND rs.sync_group_id IS NOT NULL
+      LIMIT 1`,
+    [sheetId]
+  ).catch(() => []);
+  if (sheetScopedGroup?.[0]?.group_id) return sheetScopedGroup[0].group_id;
+  const ownerScopedGroup = await query(
+    `SELECT ug.group_id AS group_id
+       FROM sheets s
+       JOIN report_sources rs ON rs.id = s.report_source_id
+       JOIN user_groups ug ON ug.user_id = rs.created_by
+      WHERE s.id = $1
+        AND ug.group_id IS NOT NULL
+      ORDER BY ug.is_admin DESC, ug.group_id ASC
+      LIMIT 1`,
+    [sheetId]
+  ).catch(() => []);
+  if (ownerScopedGroup?.[0]?.group_id) return ownerScopedGroup[0].group_id;
+  const tokenGroupId = Number.parseInt(String(user?.customer_group_id ?? user?.group_id ?? ""), 10);
+  if (Number.isInteger(tokenGroupId) && tokenGroupId > 0) return tokenGroupId;
+  if (String(user?.role || "") === "admin") return null;
   const rows = await query(
     `SELECT ug.group_id
        FROM user_groups ug

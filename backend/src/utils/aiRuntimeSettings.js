@@ -58,6 +58,7 @@ const DEFAULTS = {
   openaiInputCostPer1M: Number.parseFloat(process.env.OPENAI_INPUT_COST_PER_1M || "0.05") || 0.05,
   openaiOutputCostPer1M: Number.parseFloat(process.env.OPENAI_OUTPUT_COST_PER_1M || "0.40") || 0.40,
   translationOpenaiModel: String(process.env.OPENAI_TRANSLATION_MODEL || defaultModelForProvider(DEFAULT_AI_PROVIDER)),
+  insightAiModel: String(process.env.OPENAI_INSIGHT_MODEL || defaultModelForProvider(DEFAULT_AI_PROVIDER)),
   translationTemperature: Number.parseFloat(process.env.OPENAI_TRANSLATION_TEMPERATURE || "0") || 0,
   translationMaxOutputTokens: Number.parseInt(process.env.OPENAI_TRANSLATION_MAX_OUTPUT_TOKENS || "512", 10) || 512,
   insightAiMaxSeriesPoints: Number.parseInt(process.env.INSIGHT_AI_MAX_SERIES_POINTS || "18", 10) || 18,
@@ -71,7 +72,14 @@ const DEFAULTS = {
 
 function toBool(v, fallback) {
   if (v === undefined || v === null) return fallback;
-  return v === true;
+  if (typeof v === "boolean") return v;
+  if (typeof v === "number") return v === 1;
+  if (typeof v === "string") {
+    const s = v.trim().toLowerCase();
+    if (s === "true" || s === "1" || s === "yes" || s === "on") return true;
+    if (s === "false" || s === "0" || s === "no" || s === "off") return false;
+  }
+  return fallback;
 }
 
 function toInt(v, fallback, min, max) {
@@ -120,19 +128,26 @@ export function normalizeAiRuntimeSettings(raw = {}) {
   const cfg = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   const aiProvider = normalizeAiProvider(cfg.aiProvider || DEFAULTS.aiProvider);
   const providerConfigs = normalizeProviderConfigs(cfg.providerConfigs || DEFAULTS.providerConfigs);
-  if (cfg.openaiModel || cfg.openaiBaseUrl || cfg.openaiInputCostPer1M !== undefined || cfg.openaiOutputCostPer1M !== undefined) {
+  if (cfg.openaiBaseUrl || cfg.openaiInputCostPer1M !== undefined || cfg.openaiOutputCostPer1M !== undefined) {
     providerConfigs[aiProvider] = {
       ...providerConfigs[aiProvider],
-      model: toModel(cfg.openaiModel, providerConfigs[aiProvider].model),
       baseUrl: toBaseUrl(cfg.openaiBaseUrl, providerConfigs[aiProvider].baseUrl),
       inputCostPer1M: toFloat(cfg.openaiInputCostPer1M, providerConfigs[aiProvider].inputCostPer1M, 0, 1000),
       outputCostPer1M: toFloat(cfg.openaiOutputCostPer1M, providerConfigs[aiProvider].outputCostPer1M, 0, 1000),
     };
   }
+  const selectedOpenaiModel = String(cfg.openaiModel || "").trim();
   const providerDefaultModel = providerConfigs[aiProvider]?.model || defaultModelForProvider(aiProvider);
   const providerDefaultBaseUrl = providerConfigs[aiProvider]?.baseUrl || defaultBaseUrlForProvider(aiProvider);
   const providerInputCost = providerConfigs[aiProvider]?.inputCostPer1M ?? DEFAULTS.openaiInputCostPer1M;
   const providerOutputCost = providerConfigs[aiProvider]?.outputCostPer1M ?? DEFAULTS.openaiOutputCostPer1M;
+  const activeModel = toModel(providerConfigs[aiProvider]?.model || selectedOpenaiModel, providerDefaultModel || DEFAULTS.openaiModel);
+  const activeBaseUrl = toBaseUrl(cfg.openaiBaseUrl, providerDefaultBaseUrl || DEFAULTS.openaiBaseUrl);
+  providerConfigs[aiProvider] = {
+    ...providerConfigs[aiProvider],
+    model: activeModel,
+    baseUrl: activeBaseUrl,
+  };
   return {
     aiRuntimePreset: toPreset(cfg.aiRuntimePreset, DEFAULTS.aiRuntimePreset),
     aiProvider,
@@ -148,6 +163,7 @@ export function normalizeAiRuntimeSettings(raw = {}) {
     dashboardTranslateMaxItems: toInt(cfg.dashboardTranslateMaxItems, DEFAULTS.dashboardTranslateMaxItems, 1, 2000),
     dashboardTranslateMaxCharsPerItem: toInt(cfg.dashboardTranslateMaxCharsPerItem, DEFAULTS.dashboardTranslateMaxCharsPerItem, 10, 10000),
     businessClassificationModel: toModel(cfg.businessClassificationModel, providerDefaultModel || DEFAULTS.businessClassificationModel),
+    insightAiModel: toModel(cfg.insightAiModel, providerDefaultModel || DEFAULTS.insightAiModel),
     businessClassificationApplyUploads: toBool(cfg.businessClassificationApplyUploads, DEFAULTS.businessClassificationApplyUploads),
     businessClassificationApplyEmailIngest: toBool(cfg.businessClassificationApplyEmailIngest, DEFAULTS.businessClassificationApplyEmailIngest),
     businessClassificationApplyAutosync: toBool(cfg.businessClassificationApplyAutosync, DEFAULTS.businessClassificationApplyAutosync),
@@ -155,8 +171,12 @@ export function normalizeAiRuntimeSettings(raw = {}) {
     businessClassificationMaxPromptChars: toInt(cfg.businessClassificationMaxPromptChars, DEFAULTS.businessClassificationMaxPromptChars, 1000, 50000),
     businessClassificationMaxOutputTokens: toInt(cfg.businessClassificationMaxOutputTokens, DEFAULTS.businessClassificationMaxOutputTokens, 128, 2048),
     llmMaxOutputTokens: toInt(cfg.llmMaxOutputTokens, DEFAULTS.llmMaxOutputTokens, 32, 4096),
-    openaiModel: toModel(cfg.openaiModel, providerDefaultModel || DEFAULTS.openaiModel),
-    openaiBaseUrl: toBaseUrl(cfg.openaiBaseUrl, providerDefaultBaseUrl || DEFAULTS.openaiBaseUrl),
+    openaiModel: activeModel,
+    openaiBaseUrl: activeBaseUrl,
+    model: activeModel,
+    runtimeModel: activeModel,
+    runtimeBaseUrl: activeBaseUrl,
+    providerModel: activeModel,
     openaiTimeoutMs: toInt(cfg.openaiTimeoutMs, DEFAULTS.openaiTimeoutMs, 1000, 300000),
     openaiTemperature: toFloat(cfg.openaiTemperature, DEFAULTS.openaiTemperature, 0, 2),
     openaiMaxOutputTokens: toInt(cfg.openaiMaxOutputTokens, DEFAULTS.openaiMaxOutputTokens, 32, 4096),
@@ -186,6 +206,36 @@ function scopedKey(groupId) {
 export async function loadAiRuntimeSettings(groupId = null) {
   const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [scopedKey(groupId)]);
   return normalizeAiRuntimeSettings(rows?.[0]?.value || {});
+}
+
+export async function loadEffectiveAiRuntimeSettings(groupId = null) {
+  const globalRuntime = await loadAiRuntimeSettings(null);
+  const gid = Number.parseInt(String(groupId || ""), 10);
+  if (!Number.isInteger(gid) || gid <= 0) {
+    return {
+      runtime: globalRuntime,
+      globalRuntime,
+      groupRuntime: null,
+      hasGroupScopedRuntime: false,
+    };
+  }
+  const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [scopedKey(gid)]);
+  const hasGroupScopedRuntime = !!rows?.length;
+  if (!hasGroupScopedRuntime) {
+    return {
+      runtime: globalRuntime,
+      globalRuntime,
+      groupRuntime: null,
+      hasGroupScopedRuntime: false,
+    };
+  }
+  const groupRuntime = normalizeAiRuntimeSettings(rows?.[0]?.value || {});
+  return {
+    runtime: groupRuntime,
+    globalRuntime,
+    groupRuntime,
+    hasGroupScopedRuntime: true,
+  };
 }
 
 export async function saveAiRuntimeSettings(groupId = null, next = {}) {

@@ -35,6 +35,7 @@ export default function SpreadsheetChatbot({
     } = useChatbotLogic({
         sheetId, data: chatData, headers, activeFilters, allData, onApplyFilter,
         onUpdateChart, onSwitchSheet, myFiles, activeFilename, activeTab, splitContext, activeViewScope, locale, copy: ui,
+        applyActionsDefault: !inline,
     });
 
     const [chatSize, setChatSize] = useState({ width: 480, height: 420 });
@@ -82,7 +83,7 @@ export default function SpreadsheetChatbot({
         return (
             <section className="h-full max-h-full min-h-0 flex flex-col rounded-md border border-slate-200 bg-white shadow-sm overflow-hidden">
                 <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden">
-                    <ChatHistory messages={messages} onApplyFilter={onApplyFilter} copy={ui} locale={locale} />
+                    <ChatHistory sheetId={sheetId} messages={messages} onApplyFilter={onApplyFilter} copy={ui} locale={locale} />
                     <div className="border-t border-slate-200 bg-white flex-shrink-0">
                         <ChatInput input={input} setInput={setInput} handleSend={handleSend} isOpen={true} copy={ui} />
                     </div>
@@ -141,7 +142,7 @@ export default function SpreadsheetChatbot({
                     {!isMinimized && (
                         <div className="flex-1 flex flex-col min-h-0 bg-white relative z-[100] overflow-hidden">
                             <div className="flex-1 overflow-hidden min-h-0 flex flex-col">
-                                <ChatHistory messages={messages} onApplyFilter={onApplyFilter} copy={ui} locale={locale} />
+                                <ChatHistory sheetId={sheetId} messages={messages} onApplyFilter={onApplyFilter} copy={ui} locale={locale} />
                             </div>
                             <div className="p-2.5 bg-white border-t border-slate-200 flex-shrink-0">
                                 <ChatInput input={input} setInput={setInput} handleSend={handleSend} isOpen={isOpen} copy={ui} />

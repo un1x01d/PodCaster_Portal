@@ -1,11 +1,11 @@
 import React, { useRef, useEffect } from 'react';
 import { DASHBOARD_COPY_EN } from "../../hooks/useDashboardI18n";
 
-export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_COPY_EN, locale = "en" }) {
+export default function ChatHistory({ sheetId = null, messages, onApplyFilter, copy = DASHBOARD_COPY_EN, locale = "en" }) {
     const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
     const containerRef = useRef(null);
     const [speakingIndex, setSpeakingIndex] = React.useState(null);
-    const [chatAudioEnabled, setChatAudioEnabled] = React.useState(false);
+    const [chatAudioEnabled, setChatAudioEnabled] = React.useState(true);
     const utteranceRef = useRef(null);
     const readCookie = (name) => {
         if (typeof document === "undefined") return "";
@@ -46,18 +46,55 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
     }, []);
 
     useEffect(() => {
-        fetch(`${API}/users/me/ai-features`, {
-            method: "GET",
-            credentials: "include",
-        })
-            .then((res) => (res.ok ? res.json() : null))
-            .then((data) => {
-                if (!data || typeof data !== "object") return;
-                setChatAudioEnabled(data.chatAudioEnabled === true);
-            })
-            .catch(() => {
+        let ignore = false;
+        const normalizeBoolean = (value) => {
+            if (value === true || value === 1) return true;
+            if (value === false || value === 0 || value === null || value === undefined) return false;
+            if (typeof value === "string") {
+                const normalized = value.trim().toLowerCase();
+                if (normalized === "true" || normalized === "1" || normalized === "on" || normalized === "yes") return true;
+                if (normalized === "false" || normalized === "0" || normalized === "off" || normalized === "no") return false;
+            }
+            return false;
+        };
+        const load = async () => {
+            try {
+                const token =
+                    localStorage.getItem("token") ||
+                    localStorage.getItem("authToken") ||
+                    localStorage.getItem("jwt") ||
+                    localStorage.getItem("jwtToken") ||
+                    "";
+                const headers = token ? { Authorization: `Bearer ${token}` } : {};
+                const [userRes, runtimeRes] = await Promise.all([
+                  fetch(`${API}/users/me/ai-features`, {
+                    method: "GET",
+                    headers,
+                    credentials: "include",
+                  }),
+                  fetch(`${API}/admin/settings/ai-runtime`, {
+                    method: "GET",
+                    headers,
+                    credentials: "include",
+                  }),
+                ]);
+                const userPayload = userRes && userRes.ok ? await userRes.json() : null;
+                const runtimePayload = runtimeRes && runtimeRes.ok ? await runtimeRes.json() : null;
+                if (ignore) return;
+                const userEnabled = userPayload && Object.prototype.hasOwnProperty.call(userPayload, "chatAudioEnabled")
+                  ? normalizeBoolean(userPayload.chatAudioEnabled)
+                  : false;
+                const runtimeEnabled = runtimePayload && Object.prototype.hasOwnProperty.call(runtimePayload, "chatAudioEnabled")
+                  ? (runtimePayload.globalAiDisabled === true ? false : normalizeBoolean(runtimePayload.chatAudioEnabled))
+                  : false;
+                setChatAudioEnabled(userEnabled || runtimeEnabled);
+            } catch (err) {
+                console.warn("Failed to resolve chat audio feature flags", err);
                 setChatAudioEnabled(false);
-            });
+            }
+        };
+        load();
+        return () => { ignore = true; };
     }, [API]);
 
     const [voices, setVoices] = React.useState([]);
@@ -254,7 +291,6 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
     };
 
     const handleSpeak = async (text, index) => {
-        if (!chatAudioEnabled) return;
         const synth = window.speechSynthesis;
         const localeBase = String(locale || "en").toLowerCase().split("-")[0];
         if (synth) synth.cancel();
@@ -282,7 +318,6 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
     };
 
     const streamTextToAudio = async (text) => {
-        if (!chatAudioEnabled) return false;
         window._stopPlayback = false;
         window._audioQueue = [];
         window._audioAbortControllers = [];
@@ -296,12 +331,11 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
                 "Content-Type": "application/json",
                 ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
             },
-            body: JSON.stringify({ text, locale }),
+            body: JSON.stringify({ text, locale, sheetId }),
             signal: controller.signal,
             credentials: "include",
         });
         if (!response.ok) {
-            if (response.status === 403) setChatAudioEnabled(false);
             return false;
         }
         if (!response.body) return false;
@@ -439,6 +473,7 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
         >
             {messages.map((msg, i) => {
                 const isSpeaking = speakingIndex === i;
+                const botLike = msg.type !== 'user' && !msg.isSystem;
                 return (
                     <div key={i} className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'} mb-1`}>
                         <div className={`rounded-xl px-2.5 py-1.5 text-[11px] leading-snug shadow-sm group relative transition-all break-words overflow-wrap-anywhere ${
@@ -446,10 +481,18 @@ export default function ChatHistory({ messages, onApplyFilter, copy = DASHBOARD_
                               ? 'max-w-[88%] bg-blue-600 text-white rounded-tr-sm'
                               : `w-full max-w-none bg-white text-slate-600 border border-slate-200 rounded-tl-sm pr-8 ${isSpeaking ? 'bg-indigo-50/30' : ''}`
                         }`}>
-                            {msg.type === 'bot' && chatAudioEnabled && (
+                            {botLike && (
                                 <button 
                                     onClick={() => handleSpeak(msg.text, i)}
-                                    className={`absolute right-1.5 top-1.5 w-6 h-6 rounded-full flex items-center justify-center transition-all shadow-md z-[120] cursor-pointer ${isSpeaking ? 'bg-orange-500 text-white' : 'bg-white text-slate-400 border border-slate-100 opacity-0 group-hover:opacity-100 hover:text-indigo-600'}`}
+                                    title={isSpeaking ? "Stop speaking" : "Play response audio"}
+                                    aria-label={isSpeaking ? "Stop speaking" : "Play response audio"}
+                                    disabled={false}
+                                    className={`absolute right-1.5 top-1.5 w-3.5 h-3.5 rounded-full flex items-center justify-center transition-all shadow-sm z-[120] border
+                                        ${isSpeaking
+                                          ? 'bg-orange-500 text-white border-orange-500 cursor-pointer'
+                                          : 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-500 cursor-pointer'
+                                        }
+                                    `}
                                 >
                                     {isSpeaking ? (
                                         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="animate-pulse"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
