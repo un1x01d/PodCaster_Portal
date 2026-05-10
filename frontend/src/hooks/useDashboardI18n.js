@@ -6,7 +6,7 @@ const DASHBOARD_COPY_IN_FLIGHT = new Map();
 const DASHBOARD_COPY_STORAGE_PREFIX = "dashboardCopy:v2:";
 
 export const DASHBOARD_COPY_EN = {
-  portalTitle: "Data Insights Portal",
+  portalTitle: "TFORN Insights",
   selectSheet: "Select a sheet...",
   searchSpreadsheets: "Search spreadsheets...",
   signOut: "Sign out",

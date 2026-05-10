@@ -1,5 +1,6 @@
 import { query } from "../config/db.js";
 import { normalizeGroupEntitlements, groupHasFeature } from "./entitlements.js";
+import { resolveRuntimeGroupIdForUser } from "./authorization.js";
 
 const OPENAI_INPUT_COST_PER_1M = Number.parseFloat(process.env.OPENAI_INPUT_COST_PER_1M || "0.05");
 const OPENAI_OUTPUT_COST_PER_1M = Number.parseFloat(process.env.OPENAI_OUTPUT_COST_PER_1M || "0.40");
@@ -50,42 +51,7 @@ async function resolveCustomerGroupForSheet(sheetId, user) {
     [sheetId]
   ).catch(() => []);
   if (ownerScopedGroup?.[0]?.group_id) return ownerScopedGroup[0].group_id;
-  const tokenGroupId = Number.parseInt(String(user?.customer_group_id ?? user?.group_id ?? ""), 10);
-  if (Number.isInteger(tokenGroupId) && tokenGroupId > 0) return tokenGroupId;
-  if (String(user?.role || "") === "admin") return null;
-  const rows = await query(
-    `SELECT ug.group_id
-       FROM user_groups ug
-      WHERE ug.user_id = $2
-        AND (
-          EXISTS (
-            SELECT 1
-              FROM views v
-              LEFT JOIN report_source_imports rsi ON rsi.sheet_id = $1
-              JOIN view_user_permissions vup ON vup.view_id = v.id
-             WHERE vup.user_id = $2
-               AND (
-                 v.sheet_id = $1
-                 OR (
-                   v.sheet_id IS NULL
-                   AND v.report_source_id = rsi.report_source_id
-                   AND (v.file_label IS NULL OR v.file_label = rsi.file_label)
-                 )
-               )
-          )
-          OR EXISTS (
-            SELECT 1
-              FROM sheets s
-              JOIN report_sources rs ON rs.id = s.report_source_id
-             WHERE s.id = $1
-               AND rs.created_by = $2
-          )
-        )
-      ORDER BY group_id ASC
-      LIMIT 1`,
-    [sheetId, user?.id]
-  );
-  return rows?.[0]?.group_id || null;
+  return resolveRuntimeGroupIdForUser(user);
 }
 
 export async function resolveAiGroupIdForSheet({ sheetId, user } = {}) {

@@ -108,7 +108,7 @@ export function verifyTotpCode(secretBase32, code, { period = DEFAULT_PERIOD, di
 }
 
 export function buildOtpAuthUrl({ issuer, accountName, secret, digits = DEFAULT_DIGITS, period = DEFAULT_PERIOD }) {
-  const safeIssuer = encodeURIComponent(String(issuer || "Portal").trim() || "Portal");
+  const safeIssuer = encodeURIComponent(String(issuer || "TFORN Insights").trim() || "TFORN Insights");
   const safeAccount = encodeURIComponent(String(accountName || "user").trim() || "user");
   const safeDigits = normalize2faDigits(digits, DEFAULT_DIGITS);
   const safePeriod = normalize2faPeriod(period, DEFAULT_PERIOD);
@@ -127,4 +127,3 @@ export function hashCodeForChallenge(challengeId, code) {
     .update(`${String(challengeId || "")}:${String(code || "")}`)
     .digest("hex");
 }
-

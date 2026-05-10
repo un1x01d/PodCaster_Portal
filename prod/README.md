@@ -1,6 +1,6 @@
 # Production Deployment Runbook
 
-This file is the production source of truth for taking Data Insights Portal from local/dev into a real customer-facing deployment.
+This file is the production source of truth for taking TFORN Insights from local/dev into a real customer-facing deployment.
 
 Current status: **No-Go until the launch gates below are closed.**
 
@@ -262,15 +262,15 @@ Expected current caveat:
 Docker build:
 
 ```bash
-docker build -f backend/Dockerfile -t data-insights-portal-backend:prod .
-docker build --build-arg "VITE_API_URL=https://api.example.com" -f frontend/Dockerfile -t data-insights-portal-frontend:prod .
+docker build -f backend/Dockerfile -t tforn-insights-backend:prod .
+docker build --build-arg "VITE_API_URL=https://api.example.com" -f frontend/Dockerfile -t tforn-insights-frontend:prod .
 ```
 
 Container smoke checks:
 
 ```bash
-docker run --rm data-insights-portal-backend:prod node --version
-docker run --rm data-insights-portal-frontend:prod node --version
+docker run --rm tforn-insights-backend:prod node --version
+docker run --rm tforn-insights-frontend:prod node --version
 ```
 
 ## 8. Container Registry
@@ -278,17 +278,17 @@ docker run --rm data-insights-portal-frontend:prod node --version
 Example using Artifact Registry:
 
 ```bash
-gcloud artifacts repositories create data-insights-portal \
+gcloud artifacts repositories create tforn-insights \
   --repository-format=docker \
   --location=us-central1
 
 gcloud auth configure-docker us-central1-docker.pkg.dev
 
-docker tag data-insights-portal-backend:prod us-central1-docker.pkg.dev/PROJECT_ID/data-insights-portal/backend:COMMIT_SHA
-docker tag data-insights-portal-frontend:prod us-central1-docker.pkg.dev/PROJECT_ID/data-insights-portal/frontend:COMMIT_SHA
+docker tag tforn-insights-backend:prod us-central1-docker.pkg.dev/PROJECT_ID/tforn-insights/backend:COMMIT_SHA
+docker tag tforn-insights-frontend:prod us-central1-docker.pkg.dev/PROJECT_ID/tforn-insights/frontend:COMMIT_SHA
 
-docker push us-central1-docker.pkg.dev/PROJECT_ID/data-insights-portal/backend:COMMIT_SHA
-docker push us-central1-docker.pkg.dev/PROJECT_ID/data-insights-portal/frontend:COMMIT_SHA
+docker push us-central1-docker.pkg.dev/PROJECT_ID/tforn-insights/backend:COMMIT_SHA
+docker push us-central1-docker.pkg.dev/PROJECT_ID/tforn-insights/frontend:COMMIT_SHA
 ```
 
 Use immutable tags based on commit SHA. Avoid deploying `latest` to production.
@@ -298,7 +298,7 @@ Use immutable tags based on commit SHA. Avoid deploying `latest` to production.
 Production database requirements:
 
 - PostgreSQL reachable only on private IP.
-- Create the control database, normally `portaldb`.
+- Create the control database, normally `tforn_insights_db`.
 - Enable dedicated customer databases by default: `TENANT_DB_ISOLATION_ENABLED=true`.
 - Customer databases are created in the same PostgreSQL instance using names like `tenant_g123`.
 - The provisioning identity must be able to create databases, or a separate migration/admin identity must run customer DB provisioning.
@@ -311,7 +311,7 @@ Production database requirements:
 Before production:
 
 1. Create the Cloud SQL/PostgreSQL instance.
-2. Create the control database (`POSTGRES_DB`, normally `portaldb`).
+2. Create the control database (`POSTGRES_DB`, normally `tforn_insights_db`).
 3. Create the app user and decide whether it may create tenant databases.
 4. If app user cannot create tenant databases, create a migration/admin user and run customer provisioning/migration with that identity.
 5. Run reviewed migrations or controlled initialization for the control DB.
@@ -393,7 +393,7 @@ Example internal scrape config:
 
 ```yaml
 scrape_configs:
-  - job_name: data-insights-portal-backend
+  - job_name: tforn-insights-backend
     scheme: http
     metrics_path: /metrics
     static_configs:
@@ -506,7 +506,7 @@ Export the control DB and each customer DB separately:
 
 ```bash
 export DB_INSTANCE="data-insights-pg"
-export CONTROL_DB="portaldb"
+export CONTROL_DB="tforn_insights_db"
 export BACKUP_BUCKET="PROJECT-prod-db-exports"
 export STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 

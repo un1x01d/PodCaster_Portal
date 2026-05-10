@@ -24,14 +24,15 @@ export function useSheetData({ token, user }) {
 
   const loadData = async (sid = sheetId, options = {}) => {
     if (!sid || !token) return;
-    const { 
+    const {
       preserveFilters = false, 
       tabName = activeTab, 
       preferCache = true, 
       limit = BATCH_SIZE, 
       offset = 0, 
       append = false,
-      selectedViewId = null
+      selectedViewId = null,
+      _cursorSortRetried = false,
     } = options;
     
     if (append) setIsBatchLoading(true);
@@ -89,6 +90,24 @@ export function useSheetData({ token, user }) {
       }
     } catch (e) {
       console.error("loadData failed:", e);
+      const code = String(e?.response?.data?.error || "").trim();
+      if (code === "unsupported_cursor_sort_combination") {
+        if (_cursorSortRetried) {
+          alert("Current sorting is not compatible with cursor pagination. Clear sorting or reload from the first page.");
+        } else {
+          setSortConfig(null);
+          await loadData(sid, {
+            preserveFilters: true,
+            tabName,
+            preferCache: false,
+            limit,
+            offset: 0,
+            append: false,
+            selectedViewId,
+            _cursorSortRetried: true,
+          });
+        }
+      }
     } finally {
       setIsBatchLoading(false);
     }

@@ -24,7 +24,7 @@ test("production config validation rejects missing and dev-default secrets", () 
 test("production config validation accepts strong production-like config", () => {
   const errors = validateProductionConfig({
     NODE_ENV: "production",
-    DATABASE_URL: "postgres://portal:strong-password@10.0.0.5:5432/portaldb",
+    DATABASE_URL: "postgres://portal:strong-password@10.0.0.5:5432/tforn_insights_db",
     JWT_SECRET: "prod-jwt-secret-with-more-than-32-characters",
     SETTINGS_CRYPTO_KEY: "prod-settings-key-with-more-than-32-chars",
     ALLOWED_ORIGINS: "https://portal.example.com",
@@ -39,7 +39,7 @@ test("production config validation accepts discrete postgres env vars when DATAB
     POSTGRES_HOST: "/cloudsql/project:region:instance",
     POSTGRES_USER: "portal",
     POSTGRES_PASSWORD: "strong-db-password",
-    POSTGRES_DB: "portaldb",
+    POSTGRES_DB: "tforn_insights_db",
     JWT_SECRET: "prod-jwt-secret-with-more-than-32-characters",
     SETTINGS_CRYPTO_KEY: "prod-settings-key-with-more-than-32-chars",
     ALLOWED_ORIGINS: "https://portal.example.com",

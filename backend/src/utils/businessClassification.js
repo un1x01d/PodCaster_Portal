@@ -5,6 +5,8 @@ import {
   minCompletionTokensForModel,
 } from "./openAiCompat.js";
 import { resolveChatCompletionProviderConfig } from "./llmProvider.js";
+import { enforceAiPromptBudget } from "./aiBudget.js";
+const AI_DEBUG_LOGS = String(process.env.AI_DEBUG_LOGS || "").trim().toLowerCase() === "true";
 
 async function loadRuntimeSettingsForClassification(groupId = null) {
   const mod = await import("./aiRuntimeSettings.js");
@@ -136,21 +138,21 @@ export async function classifySheetBusinessContext({
 } = {}) {
   const { runtime, globallyDisabled } = await loadRuntimeSettingsForClassification(groupId || null).catch(() => ({ runtime: null, globallyDisabled: false }));
   if (globallyDisabled) {
-    console.info("[business_classification] skipped: global_ai_disabled");
+    if (AI_DEBUG_LOGS) console.info("[business_classification] skipped: global_ai_disabled");
     return null;
   }
   if (!runtime?.businessClassificationEnabled) {
-    console.info("[business_classification] skipped: businessClassificationEnabled=false");
+    if (AI_DEBUG_LOGS) console.info("[business_classification] skipped: businessClassificationEnabled=false");
     return null;
   }
   if (!sourceKindEnabled(runtime, sourceKind)) {
-    console.info("[business_classification] skipped: source_kind_disabled", { sourceKind });
+    if (AI_DEBUG_LOGS) console.info("[business_classification] skipped: source_kind_disabled", { sourceKind });
     return null;
   }
   const providerConfig = resolveChatCompletionProviderConfig(runtime, runtime?.businessClassificationModel);
   const { provider, model, baseUrl, apiKey } = providerConfig;
   if (!apiKey) {
-    console.info("[business_classification] skipped: missing_api_key", { provider });
+    if (AI_DEBUG_LOGS) console.info("[business_classification] skipped: missing_api_key", { provider });
     return null;
   }
 
@@ -171,6 +173,12 @@ export async function classifySheetBusinessContext({
       suggestedViews: ["short dashboard/view names"],
     },
   }, runtime.businessClassificationMaxPromptChars);
+  const promptSerialized = JSON.stringify(promptPayload);
+  enforceAiPromptBudget({
+    text: promptSerialized,
+    maxChars: runtime.businessClassificationMaxPromptChars,
+    errorCode: "business_classification_prompt_budget_exceeded",
+  });
 
   const system = [
     "Classify whether a spreadsheet looks like business or operational data.",
@@ -201,7 +209,7 @@ export async function classifySheetBusinessContext({
         temperature: 0,
         messages: [
           { role: "system", content: system },
-          { role: "user", content: JSON.stringify(promptPayload) },
+          { role: "user", content: promptSerialized },
         ],
       })),
       signal: controller.signal,

@@ -15,6 +15,56 @@ export function isPlatformAdminUser(user) {
   );
 }
 
+export async function resolveUserAccessContext(user) {
+  const userId = Number.parseInt(String(user?.id || ""), 10);
+  const isPlatformAdmin = isPlatformAdminUser(user);
+  const resolvedGroupId = Number.parseInt(String(user?.resolved_group_id || ""), 10) || null;
+  if (!Number.isInteger(userId) || userId <= 0) {
+    return {
+      userId: null,
+      isPlatformAdmin,
+      resolvedGroupId,
+      managedGroupIds: [],
+    };
+  }
+  const membershipRows = await query(
+    `SELECT group_id, is_admin
+       FROM user_groups
+      WHERE user_id = $1`,
+    [userId]
+  );
+  const rows = Array.isArray(membershipRows) ? membershipRows : [];
+  const managedGroupIds = rows
+    .filter((row) => row?.is_admin === true || String(row?.is_admin).toLowerCase() === "true")
+    .map((row) => Number.parseInt(String(row?.group_id || ""), 10))
+    .filter((gid) => Number.isInteger(gid) && gid > 0);
+  return {
+    userId,
+    isPlatformAdmin,
+    resolvedGroupId,
+    managedGroupIds,
+  };
+}
+
+export async function resolveRuntimeGroupIdForUser(user, { allowPlatformAdminGroup = false } = {}) {
+  const isPlatformAdmin = isPlatformAdminUser(user);
+  if (isPlatformAdmin && !allowPlatformAdminGroup) return null;
+  const tokenGroupId = Number.parseInt(String(user?.resolved_group_id || ""), 10);
+  if (Number.isInteger(tokenGroupId) && tokenGroupId > 0) return tokenGroupId;
+  const userId = Number.parseInt(String(user?.id || ""), 10);
+  if (!Number.isInteger(userId) || userId <= 0) return null;
+  const membershipRows = await query(
+    `SELECT group_id
+       FROM user_groups
+      WHERE user_id = $1
+      ORDER BY is_admin DESC, group_id ASC
+      LIMIT 1`,
+    [userId]
+  );
+  const membershipGroupId = Number.parseInt(String(membershipRows?.[0]?.group_id || ""), 10);
+  return Number.isInteger(membershipGroupId) && membershipGroupId > 0 ? membershipGroupId : null;
+}
+
 function parseJsonMaybe(value, fallback) {
   if (typeof value !== "string") return value ?? fallback;
   try {

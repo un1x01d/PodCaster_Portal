@@ -1,11 +1,11 @@
 substitutions:
   _REGION: us-central1
-  _REPO: data-insights-portal
+  _REPO: tforn-insights
   _BACKEND_SERVICE: data-insights-backend
   _FRONTEND_SERVICE: data-insights-frontend
   _DB_INSTANCE: data-insights-pg
-  _DB_NAME: portaldb
-  _DB_USER: portal
+  _DB_NAME: tforn_insights_db
+  _DB_USER: tforn_insights
 
 steps:
   - name: gcr.io/cloud-builders/gcloud

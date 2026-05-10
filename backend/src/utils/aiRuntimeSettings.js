@@ -38,8 +38,9 @@ const DEFAULTS = {
   dashboardTranslationEnabled: false,
   businessClassificationEnabled: false,
   insightAiEnabled: false,
-  chatMaxInputChars: 12000,
-  chatHistoryWindowMessages: 8,
+  chatMaxInputChars: 1000000,
+  chatPromptBudgetEnabled: true,
+  chatHistoryWindowMessages: 40,
   dashboardTranslateMaxItems: 200,
   dashboardTranslateMaxCharsPerItem: 500,
   businessClassificationModel: String(process.env.OPENAI_BUSINESS_CLASSIFICATION_MODEL || defaultModelForProvider(DEFAULT_AI_PROVIDER)),
@@ -68,6 +69,16 @@ const DEFAULTS = {
   chatAudioTtsModelDefault: String(process.env.OPENAI_TTS_MODEL_DEFAULT || "tts-1"),
   chatAudioTtsVoice: String(process.env.OPENAI_TTS_VOICE || "nova"),
   chatAudioTtsSpeed: Number.parseFloat(process.env.OPENAI_TTS_SPEED || "0.9") || 0.9,
+  aiBaseUrlAllowlistEnabled: true,
+  aiBaseUrlAllowlistBypass: false,
+  aiBaseUrlAllowlist: [
+    "api.openai.com",
+    "generativelanguage.googleapis.com",
+    "localhost",
+    "127.0.0.1",
+    "::1",
+    "host.docker.internal",
+  ],
 };
 
 function toBool(v, fallback) {
@@ -98,9 +109,58 @@ function toModel(v, fallback) {
   const s = String(v ?? "").trim();
   return s || fallback;
 }
+
+function isLocalHostname(hostname = "") {
+  const h = String(hostname || "").trim().toLowerCase();
+  return h === "localhost" || h === "127.0.0.1" || h === "::1" || h === "host.docker.internal";
+}
+
+function sanitizeBaseUrl(value, fallback) {
+  const raw = String(value ?? "").trim();
+  const candidate = raw || String(fallback || "").trim();
+  if (!candidate) return "";
+  try {
+    const url = new URL(candidate);
+    if (url.username || url.password) return String(fallback || "").trim().replace(/\/+$/, "");
+    const protocol = String(url.protocol || "").toLowerCase();
+    if (protocol !== "https:" && protocol !== "http:") {
+      return String(fallback || "").trim().replace(/\/+$/, "");
+    }
+    if (protocol === "http:" && !isLocalHostname(url.hostname)) {
+      return String(fallback || "").trim().replace(/\/+$/, "");
+    }
+    return url.toString().replace(/\/+$/, "");
+  } catch {
+    return String(fallback || "").trim().replace(/\/+$/, "");
+  }
+}
+function normalizeHostAllowlist(value) {
+  const list = Array.isArray(value) ? value : String(value || "").split(/[\n, ]+/);
+  return Array.from(new Set(list.map((v) => String(v || "").trim().toLowerCase()).filter(Boolean))).slice(0, 200);
+}
+function hostnameAllowed(hostname, runtimeAllowlist = []) {
+  const host = String(hostname || "").trim().toLowerCase();
+  if (!host) return false;
+  const allow = normalizeHostAllowlist(runtimeAllowlist);
+  return allow.some((entry) => host === entry || host.endsWith(`.${entry}`));
+}
+function sanitizeBaseUrlWithPolicy(value, fallback, policy = {}) {
+  const normalized = sanitizeBaseUrl(value, fallback);
+  if (!normalized) return normalized;
+  if (policy?.aiBaseUrlAllowlistBypass === true) return normalized;
+  if (policy?.aiBaseUrlAllowlistEnabled === false) return normalized;
+  try {
+    const url = new URL(normalized);
+    if (!hostnameAllowed(url.hostname, policy?.aiBaseUrlAllowlist || DEFAULTS.aiBaseUrlAllowlist)) {
+      return sanitizeBaseUrl(fallback, fallback);
+    }
+  } catch {
+    return sanitizeBaseUrl(fallback, fallback);
+  }
+  return normalized;
+}
 function toBaseUrl(v, fallback) {
-  const s = String(v ?? "").trim().replace(/\/+$/, "");
-  return s || fallback;
+  return sanitizeBaseUrl(v, fallback);
 }
 function toPreset(v, fallback) {
   const s = String(v ?? "").trim().toLowerCase();
@@ -126,8 +186,22 @@ function normalizeProviderConfigs(raw = {}) {
 
 export function normalizeAiRuntimeSettings(raw = {}) {
   const cfg = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const aiBaseUrlAllowlistEnabled = toBool(cfg.aiBaseUrlAllowlistEnabled, DEFAULTS.aiBaseUrlAllowlistEnabled);
+  const aiBaseUrlAllowlistBypass = toBool(cfg.aiBaseUrlAllowlistBypass, DEFAULTS.aiBaseUrlAllowlistBypass);
+  const aiBaseUrlAllowlist = normalizeHostAllowlist(cfg.aiBaseUrlAllowlist || DEFAULTS.aiBaseUrlAllowlist);
+  const urlPolicy = { aiBaseUrlAllowlistEnabled, aiBaseUrlAllowlistBypass, aiBaseUrlAllowlist };
   const aiProvider = normalizeAiProvider(cfg.aiProvider || DEFAULTS.aiProvider);
   const providerConfigs = normalizeProviderConfigs(cfg.providerConfigs || DEFAULTS.providerConfigs);
+  AI_PROVIDER_KEYS.forEach((provider) => {
+    providerConfigs[provider] = {
+      ...providerConfigs[provider],
+      baseUrl: sanitizeBaseUrlWithPolicy(
+        providerConfigs[provider]?.baseUrl,
+        defaultBaseUrlForProvider(provider),
+        urlPolicy
+      ),
+    };
+  });
   if (cfg.openaiBaseUrl || cfg.openaiInputCostPer1M !== undefined || cfg.openaiOutputCostPer1M !== undefined) {
     providerConfigs[aiProvider] = {
       ...providerConfigs[aiProvider],
@@ -142,7 +216,11 @@ export function normalizeAiRuntimeSettings(raw = {}) {
   const providerInputCost = providerConfigs[aiProvider]?.inputCostPer1M ?? DEFAULTS.openaiInputCostPer1M;
   const providerOutputCost = providerConfigs[aiProvider]?.outputCostPer1M ?? DEFAULTS.openaiOutputCostPer1M;
   const activeModel = toModel(providerConfigs[aiProvider]?.model || selectedOpenaiModel, providerDefaultModel || DEFAULTS.openaiModel);
-  const activeBaseUrl = toBaseUrl(cfg.openaiBaseUrl, providerDefaultBaseUrl || DEFAULTS.openaiBaseUrl);
+  const activeBaseUrl = sanitizeBaseUrlWithPolicy(
+    cfg.openaiBaseUrl,
+    providerDefaultBaseUrl || DEFAULTS.openaiBaseUrl,
+    urlPolicy
+  );
   providerConfigs[aiProvider] = {
     ...providerConfigs[aiProvider],
     model: activeModel,
@@ -158,8 +236,9 @@ export function normalizeAiRuntimeSettings(raw = {}) {
     dashboardTranslationEnabled: toBool(cfg.dashboardTranslationEnabled, DEFAULTS.dashboardTranslationEnabled),
     businessClassificationEnabled: toBool(cfg.businessClassificationEnabled, DEFAULTS.businessClassificationEnabled),
     insightAiEnabled: toBool(cfg.insightAiEnabled, DEFAULTS.insightAiEnabled),
-    chatMaxInputChars: toInt(cfg.chatMaxInputChars, DEFAULTS.chatMaxInputChars, 500, 200000),
-    chatHistoryWindowMessages: toInt(cfg.chatHistoryWindowMessages, DEFAULTS.chatHistoryWindowMessages, 1, 40),
+    chatMaxInputChars: toInt(cfg.chatMaxInputChars, DEFAULTS.chatMaxInputChars, 500, 2000000),
+    chatPromptBudgetEnabled: toBool(cfg.chatPromptBudgetEnabled, DEFAULTS.chatPromptBudgetEnabled),
+    chatHistoryWindowMessages: toInt(cfg.chatHistoryWindowMessages, DEFAULTS.chatHistoryWindowMessages, 1, 100),
     dashboardTranslateMaxItems: toInt(cfg.dashboardTranslateMaxItems, DEFAULTS.dashboardTranslateMaxItems, 1, 2000),
     dashboardTranslateMaxCharsPerItem: toInt(cfg.dashboardTranslateMaxCharsPerItem, DEFAULTS.dashboardTranslateMaxCharsPerItem, 10, 10000),
     businessClassificationModel: toModel(cfg.businessClassificationModel, providerDefaultModel || DEFAULTS.businessClassificationModel),
@@ -192,6 +271,9 @@ export function normalizeAiRuntimeSettings(raw = {}) {
     chatAudioTtsModelDefault: toModel(cfg.chatAudioTtsModelDefault, DEFAULTS.chatAudioTtsModelDefault),
     chatAudioTtsVoice: toModel(cfg.chatAudioTtsVoice, DEFAULTS.chatAudioTtsVoice),
     chatAudioTtsSpeed: toFloat(cfg.chatAudioTtsSpeed, DEFAULTS.chatAudioTtsSpeed, 0.25, 4),
+    aiBaseUrlAllowlistEnabled,
+    aiBaseUrlAllowlistBypass,
+    aiBaseUrlAllowlist,
   };
 }
 

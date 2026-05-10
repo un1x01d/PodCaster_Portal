@@ -54,6 +54,11 @@ export default function IntegrationSettingsPanel(props) {
     autosyncIntervalSaved,
     setAutosyncInterval,
     saveAutosyncIntervalSetting,
+    importPipelineSettings,
+    setImportPipelineSettings,
+    importPipelineSaving,
+    importPipelineSaved,
+    saveImportPipelineSetting,
     INTEGRATION_LOGOS,
     emailIngestConfig,
     emailIngestSaving,
@@ -259,6 +264,10 @@ export default function IntegrationSettingsPanel(props) {
               <span>Chat AI Enabled</span>
             </label>
             <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 px-2 py-1 rounded-md border border-slate-200">
+              <input type="checkbox" checked={aiRuntimeSettings.chatPromptBudgetEnabled !== false} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, chatPromptBudgetEnabled: e.target.checked }))} />
+              <span>Chat Prompt Budget Enabled</span>
+            </label>
+            <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 px-2 py-1 rounded-md border border-slate-200">
               <input type="checkbox" disabled={aiRuntimeSettings.globalAiDisabled === true} checked={aiRuntimeSettings.chatAudioEnabled === true} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, chatAudioEnabled: e.target.checked }))} />
               <span>Chat Audio AI Enabled</span>
             </label>
@@ -316,6 +325,27 @@ export default function IntegrationSettingsPanel(props) {
               updateProviderConfig(selectedAiProvider, { baseUrl: e.target.value });
               setAiRuntimeSettings((prev) => ({ ...prev, openaiBaseUrl: e.target.value }));
             }} />
+            <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 px-2 py-1 rounded-md border border-slate-200 col-span-2">
+              <input type="checkbox" checked={aiRuntimeSettings.aiBaseUrlAllowlistEnabled !== false} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, aiBaseUrlAllowlistEnabled: e.target.checked }))} />
+              <span>AI Base URL Allowlist Enabled</span>
+            </label>
+            <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 px-2 py-1 rounded-md border border-slate-200 col-span-2">
+              <input type="checkbox" checked={aiRuntimeSettings.aiBaseUrlAllowlistBypass === true} onChange={(e) => setAiRuntimeSettings((prev) => ({ ...prev, aiBaseUrlAllowlistBypass: e.target.checked }))} />
+              <span>AI Base URL Allowlist Bypass</span>
+            </label>
+            <div className="col-span-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">AI Base URL Allowlist (hostnames)</div>
+            <textarea
+              className="input-premium py-1.5 text-[11px] font-semibold col-span-2 min-h-[80px]"
+              placeholder={"api.openai.com\ngenerativelanguage.googleapis.com"}
+              value={Array.isArray(aiRuntimeSettings.aiBaseUrlAllowlist) ? aiRuntimeSettings.aiBaseUrlAllowlist.join("\n") : ""}
+              onChange={(e) => setAiRuntimeSettings((prev) => ({
+                ...prev,
+                aiBaseUrlAllowlist: String(e.target.value || "")
+                  .split(/[\n,]/)
+                  .map((v) => String(v || "").trim().toLowerCase())
+                  .filter(Boolean),
+              }))}
+            />
             <div className="col-span-2 mt-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">All Provider Model Configs</div>
             <div className="col-span-2 overflow-x-auto border-y border-slate-200">
               <div className="grid min-w-[840px] grid-cols-[90px_150px_150px_minmax(220px,1fr)_90px_90px] gap-2 bg-slate-100/70 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
@@ -536,6 +566,81 @@ export default function IntegrationSettingsPanel(props) {
         <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="1" max="1440" placeholder="Interval in minutes" value={autosyncInterval.intervalMinutes} onChange={(e) => setAutosyncInterval((prev) => ({ ...prev, intervalMinutes: e.target.value }))} />
         <div className="text-[10px] text-slate-500">Cloud drive sources are checked for file updates on this interval.</div>
         <button type="button" onClick={saveAutosyncIntervalSetting} disabled={autosyncIntervalSaving} className={`btn-premium text-white w-full py-1.5 text-[11px] ${autosyncIntervalSaved ? "bg-emerald-600 hover:bg-emerald-600" : "bg-slate-800"} ${autosyncIntervalSaving ? "opacity-60 cursor-not-allowed" : ""}`}>{autosyncIntervalSaving ? "Saving..." : autosyncIntervalSaved ? "Saved" : "Save Autosync Interval"}</button>
+      </div>
+
+      <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Import Pipeline</div>
+          <span className={`text-[10px] font-semibold ${importPipelineSettings?.importStreamingEnabled ? "text-emerald-600" : "text-slate-400"}`}>
+            {importPipelineSettings?.importStreamingEnabled ? "Enabled" : "Disabled"}
+          </span>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          <div className="rounded-md border border-slate-200 p-2 space-y-1">
+            <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+              <input
+                type="checkbox"
+                checked={importPipelineSettings?.importStreamingEnabled === true}
+                disabled={!isSuperAdmin}
+                onChange={(e) =>
+                  setImportPipelineSettings((prev) => ({ ...prev, importStreamingEnabled: e.target.checked }))
+                }
+              />
+              <span>Import Row Streaming Enabled</span>
+            </label>
+            <div className="text-[10px] text-slate-500">Queues new imports and processes them asynchronously through the import pipeline.</div>
+          </div>
+          <div className="rounded-md border border-slate-200 p-2 space-y-1">
+            <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+              <input
+                type="checkbox"
+                checked={importPipelineSettings?.queuedImportStreamingV2Enabled === true}
+                disabled={!isSuperAdmin}
+                onChange={(e) =>
+                  setImportPipelineSettings((prev) => ({ ...prev, queuedImportStreamingV2Enabled: e.target.checked }))
+                }
+              />
+              <span>Queued Import Streaming V2 Enabled</span>
+            </label>
+            <div className="text-[10px] text-slate-500">Enables chunked worker-to-backend transfer for queued imports with automatic fallback on failure.</div>
+          </div>
+          <div className="rounded-md border border-slate-200 p-2 space-y-1">
+            <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+              <input
+                type="checkbox"
+                checked={importPipelineSettings?.importStagingWriteEnabled === true}
+                disabled={!isSuperAdmin}
+                onChange={(e) =>
+                  setImportPipelineSettings((prev) => ({ ...prev, importStagingWriteEnabled: e.target.checked }))
+                }
+              />
+              <span>Import Staging Write Enabled</span>
+            </label>
+            <div className="text-[10px] text-slate-500">Writes queued streamed rows into staging storage before final publish.</div>
+          </div>
+          <div className="rounded-md border border-slate-200 p-2 space-y-1">
+            <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+              <input
+                type="checkbox"
+                checked={importPipelineSettings?.importStagingFinalizeEnabled === true}
+                disabled={!isSuperAdmin}
+                onChange={(e) =>
+                  setImportPipelineSettings((prev) => ({ ...prev, importStagingFinalizeEnabled: e.target.checked }))
+                }
+              />
+              <span>Import Staging Finalize Enabled</span>
+            </label>
+            <div className="text-[10px] text-slate-500">Publishes import rows from staging into final sheet rows transactionally.</div>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={saveImportPipelineSetting}
+          disabled={importPipelineSaving || !isSuperAdmin}
+          className={`btn-premium text-white w-full py-1.5 text-[11px] ${importPipelineSaved ? "bg-emerald-600 hover:bg-emerald-600" : "bg-slate-800"} ${(importPipelineSaving || !isSuperAdmin) ? "opacity-60 cursor-not-allowed" : ""}`}
+        >
+          {importPipelineSaving ? "Saving..." : importPipelineSaved ? "Saved" : "Save Import Pipeline"}
+        </button>
       </div>
 
       {/* Dropbox */}

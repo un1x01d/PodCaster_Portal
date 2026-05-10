@@ -1,4 +1,4 @@
-# Data Insights Portal
+# TFORN Insights
 
 ## AI Chat Configuration
 

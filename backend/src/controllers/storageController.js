@@ -19,6 +19,7 @@ import {
 
 const STORAGE_TEST_TIMEOUT_MS = Number.parseInt(process.env.STORAGE_TEST_TIMEOUT_MS || "20000", 10);
 const SFTP_TMP_PREFIX = "storage-sftp-";
+const fsp = fs.promises;
 
 function parsePositiveInt(value) {
   const parsed = Number.parseInt(value, 10);
@@ -39,18 +40,18 @@ function safeAskpassScript(secretValue) {
   return `#!/bin/sh\nprintf '%s\\n' ${shellQuote(String(secretValue || ""))}\n`;
 }
 
-function cleanupStaleSftpTempArtifacts() {
+async function cleanupStaleSftpTempArtifacts() {
   try {
     const root = os.tmpdir();
     const now = Date.now();
-    const entries = fs.readdirSync(root, { withFileTypes: true });
+    const entries = await fsp.readdir(root, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isDirectory() || !entry.name.startsWith(SFTP_TMP_PREFIX)) continue;
       const target = path.join(root, entry.name);
       try {
-        const st = fs.statSync(target);
+        const st = await fsp.stat(target);
         const ageMs = now - Number(st.mtimeMs || st.ctimeMs || now);
-        if (ageMs > 60 * 60 * 1000) fs.rmSync(target, { recursive: true, force: true });
+        if (ageMs > 60 * 60 * 1000) await fsp.rm(target, { recursive: true, force: true });
       } catch {}
     }
   } catch {}
@@ -238,8 +239,8 @@ async function runSshProbe(cfg) {
     "-p", String(port),
   ];
 
-  cleanupStaleSftpTempArtifacts();
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), SFTP_TMP_PREFIX));
+  await cleanupStaleSftpTempArtifacts();
+  const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), SFTP_TMP_PREFIX));
   const cleanupPaths = [];
   const env = { ...process.env };
 
@@ -248,13 +249,13 @@ async function runSshProbe(cfg) {
       const privateKey = trimString(decryptSettingValue(String(cfg?.privateKey || "")));
       if (!privateKey) return { ok: false, error: "ssh_private_key_missing" };
       const keyPath = path.join(tmpDir, "id_rsa");
-      fs.writeFileSync(keyPath, privateKey, { mode: 0o600 });
+      await fsp.writeFile(keyPath, privateKey, { mode: 0o600 });
       cleanupPaths.push(keyPath);
       args.push("-i", keyPath, "-o", "IdentitiesOnly=yes", "-o", "PreferredAuthentications=publickey");
       const passphrase = trimString(decryptSettingValue(String(cfg?.passphrase || "")));
       if (passphrase) {
         const scriptPath = path.join(tmpDir, "askpass.sh");
-        fs.writeFileSync(scriptPath, safeAskpassScript(passphrase), { mode: 0o700 });
+        await fsp.writeFile(scriptPath, safeAskpassScript(passphrase), { mode: 0o700 });
         cleanupPaths.push(scriptPath);
         env.SSH_ASKPASS = scriptPath;
         env.SSH_ASKPASS_REQUIRE = "force";
@@ -264,7 +265,7 @@ async function runSshProbe(cfg) {
       const password = trimString(decryptSettingValue(String(cfg?.password || "")));
       if (!password) return { ok: false, error: "ssh_password_missing" };
       const scriptPath = path.join(tmpDir, "askpass.sh");
-      fs.writeFileSync(scriptPath, safeAskpassScript(password), { mode: 0o700 });
+      await fsp.writeFile(scriptPath, safeAskpassScript(password), { mode: 0o700 });
       cleanupPaths.push(scriptPath);
       env.SSH_ASKPASS = scriptPath;
       env.SSH_ASKPASS_REQUIRE = "force";
@@ -308,9 +309,9 @@ async function runSshProbe(cfg) {
     return result;
   } finally {
     for (const p of cleanupPaths) {
-      try { fs.unlinkSync(p); } catch {}
+      try { await fsp.unlink(p); } catch {}
     }
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    try { await fsp.rm(tmpDir, { recursive: true, force: true }); } catch {}
   }
 }
 

@@ -29,6 +29,7 @@ import {
     getAutosyncPollIntervalSetting, setAutosyncPollIntervalSetting,
     getRevisionCompareSetting, setRevisionCompareSetting,
     getEmailIngestSetting, setEmailIngestSetting,
+    getImportPipelineSetting, setImportPipelineSetting,
     getUserGroups,
     listGroups, createGroup, provisionGroupDatabase, updateGroup, deleteGroup, getGroupMembers, updateGroupMembers, getGroupSheets,
     addUserToGroup, removeUserFromGroup, toggleGroupAdmin,
@@ -45,9 +46,17 @@ import {
 import { auth } from "../middleware/auth.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { invitationIssueRateLimit } from "../middleware/rateLimit.js";
+import { isPlatformAdminUser } from "../utils/authorization.js";
 
 const router = express.Router();
 router.use(auth);
+
+function requirePlatformAdmin(req, res, next) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    return next();
+}
+
+router.use("/admin", requirePlatformAdmin);
 
 // Users
 router.get("/users", asyncHandler(listUsers));
@@ -112,6 +121,8 @@ router.get("/admin/settings/revision-compare", asyncHandler(getRevisionCompareSe
 router.patch("/admin/settings/revision-compare", asyncHandler(setRevisionCompareSetting));
 router.get("/admin/settings/email-ingest", asyncHandler(getEmailIngestSetting));
 router.patch("/admin/settings/email-ingest", asyncHandler(setEmailIngestSetting));
+router.get("/admin/settings/import-pipeline", asyncHandler(getImportPipelineSetting));
+router.patch("/admin/settings/import-pipeline", asyncHandler(setImportPipelineSetting));
 router.get("/admin/settings/sftp-storage", asyncHandler(getSftpStorageSetting));
 router.patch("/admin/settings/sftp-storage", asyncHandler(setSftpStorageSetting));
 router.post("/admin/settings/sftp-storage/test", asyncHandler(testSftpStorageSetting));
@@ -146,7 +157,7 @@ router.get("/users/me/kpi-overrides", asyncHandler(getUserKpiOverrides));
 router.put("/users/me/kpi-overrides", asyncHandler(setUserKpiOverrides));
 router.get("/users/me/metrics-exposure", asyncHandler(getMyMetricsExposureSetting));
 router.get("/users/me/ai-features", asyncHandler(getMyAiFeatureTogglesSetting));
-router.get("/audit-logs", asyncHandler(listAuditLogs));
+router.get("/audit-logs", requirePlatformAdmin, asyncHandler(listAuditLogs));
 router.get("/admin/ai-usage-summary", asyncHandler(getAiUsageSummary));
 
 export default router;

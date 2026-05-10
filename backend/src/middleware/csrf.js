@@ -5,13 +5,9 @@ const CSRF_COOKIE = String(process.env.CSRF_COOKIE_NAME || "csrf_token");
 const CSRF_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const CSRF_EXEMPT_PATHS = new Set([
   "/auth/login",
-  "/auth/logout",
   "/auth/google/exchange",
   "/auth/saml/acs",
   "/auth/saml/exchange",
-  "/auth/invitations/accept",
-  "/auth/2fa/verify",
-  "/auth/2fa/sms/resend",
   "/email-ingest/inbound",
 ]);
 

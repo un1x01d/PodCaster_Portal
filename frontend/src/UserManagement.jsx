@@ -169,6 +169,7 @@ const AI_FEATURE_RUNTIME_DEFAULTS = {
   chatAudioEnabled: false,
   dashboardTranslationEnabled: false,
   insightAiEnabled: false,
+  importStreamingEnabled: false,
 };
 const AI_PROVIDER_RUNTIME_DEFAULTS = {
   aiProvider: "openai",
@@ -200,6 +201,7 @@ const AI_RUNTIME_PRESETS = {
     ...AI_FEATURE_RUNTIME_DEFAULTS,
     ...BUSINESS_CLASSIFICATION_RUNTIME_DEFAULTS,
     chatMaxInputChars: 1500,
+    chatPromptBudgetEnabled: true,
     chatHistoryWindowMessages: 1,
     dashboardTranslateMaxItems: 20,
     dashboardTranslateMaxCharsPerItem: 125,
@@ -222,6 +224,9 @@ const AI_RUNTIME_PRESETS = {
     chatAudioTtsModelDefault: "tts-1",
     chatAudioTtsVoice: "nova",
     chatAudioTtsSpeed: 0.85,
+    aiBaseUrlAllowlistEnabled: true,
+    aiBaseUrlAllowlistBypass: false,
+    aiBaseUrlAllowlist: ["api.openai.com", "generativelanguage.googleapis.com"],
   },
   tiny: {
     aiRuntimePreset: "tiny",
@@ -230,6 +235,7 @@ const AI_RUNTIME_PRESETS = {
     ...AI_FEATURE_RUNTIME_DEFAULTS,
     ...BUSINESS_CLASSIFICATION_RUNTIME_DEFAULTS,
     chatMaxInputChars: 3000,
+    chatPromptBudgetEnabled: true,
     chatHistoryWindowMessages: 2,
     dashboardTranslateMaxItems: 40,
     dashboardTranslateMaxCharsPerItem: 250,
@@ -252,6 +258,9 @@ const AI_RUNTIME_PRESETS = {
     chatAudioTtsModelDefault: "tts-1",
     chatAudioTtsVoice: "nova",
     chatAudioTtsSpeed: 0.9,
+    aiBaseUrlAllowlistEnabled: true,
+    aiBaseUrlAllowlistBypass: false,
+    aiBaseUrlAllowlist: ["api.openai.com", "generativelanguage.googleapis.com"],
   },
   low: {
     aiRuntimePreset: "low",
@@ -260,6 +269,7 @@ const AI_RUNTIME_PRESETS = {
     ...AI_FEATURE_RUNTIME_DEFAULTS,
     ...BUSINESS_CLASSIFICATION_RUNTIME_DEFAULTS,
     chatMaxInputChars: 6000,
+    chatPromptBudgetEnabled: true,
     chatHistoryWindowMessages: 4,
     dashboardTranslateMaxItems: 80,
     dashboardTranslateMaxCharsPerItem: 250,
@@ -282,6 +292,9 @@ const AI_RUNTIME_PRESETS = {
     chatAudioTtsModelDefault: "tts-1",
     chatAudioTtsVoice: "nova",
     chatAudioTtsSpeed: 0.95,
+    aiBaseUrlAllowlistEnabled: true,
+    aiBaseUrlAllowlistBypass: false,
+    aiBaseUrlAllowlist: ["api.openai.com", "generativelanguage.googleapis.com"],
   },
   mid: {
     aiRuntimePreset: "mid",
@@ -290,6 +303,7 @@ const AI_RUNTIME_PRESETS = {
     ...AI_FEATURE_RUNTIME_DEFAULTS,
     ...BUSINESS_CLASSIFICATION_RUNTIME_DEFAULTS,
     chatMaxInputChars: 12000,
+    chatPromptBudgetEnabled: true,
     chatHistoryWindowMessages: 8,
     dashboardTranslateMaxItems: 200,
     dashboardTranslateMaxCharsPerItem: 500,
@@ -312,6 +326,9 @@ const AI_RUNTIME_PRESETS = {
     chatAudioTtsModelDefault: "tts-1",
     chatAudioTtsVoice: "nova",
     chatAudioTtsSpeed: 1.0,
+    aiBaseUrlAllowlistEnabled: true,
+    aiBaseUrlAllowlistBypass: false,
+    aiBaseUrlAllowlist: ["api.openai.com", "generativelanguage.googleapis.com"],
   },
   high: {
     aiRuntimePreset: "high",
@@ -320,6 +337,7 @@ const AI_RUNTIME_PRESETS = {
     ...AI_FEATURE_RUNTIME_DEFAULTS,
     ...BUSINESS_CLASSIFICATION_RUNTIME_DEFAULTS,
     chatMaxInputChars: 24000,
+    chatPromptBudgetEnabled: true,
     chatHistoryWindowMessages: 16,
     dashboardTranslateMaxItems: 400,
     dashboardTranslateMaxCharsPerItem: 1000,
@@ -342,6 +360,9 @@ const AI_RUNTIME_PRESETS = {
     chatAudioTtsModelDefault: "tts-1",
     chatAudioTtsVoice: "nova",
     chatAudioTtsSpeed: 1.05,
+    aiBaseUrlAllowlistEnabled: true,
+    aiBaseUrlAllowlistBypass: false,
+    aiBaseUrlAllowlist: ["api.openai.com", "generativelanguage.googleapis.com"],
   },
 };
 function loadTemplates() {
@@ -527,6 +548,14 @@ export default function UserManagement({ token, user, sheetId }) {
   const [autosyncInterval, setAutosyncInterval] = useState({ intervalMinutes: 5 });
   const [autosyncIntervalSaving, setAutosyncIntervalSaving] = useState(false);
   const [autosyncIntervalSaved, setAutosyncIntervalSaved] = useState(false);
+  const [importPipelineSettings, setImportPipelineSettings] = useState({
+    importStreamingEnabled: false,
+    queuedImportStreamingV2Enabled: false,
+    importStagingWriteEnabled: false,
+    importStagingFinalizeEnabled: false,
+  });
+  const [importPipelineSaving, setImportPipelineSaving] = useState(false);
+  const [importPipelineSaved, setImportPipelineSaved] = useState(false);
   const [revisionCompareSettings, setRevisionCompareSettings] = useState({ maxRows: 100000, maxAllowedRows: 100000 });
   const [revisionCompareSaving, setRevisionCompareSaving] = useState(false);
   const [revisionCompareSaved, setRevisionCompareSaved] = useState(false);
@@ -1710,6 +1739,25 @@ export default function UserManagement({ token, user, sheetId }) {
     }
   };
 
+  const fetchImportPipelineSetting = async () => {
+    if (!isSuperAdmin) return;
+    try {
+      const res = await axios.get(`${API}/admin/settings/import-pipeline`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || {};
+      setImportPipelineSettings({
+        importStreamingEnabled: data.importStreamingEnabled === true,
+        queuedImportStreamingV2Enabled: data.queuedImportStreamingV2Enabled === true,
+        importStagingWriteEnabled: data.importStagingWriteEnabled === true,
+        importStagingFinalizeEnabled: data.importStagingFinalizeEnabled === true,
+      });
+      setAiRuntimeSettings((prev) => ({ ...prev, importStreamingEnabled: data.importStreamingEnabled === true }));
+    } catch (e) {
+      console.error("fetchImportPipelineSetting failed", e);
+    }
+  };
+
   const fetchRevisionCompareSetting = async () => {
     if (!isSuperAdmin) return;
     try {
@@ -1754,6 +1802,7 @@ export default function UserManagement({ token, user, sheetId }) {
         chatAudioEnabled: data.chatAudioEnabled === true,
         dashboardTranslationEnabled: data.dashboardTranslationEnabled === true,
         insightAiEnabled: data.insightAiEnabled === true,
+        importStreamingEnabled: data.importStreamingEnabled === true,
         businessClassificationEnabled: data.businessClassificationEnabled === true,
         businessClassificationModel: String(data.businessClassificationModel || AI_RUNTIME_PRESETS.mid.businessClassificationModel),
         businessClassificationApplyUploads: data.businessClassificationApplyUploads !== false,
@@ -1763,6 +1812,7 @@ export default function UserManagement({ token, user, sheetId }) {
         businessClassificationMaxPromptChars: Number(data.businessClassificationMaxPromptChars || AI_RUNTIME_PRESETS.mid.businessClassificationMaxPromptChars),
         businessClassificationMaxOutputTokens: Number(data.businessClassificationMaxOutputTokens || AI_RUNTIME_PRESETS.mid.businessClassificationMaxOutputTokens),
         chatMaxInputChars: Number(data.chatMaxInputChars || AI_RUNTIME_PRESETS.mid.chatMaxInputChars),
+        chatPromptBudgetEnabled: data.chatPromptBudgetEnabled !== false,
         chatHistoryWindowMessages: Number(data.chatHistoryWindowMessages || AI_RUNTIME_PRESETS.mid.chatHistoryWindowMessages),
         dashboardTranslateMaxItems: Number(data.dashboardTranslateMaxItems || AI_RUNTIME_PRESETS.mid.dashboardTranslateMaxItems),
         dashboardTranslateMaxCharsPerItem: Number(data.dashboardTranslateMaxCharsPerItem || AI_RUNTIME_PRESETS.mid.dashboardTranslateMaxCharsPerItem),
@@ -1983,6 +2033,37 @@ export default function UserManagement({ token, user, sheetId }) {
     }
   };
 
+  const saveImportPipelineSetting = async () => {
+    if (!isSuperAdmin || importPipelineSaving) return;
+    setImportPipelineSaving(true);
+    setImportPipelineSaved(false);
+    try {
+      const payload = {
+        importStreamingEnabled: importPipelineSettings.importStreamingEnabled === true,
+        queuedImportStreamingV2Enabled: importPipelineSettings.queuedImportStreamingV2Enabled === true,
+        importStagingWriteEnabled: importPipelineSettings.importStagingWriteEnabled === true,
+        importStagingFinalizeEnabled: importPipelineSettings.importStagingFinalizeEnabled === true,
+      };
+      const res = await axios.patch(`${API}/admin/settings/import-pipeline`, payload, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || payload;
+      setImportPipelineSettings({
+        importStreamingEnabled: data.importStreamingEnabled === true,
+        queuedImportStreamingV2Enabled: data.queuedImportStreamingV2Enabled === true,
+        importStagingWriteEnabled: data.importStagingWriteEnabled === true,
+        importStagingFinalizeEnabled: data.importStagingFinalizeEnabled === true,
+      });
+      setAiRuntimeSettings((prev) => ({ ...prev, importStreamingEnabled: data.importStreamingEnabled === true }));
+      setImportPipelineSaved(true);
+      setTimeout(() => setImportPipelineSaved(false), 1800);
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to save import pipeline settings");
+    } finally {
+      setImportPipelineSaving(false);
+    }
+  };
+
   const saveRevisionCompareSetting = async () => {
     if (!isSuperAdmin || revisionCompareSaving) return;
     setRevisionCompareSaving(true);
@@ -2043,6 +2124,7 @@ export default function UserManagement({ token, user, sheetId }) {
             businessClassificationModel: String(runtimeDraft.businessClassificationModel || "").trim() || selectedModel,
             translationOpenaiModel: String(runtimeDraft.translationOpenaiModel || "").trim() || selectedModel,
             insightAiModel: String(runtimeDraft.insightAiModel || "").trim() || selectedModel,
+            importStreamingEnabled: runtimeDraft.importStreamingEnabled === true,
           }
         : {
             chatEnabled: runtimeDraft.chatEnabled === true,
@@ -2053,6 +2135,7 @@ export default function UserManagement({ token, user, sheetId }) {
             chatAudioEnabled: runtimeDraft.chatAudioEnabled === true,
             dashboardTranslationEnabled: runtimeDraft.dashboardTranslationEnabled === true,
             insightAiEnabled: runtimeDraft.insightAiEnabled === true,
+            importStreamingEnabled: runtimeDraft.importStreamingEnabled === true,
             businessClassificationEnabled: runtimeDraft.businessClassificationEnabled === true,
             businessClassificationModel: String(runtimeDraft.businessClassificationModel || "").trim() || AI_RUNTIME_PRESETS.mid.businessClassificationModel,
             businessClassificationApplyUploads: runtimeDraft.businessClassificationApplyUploads !== false,
@@ -2062,6 +2145,7 @@ export default function UserManagement({ token, user, sheetId }) {
             businessClassificationMaxPromptChars: Number.parseInt(String(runtimeDraft.businessClassificationMaxPromptChars || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.businessClassificationMaxPromptChars,
             businessClassificationMaxOutputTokens: Number.parseInt(String(runtimeDraft.businessClassificationMaxOutputTokens || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.businessClassificationMaxOutputTokens,
             chatMaxInputChars: Number.parseInt(String(runtimeDraft.chatMaxInputChars || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.chatMaxInputChars,
+            chatPromptBudgetEnabled: runtimeDraft.chatPromptBudgetEnabled !== false,
             chatHistoryWindowMessages: Number.parseInt(String(runtimeDraft.chatHistoryWindowMessages || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.chatHistoryWindowMessages,
             dashboardTranslateMaxItems: Number.parseInt(String(runtimeDraft.dashboardTranslateMaxItems || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.dashboardTranslateMaxItems,
             dashboardTranslateMaxCharsPerItem: Number.parseInt(String(runtimeDraft.dashboardTranslateMaxCharsPerItem || "").trim(), 10) || AI_RUNTIME_PRESETS.mid.dashboardTranslateMaxCharsPerItem,
@@ -2084,6 +2168,14 @@ export default function UserManagement({ token, user, sheetId }) {
             chatAudioTtsModelDefault: String(runtimeDraft.chatAudioTtsModelDefault || "").trim() || AI_RUNTIME_PRESETS.mid.chatAudioTtsModelDefault,
             chatAudioTtsVoice: String(runtimeDraft.chatAudioTtsVoice || "").trim() || AI_RUNTIME_PRESETS.mid.chatAudioTtsVoice,
             chatAudioTtsSpeed: Number.parseFloat(String(runtimeDraft.chatAudioTtsSpeed || "").trim()) || AI_RUNTIME_PRESETS.mid.chatAudioTtsSpeed,
+            aiBaseUrlAllowlistEnabled: runtimeDraft.aiBaseUrlAllowlistEnabled !== false,
+            aiBaseUrlAllowlistBypass: runtimeDraft.aiBaseUrlAllowlistBypass === true,
+            aiBaseUrlAllowlist: Array.isArray(runtimeDraft.aiBaseUrlAllowlist)
+              ? runtimeDraft.aiBaseUrlAllowlist
+              : String(runtimeDraft.aiBaseUrlAllowlist || "")
+                .split(/[\n,]/)
+                .map((v) => String(v || "").trim().toLowerCase())
+                .filter(Boolean),
           };
       const fallbackSavedPricingForModel = getAiModelPricing(next.openaiModel);
       const savedProviderConfigForModel = next.providerConfigs?.[next.aiProvider] || {};
@@ -2093,7 +2185,7 @@ export default function UserManagement({ token, user, sheetId }) {
       };
       next.openaiInputCostPer1M = savedPricingForModel.openaiInputCostPer1M;
       next.openaiOutputCostPer1M = savedPricingForModel.openaiOutputCostPer1M;
-      const res = await axios.patch(`${API}/admin/settings/ai-runtime`, { ...next, ...integrationScopeParams }, {
+      const res = await axios.patch(`${API}/admin/settings/ai-runtime`, { ...next }, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (requestSeq !== aiRuntimeRequestSeqRef.current) return;
@@ -2116,6 +2208,7 @@ export default function UserManagement({ token, user, sheetId }) {
         chatAudioEnabled: data.chatAudioEnabled === true,
         dashboardTranslationEnabled: data.dashboardTranslationEnabled === true,
         insightAiEnabled: data.insightAiEnabled === true,
+        importStreamingEnabled: data.importStreamingEnabled === true,
         businessClassificationEnabled: data.businessClassificationEnabled === true,
         businessClassificationModel: String(data.businessClassificationModel || next.businessClassificationModel),
         businessClassificationApplyUploads: data.businessClassificationApplyUploads !== false,
@@ -2125,6 +2218,7 @@ export default function UserManagement({ token, user, sheetId }) {
         businessClassificationMaxPromptChars: Number(data.businessClassificationMaxPromptChars || next.businessClassificationMaxPromptChars),
         businessClassificationMaxOutputTokens: Number(data.businessClassificationMaxOutputTokens || next.businessClassificationMaxOutputTokens),
         chatMaxInputChars: Number(data.chatMaxInputChars || next.chatMaxInputChars),
+        chatPromptBudgetEnabled: data.chatPromptBudgetEnabled !== false,
         chatHistoryWindowMessages: Number(data.chatHistoryWindowMessages || next.chatHistoryWindowMessages),
         dashboardTranslateMaxItems: Number(data.dashboardTranslateMaxItems || next.dashboardTranslateMaxItems),
         dashboardTranslateMaxCharsPerItem: Number(data.dashboardTranslateMaxCharsPerItem || next.dashboardTranslateMaxCharsPerItem),
@@ -2147,6 +2241,9 @@ export default function UserManagement({ token, user, sheetId }) {
         chatAudioTtsModelDefault: String(data.chatAudioTtsModelDefault || next.chatAudioTtsModelDefault),
         chatAudioTtsVoice: String(data.chatAudioTtsVoice || next.chatAudioTtsVoice),
         chatAudioTtsSpeed: Number(data.chatAudioTtsSpeed ?? next.chatAudioTtsSpeed),
+        aiBaseUrlAllowlistEnabled: data.aiBaseUrlAllowlistEnabled !== false,
+        aiBaseUrlAllowlistBypass: data.aiBaseUrlAllowlistBypass === true,
+        aiBaseUrlAllowlist: Array.isArray(data.aiBaseUrlAllowlist) ? data.aiBaseUrlAllowlist : (Array.isArray(next.aiBaseUrlAllowlist) ? next.aiBaseUrlAllowlist : []),
       });
       setAiRuntimeSaved(true);
       setTimeout(() => setAiRuntimeSaved(false), 1800);
@@ -2489,6 +2586,7 @@ export default function UserManagement({ token, user, sheetId }) {
       fetchDlpSetting();
       fetchMetricsExposureSetting();
       fetchAutosyncIntervalSetting();
+      fetchImportPipelineSetting();
       fetchRevisionCompareSetting();
       fetchAiRuntimeSetting();
       fetchAiUsageSummary();
@@ -2522,6 +2620,7 @@ export default function UserManagement({ token, user, sheetId }) {
     fetchDlpSetting();
     fetchMetricsExposureSetting();
     fetchAutosyncIntervalSetting();
+    fetchImportPipelineSetting();
     fetchRevisionCompareSetting();
     fetchAiRuntimeSetting();
     fetchAiUsageSummary();
@@ -4060,7 +4159,7 @@ export default function UserManagement({ token, user, sheetId }) {
                       </div>
                     </div>
                     <div className="text-[10px] text-slate-500">
-                      Issuer is used as the app label: <span className="font-semibold text-slate-700">{twoFactorTotpSettings.issuer || "Data Insights Portal"}</span>
+                      Issuer is used as the app label: <span className="font-semibold text-slate-700">{twoFactorTotpSettings.issuer || "TFORN Insights"}</span>
                     </div>
                     <button
                       type="button"
@@ -4706,6 +4805,11 @@ export default function UserManagement({ token, user, sheetId }) {
           autosyncIntervalSaved={autosyncIntervalSaved}
           setAutosyncInterval={setAutosyncInterval}
           saveAutosyncIntervalSetting={saveAutosyncIntervalSetting}
+          importPipelineSettings={importPipelineSettings}
+          setImportPipelineSettings={setImportPipelineSettings}
+          importPipelineSaving={importPipelineSaving}
+          importPipelineSaved={importPipelineSaved}
+          saveImportPipelineSetting={saveImportPipelineSetting}
           INTEGRATION_LOGOS={INTEGRATION_LOGOS}
           emailIngestConfig={emailIngestConfig}
           emailIngestSaving={emailIngestSaving}

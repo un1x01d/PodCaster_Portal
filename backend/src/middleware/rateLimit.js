@@ -44,10 +44,10 @@ const EXPENSIVE_TENANT_WINDOW_MS = Number.parseInt(process.env.EXPENSIVE_TENANT_
 const EXPENSIVE_TENANT_MAX_BUCKETS = Number.parseInt(process.env.EXPENSIVE_TENANT_RATE_LIMIT_MAX_BUCKETS || "50000", 10);
 let lastPruneAt = 0;
 const DISTRIBUTED_RATE_LIMIT = String(
-  process.env.RATE_LIMIT_DISTRIBUTED ?? (process.env.NODE_ENV === "production" ? "1" : "0")
+  process.env.RATE_LIMIT_DISTRIBUTED ?? "1"
 ).trim() !== "0";
 const RATE_LIMIT_FAIL_OPEN = String(
-  process.env.RATE_LIMIT_FAIL_OPEN ?? (process.env.NODE_ENV === "production" ? "0" : "1")
+  process.env.RATE_LIMIT_FAIL_OPEN ?? "0"
 ).trim() !== "0";
 
 function pruneExpiredBuckets(now) {
@@ -145,8 +145,7 @@ function uploadKeyFromReq(req) {
 function expensiveTenantKeyFromReq(req) {
   const route = String(req.route?.path || req.path || "").trim();
   const groupId = String(
-    req.user?.customer_group_id
-    || req.user?.group_id
+    req.user?.resolved_group_id
     || req.query?.groupId
     || req.body?.groupId
     || "global"

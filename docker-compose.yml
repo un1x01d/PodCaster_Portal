@@ -2,9 +2,9 @@ services:
   db:
     image: postgres:15
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-portal}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-portalpass}
-      POSTGRES_DB: ${POSTGRES_DB:-portaldb}
+      POSTGRES_USER: ${POSTGRES_USER:-tforn_insights}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tforn_insights_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-tforn_insights_db}
     volumes:
       - db_data:/var/lib/postgresql/data
       - ./db/init:/docker-entrypoint-initdb.d:ro
@@ -25,7 +25,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgres://portal:portalpass@db:5432/portaldb}
+      DATABASE_URL: ${DATABASE_URL:-postgres://tforn_insights:tforn_insights_pass@db:5432/tforn_insights_db}
       JWT_SECRET: ${JWT_SECRET:-dev-jwt-2026-rotate-me-7f3b9c1d5a8e4b2f9d6c0a1e3f5b7d9}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-8h}
       JWT_ISSUER: ${JWT_ISSUER:-}

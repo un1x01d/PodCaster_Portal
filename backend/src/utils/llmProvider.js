@@ -28,6 +28,33 @@ function sanitizeBaseUrl(raw, fallback) {
   }
 }
 
+function safeHostname(raw = "") {
+  try {
+    const normalized = /^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(String(raw || "").trim())
+      ? String(raw || "").trim()
+      : `https://${String(raw || "").trim()}`;
+    return new URL(normalized).hostname || "";
+  } catch {
+    return "";
+  }
+}
+
+function auditAiUrlPolicyDeny(metadata = {}) {
+  Promise.resolve()
+    .then(() => import("../config/db.js"))
+    .then(({ query }) => query(
+      `INSERT INTO audit_logs (action, resource_type, resource_id, metadata)
+       VALUES ($1, $2, $3, $4::jsonb)`,
+      [
+        "ai_runtime.url_policy_denied",
+        "ai_runtime",
+        "provider_base_url",
+        JSON.stringify(metadata || {}),
+      ]
+    ))
+    .catch(() => {});
+}
+
 function isOllamaBaseUrl(raw) {
   const value = String(raw || "").toLowerCase();
   return value.includes("localhost:11434") || value.includes("127.0.0.1:11434") || value.includes("ollama");
@@ -106,15 +133,7 @@ export function apiKeyForProvider(provider = "openai") {
 }
 
 export function resolveChatCompletionProviderConfig(runtime = {}, modelOverride = null) {
-  const requestedProvider = normalizeAiProvider(runtime?.aiProvider || process.env.AI_PROVIDER || process.env.LLM_PROVIDER || "");
-  const requestedProviderConfig = runtime?.providerConfigs?.[requestedProvider] || {};
-  const preferredRuntimeModel = modelOverride || requestedProviderConfig.model || runtime?.openaiModel || "";
-  const preferredRuntimeBaseUrl = requestedProviderConfig.baseUrl || runtime?.openaiBaseUrl || "";
-  const provider = inferAiProvider({
-    provider: requestedProvider,
-    baseUrl: preferredRuntimeBaseUrl,
-    model: preferredRuntimeModel,
-  });
+  const provider = normalizeAiProvider(runtime?.aiProvider || process.env.AI_PROVIDER || process.env.LLM_PROVIDER || "");
   const providerRuntimeConfig = runtime?.providerConfigs?.[provider] || {};
   const model = normalizeModelForProvider(
     provider,
@@ -122,26 +141,30 @@ export function resolveChatCompletionProviderConfig(runtime = {}, modelOverride 
     providerRuntimeConfig.model || defaultModelForProvider(provider)
   );
   const candidateBaseUrl = providerRuntimeConfig.baseUrl || runtime?.openaiBaseUrl;
-  const baseUrl = sanitizeBaseUrl(
-    !isOllamaEnabled() && provider === "openai" && isOllamaBaseUrl(candidateBaseUrl)
-      ? ""
-      : candidateBaseUrl,
-    defaultBaseUrlForProvider(provider)
-  );
+  const policyBlockedOllamaForOpenAi = !isOllamaEnabled() && provider === "openai" && isOllamaBaseUrl(candidateBaseUrl);
+  const rawCandidate = policyBlockedOllamaForOpenAi ? "" : candidateBaseUrl;
+  const fallbackBase = defaultBaseUrlForProvider(provider);
+  const baseUrl = sanitizeBaseUrl(rawCandidate, fallbackBase);
+  const candidateText = String(candidateBaseUrl || "").trim();
+  const fallbackText = String(fallbackBase || "").trim();
+  if (candidateText) {
+    const denied = policyBlockedOllamaForOpenAi || (baseUrl === fallbackText && sanitizeBaseUrl(candidateText, fallbackText) !== candidateText.replace(/\/+$/, ""));
+    if (denied) {
+      auditAiUrlPolicyDeny({
+        provider,
+        requestedBaseUrl: candidateText,
+        resolvedBaseUrl: baseUrl,
+        hostname: safeHostname(candidateText),
+        reason: policyBlockedOllamaForOpenAi ? "ollama_not_enabled_for_openai" : "sanitized_to_fallback",
+      });
+    }
+  }
   const apiKey = apiKeyForProvider(provider);
   return { provider, model, baseUrl, apiKey };
 }
 
 export function resolveProviderModel(runtime = {}, configuredModel = "") {
-  const requestedProvider = normalizeAiProvider(runtime?.aiProvider || process.env.AI_PROVIDER || process.env.LLM_PROVIDER || "");
-  const requestedProviderConfig = runtime?.providerConfigs?.[requestedProvider] || {};
-  const preferredRuntimeModel = configuredModel || requestedProviderConfig.model || runtime?.openaiModel || "";
-  const preferredRuntimeBaseUrl = requestedProviderConfig.baseUrl || runtime?.openaiBaseUrl || "";
-  const provider = inferAiProvider({
-    provider: requestedProvider,
-    baseUrl: preferredRuntimeBaseUrl,
-    model: preferredRuntimeModel,
-  });
+  const provider = normalizeAiProvider(runtime?.aiProvider || process.env.AI_PROVIDER || process.env.LLM_PROVIDER || "");
   const providerRuntimeConfig = runtime?.providerConfigs?.[provider] || {};
   const model = normalizeModelForProvider(
     provider,

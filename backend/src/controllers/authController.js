@@ -26,7 +26,7 @@ const TWO_FACTOR_PENDING_TOTP_TTL_SEC = Number.parseInt(process.env.TWO_FACTOR_P
 const TWO_FACTOR_SMS_CODE_DIGITS = Number.parseInt(process.env.TWO_FACTOR_SMS_CODE_DIGITS || "6", 10);
 
 const DEFAULT_TOTP_SETTINGS = {
-    issuer: String(process.env.TWO_FACTOR_TOTP_ISSUER || "Data Insights Portal").trim() || "Data Insights Portal",
+    issuer: String(process.env.TWO_FACTOR_TOTP_ISSUER || "TFORN Insights").trim() || "TFORN Insights",
     digits: normalize2faDigits(process.env.TWO_FACTOR_TOTP_DIGITS || 6, 6),
     period: normalize2faPeriod(process.env.TWO_FACTOR_TOTP_PERIOD || 30, 30),
 };

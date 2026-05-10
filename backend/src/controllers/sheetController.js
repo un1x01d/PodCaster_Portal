@@ -10,6 +10,7 @@ import {
     checkSheetAccess,
     hasReportSourceOwnerAccess,
     isPlatformAdminUser,
+    resolveRuntimeGroupIdForUser,
     resolveAssignedViewForSheet,
     resolveViewColumnAllowlist as resolveViewColumnAllowlistFromAuth,
 } from "../utils/authorization.js";
@@ -52,12 +53,16 @@ const SHEET_DATA_HARD_CAP = Number.parseInt(
 // Durable DB-backed import queue controls (no external queue dependency).
 const IMPORT_DB_QUEUE_ENABLED = !["0", "false", "no", "off"].includes(String(process.env.IMPORT_DB_QUEUE_ENABLED || "true").trim().toLowerCase());
 const IMPORT_JOB_MAX_ATTEMPTS = Math.max(1, Number.parseInt(process.env.IMPORT_JOB_MAX_ATTEMPTS || "3", 10) || 3);
+const AI_DEBUG_LOGS = String(process.env.AI_DEBUG_LOGS || "").trim().toLowerCase() === "true";
 const IMPORT_JOB_LEASE_MS = Math.max(10000, Number.parseInt(process.env.IMPORT_JOB_LEASE_MS || "120000", 10) || 120000);
 const IMPORT_JOB_POLL_MS = Math.max(500, Number.parseInt(process.env.IMPORT_JOB_POLL_MS || "2000", 10) || 2000);
 const IMPORT_JOB_MAX_CLAIMS_PER_TICK = Math.max(1, Number.parseInt(process.env.IMPORT_JOB_MAX_CLAIMS_PER_TICK || "1", 10) || 1);
 const IMPORT_JOB_PAYLOAD_TTL_HOURS = Math.max(1, Number.parseInt(process.env.IMPORT_JOB_PAYLOAD_TTL_HOURS || "24", 10) || 24);
 const IMPORT_WORKER_ADVISORY_LOCK_KEY = Number.parseInt(process.env.IMPORT_WORKER_ADVISORY_LOCK_KEY || "814001", 10);
 const AUTOSYNC_WORKER_ADVISORY_LOCK_KEY = Number.parseInt(process.env.AUTOSYNC_WORKER_ADVISORY_LOCK_KEY || "814002", 10);
+const IMPORT_PIPELINE_SETTINGS_KEY = "import_pipeline_settings";
+const IMPORT_STAGING_WRITE_ENABLED = ["1", "true", "yes", "on"].includes(String(process.env.IMPORT_STAGING_WRITE_ENABLED || "false").trim().toLowerCase());
+const IMPORT_STAGING_FINALIZE_ENABLED = ["1", "true", "yes", "on"].includes(String(process.env.IMPORT_STAGING_FINALIZE_ENABLED || "false").trim().toLowerCase());
 
 function isRevisionCompareRequest(queryParams = {}) {
     const marker = String(
@@ -130,6 +135,68 @@ function normalizeSheetRow(row) {
     Object.entries(row || {}).forEach(([key, value]) => {
         out[key] = normalizeSheetCellValue(value);
     });
+    return out;
+}
+
+function toPeriodKeyFromValue(value) {
+    const normalized = normalizeSheetCellValue(value);
+    const text = String(normalized || "").trim();
+    if (!text) return null;
+    const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (iso) return `${iso[1]}-${iso[2]}`;
+    const dt = new Date(text);
+    if (Number.isNaN(dt.getTime())) return null;
+    const y = dt.getUTCFullYear();
+    const m = String(dt.getUTCMonth() + 1).padStart(2, "0");
+    return `${y}-${m}`;
+}
+
+function toNumericOrNull(value) {
+    if (value === null || value === undefined || value === "") return null;
+    const num = Number.parseFloat(String(value).replace(/[^0-9.-]/g, ""));
+    return Number.isFinite(num) ? num : null;
+}
+
+function buildInsightSummaryRows({ sheetId, sheetNames, sheets }) {
+    const out = [];
+    for (const tabName of sheetNames || []) {
+        const rows = Array.isArray(sheets?.[tabName]) ? sheets[tabName] : [];
+        if (!rows.length) continue;
+        const headers = Object.keys(rows[0] || {}).filter(Boolean);
+        const dateCandidates = headers.filter((h) => /date|time|month|year|period/i.test(String(h)));
+        const dateCol = dateCandidates[0] || headers.find((h) => rows.some((r) => toPeriodKeyFromValue(r?.[h])));
+        if (!dateCol) continue;
+        const metricCols = headers.filter((h) => rows.some((r) => toNumericOrNull(r?.[h]) !== null));
+        const categoryCol = headers.find((h) => h !== dateCol && !metricCols.includes(h));
+        const bucket = new Map();
+        for (const row of rows) {
+            const periodKey = toPeriodKeyFromValue(row?.[dateCol]);
+            if (!periodKey) continue;
+            const categoryKey = categoryCol ? String(row?.[categoryCol] ?? "Unknown") : "__all__";
+            for (const metricKey of metricCols) {
+                const num = toNumericOrNull(row?.[metricKey]);
+                if (num === null) continue;
+                const key = `${tabName}::${periodKey}::${categoryKey}::${metricKey}`;
+                const prev = bucket.get(key) || { sum: 0, count: 0 };
+                prev.sum += num;
+                prev.count += 1;
+                bucket.set(key, prev);
+            }
+        }
+        bucket.forEach((agg, key) => {
+            const [tn, periodKey, categoryKey, metricKey] = key.split("::");
+            out.push({
+                sheet_id: sheetId,
+                tab_name: tn,
+                period_key: periodKey,
+                category_key: categoryKey,
+                metric_key: metricKey,
+                agg_sum: agg.sum,
+                agg_avg: agg.count > 0 ? (agg.sum / agg.count) : null,
+                agg_count: agg.count,
+            });
+        });
+    }
     return out;
 }
 
@@ -593,7 +660,7 @@ async function resolveReportSourceForUpload(client, { reportSourceId, reportSour
     return {
         id: inserted.rows[0].id,
         name: inserted.rows[0].name,
-        syncGroupId: Number.parseInt(user?.customer_group_id ?? user?.group_id, 10) || null,
+        syncGroupId: Number.parseInt(user?.resolved_group_id ?? "", 10) || null,
         reviewRequired: false,
         reviewSchemaChanges: true,
         reviewLabelRules: {},
@@ -640,7 +707,7 @@ async function loadReportSourceForImport(client, reportSourceId) {
 }
 
 function resolveImportGroupId(user, reportSource) {
-    const raw = reportSource?.syncGroupId ?? user?.customer_group_id ?? user?.group_id;
+    const raw = reportSource?.syncGroupId ?? user?.resolved_group_id;
     const parsed = Number.parseInt(raw, 10);
     return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
@@ -721,6 +788,51 @@ function uploadUsesDbQueue(req) {
         return ["1", "true", "yes", "on"].includes(String(requested || "").trim().toLowerCase());
     }
     return false;
+}
+
+async function importStreamingEnabledBySettings() {
+    try {
+        const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [IMPORT_PIPELINE_SETTINGS_KEY]);
+        const enabled = rows?.[0]?.value?.importStreamingEnabled;
+        if (enabled === true || String(enabled || "").trim().toLowerCase() === "true") return true;
+    } catch {
+        // fallback path below
+    }
+    return false;
+}
+
+async function queuedImportStreamingV2EnabledBySettings() {
+    try {
+        const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [IMPORT_PIPELINE_SETTINGS_KEY]);
+        const enabled = rows?.[0]?.value?.queuedImportStreamingV2Enabled;
+        if (enabled === true || String(enabled || "").trim().toLowerCase() === "true") return true;
+    } catch {
+        // fallback disabled
+    }
+    return false;
+}
+
+async function importStagingWriteEnabledBySettings() {
+    try {
+        const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [IMPORT_PIPELINE_SETTINGS_KEY]);
+        const enabled = rows?.[0]?.value?.importStagingWriteEnabled;
+        if (enabled === true || String(enabled || "").trim().toLowerCase() === "true") return true;
+    } catch {}
+    return IMPORT_STAGING_WRITE_ENABLED;
+}
+
+async function importStagingFinalizeEnabledBySettings() {
+    try {
+        const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [IMPORT_PIPELINE_SETTINGS_KEY]);
+        const enabled = rows?.[0]?.value?.importStagingFinalizeEnabled;
+        if (enabled === true || String(enabled || "").trim().toLowerCase() === "true") return true;
+    } catch {}
+    return IMPORT_STAGING_FINALIZE_ENABLED;
+}
+
+async function shouldUseQueuedImport(req) {
+    if (await importStreamingEnabledBySettings()) return true;
+    return uploadUsesDbQueue(req);
 }
 
 function parseBooleanLike(value) {
@@ -946,8 +1058,8 @@ function assertBufferedImportSizeAllowed(fileSize, parseMemoryLimitMb) {
 
 async function resolveTenantParseMemoryLimitMb(user) {
     const defaultLimit = normalizeWorkerMemoryLimitMb(null);
-    const groupId = Number.parseInt(user?.customer_group_id ?? user?.group_id, 10);
     try {
+        const groupId = await resolveRuntimeGroupIdForUser(user);
         let rows = [];
         if (Number.isInteger(groupId) && groupId > 0) {
             rows = await query("SELECT entitlements FROM groups WHERE id = $1 LIMIT 1", [groupId]);
@@ -1019,6 +1131,87 @@ function parseWorkbookInWorker(buffer, { memoryLimitMb } = {}) {
             if (settled) return;
             cleanup();
             if (code !== 0) reject(new Error("xlsx_worker_memory_limit_exceeded"));
+        });
+    });
+}
+
+function parseWorkbookInWorkerStreamed(buffer, { memoryLimitMb } = {}) {
+    return new Promise((resolve, reject) => {
+        const parseMemoryLimitMb = normalizeWorkerMemoryLimitMb(memoryLimitMb);
+        const memoryLimitBytes = parseMemoryLimitMb * 1024 * 1024;
+        if (Buffer.byteLength(buffer || Buffer.alloc(0)) > memoryLimitBytes) {
+            reject(new Error("xlsx_worker_memory_limit_exceeded"));
+            return;
+        }
+        const worker = new Worker(XLSX_WORKER_PATH, {
+            workerData: { buffer, memoryLimitMb: parseMemoryLimitMb, options: { streamMode: true } },
+            resourceLimits: { maxOldGenerationSizeMb: parseMemoryLimitMb },
+        });
+        const result = {
+            sheetNames: [],
+            sheets: {},
+            cleanup: { formulasStripped: 0, metadataEntriesStripped: 0 },
+        };
+        let settled = false;
+        const cleanup = () => {
+            if (settled) return false;
+            settled = true;
+            clearTimeout(timer);
+            worker.removeAllListeners();
+            return true;
+        };
+        const timer = setTimeout(async () => {
+            if (!cleanup()) return;
+            try { await worker.terminate(); } catch {}
+            reject(new Error("xlsx_worker_timeout"));
+        }, XLSX_WORKER_TIMEOUT_MS);
+        worker.on("message", (msg) => {
+            if (settled) return;
+            if (!msg?.success) {
+                cleanup();
+                reject(new Error(msg?.error || "unreadable_spreadsheet"));
+                return;
+            }
+            if (msg?.mode !== "stream") return;
+            const ev = String(msg?.event || "");
+            if (ev === "sheet_start") {
+                const sn = String(msg.sheetName || "").trim();
+                if (!sn) return;
+                if (!result.sheetNames.includes(sn)) result.sheetNames.push(sn);
+                if (!Array.isArray(result.sheets[sn])) result.sheets[sn] = [];
+                return;
+            }
+            if (ev === "rows_chunk") {
+                const sn = String(msg.sheetName || "").trim();
+                if (!sn) return;
+                if (!Array.isArray(result.sheets[sn])) result.sheets[sn] = [];
+                const rows = Array.isArray(msg.rows) ? msg.rows : [];
+                result.sheets[sn].push(...rows);
+                return;
+            }
+            if (ev === "done") {
+                const summary = msg.summary || {};
+                result.cleanup = {
+                    formulasStripped: Number(summary?.cleanup?.formulasStripped || 0),
+                    metadataEntriesStripped: Number(summary?.cleanup?.metadataEntriesStripped || 0),
+                };
+                cleanup();
+                resolve(result);
+            }
+        });
+        worker.on("error", (err) => {
+            if (!cleanup()) return;
+            if (String(err?.message || "").toLowerCase().includes("memory")) {
+                reject(new Error("xlsx_worker_memory_limit_exceeded"));
+                return;
+            }
+            reject(err);
+        });
+        worker.on("exit", (code) => {
+            if (settled) return;
+            cleanup();
+            if (code !== 0) reject(new Error("xlsx_worker_memory_limit_exceeded"));
+            else reject(new Error("unreadable_spreadsheet"));
         });
     });
 }
@@ -1214,7 +1407,7 @@ async function classifyAndPersistBusinessContext({
         );
         return storedClassification;
     } catch (err) {
-        console.warn("[business_classification] skipped:", err?.message || err);
+        if (AI_DEBUG_LOGS) console.warn("[business_classification] skipped:", err?.message || err);
         return null;
     }
 }
@@ -1297,6 +1490,7 @@ async function executeImportFromParsedWorkbook({
     autosyncConfig = null,
     fileSizeBytes = 0,
     classificationSourceKind = "manual_upload",
+    stagedSourceJobId = null,
 }) {
     const { sheetNames, sheets: parsedSheets, cleanup } = parsedResult || {};
     let sheets = parsedSheets;
@@ -1421,35 +1615,100 @@ async function executeImportFromParsedWorkbook({
         );
 
         let totalRows = 0;
-        for (const sn of sheetNames) {
-            const rows = sheets[sn];
-            if (rows.length > MAX_UPLOAD_ROWS_PER_SHEET) {
-                const err = toImportError("too_many_rows_in_sheet", 413);
-                err.details = { tab: sn, maxRowsPerSheet: MAX_UPLOAD_ROWS_PER_SHEET };
-                throw err;
+        const canUseStagingFinalize = IMPORT_STAGING_FINALIZE_ENABLED === true && !!stagedSourceJobId;
+        if (canUseStagingFinalize) {
+            const countRows = await client.query(
+                `SELECT sheet_name, COUNT(*)::int AS c
+                   FROM import_row_staging
+                  WHERE job_id = $1
+                  GROUP BY sheet_name`,
+                [stagedSourceJobId]
+            );
+            const countMap = new Map(countRows.rows.map((r) => [String(r.sheet_name), Number(r.c || 0)]));
+            for (const sn of sheetNames) {
+                const c = Number(countMap.get(sn) || 0);
+                if (c > MAX_UPLOAD_ROWS_PER_SHEET) {
+                    const err = toImportError("too_many_rows_in_sheet", 413);
+                    err.details = { tab: sn, maxRowsPerSheet: MAX_UPLOAD_ROWS_PER_SHEET };
+                    throw err;
+                }
+                totalRows += c;
             }
-            totalRows += rows.length;
             if (totalRows > MAX_UPLOAD_TOTAL_ROWS) {
                 const err = toImportError("too_many_total_rows", 413);
                 err.details = { maxTotalRows: MAX_UPLOAD_TOTAL_ROWS };
                 throw err;
             }
+            if (totalRows <= 0) {
+                throw toImportError("staging_rows_missing", 500);
+            }
+            await client.query(
+                `INSERT INTO sheet_rows (sheet_id, row_index, row_data, tab_name)
+                 SELECT $2 AS sheet_id, s.row_index, s.row_data, s.sheet_name AS tab_name
+                   FROM import_row_staging s
+                  WHERE s.job_id = $1
+                  ORDER BY s.sheet_name ASC, s.row_index ASC`,
+                [stagedSourceJobId, sheetId]
+            );
+        } else {
+            for (const sn of sheetNames) {
+                const rows = sheets[sn];
+                if (rows.length > MAX_UPLOAD_ROWS_PER_SHEET) {
+                    const err = toImportError("too_many_rows_in_sheet", 413);
+                    err.details = { tab: sn, maxRowsPerSheet: MAX_UPLOAD_ROWS_PER_SHEET };
+                    throw err;
+                }
+                totalRows += rows.length;
+                if (totalRows > MAX_UPLOAD_TOTAL_ROWS) {
+                    const err = toImportError("too_many_total_rows", 413);
+                    err.details = { maxTotalRows: MAX_UPLOAD_TOTAL_ROWS };
+                    throw err;
+                }
 
-            const CHUNK_SIZE = 500;
-            for (let j = 0; j < rows.length; j += CHUNK_SIZE) {
-                const chunk = rows.slice(j, j + CHUNK_SIZE);
+                const CHUNK_SIZE = 500;
+                for (let j = 0; j < rows.length; j += CHUNK_SIZE) {
+                    const chunk = rows.slice(j, j + CHUNK_SIZE);
+                    const values = [];
+                    const placeHolders = [];
+                    let pIdx = 1;
+
+                    chunk.forEach((r, idx) => {
+                        const normalizedRow = normalizeSheetRow(r);
+                        values.push(sheetId, j + idx, JSON.stringify(normalizedRow), sn);
+                        placeHolders.push(`($${pIdx++}, $${pIdx++}, $${pIdx++}, $${pIdx++})`);
+                    });
+
+                    const sql = `INSERT INTO sheet_rows (sheet_id, row_index, row_data, tab_name) VALUES ${placeHolders.join(",")}`;
+                    await client.query(sql, values);
+                }
+            }
+        }
+
+        const summaryRows = buildInsightSummaryRows({ sheetId, sheetNames, sheets });
+        if (summaryRows.length) {
+            await client.query(`DELETE FROM sheet_insight_summaries WHERE sheet_id = $1`, [sheetId]);
+            const CHUNK = 500;
+            for (let i = 0; i < summaryRows.length; i += CHUNK) {
+                const chunk = summaryRows.slice(i, i + CHUNK);
                 const values = [];
-                const placeHolders = [];
-                let pIdx = 1;
-
-                chunk.forEach((r, idx) => {
-                    const normalizedRow = normalizeSheetRow(r);
-                    values.push(sheetId, j + idx, JSON.stringify(normalizedRow), sn);
-                    placeHolders.push(`($${pIdx++}, $${pIdx++}, $${pIdx++}, $${pIdx++})`);
+                const placeholders = [];
+                let p = 1;
+                chunk.forEach((r) => {
+                    values.push(r.sheet_id, r.tab_name, r.period_key, r.category_key, r.metric_key, r.agg_sum, r.agg_avg, r.agg_count);
+                    placeholders.push(`($${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
                 });
-
-                const sql = `INSERT INTO sheet_rows (sheet_id, row_index, row_data, tab_name) VALUES ${placeHolders.join(",")}`;
-                await client.query(sql, values);
+                await client.query(
+                    `INSERT INTO sheet_insight_summaries
+                    (sheet_id, tab_name, period_key, category_key, metric_key, agg_sum, agg_avg, agg_count)
+                    VALUES ${placeholders.join(",")}
+                    ON CONFLICT (sheet_id, tab_name, period_key, category_key, metric_key)
+                    DO UPDATE SET
+                      agg_sum = EXCLUDED.agg_sum,
+                      agg_avg = EXCLUDED.agg_avg,
+                      agg_count = EXCLUDED.agg_count,
+                      updated_at = CURRENT_TIMESTAMP`,
+                    values
+                );
             }
         }
 
@@ -1751,9 +2010,29 @@ async function executeQueuedImportJob(job, payloadRows = null) {
     const fileLabel = String(payloadMeta.fileLabel || displayName || "File").trim();
     if (!displayName) throw toImportError("display_name_required", 400);
 
-    const parsedResult = await parseWorkbookBufferOrThrow(payload.file_bytes, {
-        memoryLimitMb: payloadMeta.parseMemoryLimitMb,
-    });
+    const useStreamingV2 = await queuedImportStreamingV2EnabledBySettings();
+    let parsedResult;
+    if (useStreamingV2) {
+        try {
+            parsedResult = await parseWorkbookInWorkerStreamed(payload.file_bytes, {
+                memoryLimitMb: payloadMeta.parseMemoryLimitMb,
+            });
+        } catch (streamErr) {
+            if (AI_DEBUG_LOGS) console.warn("[import_stream_v2] fallback to legacy parser:", streamErr?.message || streamErr);
+            parsedResult = await parseWorkbookBufferOrThrow(payload.file_bytes, {
+                memoryLimitMb: payloadMeta.parseMemoryLimitMb,
+            });
+        }
+    } else {
+        parsedResult = await parseWorkbookBufferOrThrow(payload.file_bytes, {
+            memoryLimitMb: payloadMeta.parseMemoryLimitMb,
+        });
+    }
+    let stagedSourceJobId = null;
+    const stagingWriteEnabled = await importStagingWriteEnabledBySettings();
+    const stagingFinalizeEnabled = await importStagingFinalizeEnabledBySettings();
+    const useStagingFinalize = stagingFinalizeEnabled === true && stagingWriteEnabled === true && useStreamingV2 === true;
+    if (useStagingFinalize) stagedSourceJobId = job.id;
     const { responsePayload } = await executeImportFromParsedWorkbook({
         parsedResult,
         approvalRequired: !!payloadMeta.approvalRequired,
@@ -1778,9 +2057,41 @@ async function executeQueuedImportJob(job, payloadRows = null) {
             fileLabel: payloadMeta.autosyncFileLabel,
         } : null,
         classificationSourceKind: payloadMeta.classificationSourceKind || (payloadMeta.autosyncEnabled ? "autosync" : "manual_upload"),
+        stagedSourceJobId,
     });
 
+    if (stagingWriteEnabled === true && useStreamingV2 === true) {
+        try {
+            const sheetNames = Array.isArray(parsedResult?.sheetNames) ? parsedResult.sheetNames : [];
+            const sheets = parsedResult?.sheets && typeof parsedResult.sheets === "object" ? parsedResult.sheets : {};
+            await query(`DELETE FROM import_row_staging WHERE job_id = $1`, [job.id]);
+            for (const sn of sheetNames) {
+                const rows = Array.isArray(sheets[sn]) ? sheets[sn] : [];
+                const CHUNK = 500;
+                for (let i = 0; i < rows.length; i += CHUNK) {
+                    const chunk = rows.slice(i, i + CHUNK);
+                    const values = [];
+                    const placeholders = [];
+                    let p = 1;
+                    chunk.forEach((r, idx) => {
+                        values.push(job.id, sn, i + idx, JSON.stringify(normalizeSheetRow(r)));
+                        placeholders.push(`($${p++},$${p++},$${p++},$${p++}::jsonb)`);
+                    });
+                    await query(
+                        `INSERT INTO import_row_staging (job_id, sheet_name, row_index, row_data) VALUES ${placeholders.join(",")}`,
+                        values
+                    );
+                }
+            }
+        } catch (stagingErr) {
+            if (AI_DEBUG_LOGS) console.warn("[import_staging_write] skipped:", stagingErr?.message || stagingErr);
+        }
+    }
+
     await query("DELETE FROM import_job_payloads WHERE job_id = $1", [job.id]);
+    if (stagedSourceJobId) {
+        await query("DELETE FROM import_row_staging WHERE job_id = $1", [job.id]).catch(() => {});
+    }
     await writeAuditLog({
         actorUserId: job.requested_by || null,
         action: responsePayload.import_status === "pending_approval" ? "import.pending_approval" : "import.published",
@@ -2229,7 +2540,7 @@ export async function uploadSheet(req, res) {
         console.log(`[upload] size=${req.file.size} reportSourceId=${rawReportSourceId || "new"}`);
         const parseMemoryLimitMb = await resolveTenantParseMemoryLimitMb(req.user);
         assertBufferedImportSizeAllowed(req.file?.size, parseMemoryLimitMb);
-        const shouldQueueImport = uploadUsesDbQueue(req);
+        const shouldQueueImport = await shouldUseQueuedImport(req);
 
         let fileBuffer = req.fileBuffer;
         if (!fileBuffer && shouldQueueImport) {
@@ -2481,49 +2792,53 @@ export async function ingestEmailAttachment(req, res) {
 
         const parseMemoryLimitMb = await resolveTenantParseMemoryLimitMb({ customer_group_id: targetCustomer.group_id });
         assertBufferedImportSizeAllowed(file?.size, parseMemoryLimitMb);
-        const fileBuffer = file.buffer || null;
-        if (!fileBuffer && !file.path) return res.status(400).json({ error: "file_buffer_missing" });
-        const parsedResult = fileBuffer
-            ? await parseWorkbookBufferOrThrow(fileBuffer, { memoryLimitMb: parseMemoryLimitMb })
-            : await parseWorkbookFileOrThrow(file.path, { memoryLimitMb: parseMemoryLimitMb });
-
-        const { responsePayload, importStatus } = await executeImportFromParsedWorkbook({
-            parsedResult,
-            approvalRequired: false,
-            importJobId,
+        let fileBuffer = file.buffer || null;
+        if (!fileBuffer && file.path) {
+            fileBuffer = await fs.promises.readFile(file.path);
+        }
+        if (!fileBuffer) return res.status(400).json({ error: "file_buffer_missing" });
+        await persistImportJobPayload(importJobId, fileBuffer, {
+            contentType: file.mimetype || "application/octet-stream",
+            original_filename: originalName,
+            display_name: displayName,
+            file_label: fileLabel,
+            mode: "email",
+            parseMemoryLimitMb,
             reportSourceId: reportSource.id,
             reportSourceName: reportSource.name,
-            displayName,
-            fileLabel,
-            originalName,
-            user: null,
-            enforceOwnership: false,
-            fileSizeBytes: Number(file?.size || fileBuffer?.length || 0),
-            autosyncConfig: null,
+            approvalRequired: false,
+            requestedBy: null,
             classificationSourceKind: "email_ingest",
+            source_group_id: targetCustomer.group_id,
+            sender_email: senderEmail,
+            recipient_email: targetCustomer.recipientAddress || recipientAddresses[0] || null,
         });
 
         await writeAuditLog({
             req,
-            action: "email_ingest.imported",
-            resourceType: "report_source_import",
-            resourceId: responsePayload.importId,
+            action: "email_ingest.queued",
+            resourceType: "import_job",
+            resourceId: importJobId,
             metadata: {
-                report_source_id: responsePayload.report_source_id,
-                sheet_id: responsePayload.sheetId,
-                job_id: importJobId,
-                rows: responsePayload.rows,
-                tabs: Array.isArray(responsePayload.tabs) ? responsePayload.tabs.length : 0,
-                schema_status: responsePayload.schema_status,
+                report_source_id: reportSource.id,
+                report_source_name: reportSource.name,
                 sender_email: senderEmail,
                 recipient_email: targetCustomer.recipientAddress || "",
                 source_group_id: targetCustomer.group_id,
                 mode: "email",
-                import_status: importStatus,
+                import_status: "queued",
             },
         });
-        return res.json({
-            ...responsePayload,
+        return res.status(202).json({
+            status: "queued",
+            import_status: "queued",
+            importJobId,
+            import_job_id: importJobId,
+            reportSourceId: reportSource.id,
+            report_source_id: reportSource.id,
+            report_source_name: reportSource.name,
+            filename: originalName,
+            display_name: displayName,
             email_sender: senderEmail,
             email_recipient: targetCustomer.recipientAddress,
             customer_group_id: targetCustomer.group_id,
@@ -3543,6 +3858,12 @@ export async function getSheetData(req, res) {
     if (pagination.error) {
         return res.status(400).json({ error: pagination.error });
     }
+    if (String(req.query?.cursor || "").trim() && sort_by) {
+        return res.status(400).json({
+            error: "unsupported_cursor_sort_combination",
+            message: "Cursor pagination is only supported with default row order (no sort_by).",
+        });
+    }
 
     let validCols = [];
     let rowFiltersList = [];
@@ -3752,12 +4073,21 @@ export async function getSheetData(req, res) {
             sql += ` ORDER BY row_index ASC`;
         }
 
-        if (pagination.hasPagination) {
-            sql += ` LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
-            params.push(pagination.limit, pagination.offset);
-        } else if (!pagination.hasPagination && SHEET_DATA_HARD_CAP > 0) {
-            sql += ` LIMIT $${params.length + 1}`;
-            params.push(SHEET_DATA_HARD_CAP + 1);
+        const cursorRaw = String(req.query?.cursor || "").trim();
+        let decodedCursor = null;
+        if (cursorRaw && !sort_by) {
+            try { decodedCursor = JSON.parse(Buffer.from(cursorRaw, "base64url").toString("utf8")); } catch { decodedCursor = null; }
+            if (decodedCursor && Number.isInteger(Number(decodedCursor.rowIndex))) {
+                sql += ` AND row_index > $${params.length + 1}`;
+                params.push(Number(decodedCursor.rowIndex));
+            }
+        }
+        const effectiveLimit = pagination.hasPagination ? pagination.limit : (SHEET_DATA_HARD_CAP > 0 ? SHEET_DATA_HARD_CAP : 1000);
+        sql += ` LIMIT $${params.length + 1}`;
+        params.push(effectiveLimit + 1);
+        if (pagination.hasPagination && !decodedCursor) {
+            sql += ` OFFSET $${params.length + 1}`;
+            params.push(pagination.offset);
         }
 
         let rows = await query(sql, params);
@@ -3785,9 +4115,21 @@ export async function getSheetData(req, res) {
             });
         }
 
-        res
+        const hasMore = rows.length > effectiveLimit;
+        const items = hasMore ? rows.slice(0, effectiveLimit) : rows;
+        const nextCursor = (!sort_by && hasMore && items.length)
+            ? Buffer.from(JSON.stringify({ rowIndex: Number(items.length ? (decodedCursor?.rowIndex || 0) + items.length : 0) }), "utf8").toString("base64url")
+            : null;
+        res.set("X-Next-Cursor", nextCursor || "");
+        res.set("X-Has-More", hasMore ? "1" : "0");
+        if (String(req.query?.cursor_mode || "").toLowerCase() === "body") {
+            return res
+                .set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0, private")
+                .json({ items, nextCursor, hasMore });
+        }
+        return res
             .set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0, private")
-            .json(rows);
+            .json(items);
     } catch (e) {
         console.error("Get sheet data failed:", e);
         res.status(500).json({

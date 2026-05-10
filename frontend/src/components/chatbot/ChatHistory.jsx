@@ -7,6 +7,9 @@ export default function ChatHistory({ sheetId = null, messages, onApplyFilter, c
     const [speakingIndex, setSpeakingIndex] = React.useState(null);
     const [chatAudioEnabled, setChatAudioEnabled] = React.useState(true);
     const utteranceRef = useRef(null);
+    const liveSentenceBufferRef = useRef("");
+    const liveSentenceQueueRef = useRef([]);
+    const liveSpeakingRef = useRef(false);
     const readCookie = (name) => {
         if (typeof document === "undefined") return "";
         const prefix = `${name}=`;
@@ -288,6 +291,38 @@ export default function ChatHistory({ sheetId = null, messages, onApplyFilter, c
         }
         const synth = window.speechSynthesis;
         if (synth) synth.cancel();
+        liveSentenceQueueRef.current = [];
+        liveSentenceBufferRef.current = "";
+        liveSpeakingRef.current = false;
+    };
+
+    const splitCompleteSentences = (bufferText = "") => {
+        const text = String(bufferText || "");
+        const out = [];
+        let start = 0;
+        for (let i = 0; i < text.length; i++) {
+            const ch = text[i];
+            if (ch === "." || ch === "!" || ch === "?" || ch === "\n") {
+                const piece = text.slice(start, i + 1).trim();
+                if (piece.length >= 2) out.push(piece);
+                start = i + 1;
+            }
+        }
+        return { sentences: out, rest: text.slice(start) };
+    };
+
+    const playLiveQueue = async () => {
+        if (liveSpeakingRef.current) return;
+        liveSpeakingRef.current = true;
+        try {
+            while (liveSentenceQueueRef.current.length && !window._stopPlayback) {
+                const next = liveSentenceQueueRef.current.shift();
+                if (!next) continue;
+                await streamTextToAudio(next).catch(() => false);
+            }
+        } finally {
+            liveSpeakingRef.current = false;
+        }
     };
 
     const handleSpeak = async (text, index) => {
@@ -464,6 +499,39 @@ export default function ChatHistory({ sheetId = null, messages, onApplyFilter, c
         synth.speak(utterance);
         return true;
     };
+
+    useEffect(() => {
+        const onChunk = (event) => {
+            if (!chatAudioEnabled) return;
+            const detailSheetId = String(event?.detail?.sheetId || "");
+            const currentSheetId = String(sheetId || "");
+            if (currentSheetId && detailSheetId && currentSheetId !== detailSheetId) return;
+            const text = String(event?.detail?.text || "");
+            if (!text) return;
+            liveSentenceBufferRef.current += text;
+            const { sentences, rest } = splitCompleteSentences(liveSentenceBufferRef.current);
+            liveSentenceBufferRef.current = rest;
+            if (sentences.length) {
+                liveSentenceQueueRef.current.push(...sentences);
+                playLiveQueue();
+            }
+        };
+        const onDone = () => {
+            if (!chatAudioEnabled) return;
+            const tail = String(liveSentenceBufferRef.current || "").trim();
+            liveSentenceBufferRef.current = "";
+            if (tail) {
+                liveSentenceQueueRef.current.push(tail);
+                playLiveQueue();
+            }
+        };
+        window.addEventListener("dashboard:chat-stream-chunk", onChunk);
+        window.addEventListener("dashboard:chat-stream-done", onDone);
+        return () => {
+            window.removeEventListener("dashboard:chat-stream-chunk", onChunk);
+            window.removeEventListener("dashboard:chat-stream-done", onDone);
+        };
+    }, [chatAudioEnabled, sheetId]);
 
     return (
         <div

@@ -107,6 +107,12 @@ function rowsFromWorksheet(ws) {
   });
 }
 
+function chunkRows(rows, chunkSize = 500) {
+  const out = [];
+  for (let i = 0; i < rows.length; i += chunkSize) out.push(rows.slice(i, i + chunkSize));
+  return out;
+}
+
 function parseWorkbookWithFallbacks(sourceBuffer, baseOptions) {
   const normalized = Buffer.isBuffer(sourceBuffer)
     ? sourceBuffer
@@ -147,6 +153,7 @@ function parseWorkbookWithFallbacks(sourceBuffer, baseOptions) {
 
 try {
   const { buffer, filePath, options } = workerData;
+  const streamMode = options?.streamMode === true;
   assertWithinMemoryLimit("start");
   const workbookOptions = {
       cellDates: true,
@@ -176,6 +183,7 @@ try {
   };
 
   const usedSheetNames = new Set();
+  if (streamMode) parentPort.postMessage({ success: true, mode: "stream", event: "start" });
   for (let i = 0; i < wb.SheetNames.length; i += 1) {
     const originalName = wb.SheetNames[i];
     const cleanName = uniqueSheetName(cleanSheetName(originalName, i), usedSheetNames);
@@ -184,12 +192,33 @@ try {
     result.cleanup.formulasStripped += stats.formulas;
     result.cleanup.metadataEntriesStripped += stats.metadata;
     result.sheetNames.push(cleanName);
-    result.sheets[cleanName] = rowsFromWorksheet(wb.Sheets[originalName]);
+    const rows = rowsFromWorksheet(wb.Sheets[originalName]);
+    if (streamMode) {
+      parentPort.postMessage({ success: true, mode: "stream", event: "sheet_start", sheetName: cleanName, rowCount: rows.length });
+      const chunks = chunkRows(rows, 500);
+      for (let c = 0; c < chunks.length; c += 1) {
+        parentPort.postMessage({
+          success: true,
+          mode: "stream",
+          event: "rows_chunk",
+          sheetName: cleanName,
+          chunkIndex: c,
+          rows: chunks[c],
+        });
+      }
+      parentPort.postMessage({ success: true, mode: "stream", event: "sheet_end", sheetName: cleanName });
+    } else {
+      result.sheets[cleanName] = rows;
+    }
     assertWithinMemoryLimit(`after_sheet_${i}`);
   }
 
   if (monitor) clearInterval(monitor);
-  parentPort.postMessage({ success: true, result });
+  if (streamMode) {
+    parentPort.postMessage({ success: true, mode: "stream", event: "done", summary: { sheetNames: result.sheetNames, cleanup: result.cleanup } });
+  } else {
+    parentPort.postMessage({ success: true, result });
+  }
 } catch (e) {
   if (monitor) clearInterval(monitor);
   parentPort.postMessage({

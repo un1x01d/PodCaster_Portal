@@ -24,7 +24,14 @@ function serializeActiveFilters(activeFilters = {}) {
   return out;
 }
 
-function buildConversationHistory(messages = [], limit = 8) {
+function sanitizeAiText(value) {
+  return String(value || "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function buildConversationHistory(messages = [], limit = 40, maxCharsPerMessage = 4000) {
   if (!Array.isArray(messages)) return [];
   return messages
     .filter((m) => m && (m.type === "user" || m.type === "bot") && typeof m.text === "string")
@@ -32,7 +39,7 @@ function buildConversationHistory(messages = [], limit = 8) {
     .slice(-limit)
     .map((m) => ({
       role: m.type === "user" ? "user" : "assistant",
-      content: m.text.trim(),
+      content: m.text.trim().slice(0, maxCharsPerMessage),
     }))
     .filter((m) => m.content);
 }
@@ -215,6 +222,59 @@ export function useChatbotLogic({
     return { filters, reset_filters: !!actions.reset_filters };
   }, [onApplyFilter, onUpdateChart]);
 
+  const streamChatQuery = useCallback(async (payload, { onMeta, onChunk, onDone, onError }) => {
+    const token =
+      localStorage.getItem("token") ||
+      localStorage.getItem("authToken") ||
+      localStorage.getItem("jwt") ||
+      localStorage.getItem("jwtToken") ||
+      "";
+    const base =
+      String(api?.defaults?.baseURL || "").trim()
+      || String(import.meta?.env?.VITE_API_URL || "").trim()
+      || window.location.origin;
+    const res = await fetch(`${base.replace(/\/+$/, "")}/chat/query/stream`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      credentials: "include",
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok || !res.body) {
+      let msg = "stream_request_failed";
+      try {
+        const t = await res.text();
+        if (t) msg = t.slice(0, 500);
+      } catch (_) {}
+      throw new Error(msg);
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+    const dispatch = (block) => {
+      const lines = block.split("\n");
+      const ev = (lines.find((l) => l.startsWith("event:")) || "").slice(6).trim();
+      const dataLine = (lines.find((l) => l.startsWith("data:")) || "").slice(5).trim();
+      if (!ev || !dataLine) return;
+      let data = {};
+      try { data = JSON.parse(dataLine); } catch { data = {}; }
+      if (ev === "meta") onMeta?.(data);
+      if (ev === "chunk") onChunk?.(String(data?.text || ""));
+      if (ev === "done") onDone?.(data);
+      if (ev === "error") onError?.(data);
+    };
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop() || "";
+      parts.forEach(dispatch);
+    }
+  }, []);
+
   const sendMessage = useCallback(async (rawMessage, meta = null) => {
     const q = String(rawMessage || "").trim();
     if (!q || isSending) return;
@@ -230,7 +290,7 @@ export function useChatbotLogic({
     setIsSending(true);
 
     try {
-      const res = await api.post("/chat/query", {
+      const payload = {
         sheetId: sheetId || null,
         activeTab: activeTab || null,
         message: q,
@@ -239,25 +299,87 @@ export function useChatbotLogic({
         activeViewScope: activeViewScope && typeof activeViewScope === "object" ? activeViewScope : null,
         conversationHistory: buildConversationHistory(messages),
         locale,
+      };
+      const botIndexRef = { idx: -1 };
+      setMessages((prev) => {
+        const next = [...prev, { type: "bot", text: "", timestamp: new Date() }];
+        botIndexRef.idx = next.length - 1;
+        return next;
       });
-
-      const payload = res?.data || {};
-      const answer = typeof payload.answer === "string" && payload.answer.trim()
-        ? payload.answer
-        : (copy.chatNoResponse || "I could not produce a response.");
-
-      const actions = payload.actions || {};
-      const { filters } = applyChatActions(actions, meta);
-
-      setMessages((prev) => [...prev, {
-        type: "bot",
-        text: answer,
-        timestamp: new Date(),
-        isFilter: filters.length > 0,
-        filterCol: filters[0]?.column,
-      }]);
+      let streamActions = {};
+      let streamFilters = [];
+      let gotDone = false;
+      try {
+        await streamChatQuery(payload, {
+          onMeta: (data) => {
+            streamActions = data?.actions || {};
+            const out = applyChatActions(streamActions, meta);
+            streamFilters = out?.filters || [];
+          },
+          onChunk: (text) => {
+            const safe = sanitizeAiText(text);
+            if (typeof window !== "undefined") {
+              window.dispatchEvent(new CustomEvent("dashboard:chat-stream-chunk", {
+                detail: { sheetId: sheetId || null, text: safe, locale },
+              }));
+            }
+            setMessages((prev) => {
+              const next = [...prev];
+              const i = botIndexRef.idx;
+              if (i >= 0 && next[i]) {
+                next[i] = { ...next[i], text: `${next[i].text || ""}${safe}` };
+              }
+              return next;
+            });
+          },
+          onDone: () => {
+            gotDone = true;
+            if (typeof window !== "undefined") {
+              window.dispatchEvent(new CustomEvent("dashboard:chat-stream-done", {
+                detail: { sheetId: sheetId || null, locale },
+              }));
+            }
+            setMessages((prev) => {
+              const next = [...prev];
+              const i = botIndexRef.idx;
+              if (i >= 0 && next[i]) {
+                next[i] = { ...next[i], isFilter: streamFilters.length > 0, filterCol: streamFilters[0]?.column };
+              }
+              return next;
+            });
+          },
+          onError: (err) => {
+            throw new Error(String(err?.error || "stream_error"));
+          },
+        });
+        if (!gotDone) throw new Error("stream_incomplete");
+      } catch (streamErr) {
+        const res = await api.post("/chat/query", payload);
+        const fallbackPayload = res?.data || {};
+        const answer = typeof fallbackPayload.answer === "string" && fallbackPayload.answer.trim()
+          ? sanitizeAiText(fallbackPayload.answer)
+          : sanitizeAiText(copy.chatNoResponse || "I could not produce a response.");
+        const actions = fallbackPayload.actions || {};
+        const { filters } = applyChatActions(actions, meta);
+        setMessages((prev) => {
+          const next = [...prev];
+          const i = botIndexRef.idx;
+          if (i >= 0 && next[i]) {
+            next[i] = {
+              ...next[i],
+              text: answer,
+              isFilter: filters.length > 0,
+              filterCol: filters[0]?.column,
+            };
+          }
+          return next;
+        });
+      }
     } catch (e) {
-      const msg = e?.response?.data?.message || e?.response?.data?.error || copy.chatRequestFailed || "AI chat request failed.";
+      const code = String(e?.response?.data?.error || "").trim();
+      const msg = code === "chat_prompt_budget_exceeded"
+        ? sanitizeAiText("Your request context is too large for the current AI budget. Reduce filters/history or ask a narrower question.")
+        : sanitizeAiText(e?.response?.data?.message || e?.response?.data?.error || copy.chatRequestFailed || "AI chat request failed.");
       setMessages((prev) => [...prev, { type: "bot", text: msg, timestamp: new Date() }]);
     } finally {
       setIsSending(false);
@@ -303,7 +425,7 @@ export function useChatbotLogic({
             });
             const result = res?.data || {};
             const answer = typeof result.answer === "string" && result.answer.trim()
-              ? result.answer
+              ? sanitizeAiText(result.answer)
               : "";
             applyChatActions(result.actions || {}, meta);
             
@@ -318,15 +440,18 @@ export function useChatbotLogic({
             }
           } catch (err) {
             if (typeof window !== "undefined") {
+              const code = String(err?.response?.data?.error || "").trim();
               const errMsg =
-                err?.response?.data?.message
-                || err?.response?.data?.error
-                || "AI chat request failed.";
+                (code === "chat_prompt_budget_exceeded"
+                  ? "Your request context is too large for the current AI budget. Reduce filters/history or ask a narrower question."
+                  : (err?.response?.data?.message
+                    || err?.response?.data?.error
+                    || "AI chat request failed."));
               window.dispatchEvent(new CustomEvent("dashboard:chat-response", {
                 detail: {
                   sheetId: current.sheetId,
                   answer: "",
-                  error: String(errMsg),
+                  error: sanitizeAiText(errMsg),
                   meta,
                 },
               }));

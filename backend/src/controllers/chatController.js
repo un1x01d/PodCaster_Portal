@@ -1,12 +1,13 @@
 import { createHash } from "crypto";
 import { query } from "../config/db.js";
 import { isEnglishLocale, normalizeLocale, translateDashboardItems } from "../utils/dashboardLocalization.js";
-import { checkSheetAccess, hasReportSourceOwnerAccess, isPlatformAdminUser, loadSheetPermissionSets } from "../utils/authorization.js";
+import { checkSheetAccess, hasReportSourceOwnerAccess, isPlatformAdminUser, loadSheetPermissionSets, resolveRuntimeGroupIdForUser } from "../utils/authorization.js";
 import { estimateOpenAiCostUsd, recordAiUsage, reserveAiQueryForSheet, resolveAiGroupIdForSheet } from "../utils/aiQuota.js";
 import { isAiGloballyDisabled, loadAiRuntimeSettings, loadEffectiveAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
 import { groupHasFeature } from "../utils/entitlements.js";
 import { resolveChatCompletionProviderConfig } from "../utils/llmProvider.js";
 import { buildChatCompletionRequestBody, extractOpenAiAssistantText, getOpenAiResponseDiagnostics, minCompletionTokensForModel } from "../utils/openAiCompat.js";
+import { enforceAiPromptBudget } from "../utils/aiBudget.js";
 import {
   buildSheetSemanticProfile,
   resolveProfileDateColumn,
@@ -20,6 +21,7 @@ const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "6000
 const CHAT_MAX_ROWS = Math.min(100000, Number.parseInt(process.env.CHAT_MAX_ROWS || "50000", 10));
 const CHAT_SQL_AGG_MAX_ROWS = Math.min(300000, Number.parseInt(process.env.CHAT_SQL_AGG_MAX_ROWS || "120000", 10));
 const CHAT_AUDIO_MAX_CHARS = Number.parseInt(process.env.CHAT_AUDIO_MAX_CHARS || "8000", 10);
+const AI_DEBUG_LOGS = String(process.env.AI_DEBUG_LOGS || "").trim().toLowerCase() === "true";
 const CHAT_TTS_SETTINGS_KEY = "chat_tts_settings";
 const CHAT_TTS_DEFAULTS = {
   voices: { default: "nova", es: "shimmer", uk: "nova", ru: "nova" },
@@ -33,6 +35,10 @@ function resolveOpenAIRequestFailureReason(error) {
   if (message.includes("openai_request_timeout:")) return "provider_timeout";
   if (String(error?.code || "").includes("no_api_key")) return "provider_not_configured";
   return "provider_request_failed";
+}
+
+function aiError(code, details = {}) {
+  return { error: code, code, ...details };
 }
 
 let SEMANTIC_CACHE = null;
@@ -90,6 +96,18 @@ function toSqlDateLiteral(v) {
     return `${yyyy}-${mm}-${dd}`;
   }
   return null;
+}
+
+function buildSqlSafeDateExpr(valueExpr) {
+  return `(
+    CASE
+      WHEN (${valueExpr}) ~ '^\\s*\\d{4}-\\d{2}-\\d{2}\\s*$' THEN CAST(TRIM(${valueExpr}) AS DATE)
+      WHEN (${valueExpr}) ~ '^\\s*\\d{4}/\\d{2}/\\d{2}\\s*$' THEN CAST(REPLACE(TRIM(${valueExpr}), '/', '-') AS DATE)
+      WHEN (${valueExpr}) ~ '^\\s*\\d{2}-\\d{2}-\\d{4}\\s*$' THEN to_date(TRIM(${valueExpr}), 'MM-DD-YYYY')
+      WHEN (${valueExpr}) ~ '^\\s*\\d{2}/\\d{2}/\\d{4}\\s*$' THEN to_date(TRIM(${valueExpr}), 'MM/DD/YYYY')
+      ELSE NULL
+    END
+  )`;
 }
 
 function parseDateValue(v) {
@@ -335,12 +353,23 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
           looksLikeDateText(f.value) ||
           /date|time|day|month|year|period|quarter|дата|період|рік|год/i.test(String(f.column || ""))
         );
+        const safeDateExpr = buildSqlSafeDateExpr(colSql);
 
         switch(f.operator) {
+            case 'year_equals':
+              where += ` AND (
+                CASE
+                  WHEN (${colSql}) ~ '^\\s*\\d{4}\\s*$' THEN CAST(TRIM(${colSql}) AS INT)
+                  WHEN (${colSql}) ~ '^\\s*\\d{4}[-/]\\d{2}[-/]\\d{2}\\s*$' THEN EXTRACT(YEAR FROM CAST(REPLACE(TRIM(${colSql}), '/', '-') AS DATE))::INT
+                  WHEN (${colSql}) ~ '^\\s*\\d{2}[-/]\\d{2}[-/]\\d{4}\\s*$' THEN CAST(RIGHT(TRIM(${colSql}), 4) AS INT)
+                  ELSE NULL
+                END
+              ) = $${valIdx}::int`;
+              break;
             case 'gt':
               if (useDateComparators) {
                 params[params.length - 1] = dateFilterVal;
-                where += ` AND (to_date(${colSql}, 'MM-DD-YYYY') > $${valIdx}::date)`;
+                where += ` AND (${safeDateExpr} > $${valIdx}::date)`;
               } else if (numericFilterVal !== null) {
                 params[params.length - 1] = String(numericFilterVal);
                 where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) > $${valIdx}::numeric)`;
@@ -351,7 +380,7 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
             case 'gte':
               if (useDateComparators) {
                 params[params.length - 1] = dateFilterVal;
-                where += ` AND (to_date(${colSql}, 'MM-DD-YYYY') >= $${valIdx}::date)`;
+                where += ` AND (${safeDateExpr} >= $${valIdx}::date)`;
               } else if (numericFilterVal !== null) {
                 params[params.length - 1] = String(numericFilterVal);
                 where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) >= $${valIdx}::numeric)`;
@@ -362,7 +391,7 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
             case 'lt':
               if (useDateComparators) {
                 params[params.length - 1] = dateFilterVal;
-                where += ` AND (to_date(${colSql}, 'MM-DD-YYYY') < $${valIdx}::date)`;
+                where += ` AND (${safeDateExpr} < $${valIdx}::date)`;
               } else if (numericFilterVal !== null) {
                 params[params.length - 1] = String(numericFilterVal);
                 where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) < $${valIdx}::numeric)`;
@@ -373,7 +402,7 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
             case 'lte':
               if (useDateComparators) {
                 params[params.length - 1] = dateFilterVal;
-                where += ` AND (to_date(${colSql}, 'MM-DD-YYYY') <= $${valIdx}::date)`;
+                where += ` AND (${safeDateExpr} <= $${valIdx}::date)`;
               } else if (numericFilterVal !== null) {
                 params[params.length - 1] = String(numericFilterVal);
                 where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) <= $${valIdx}::numeric)`;
@@ -504,6 +533,11 @@ function noDateColumnAnswer(locale = "en") {
 function inferAggregateOperationFromMessage(message = "", ai = {}) {
   const msg = String(message || "").toLowerCase();
   const op = String(ai?.operation || "").toLowerCase();
+  const hasExplicitSingleYear = /(?:\bfor\b|\bin\b|\bза\b)\s*(?:19|20)\d{2}\b/i.test(msg);
+  const hasComparisonCue = /\b(yoy|year over year|year-over-year|annual growth|yearly growth|previous year|last year|vs\.?|versus|compare|comparison|trend|over time|timeline|mom|qoq|г\/г|р\/р|год к году|рік до року)\b/i.test(msg);
+  if (hasExplicitSingleYear && !hasComparisonCue) {
+    return /\b(average|mean)\b/i.test(msg) ? "avg" : "sum";
+  }
   if (["count", "sum", "avg", "max", "min", "top_n", "year_over_year", "chart", "plot", "trend"].includes(op)) {
     return op;
   }
@@ -515,12 +549,54 @@ function inferAggregateOperationFromMessage(message = "", ai = {}) {
   return null;
 }
 
+function detectQueryMetricIntent(message = "") {
+  const msg = String(message || "").toLowerCase();
+  if (/\b(revenue|sales|income|turnover|выручк|доход|дохід|продаж)\b/i.test(msg)) return "revenue";
+  if (/\b(expense|cost|spend|cogs|opex|расход|витрат)\b/i.test(msg)) return "expense";
+  if (/\b(profit|margin|ebit|ebitda|прибут|прибыл)\b/i.test(msg)) return "profit";
+  return null;
+}
+
+function classifyColumnMetricCategory(column = "") {
+  const c = String(column || "").toLowerCase();
+  if (!c) return null;
+  if (/\b(revenue|sales|income|turnover)\b|выручк|доход|дохід|продаж/i.test(c)) return "revenue";
+  if (/\b(expense|cost|spend|cogs|opex)\b|расход|витрат/i.test(c)) return "expense";
+  if (/\b(profit|margin|ebit|ebitda)\b|прибут|прибыл/i.test(c)) return "profit";
+  return null;
+}
+
 function isDriverRankingQuery(message = "") {
   const msg = String(message || "").toLowerCase();
   const rankingIntent = /\b(top|highest|largest|biggest|best|most|leading|rank(?:ing)?|drivers?|drives|contributors?|sources?)\b/i.test(msg);
   const valueIntent = /\b(revenue|sales|income|profit|amount|value|brought|generated|drove|bring|earnings?)\b/i.test(msg);
   return rankingIntent && valueIntent;
 }
+
+function extractYearToken(message = "") {
+  const m = String(message || "").match(/\b(19\d{2}|20\d{2})\b/);
+  return m ? String(m[1]) : null;
+}
+
+function wantsRevenueIntent(message = "") {
+  return /\b(revenue|sales|income|turnover|выручк|доход|дохід|продаж)\b/i.test(String(message || ""));
+}
+
+function findRevenueMetric(headers = []) {
+  const list = Array.isArray(headers) ? headers : [];
+  const prefs = [/net\s*revenue/i, /revenue\s*total/i, /\brevenue\b/i, /\bincome\b/i, /\bsales\b/i];
+  for (const rx of prefs) {
+    const hit = list.find((h) => rx.test(String(h || "")));
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function asksExplicitBreakdown(message = "") {
+  const msg = String(message || "").toLowerCase();
+  return /\b(by|per|group(?:ed)? by|breakdown|split by|segmented by|across)\b|по\s+|за\s+категор|по\s+категор|розбив|за\s+категор/i.test(msg);
+}
+
 
 function inferLikelyMetricColumn(headers = [], sampleRows = [], message = "", candidates = []) {
   const headerList = Array.isArray(headers) ? headers : [];
@@ -715,12 +791,23 @@ function buildChatWhereClause({ tabName = null, filters = [], rowFiltersList = [
       looksLikeDateText(f.value) ||
       /date|time|day|month|year|period|quarter|дата|період|рік|год/i.test(String(f.column || ""))
     );
+    const safeDateExpr = buildSqlSafeDateExpr(colSql);
 
     switch (f.operator) {
+      case "year_equals":
+        where += ` AND (
+          CASE
+            WHEN (${colSql}) ~ '^\\s*\\d{4}\\s*$' THEN CAST(TRIM(${colSql}) AS INT)
+            WHEN (${colSql}) ~ '^\\s*\\d{4}[-/]\\d{2}[-/]\\d{2}\\s*$' THEN EXTRACT(YEAR FROM CAST(REPLACE(TRIM(${colSql}), '/', '-') AS DATE))::INT
+            WHEN (${colSql}) ~ '^\\s*\\d{2}[-/]\\d{2}[-/]\\d{4}\\s*$' THEN CAST(RIGHT(TRIM(${colSql}), 4) AS INT)
+            ELSE NULL
+          END
+        ) = $${valIdx}::int`;
+        break;
       case "gt":
         if (useDateComparators) {
           params[params.length - 1] = dateFilterVal;
-          where += ` AND (to_date(${colSql}, 'MM-DD-YYYY') > $${valIdx}::date)`;
+          where += ` AND (${safeDateExpr} > $${valIdx}::date)`;
         } else if (numericFilterVal !== null) {
           params[params.length - 1] = String(numericFilterVal);
           where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) > $${valIdx}::numeric)`;
@@ -731,7 +818,7 @@ function buildChatWhereClause({ tabName = null, filters = [], rowFiltersList = [
       case "gte":
         if (useDateComparators) {
           params[params.length - 1] = dateFilterVal;
-          where += ` AND (to_date(${colSql}, 'MM-DD-YYYY') >= $${valIdx}::date)`;
+          where += ` AND (${safeDateExpr} >= $${valIdx}::date)`;
         } else if (numericFilterVal !== null) {
           params[params.length - 1] = String(numericFilterVal);
           where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) >= $${valIdx}::numeric)`;
@@ -742,7 +829,7 @@ function buildChatWhereClause({ tabName = null, filters = [], rowFiltersList = [
       case "lt":
         if (useDateComparators) {
           params[params.length - 1] = dateFilterVal;
-          where += ` AND (to_date(${colSql}, 'MM-DD-YYYY') < $${valIdx}::date)`;
+          where += ` AND (${safeDateExpr} < $${valIdx}::date)`;
         } else if (numericFilterVal !== null) {
           params[params.length - 1] = String(numericFilterVal);
           where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) < $${valIdx}::numeric)`;
@@ -753,7 +840,7 @@ function buildChatWhereClause({ tabName = null, filters = [], rowFiltersList = [
       case "lte":
         if (useDateComparators) {
           params[params.length - 1] = dateFilterVal;
-          where += ` AND (to_date(${colSql}, 'MM-DD-YYYY') <= $${valIdx}::date)`;
+          where += ` AND (${safeDateExpr} <= $${valIdx}::date)`;
         } else if (numericFilterVal !== null) {
           params[params.length - 1] = String(numericFilterVal);
           where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) <= $${valIdx}::numeric)`;
@@ -1640,6 +1727,25 @@ function compactSemanticProfileForPrompt(profile) {
   };
 }
 
+function compactSchemaProfileForPrompt(schemaProfile = {}) {
+  const src = schemaProfile && typeof schemaProfile === "object" ? schemaProfile : {};
+  const files = Array.isArray(src.available_files) ? src.available_files : [];
+  const compactFiles = files.slice(0, 10).map((f) => ({
+    id: String(f?.id || ""),
+    name: String(f?.name || "").slice(0, 80),
+    headers: Array.isArray(f?.headers) ? f.headers.slice(0, 40).map((h) => String(h).slice(0, 60)) : [],
+    file_label: f?.file_label ? String(f.file_label).slice(0, 80) : null,
+    import_version: Number.isFinite(Number(f?.import_version)) ? Number(f.import_version) : null,
+  }));
+  return {
+    available_tabs: Array.isArray(src.available_tabs) ? src.available_tabs.slice(0, 20).map((t) => String(t).slice(0, 80)) : [],
+    available_files: compactFiles,
+    active_filters: Array.isArray(src.active_filters) ? src.active_filters.slice(0, 30) : [],
+    split_context: src.split_context || null,
+    semantic_profile: src.semantic_profile || {},
+  };
+}
+
 async function callOpenAI({ message, schemaProfile, sampleRows, headers, conversationHistory, locale, dateFormatHints, maxOutputTokens = 800, runtime = null }) {
   const { provider, model, baseUrl, apiKey } = resolveChatCompletionProviderConfig(runtime);
   if (!apiKey) throw new Error("no_api_key");
@@ -1685,6 +1791,9 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
     "Quarter handling: Interpret Q1/Q2/Q3/Q4 as quarter periods.",
     "Quarter handling: Also interpret localized quarter aliases as Q1..Q4 (e.g., квартал 1/2/3/4, 1 квартал, I/II/III/IV квартал).",
     "Conversational Rule: ALWAYS include the filter context (e.g., the year, category, or period) in your final 'answer' string. Never just say 'Total Revenue: $X', say 'Total Revenue for 2023: $X'.",
+    "Conciseness rule: If the user asks for a single scalar value (for example: 'what is revenue for 2022?'), return exactly one short sentence with that value and context.",
+    "Conciseness rule: Do not add recommendations, disclaimers, or methodological notes unless the user explicitly asks for explanation.",
+    "Execution rule: If year/date fields exist and the request is computable from available rows, do not claim the value cannot be calculated.",
     "Language rule for quarter wording: use the English word 'quarter' only in English output.",
     "Language rule for quarter wording: in Russian use 'квартал', in Ukrainian use 'квартал/кварталу' as grammatically appropriate.",
     "Number formatting: Use grouped numbers with thousands separators in the final answer (example: 12,345.67).",
@@ -1699,10 +1808,10 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
     " - 'top_n': Use for 'drivers', 'who spent most', 'biggest segments', 'which category is highest'. Requires 'group_by'.",
     " - 'sum': Use for 'totals', 'all revenue', 'combined cost'.",
     " - 'avg': Use for 'averages', 'mean', 'per transaction'.",
-    " - 'year_over_year': Use for YoY, annual growth, comparison with prior year, 'годовое исчисление', 'річне обчислення', 'г/г', 'р/р'.",
+    " - 'year_over_year': Use for YoY, annual growth, comparison with prior year, 'годовое исчисление', 'річне обчислення', 'г/г', 'р/р', when this is the best fit for the user's full request.",
     "Supported operations: none, filter, reset, count, sum, avg, max, min, top_n, year_over_year.",
     "IMPORTANT: Only use operation: 'filter' when user explicitly says 'Show', 'Filter', 'Find', or 'View only'.",
-    "IMPORTANT: Always use operation: 'year_over_year' for any annual comparison, YoY analysis, or growth metrics between years.",
+    "IMPORTANT: Do not force an operation from one keyword. Choose the operation that best answers the full user request using available data.",
     "Use bullet points for multiple findings or drivers.",
     "Include concrete numbers and business names in explanations.",
   ].join(" ");
@@ -1723,7 +1832,7 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
     conversation_history: promptHistory,
     available_columns: headers,
     date_format_hints: dateFormatHints || [],
-    schema_profile: schemaProfile,
+    schema_profile: compactSchemaProfileForPrompt(schemaProfile),
     sample_rows: promptRows,
     output_schema: {
       answer: "string",
@@ -1738,6 +1847,11 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
       cross_targets: [{ sheet_id: "string", column: "string", operation: "sum|avg|count|max|min" }]
     }
   };
+  const promptBudgetChars = Math.max(1000, Number(runtime?.chatMaxInputChars || 12000));
+  const promptSerialized = JSON.stringify(userPrompt);
+  if (runtime?.chatPromptBudgetEnabled !== false) {
+    enforceAiPromptBudget({ text: promptSerialized, maxChars: promptBudgetChars, errorCode: "chat_prompt_budget_exceeded" });
+  }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -1745,15 +1859,17 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
   const requestUrl = `${baseUrl}/chat/completions`;
   const providerLabel = String(provider || "openai");
   const providerModel = String(model || "").trim();
-  console.info("[chat_ai_request] starting", {
-    provider: providerLabel,
-    model: providerModel,
-    resolvedBaseUrl: baseUrl,
-    requestUrl,
-    fallbackUrl: providerLabel === "openai" && OPENAI_BASE_URL && OPENAI_BASE_URL !== baseUrl ? `${OPENAI_BASE_URL}/chat/completions` : null,
-    runtimeHasOpenaiBaseUrl: !!runtime?.openaiBaseUrl,
-    providerConfigHasBaseUrl: !!(runtime?.providerConfigs?.[providerLabel]?.baseUrl),
-  });
+  if (AI_DEBUG_LOGS) {
+    console.info("[chat_ai_request] starting", {
+      provider: providerLabel,
+      model: providerModel,
+      resolvedBaseUrl: baseUrl,
+      requestUrl,
+      fallbackUrl: providerLabel === "openai" && OPENAI_BASE_URL && OPENAI_BASE_URL !== baseUrl ? `${OPENAI_BASE_URL}/chat/completions` : null,
+      runtimeHasOpenaiBaseUrl: !!runtime?.openaiBaseUrl,
+      providerConfigHasBaseUrl: !!(runtime?.providerConfigs?.[providerLabel]?.baseUrl),
+    });
+  }
   const fallbackUrl = providerLabel === "openai" && OPENAI_BASE_URL && OPENAI_BASE_URL !== baseUrl
     ? `${OPENAI_BASE_URL}/chat/completions`
     : null;
@@ -1767,7 +1883,7 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
     maxCompletionTokens: effectiveMaxTokens,
     responseFormat: { type: "json_object" },
     temperature: safeTemperature,
-    messages: [{ role: "system", content: system }, { role: "user", content: JSON.stringify(userPrompt) }],
+    messages: [{ role: "system", content: system }, { role: "user", content: promptSerialized }],
   });
   const requestPayload = JSON.stringify(requestBody);
 
@@ -1844,17 +1960,19 @@ async function callOpenAI({ message, schemaProfile, sampleRows, headers, convers
     inputPer1M: inputCostPer1M,
     outputPer1M: outputCostPer1M,
   });
-  console.info("[ai_metrics]", JSON.stringify({
-    provider,
-    endpoint: "chat.completions",
-    model,
-    latency_ms: Date.now() - startedAt,
-    prompt_tokens: promptTokens,
-    completion_tokens: completionTokens,
-    total_tokens: totalTokens,
-    estimated_cost_usd: Number.isFinite(estimatedCostUsd) ? Number(estimatedCostUsd.toFixed(8)) : null,
-    status: "ok",
-  }));
+  if (AI_DEBUG_LOGS) {
+    console.info("[ai_metrics]", JSON.stringify({
+      provider,
+      endpoint: "chat.completions",
+      model,
+      latency_ms: Date.now() - startedAt,
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      total_tokens: totalTokens,
+      estimated_cost_usd: Number.isFinite(estimatedCostUsd) ? Number(estimatedCostUsd.toFixed(8)) : null,
+      status: "ok",
+    }));
+  }
   return {
     plan: validated,
     usage: {
@@ -1872,7 +1990,7 @@ function normalizeAiPlan(raw) {
   const base = raw && typeof raw === "object" ? raw : {};
   const op = String(base.operation || "none").toLowerCase();
   const allowedOps = new Set(["none", "filter", "reset", "count", "sum", "avg", "max", "min", "top_n", "year_over_year", "chart", "plot", "trend"]);
-  const allowedFilterOps = new Set(["contains", "equals", "gt", "gte", "lt", "lte"]);
+  const allowedFilterOps = new Set(["contains", "equals", "gt", "gte", "lt", "lte", "year_equals"]);
   const safeFilters = Array.isArray(base.filters)
     ? base.filters
       .filter((f) => f && typeof f === "object")
@@ -1909,6 +2027,9 @@ function normalizeAiPlan(raw) {
   return {
     answer: typeof base.answer === "string" ? base.answer : "",
     operation: allowedOps.has(op) ? op : "none",
+    metric_intent: base.metric_intent == null ? null : String(base.metric_intent).toLowerCase(),
+    time_scope: base.time_scope == null ? null : String(base.time_scope).toLowerCase(),
+    entity_scope: base.entity_scope == null ? null : String(base.entity_scope).toLowerCase(),
     target_tab: base.target_tab == null ? null : String(base.target_tab),
     target_column: base.target_column == null ? null : String(base.target_column),
     group_by: base.group_by == null ? null : String(base.group_by),
@@ -1926,7 +2047,7 @@ function validateAiResponseSchemaStrict(raw) {
   }
   const allowedTopLevel = new Set([
     "answer", "operation", "target_tab", "target_column", "group_by", "limit",
-    "filters", "chart", "cross_talk", "cross_targets"
+    "filters", "chart", "cross_talk", "cross_targets", "metric_intent", "time_scope", "entity_scope"
   ]);
   const keys = Object.keys(raw);
   if (!keys.length) {
@@ -1938,6 +2059,133 @@ function validateAiResponseSchemaStrict(raw) {
     }
   }
   return normalizeAiPlan(raw);
+}
+
+function deriveMetricIntentFromQuestion(message = "") {
+  const msg = String(message || "").toLowerCase();
+  if (/\b(revenue|sales|income|turnover|выручк|доход|дохід|продаж)\b/i.test(msg)) return "revenue";
+  if (/\b(expense|cost|spend|cogs|opex|расход|витрат)\b/i.test(msg)) return "expense";
+  if (/\b(profit|margin|ebit|ebitda|прибут|прибыл)\b/i.test(msg)) return "profit";
+  return "auto";
+}
+
+function deriveDriverIntentFromQuestion(message = "") {
+  const msg = String(message || "").toLowerCase();
+  return /\b(driver|drivers|top|biggest|largest|main driver|leading contributor|contributor)\b|драйвер|топ|основн/i.test(msg);
+}
+
+function isRatioIntent(message = "") {
+  const msg = String(message || "").toLowerCase();
+  return /\b(quick ratio|acid test|cash runway|runway|current ratio|debt[-\s]?to[-\s]?equity|interest coverage|roi|roe|roa|eps|p\/e|wacc|irr|npv|dso|dpo|gross margin|ebitda margin)\b|коэффициент|ліквідності|ліквідн|окупаемость|рентабельн|маржа|прибутковост/i.test(msg);
+}
+
+function computeDeterministicLiquidityRunway(rows = []) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  if (!safeRows.length) return null;
+  const headers = Object.keys(safeRows[0] || {});
+  const findCol = (patterns = []) => {
+    for (const rx of patterns) {
+      const hit = headers.find((h) => rx.test(String(h || "")));
+      if (hit) return hit;
+    }
+    return null;
+  };
+  const colAssetCurr = findCol([/\bcurrent\s*assets?\b/i, /activos?\s*circulantes?/i, /оборотн(ые|і)\s*актив/i]);
+  const colAssetInv = findCol([/\binventory\b/i, /inventario/i, /запас/i]);
+  const colLiabCurr = findCol([/\bcurrent\s*liabilit(y|ies)\b/i, /pasivos?\s*corrientes?/i, /текущ(ие|і)\s*обязат/i]);
+  const colCashTotal = findCol([/\b(total\s*)?cash\b/i, /efectivo\s*total/i, /денежн(ых|их)\s*средств/i]);
+  const colExpOpex = findCol([/\bopex\b/i, /operating\s*expenses?/i, /gastos?\s*operativos/i, /операционн(ые|і)\s*расход/i]);
+  const colRevMonth = findCol([/\bmonthly\s*revenue\b/i, /ingresos?\s*mensuales/i, /ежемесячн(ая|і)\s*выручк/i]);
+  if (!colAssetCurr || !colAssetInv || !colLiabCurr || !colCashTotal || !colExpOpex || !colRevMonth) return null;
+  const sum = (col) => safeRows.reduce((acc, r) => acc + (toNum(r?.[col]) || 0), 0);
+  const ASSET_CURR = sum(colAssetCurr);
+  const ASSET_INV = sum(colAssetInv);
+  const LIAB_CURR = sum(colLiabCurr);
+  const CASH_TOTAL = sum(colCashTotal);
+  const EXP_OPEX = sum(colExpOpex);
+  const REV_MONTH = sum(colRevMonth);
+  const NET_BURN = EXP_OPEX - REV_MONTH;
+  const quickRatio = LIAB_CURR === 0 ? "DIV_ZERO_ERR" : Number(((ASSET_CURR - ASSET_INV) / LIAB_CURR).toFixed(2));
+  const runwayMonths = NET_BURN === 0 ? "DIV_ZERO_ERR" : Number((CASH_TOTAL / NET_BURN).toFixed(2));
+  return {
+    QUICK_RATIO: quickRatio,
+    NET_BURN: Number(NET_BURN.toFixed(2)),
+    RUNWAY_MONTHS: runwayMonths,
+  };
+}
+
+async function loadFormulaRegistry() {
+  const formulas = await query(
+    "SELECT code, category, expression, output_unit, precision_digits, denominator_guard_key, enabled FROM formula_registry WHERE enabled = true",
+    []
+  );
+  const keys = await query(
+    "SELECT formula_code, key_code, required, header_patterns FROM formula_keys ORDER BY formula_code, id",
+    []
+  );
+  const aliases = await query(
+    "SELECT formula_code, language, alias FROM formula_aliases",
+    []
+  );
+  const intents = await query(
+    "SELECT language, phrase, intent_code, priority FROM formula_intent_aliases ORDER BY priority ASC, id ASC",
+    []
+  ).catch(() => []);
+  const composites = await query(
+    "SELECT code, label, expression, output_unit, precision_digits, enabled FROM formula_composites WHERE enabled = true",
+    []
+  ).catch(() => []);
+  return { formulas, keys, aliases, intents, composites };
+}
+
+function pickHeaderByPatterns(headers = [], patterns = []) {
+  const list = Array.isArray(headers) ? headers : [];
+  for (const pat of (Array.isArray(patterns) ? patterns : [])) {
+    let rx = null;
+    try { rx = new RegExp(String(pat), "i"); } catch { rx = null; }
+    if (!rx) continue;
+    const hit = list.find((h) => rx.test(String(h || "")));
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function execFormulaExpression(expr = "", values = {}) {
+  const safe = String(expr || "");
+  const allowed = /^[A-Z0-9_+\-*/().\s]+$/i.test(safe);
+  if (!allowed) return null;
+  const replaced = safe.replace(/\b[A-Z_][A-Z0-9_]*\b/g, (k) => String(Number(values[k] || 0)));
+  try {
+    // eslint-disable-next-line no-new-func
+    const n = Function(`"use strict"; return (${replaced});`)();
+    return Number.isFinite(Number(n)) ? Number(n) : null;
+  } catch {
+    return null;
+  }
+}
+
+function detectFormulaIntent(message = "", intents = []) {
+  const msg = String(message || "").toLowerCase();
+  const rows = Array.isArray(intents) ? intents : [];
+  const hit = rows.find((i) => msg.includes(String(i.phrase || "").toLowerCase()));
+  return hit ? String(hit.intent_code || "") : null;
+}
+
+async function enforceHeaderBoundAiPlan(aiPlan, headers = [], sampleRows = []) {
+  const hdrs = Array.isArray(headers) ? headers : [];
+  if (!hdrs.length) return aiPlan;
+  const next = { ...(aiPlan || {}) };
+  const resolvedTarget = await resolveColumn(hdrs, next.target_column, sampleRows);
+  const resolvedGroup = await resolveColumn(hdrs, next.group_by, sampleRows);
+  const resolvedFilters = await Promise.all((Array.isArray(next.filters) ? next.filters : []).map(async (f) => {
+    const col = await resolveColumn(hdrs, f?.column, sampleRows);
+    if (!col) return null;
+    return { ...f, column: col };
+  }));
+  next.target_column = resolvedTarget || null;
+  next.group_by = resolvedGroup || null;
+  next.filters = resolvedFilters.filter(Boolean);
+  return next;
 }
 
 function sanitizePromptRows(rows = [], maxRows = 80, maxFieldChars = 120) {
@@ -2355,63 +2603,50 @@ function expandFinancialTextPhonetically(text = "", lang = "ru") {
 export async function getChatAudio(req, res) {
   const { text, locale, sheetId = null } = req.body;
   const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey || !text) return res.status(400).json({ error: "missing_params" });
+  if (!apiKey || !text) return res.status(400).json(aiError("missing_params"));
   if (String(text).length > CHAT_AUDIO_MAX_CHARS) {
-    return res.status(413).json({ error: "text_too_large" });
+    return res.status(413).json(aiError("text_too_large"));
   }
   let runtime = null;
   let globalRuntime = null;
   let aiReservation = null;
   if (sheetId) {
     const hasAccess = await checkSheetAccess(sheetId, req.user);
-    if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
-    const resolvedGroupId = await resolveAiGroupIdForSheet({ sheetId, user: req.user });
-    const tokenGroupId = Number.parseInt(String(req.user?.customer_group_id ?? req.user?.group_id ?? ""), 10);
-    let runtimeGroupId = resolvedGroupId || (Number.isInteger(tokenGroupId) && tokenGroupId > 0 ? tokenGroupId : null);
-    if (!runtimeGroupId) {
-      const membershipRows = await query(
-        `SELECT group_id
-           FROM user_groups
-          WHERE user_id = $1
-          ORDER BY is_admin DESC, group_id ASC
-          LIMIT 1`,
-        [req.user?.id]
-      );
-      const membershipGroupId = Number.parseInt(String(membershipRows?.[0]?.group_id || ""), 10);
-      if (Number.isInteger(membershipGroupId) && membershipGroupId > 0) {
-        runtimeGroupId = membershipGroupId;
-      }
-    }
+    if (!hasAccess) return res.status(403).json(aiError("Forbidden"));
+    const isPlatformAdmin = isPlatformAdminUser(req.user);
+    const resolvedGroupId = isPlatformAdmin ? null : await resolveAiGroupIdForSheet({ sheetId, user: req.user });
+    const fallbackUserGroupId = await resolveRuntimeGroupIdForUser(req.user);
+    const runtimeGroupId = isPlatformAdmin ? null : (resolvedGroupId || fallbackUserGroupId || null);
     const effective = await loadEffectiveAiRuntimeSettings(runtimeGroupId || null);
     runtime = effective.runtime;
     globalRuntime = effective.globalRuntime;
     const effectiveGlobalDisabled = isAiGloballyDisabled(globalRuntime) || isAiGloballyDisabled(runtime);
     const effectiveChatAudioEnabled = runtime?.chatAudioEnabled === true || globalRuntime?.chatAudioEnabled === true;
-    if (effectiveGlobalDisabled) return res.status(403).json({ error: "global_ai_disabled" });
-    if (!effectiveChatAudioEnabled) return res.status(403).json({ error: "chat_audio_disabled" });
+    if (effectiveGlobalDisabled) return res.status(403).json(aiError("global_ai_disabled"));
+    if (!effectiveChatAudioEnabled) return res.status(403).json(aiError("chat_audio_disabled"));
     try {
       aiReservation = await reserveAiQueryForSheet({ sheetId, user: req.user, kind: "chat_audio" });
     } catch (err) {
-      return res.status(err.statusCode || 429).json({ error: err.message, ...(err.details || {}) });
+      return res.status(err.statusCode || 429).json(aiError(err.message, err.details || {}));
     }
   }
   if (!runtime) runtime = await loadAiRuntimeSettings(null);
   if (!globalRuntime) globalRuntime = await loadAiRuntimeSettings(null);
   const effectiveGlobalDisabled = isAiGloballyDisabled(globalRuntime) || isAiGloballyDisabled(runtime);
   const effectiveChatAudioEnabled = runtime?.chatAudioEnabled === true || globalRuntime?.chatAudioEnabled === true;
-  if (effectiveGlobalDisabled) return res.status(403).json({ error: "global_ai_disabled" });
-  if (!effectiveChatAudioEnabled) return res.status(403).json({ error: "chat_audio_disabled" });
+  if (effectiveGlobalDisabled) return res.status(403).json(aiError("global_ai_disabled"));
+  if (!effectiveChatAudioEnabled) return res.status(403).json(aiError("chat_audio_disabled"));
 
   try {
     const streamResult = await synthesizeChatAudioToResponse({ text, locale, runtime, res });
     if (streamResult !== true) {
-      return res.status(502).json({ error: "tts_empty_response" });
+      return res.status(502).json(aiError("tts_empty_response"));
     }
     return;
   } catch (e) {
     const errorCode = e?.code || "internal_server_error";
     const status = errorCode === "global_ai_disabled" ? 403 : errorCode === "text_too_large" ? 413 : errorCode === "tts_timeout" ? 504 : errorCode === "tts_upstream_error" ? 502 : 500;
-    const payload = { error: errorCode };
+    const payload = aiError(errorCode);
     if (e?.message && errorCode === "tts_upstream_error") {
       payload.message = String(e.message).slice(0, 300);
     }
@@ -2574,56 +2809,94 @@ export async function synthesizeChatAudioBuffer({ text, locale, runtime = null }
 export async function chatQuery(req, res) {
   const { sheetId, activeTab = null, message, activeFilters = {}, splitContext = null, activeViewScope = null, conversationHistory = [], locale: rawLocale } = req.body || {};
   const locale = normalizeLocale(rawLocale || "en");
+  const normalizedMessage = String(message || "");
+  if (!normalizedMessage.trim()) {
+    return res.status(400).json(aiError("chat_message_required"));
+  }
   const hasSheet = Boolean(sheetId);
   if (hasSheet) {
     const hasAccess = await checkSheetAccess(sheetId, req.user);
-    if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
+    if (!hasAccess) return res.status(403).json(aiError("Forbidden"));
   }
-  const resolvedGroupId = await resolveAiGroupIdForSheet({ sheetId, user: req.user });
-  const tokenGroupId = Number.parseInt(String(req.user?.customer_group_id ?? req.user?.group_id ?? ""), 10);
-  let runtimeGroupId = resolvedGroupId || (Number.isInteger(tokenGroupId) && tokenGroupId > 0 ? tokenGroupId : null);
-  if (!runtimeGroupId) {
-    const membershipRows = await query(
-      `SELECT group_id
-         FROM user_groups
-        WHERE user_id = $1
-        ORDER BY is_admin DESC, group_id ASC
-        LIMIT 1`,
-      [req.user?.id]
-    );
-    const membershipGroupId = Number.parseInt(String(membershipRows?.[0]?.group_id || ""), 10);
-    if (Number.isInteger(membershipGroupId) && membershipGroupId > 0) {
-      runtimeGroupId = membershipGroupId;
-    }
-  }
+  const isPlatformAdmin = isPlatformAdminUser(req.user);
+  const resolvedGroupId = isPlatformAdmin ? null : await resolveAiGroupIdForSheet({ sheetId, user: req.user });
+  const fallbackUserGroupId = await resolveRuntimeGroupIdForUser(req.user);
+  const runtimeGroupId = isPlatformAdmin ? null : (resolvedGroupId || fallbackUserGroupId || null);
   const { runtime } = await loadEffectiveAiRuntimeSettings(runtimeGroupId || null);
-  console.info("[chat_ai_runtime] resolved", {
-    groupId: runtimeGroupId || null,
-    aiProvider: runtime?.aiProvider || null,
-    openaiModel: runtime?.openaiModel || null,
-    providerModel: runtime?.providerConfigs?.[runtime?.aiProvider || "openai"]?.model || null,
-    openaiBaseUrl: runtime?.openaiBaseUrl || null,
-    providerBaseUrl: runtime?.providerConfigs?.[runtime?.aiProvider || "openai"]?.baseUrl || null,
-  });
-  if (isAiGloballyDisabled(runtime)) return res.status(403).json({ error: "global_ai_disabled" });
-  if (!runtime.chatEnabled) return res.status(403).json({ error: "chat_disabled" });
+  if (AI_DEBUG_LOGS) {
+    console.info("[chat_ai_runtime] resolved", {
+      groupId: runtimeGroupId || null,
+      aiProvider: runtime?.aiProvider || null,
+      openaiModel: runtime?.openaiModel || null,
+      providerModel: runtime?.providerConfigs?.[runtime?.aiProvider || "openai"]?.model || null,
+      openaiBaseUrl: runtime?.openaiBaseUrl || null,
+      providerBaseUrl: runtime?.providerConfigs?.[runtime?.aiProvider || "openai"]?.baseUrl || null,
+    });
+  }
+  if (isAiGloballyDisabled(runtime)) return res.status(403).json(aiError("global_ai_disabled"));
+  if (!runtime.chatEnabled) return res.status(403).json(aiError("chat_disabled"));
   if (runtimeGroupId) {
     const rows = await query("SELECT id, entitlements FROM groups WHERE id = $1 LIMIT 1", [runtimeGroupId]);
-    if (rows?.[0] && !groupHasFeature(rows[0], "chatAi")) return res.status(403).json({ error: "feature_not_enabled:chatAi" });
+    if (rows?.[0] && !groupHasFeature(rows[0], "chatAi")) return res.status(403).json(aiError("feature_not_enabled:chatAi"));
   }
   let aiReservation = null;
+  const maxInputChars = Math.max(1, Number(runtime.chatMaxInputChars || 12000));
+  const maxHistoryMessages = Math.max(1, Number(runtime.chatHistoryWindowMessages || 8));
+  if (normalizedMessage.length > maxInputChars) {
+    console.warn("[chat_size_guard] chat_message_too_large", {
+      size: normalizedMessage.length,
+      limit: maxInputChars,
+      sheetId,
+      userId: req.user?.id || null,
+    });
+    return res.status(413).json(aiError("chat_message_too_large", { maxChars: maxInputChars }));
+  }
+  const incomingHistoryCount = Array.isArray(conversationHistory) ? conversationHistory.length : 0;
+  if (incomingHistoryCount > maxHistoryMessages) {
+    console.info("[chat_size_guard] trimming_conversation_history", {
+      incomingMessages: incomingHistoryCount,
+      keptMessages: maxHistoryMessages,
+      sheetId,
+      userId: req.user?.id || null,
+    });
+  }
+  const activeFiltersPayloadChars = JSON.stringify(activeFilters || {}).length;
+  if (activeFiltersPayloadChars > maxInputChars) {
+    console.warn("[chat_size_guard] chat_filters_too_large", {
+      size: activeFiltersPayloadChars,
+      limit: maxInputChars,
+      sheetId,
+      userId: req.user?.id || null,
+    });
+    return res.status(413).json(aiError("chat_filters_too_large", { maxChars: maxInputChars }));
+  }
   const boundedConversationHistory = Array.isArray(conversationHistory)
-    ? conversationHistory.slice(-Math.max(1, Number(runtime.chatHistoryWindowMessages || 8)))
+    ? conversationHistory.slice(-maxHistoryMessages)
     : [];
-  const estimatedInputChars = String(message || "").length + JSON.stringify(boundedConversationHistory).length;
-  if (estimatedInputChars > Number(runtime.chatMaxInputChars || 12000)) {
-    return res.status(413).json({ error: "chat_input_too_large", maxChars: Number(runtime.chatMaxInputChars || 12000) });
+  const compactConversationHistory = boundedConversationHistory
+    .map((entry) => ({
+      role: String(entry?.role || "").trim().toLowerCase() === "assistant" ? "assistant" : "user",
+      content: String(entry?.content || "").slice(0, 4000),
+    }))
+    .filter((entry) => entry.content);
+  const estimatedInputChars = normalizedMessage.length + JSON.stringify(compactConversationHistory).length;
+  if (estimatedInputChars > maxInputChars) {
+    console.warn("[chat_size_guard] chat_input_too_large", {
+      size: estimatedInputChars,
+      limit: maxInputChars,
+      messageChars: normalizedMessage.length,
+      historyChars: JSON.stringify(compactConversationHistory).length,
+      historyMessages: compactConversationHistory.length,
+      sheetId,
+      userId: req.user?.id || null,
+    });
+    return res.status(413).json(aiError("chat_input_too_large", { maxChars: maxInputChars }));
   }
 
   try {
     aiReservation = await reserveAiQueryForSheet({ sheetId, user: req.user, kind: "chat_query" });
   } catch (err) {
-    return res.status(err.statusCode || 429).json({ error: err.message, ...(err.details || {}) });
+    return res.status(err.statusCode || 429).json(aiError(err.message, err.details || {}));
   }
 
   let loadedSample = null;
@@ -2636,7 +2909,7 @@ export async function chatQuery(req, res) {
   if (hasSheet) {
     // PERF-01: Load only SAMPLE rows for AI context, not all 500k rows
     loadedSample = await loadAccessibleRows(sheetId, req.user, null, 100);
-    if (loadedSample?.forbidden) return res.status(403).json({ error: "Forbidden" });
+    if (loadedSample?.forbidden) return res.status(403).json(aiError("Forbidden"));
 
     baseHeaders = loadedSample.headers || [];
     const scopedVisibleColumns = normalizeScopeColumns(activeViewScope?.visibleColumns || [], baseHeaders);
@@ -2649,14 +2922,14 @@ export async function chatQuery(req, res) {
   }
 
   if (!hasSheet) {
-    const noSheetPrompt = `${message}\n\nNo spreadsheet is currently opened. Reply with usage guidance and safe interpretations of local workspace AI/UX rules only. Do not invent numbers or reference sheet rows.`;
+    const noSheetPrompt = `${normalizedMessage}\n\nNo spreadsheet is currently opened. Reply with usage guidance and safe interpretations of local workspace AI/UX rules only. Do not invent numbers or reference sheet rows.`;
     let noSheetPlan;
     try {
       const aiResult = await callOpenAI({
         message: noSheetPrompt,
         headers: [],
         sampleRows: [],
-        conversationHistory: boundedConversationHistory,
+        conversationHistory: compactConversationHistory,
         locale,
         dateFormatHints: [],
         schemaProfile: { available_tabs: [], available_files: [], active_filters: [], split_context: null, semantic_profile: {} },
@@ -2668,7 +2941,11 @@ export async function chatQuery(req, res) {
     const reason = resolveOpenAIRequestFailureReason(e);
     const detail = String(e?.message || "").slice(0, 280);
     console.error("OpenAI call failed:", e);
-    return res.status(502).json({ error: "ai_unavailable", reason, detail });
+    const statusCode = Number(e?.statusCode || 0);
+    if (statusCode === 413 || String(e?.code || "") === "chat_prompt_budget_exceeded" || String(e?.message || "") === "chat_prompt_budget_exceeded") {
+      return res.status(413).json(aiError("chat_prompt_budget_exceeded", { reason, detail }));
+    }
+    return res.status(502).json(aiError("ai_unavailable", { reason, detail }));
   }
 
     return res.json({
@@ -2759,7 +3036,7 @@ export async function chatQuery(req, res) {
       message: `${message}\n\nAvailable tabs: ${tabNames.join(", ") || "N/A"}\nIf the question maps to a specific tab, set target_tab in the JSON response.`,
       headers: aiHeaders,
       sampleRows,
-      conversationHistory: boundedConversationHistory,
+      conversationHistory: compactConversationHistory,
       locale,
       dateFormatHints,
       schemaProfile: { 
@@ -2773,6 +3050,58 @@ export async function chatQuery(req, res) {
       runtime,
     });
     ai = normalizeAiPlan(aiResult.plan);
+    const requiredIntent = deriveMetricIntentFromQuestion(message);
+    const requiresDriverPlan = deriveDriverIntentFromQuestion(message);
+    const targetColumnFromPlan = String(ai?.target_column || "").toLowerCase();
+    const targetIntent =
+      /\b(revenue|sales|income|turnover)\b|выручк|доход|дохід|продаж/i.test(targetColumnFromPlan) ? "revenue" :
+      (/\b(expense|cost|spend|cogs|opex)\b|расход|витрат/i.test(targetColumnFromPlan) ? "expense" :
+      (/\b(profit|margin|ebit|ebitda)\b|прибут|прибыл/i.test(targetColumnFromPlan) ? "profit" : "auto"));
+    const mismatch = requiredIntent !== "auto" && targetIntent !== "auto" && requiredIntent !== targetIntent;
+    if (mismatch) {
+      const retryPrompt = `${message}\n\nValidation feedback: selected target_column "${ai.target_column}" does not match required metric intent "${requiredIntent}". Replan with matching metric intent using only available_columns.`;
+      const retry = await callOpenAI({
+        message: `${retryPrompt}\n\nAvailable tabs: ${tabNames.join(", ") || "N/A"}\nIf the question maps to a specific tab, set target_tab in the JSON response.`,
+        headers: aiHeaders,
+        sampleRows,
+        conversationHistory: compactConversationHistory,
+        locale,
+        dateFormatHints,
+        schemaProfile: {
+          available_tabs: tabNames,
+          available_files: availableFiles,
+          active_filters: activeDashboardFilters,
+          split_context: parsedSplitContext,
+          semantic_profile: compactSemanticProfileForPrompt(semanticProfile),
+        },
+        runtime,
+      });
+      ai = normalizeAiPlan(retry.plan);
+    }
+    if (requiresDriverPlan) {
+      const validDriverPlan = String(ai?.operation || "") === "top_n" && String(ai?.group_by || "").trim().length > 0;
+      if (!validDriverPlan) {
+        const retryPrompt = `${message}\n\nValidation feedback: this is a driver-ranking request. Replan with operation='top_n' and a non-empty group_by dimension column from available_columns.`;
+        const retry = await callOpenAI({
+          message: `${retryPrompt}\n\nAvailable tabs: ${tabNames.join(", ") || "N/A"}\nIf the question maps to a specific tab, set target_tab in the JSON response.`,
+          headers: aiHeaders,
+          sampleRows,
+          conversationHistory: compactConversationHistory,
+          locale,
+          dateFormatHints,
+          schemaProfile: {
+            available_tabs: tabNames,
+            available_files: availableFiles,
+            active_filters: activeDashboardFilters,
+            split_context: parsedSplitContext,
+            semantic_profile: compactSemanticProfileForPrompt(semanticProfile),
+          },
+          runtime,
+        });
+        ai = normalizeAiPlan(retry.plan);
+      }
+    }
+    ai = await enforceHeaderBoundAiPlan(ai, aiHeaders, sampleRows);
     await recordAiUsage({
       reservation: aiReservation,
       provider: aiResult.usage?.provider,
@@ -2785,6 +3114,10 @@ export async function chatQuery(req, res) {
     const reason = resolveOpenAIRequestFailureReason(e);
     const detail = String(e?.message || "").slice(0, 280);
     console.error("OpenAI call failed:", e);
+    const statusCode = Number(e?.statusCode || 0);
+    if (statusCode === 413 || String(e?.code || "") === "chat_prompt_budget_exceeded" || String(e?.message || "") === "chat_prompt_budget_exceeded") {
+      return res.status(413).json({ error: "chat_prompt_budget_exceeded", reason, detail });
+    }
     return res.status(502).json({ error: "ai_unavailable", reason, detail });
   }
 
@@ -2816,7 +3149,14 @@ export async function chatQuery(req, res) {
     if (!resolvedGroupBy && resolvedOperation !== "year_over_year" && profileDimension && aiHeaders.includes(profileDimension)) {
       resolvedGroupBy = profileDimension;
     }
+    if (isRatioIntent(message)) {
+      resolvedOperation = "ratio";
+      resolvedGroupBy = null;
+      resolvedTarget = null;
+    }
+
     const aiClarifiedInsteadOfAnswering = isClarificationOrApologyAnswer(ai?.answer);
+    const metricIntent = detectQueryMetricIntent(message);
     const asksProductRanking = /\b(top|highest|best|selling|sold|product|products)\b/.test(msgLower)
       || /топ|продаж|продукт|товар/i.test(msgLower);
     if (asksProductRanking) {
@@ -2846,7 +3186,8 @@ export async function chatQuery(req, res) {
       }
     }
 
-    if (resolvedOperation === "none" || aiClarifiedInsteadOfAnswering) {
+    const aiProvidedConcretePlan = !!(ai?.operation && ai.operation !== "none");
+    if ((resolvedOperation === "none" || aiClarifiedInsteadOfAnswering) && !aiProvidedConcretePlan) {
       const inferredTarget = profileMetric || inferLikelyMetricColumn(aiHeaders, sampleRows, message, [ai?.target_column]);
       const inferredGroupBy = inferredTarget
         ? (resolveProfileDimension(semanticProfile, message, [inferredTarget]) || inferLikelyDimensionColumn(aiHeaders, sampleRows, [inferredTarget]))
@@ -2872,6 +3213,51 @@ export async function chatQuery(req, res) {
       if (!resolvedTarget && inferredTarget) resolvedTarget = inferredTarget;
       if (!resolvedGroupBy && inferredGroupBy) resolvedGroupBy = inferredGroupBy;
       if (!Number.isFinite(Number(ai?.limit))) ai.limit = 5;
+    }
+
+    const explicitYear = extractYearToken(message);
+    if (isDriverRankingQuery(message) && wantsRevenueIntent(message) && (!resolvedTarget || resolvedOperation === "none")) {
+      const metric = findRevenueMetric(aiHeaders) || inferLikelyMetricColumn(aiHeaders, sampleRows, message, ["revenue", "net revenue", "revenue total", "income", "sales"]);
+      const dimension = inferLikelyDimensionColumn(aiHeaders, sampleRows, [metric, profileDateColumn, "Date", "Start Date", "End Date"]);
+      if (metric && dimension) {
+        resolvedOperation = "top_n";
+        resolvedTarget = metric;
+        resolvedGroupBy = dimension;
+        ai.limit = Number.isFinite(Number(ai?.limit)) ? Number(ai.limit) : 1;
+        if (explicitYear) {
+          const dateCol = profileDateColumn || aiHeaders.find((h) => /date|period|month|year|дата|період|рік|год/i.test(String(h)));
+          if (dateCol) {
+            executionFilters.push({ column: dateCol, operator: "year_equals", value: explicitYear });
+          } else {
+            const yearCol = aiHeaders.find((h) => /\byear\b|рік|год/i.test(String(h)));
+            if (yearCol) executionFilters.push({ column: yearCol, operator: "equals", value: explicitYear });
+          }
+        }
+      }
+    }
+    if (deriveDriverIntentFromQuestion(message) && (resolvedOperation !== "top_n" || !resolvedGroupBy)) {
+      return res.status(422).json(aiError("invalid_driver_plan", {
+        reason: "driver_query_requires_top_n_with_group_by",
+      }));
+    }
+
+    if (["sum", "avg"].includes(resolvedOperation) && resolvedGroupBy && !asksExplicitBreakdown(message)) {
+      resolvedGroupBy = null;
+    }
+
+    const targetCategory = classifyColumnMetricCategory(resolvedTarget || "");
+    const categoryMismatch = metricIntent && targetCategory && metricIntent !== targetCategory;
+    if (categoryMismatch) {
+      const fallbackTarget = inferLikelyMetricColumn(aiHeaders, sampleRows, message, [metricIntent]);
+      const fallbackCategory = classifyColumnMetricCategory(fallbackTarget || "");
+      if (fallbackTarget && (!fallbackCategory || fallbackCategory === metricIntent)) {
+        resolvedTarget = fallbackTarget;
+      } else {
+        return res.status(422).json({
+          error: "metric_intent_mismatch",
+          message: `Requested ${metricIntent} but selected metric column is ${targetCategory || "unknown"}.`,
+        });
+      }
     }
 
     const opNeedsTarget = new Set(["sum", "avg", "max", "min", "top_n"]);
@@ -2958,7 +3344,111 @@ export async function chatQuery(req, res) {
       aggregation: ai.chart.aggregation || "sum"
     } : null;
 
-    if (numericOps.has(resolvedOperation)) {
+    if (resolvedOperation === "ratio") {
+      const fullLoad = await loadAccessibleRows(sheetId, req.user, selectedTab);
+      if (fullLoad?.forbidden) {
+        return res.status(403).json(aiError("forbidden"));
+      }
+      const projected = projectRowsToHeaders(fullLoad.rows, aiHeaders);
+      const matchedRows = applyFilters(projected, executionFilters);
+      const registry = await loadFormulaRegistry().catch(() => null);
+      if (registry?.formulas?.length) {
+        const intentCode = detectFormulaIntent(message, registry.intents);
+        if (intentCode === "METRIC_RUNWAY") {
+          const deterministic = computeDeterministicLiquidityRunway(matchedRows);
+          if (deterministic) {
+            exec = { answer: `Calculated RUNWAY_MONTHS: ${deterministic.RUNWAY_MONTHS}\nLogic Used: CASH_TOTAL / (EXP_OPEX - REV_MONTH)`, previewRows: [] };
+          }
+        } else if (intentCode === "METRIC_NET_BURN") {
+          const deterministic = computeDeterministicLiquidityRunway(matchedRows);
+          if (deterministic) {
+            const burn = Number(deterministic.NET_BURN || 0);
+            const state = burn > 0 ? "Net Loss/Burn" : (burn < 0 ? "Net Profit/Surplus" : "Break-even");
+            exec = { answer: `Calculated NET_BURN: ${burn.toFixed(2)} (${state})\nLogic Used: EXP_OPEX - REV_MONTH`, previewRows: [] };
+          }
+        } else if (intentCode === "FIXED_OPERATING_COSTS" || intentCode === "VARIABLE_EXPENSES") {
+          const headers = aiHeaders || [];
+          const sumBy = (patterns) => {
+            const col = pickHeaderByPatterns(headers, patterns);
+            if (!col) return 0;
+            return matchedRows.reduce((acc, r) => acc + (toNum(r?.[col]) || 0), 0);
+          };
+          if (intentCode === "FIXED_OPERATING_COSTS") {
+            const v = sumBy([/\bopex\b/i, /operating\s*expenses?/i, /gastos?\s*operativos/i, /операционн(ые|і)\s*расход/i])
+              + sumBy([/payroll/i, /nómina/i, /фонд\s*оплаты\s*труда/i, /фонд\s*оплати\s*праці/i])
+              + sumBy([/rent/i, /alquiler/i, /аренд/i, /оренд/i]);
+            exec = { answer: `Calculated Fixed Operating Costs: ${v.toFixed(2)}\nLogic Used: EXP_OPEX + EXP_PAYROLL + Rent-Expense`, previewRows: [] };
+          } else {
+            const v = sumBy([/commissions?\s*paid/i, /comisi[oó]n/i, /комисси/i, /комісі/i])
+              + sumBy([/cloud\s*infrastructure/i, /infraestructura\s*cloud/i, /облачн.*инфраструктур/i])
+              + sumBy([/rev\s*share/i, /participaci[oó]n\s*en\s*ingresos/i, /доля\s*выручки/i, /частка\s*виручки/i]);
+            exec = { answer: `Calculated Volume-Based Variable Costs: ${v.toFixed(2)}\nLogic Used: Commissions-Paid + Cloud-Infrastructure-Costs + RevShare`, previewRows: [] };
+          }
+        } else if (intentCode === "AD_PERFORMANCE") {
+          const headers = aiHeaders || [];
+          const sumBy = (patterns) => {
+            const col = pickHeaderByPatterns(headers, patterns);
+            if (!col) return 0;
+            return matchedRows.reduce((acc, r) => acc + (toNum(r?.[col]) || 0), 0);
+          };
+          const rev = sumBy([/revenue/i, /ingresos/i, /выручк/i, /виручк/i]);
+          const imps = sumBy([/impressions?/i, /impresiones/i, /показ/i]);
+          const delivered = sumBy([/ads?\s*delivered/i, /entregad/i, /доставлен/i]);
+          const requested = sumBy([/ads?\s*requested/i, /solicitad/i, /запрошен/i]);
+          const ecpm = imps === 0 ? "DIV_ZERO_ERR" : ((rev / imps) * 1000).toFixed(2);
+          const fill = requested === 0 ? "DIV_ZERO_ERR" : (delivered / requested).toFixed(2);
+          exec = { answer: `Calculated METRIC_ECPM: ${ecpm}; Calculated METRIC_FILL_RATE: ${fill}\nLogic Used: (REV_TOTAL / IMPRESSIONS_TOTAL) * 1000; ADS_DELIVERED / ADS_REQUESTED`, previewRows: [] };
+        }
+        const aliasText = String(message || "").toLowerCase();
+        const aliases = Array.isArray(registry.aliases) ? registry.aliases : [];
+        const matchedCodes = new Set(
+          aliases
+            .filter((a) => aliasText.includes(String(a.alias || "").toLowerCase()))
+            .map((a) => String(a.formula_code || ""))
+            .filter(Boolean)
+        );
+        const selectedFormulas = registry.formulas.filter((f) => matchedCodes.has(String(f.code)));
+        if (selectedFormulas.length) {
+          const keyRows = Array.isArray(registry.keys) ? registry.keys : [];
+          const values = {};
+          for (const f of selectedFormulas) {
+            const fkeys = keyRows.filter((k) => String(k.formula_code) === String(f.code));
+            for (const k of fkeys) {
+              if (values[k.key_code] != null) continue;
+              if (String(k.key_code) === "NET_BURN" && values.NET_BURN != null) continue;
+              const header = pickHeaderByPatterns(aiHeaders, k.header_patterns || []);
+              if (!header) continue;
+              values[k.key_code] = matchedRows.reduce((acc, r) => acc + (toNum(r?.[header]) || 0), 0);
+            }
+            if (f.code === "NET_BURN" && values.NET_BURN == null) {
+              const nb = execFormulaExpression(String(f.expression || ""), values);
+              if (nb != null) values.NET_BURN = nb;
+            }
+          }
+          const outputs = [];
+          for (const f of selectedFormulas) {
+            const denomKey = String(f.denominator_guard_key || "");
+            if (denomKey && Number(values[denomKey] || 0) === 0) {
+              outputs.push(`${f.code}: DIV_ZERO_ERR`);
+              continue;
+            }
+            const out = execFormulaExpression(String(f.expression || ""), values);
+            if (out == null) continue;
+            const p = Number.isFinite(Number(f.precision_digits)) ? Number(f.precision_digits) : 2;
+            outputs.push(`${f.code}: ${Number(out).toFixed(p)}`);
+            values[f.code] = out;
+          }
+          if (outputs.length) {
+            exec = { answer: outputs.join("; "), previewRows: [] };
+          }
+        }
+      }
+      if (!exec) {
+        const fallbackHint = "To calculate that, should I use [Category A] or [Category B] from the spreadsheet?";
+        exec = await computeDeterministicAnswer("ratio", matchedRows, null, null, ai?.limit, locale, message);
+        if (!exec?.answer) exec = { answer: fallbackHint, previewRows: [] };
+      }
+    } else if (numericOps.has(resolvedOperation)) {
         exec = await computeSqlAggregation({
             sheetId,
             user: req.user,
@@ -2986,7 +3476,7 @@ export async function chatQuery(req, res) {
             operation: resolvedOperation,
             targetColumn: resolvedTarget,
             groupBy: resolvedGroupBy,
-            message,
+        message: normalizedMessage,
             ai,
             headers: aiHeaders,
             sampleRows,
@@ -3024,6 +3514,7 @@ export async function chatQuery(req, res) {
         }
     }
 
+
     const isChartOp = ["chart", "plot", "trend"].includes(ai?.operation);
     if (!chart && isChartOp && ai?.chart) {
       chart = {
@@ -3044,6 +3535,7 @@ export async function chatQuery(req, res) {
             answer = exec.answer;
         }
     }
+
 
     if (!isEnglishLocale(locale) && answer) {
       const translated = await translateDashboardItems({
@@ -3079,6 +3571,68 @@ export async function chatQuery(req, res) {
   } catch (err) {
     console.error("Chat processing failed:", err);
     res.status(500).json({ error: "internal_server_error" });
+  }
+}
+
+export async function chatQueryStream(req, res) {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders?.();
+
+  const writeEvent = (event, payload) => {
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  };
+
+  try {
+    let statusCode = 200;
+    let payload = null;
+    const proxyRes = {
+      status(code) {
+        statusCode = Number(code) || 500;
+        return this;
+      },
+      json(obj) {
+        payload = obj || {};
+        return this;
+      },
+    };
+
+    await chatQuery(req, proxyRes);
+    if (!payload) {
+      writeEvent("error", { error: "empty_response" });
+      res.end();
+      return;
+    }
+    if (statusCode >= 400) {
+      writeEvent("error", payload);
+      res.end();
+      return;
+    }
+
+    const answer = String(payload.answer || "");
+    const actions = payload.actions || { reset_filters: false, filters: [], chart: null };
+    const meta = payload.meta || {};
+    writeEvent("meta", { actions, meta });
+    if (!answer) {
+      writeEvent("done", { answer: "" });
+      res.end();
+      return;
+    }
+    const sentenceChunks = answer
+      .split(/(?<=[.!?])\s+|\n+/g)
+      .map((s) => String(s || "").trim())
+      .filter(Boolean);
+    const chunks = sentenceChunks.length ? sentenceChunks : [answer];
+    for (const chunk of chunks) {
+      writeEvent("chunk", { text: chunk });
+    }
+    writeEvent("done", { answer });
+    res.end();
+  } catch (e) {
+    writeEvent("error", { error: "stream_failed", message: String(e?.message || "") });
+    res.end();
   }
 }
 

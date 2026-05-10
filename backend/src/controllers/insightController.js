@@ -7,6 +7,7 @@ import { resolveAiGroupIdForSheet } from "../utils/aiQuota.js";
 import { isAiGloballyDisabled, loadAiRuntimeSettings, loadEffectiveAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
 import { resolveChatCompletionProviderConfig } from "../utils/llmProvider.js";
 import { buildChatCompletionRequestBody, extractOpenAiAssistantText, minCompletionTokensForModel } from "../utils/openAiCompat.js";
+import { enforceAiPromptBudget } from "../utils/aiBudget.js";
 
 const INSIGHT_MAX_ROWS = Number.parseInt(process.env.INSIGHT_MAX_ROWS || "300000", 10);
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10);
@@ -20,6 +21,7 @@ const INSIGHT_CACHE_MAX_ENTRIES = Number.parseInt(process.env.INSIGHT_CACHE_MAX_
 const INSIGHT_TRANSLATION_CACHE = new Map();
 const INSIGHT_TRANSLATION_CACHE_MAX_ENTRIES = Number.parseInt(process.env.INSIGHT_TRANSLATION_CACHE_MAX_ENTRIES || "1000", 10);
 const INSIGHT_TRANSLATION_CACHE_SETTINGS_KEY = "insight_translation_cache_settings";
+const AI_DEBUG_LOGS = String(process.env.AI_DEBUG_LOGS || "").trim().toLowerCase() === "true";
 const DEFAULT_INSIGHT_TRANSLATION_CACHE_TTL_MS = Number.parseInt(
   process.env.INSIGHT_TRANSLATION_CACHE_TTL_MS || `${60 * 60 * 1000}`,
   10
@@ -344,8 +346,10 @@ function buildLegacyInsightPromptEnvelope({ metricCol, dateCol, series, context 
   };
   const userContent = JSON.stringify(payload);
   if (userContent.length > INSIGHT_AI_MAX_PROMPT_CHARS) {
-    console.warn(`[insights] forecast ai skipped: prompt_chars=${userContent.length} max=${INSIGHT_AI_MAX_PROMPT_CHARS}`);
-    console.warn(`[insights] recommendations ai skipped: prompt_chars=${userContent.length} max=${INSIGHT_AI_MAX_PROMPT_CHARS}`);
+    if (AI_DEBUG_LOGS) {
+      console.warn(`[insights] forecast ai skipped: prompt_chars=${userContent.length} max=${INSIGHT_AI_MAX_PROMPT_CHARS}`);
+      console.warn(`[insights] recommendations ai skipped: prompt_chars=${userContent.length} max=${INSIGHT_AI_MAX_PROMPT_CHARS}`);
+    }
     return null;
   }
   return payload;
@@ -376,8 +380,10 @@ async function callInsightRag({ metricCol, dateCol, categoryCol, series, categor
     priority_signals: (attentionTitles || []).slice(0, 6).map((t) => truncateText(t, 120)),
   };
   const userContent = JSON.stringify(promptPayload);
-  if (userContent.length > maxPromptChars) {
-    console.warn(`[insights] ai rag skipped: prompt_chars=${userContent.length} max=${maxPromptChars}`);
+  try {
+    enforceAiPromptBudget({ text: userContent, maxChars: maxPromptChars, errorCode: "insight_prompt_budget_exceeded" });
+  } catch {
+    if (AI_DEBUG_LOGS) console.warn(`[insights] ai rag skipped: prompt_chars=${userContent.length} max=${maxPromptChars}`);
     return null;
   }
 
@@ -411,6 +417,11 @@ async function callInsightRag({ metricCol, dateCol, categoryCol, series, categor
 
   const system = "You generate deterministic dashboard insights from supplied data only. No invented values.";
   const user = `Return JSON only. Build 3 forecast periods and 3 concise recommendations.\n\n${userContent}`;
+  try {
+    enforceAiPromptBudget({ text: user, maxChars: maxPromptChars, errorCode: "insight_prompt_budget_exceeded" });
+  } catch {
+    return null;
+  }
   const timeoutMs = Number(runtime?.openaiTimeoutMs || OPENAI_TIMEOUT_MS);
   const temperature = Number(runtime?.openaiTemperature);
   const safeTemperature = Number.isFinite(temperature) ? Math.max(0, Math.min(2, temperature)) : 0.1;
@@ -657,6 +668,37 @@ async function loadAccessibleRows(sheetId, user) {
     params
   );
   if (allRows.length > INSIGHT_MAX_ROWS) {
+    if (hasFullAccess) {
+      try {
+        const summaryRows = await query(
+          `SELECT period_key, category_key, metric_key, agg_sum
+             FROM sheet_insight_summaries
+            WHERE sheet_id = $1
+            ORDER BY period_key ASC
+            LIMIT $2`,
+          [sheetId, INSIGHT_MAX_ROWS]
+        );
+        if (summaryRows.length) {
+          const rows = summaryRows.map((r) => ({
+            Period: r.period_key,
+            Metric: r.metric_key,
+            Category: r.category_key,
+            Value: Number(r.agg_sum || 0),
+          }));
+          return {
+            headers: ["Period", "Metric", "Category", "Value"],
+            rows,
+            tooLarge: false,
+            forbidden: false,
+            reportSourceId,
+            sourceVersion,
+            usedPrecomputedSummary: true,
+          };
+        }
+      } catch (_) {
+        // fallback to existing too-large behavior
+      }
+    }
     return { headers: visibleHeaders, rows: [], tooLarge: true, forbidden: false, reportSourceId, sourceVersion };
   }
 

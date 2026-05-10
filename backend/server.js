@@ -157,7 +157,17 @@ app.use("/", oneDriveRoutes); // /auth/onedrive/*, /onedrive/files
 
 // Global Error Handler
 app.use((err, req, res, next) => {
-  console.error("Global error:", err);
+  const status = Number.isInteger(err?.statusCode) ? err.statusCode : 500;
+  const code = String(err?.code || err?.name || "internal_server_error");
+  const message = String(err?.message || "internal_server_error").slice(0, 300);
+  console.error("[http_error]", {
+    request_id: req.id || null,
+    method: req.method,
+    path: req.path,
+    status,
+    code,
+    message,
+  });
   if (res.headersSent) {
     return next(err);
   }

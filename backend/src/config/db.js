@@ -7,6 +7,11 @@ const { Pool } = pg;
 
 const tenantDbContext = new AsyncLocalStorage();
 const tenantPools = new Map();
+const tenantPoolMeta = new Map();
+const DB_SLOW_QUERY_MS = parsePositiveIntEnv("DB_SLOW_QUERY_MS", 750);
+const DB_DEBUG_QUERIES = String(process.env.DB_DEBUG_QUERIES || "").trim().toLowerCase() === "true";
+const TENANT_POOL_MAX_CACHED = parsePositiveIntEnv("TENANT_POOL_MAX_CACHED", 50);
+const TENANT_POOL_IDLE_EVICT_MS = parsePositiveIntEnv("TENANT_POOL_IDLE_EVICT_MS", 10 * 60 * 1000);
 
 function parsePositiveIntEnv(name, fallback) {
   const raw = process.env[name];
@@ -64,7 +69,13 @@ function activePool() {
 }
 
 export async function query(sql, params) {
+  const startedAt = Date.now();
   const res = await activePool().query(sql, params);
+  const elapsedMs = Date.now() - startedAt;
+  if (elapsedMs >= DB_SLOW_QUERY_MS || DB_DEBUG_QUERIES) {
+    const compactSql = String(sql || "").replace(/\s+/g, " ").trim().slice(0, 240);
+    console.warn(`[db_query] elapsed_ms=${elapsedMs} rows=${Number(res?.rowCount || 0)} sql="${compactSql}"`);
+  }
   return res.rows;
 }
 
@@ -118,15 +129,61 @@ export function tenantDatabaseNameForGroupId(groupId) {
 export async function getTenantPool(dbName) {
   const safeName = assertSafeIdentifier(dbName, "tenant_database_name");
   const existing = tenantPools.get(safeName);
-  if (existing) return existing;
+  if (existing) {
+    tenantPoolMeta.set(safeName, { lastUsedAt: Date.now() });
+    return existing;
+  }
+  if (tenantPools.size >= TENANT_POOL_MAX_CACHED) {
+    const candidates = Array.from(tenantPoolMeta.entries())
+      .sort((a, b) => Number(a?.[1]?.lastUsedAt || 0) - Number(b?.[1]?.lastUsedAt || 0));
+    const oldest = candidates[0]?.[0];
+    if (oldest && tenantPools.has(oldest)) {
+      const oldestPool = tenantPools.get(oldest);
+      tenantPools.delete(oldest);
+      tenantPoolMeta.delete(oldest);
+      try {
+        await oldestPool.end();
+      } catch {
+        // no-op
+      }
+    }
+  }
   const next = createPool(buildConnectionConfig({ database: safeName }));
   tenantPools.set(safeName, next);
+  tenantPoolMeta.set(safeName, { lastUsedAt: Date.now() });
   return next;
 }
 
 export function runWithDbPool(dbPool, callback) {
+  for (const [name, poolRef] of tenantPools.entries()) {
+    if (poolRef === dbPool) {
+      tenantPoolMeta.set(name, { lastUsedAt: Date.now() });
+      break;
+    }
+  }
   return tenantDbContext.run({ pool: dbPool }, callback);
 }
+
+setInterval(async () => {
+  const now = Date.now();
+  const stale = [];
+  for (const [name, meta] of tenantPoolMeta.entries()) {
+    const lastUsedAt = Number(meta?.lastUsedAt || 0);
+    if (!lastUsedAt || now - lastUsedAt < TENANT_POOL_IDLE_EVICT_MS) continue;
+    stale.push(name);
+  }
+  for (const name of stale) {
+    const poolRef = tenantPools.get(name);
+    tenantPools.delete(name);
+    tenantPoolMeta.delete(name);
+    if (!poolRef) continue;
+    try {
+      await poolRef.end();
+    } catch {
+      // no-op
+    }
+  }
+}, Math.max(30000, Math.floor(TENANT_POOL_IDLE_EVICT_MS / 2))).unref?.();
 
 export async function forEachActiveTenantPool(callback) {
   if (!isTenantDbIsolationEnabled()) return;
@@ -908,6 +965,47 @@ export async function initDb(targetPool = pool, options = {}) {
 
   await db.query(`ALTER TABLE sheet_rows ADD COLUMN IF NOT EXISTS tab_name TEXT;`);
   await db.query(`CREATE INDEX IF NOT EXISTS idx_sheet_rows_tab ON sheet_rows(sheet_id, tab_name);`);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS import_row_staging (
+      id BIGSERIAL PRIMARY KEY,
+      job_id UUID NOT NULL,
+      sheet_name TEXT NOT NULL,
+      row_index INTEGER NOT NULL,
+      row_data JSONB NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_import_row_staging_job ON import_row_staging(job_id, id);`);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_import_row_staging_job_sheet_row ON import_row_staging(job_id, sheet_name, row_index);`);
+
+  // Precomputed insight summary rows (additive cache for insight reads; source-of-truth remains sheet_rows).
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS sheet_insight_summaries (
+      id BIGSERIAL PRIMARY KEY,
+      sheet_id TEXT NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
+      tab_name TEXT,
+      period_key TEXT NOT NULL,
+      category_key TEXT NOT NULL DEFAULT '__all__',
+      metric_key TEXT NOT NULL,
+      agg_sum NUMERIC NOT NULL DEFAULT 0,
+      agg_avg NUMERIC,
+      agg_count INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await db.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sheet_insight_summaries_unique
+      ON sheet_insight_summaries(sheet_id, tab_name, period_key, category_key, metric_key);
+  `);
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_sheet_insight_summaries_sheet_metric_period
+      ON sheet_insight_summaries(sheet_id, metric_key, period_key);
+  `);
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_sheet_insight_summaries_sheet_tab
+      ON sheet_insight_summaries(sheet_id, tab_name);
+  `);
 
   // Multiple active sheets can coexist (customer/source scoped behavior).
   await db.query(`DROP INDEX IF EXISTS sheets_one_active_true_idx;`);

@@ -6,11 +6,11 @@ set -euo pipefail
 
 # Optional overrides
 REGION="${REGION:-us-central1}"
-REPO="${REPO:-data-insights-portal}"
+REPO="${REPO:-tforn-insights}"
 BACKEND_SERVICE="${BACKEND_SERVICE:-data-insights-backend}"
 FRONTEND_SERVICE="${FRONTEND_SERVICE:-data-insights-frontend}"
 DB_INSTANCE="${DB_INSTANCE:-data-insights-pg}"
-DB_NAME="${DB_NAME:-portaldb}"
+DB_NAME="${DB_NAME:-tforn_insights_db}"
 DB_USER="${DB_USER:-portal}"
 TENANT_DB_PREFIX="${TENANT_DB_PREFIX:-tenant}"
 TAG="${TAG:-latest}"

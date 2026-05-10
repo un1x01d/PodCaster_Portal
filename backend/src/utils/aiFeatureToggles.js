@@ -1,6 +1,6 @@
 import { query } from "../config/db.js";
 import { loadAiRuntimeSettings, loadEffectiveAiRuntimeSettings } from "./aiRuntimeSettings.js";
-import { isPlatformAdminUser } from "./authorization.js";
+import { isPlatformAdminUser, resolveRuntimeGroupIdForUser } from "./authorization.js";
 
 export const AI_FEATURE_TOGGLES_SETTINGS_KEY = "ai_feature_toggles_settings";
 
@@ -72,35 +72,6 @@ export async function resolveEffectiveAiFeaturesForUser(user) {
   if (isPlatformAdminUser(user)) {
     return resolveEffectiveAiFeaturesForGroupId(null);
   }
-  const tokenGroupId = Number.parseInt(String(user?.customer_group_id || ""), 10);
-  if (Number.isInteger(tokenGroupId) && tokenGroupId > 0) {
-    return resolveEffectiveAiFeaturesForGroupId(tokenGroupId);
-  }
-  const rows = await query(
-    `SELECT group_id
-       FROM user_groups
-      WHERE user_id = $1`,
-    [userId]
-  );
-  const effectiveRows = Array.isArray(rows) ? rows : [];
-  const groupIds = effectiveRows
-    .map((row) => Number.parseInt(String(row?.group_id || ""), 10))
-    .filter((groupId) => Number.isInteger(groupId) && groupId > 0);
-  if (!groupIds.length) {
-    return resolveEffectiveAiFeaturesForGroupId(null);
-  }
-  const effectivePerGroup = await Promise.all(groupIds.map((groupId) => resolveEffectiveAiFeaturesForGroupId(groupId)));
-  return effectivePerGroup.reduce((acc, groupEffective) => ({
-    chatEnabled: acc.chatEnabled || groupEffective?.chatEnabled === true,
-    dashboardTranslationEnabled: acc.dashboardTranslationEnabled || groupEffective?.dashboardTranslationEnabled === true,
-    chatAudioEnabled: acc.chatAudioEnabled || groupEffective?.chatAudioEnabled === true,
-    insightAiEnabled: acc.insightAiEnabled || groupEffective?.insightAiEnabled === true,
-    businessClassificationEnabled: acc.businessClassificationEnabled || groupEffective?.businessClassificationEnabled === true,
-  }), {
-    chatEnabled: false,
-    dashboardTranslationEnabled: false,
-    chatAudioEnabled: false,
-    insightAiEnabled: false,
-    businessClassificationEnabled: false,
-  });
+  const runtimeGroupId = await resolveRuntimeGroupIdForUser(user);
+  return resolveEffectiveAiFeaturesForGroupId(runtimeGroupId);
 }

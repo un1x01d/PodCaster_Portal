@@ -113,6 +113,13 @@ export async function auth(req, res, next) {
             try {
                 const rows = await query(
                     `SELECT u.role,
+                            (
+                              SELECT ug.group_id
+                                FROM user_groups ug
+                               WHERE ug.user_id = u.id
+                               ORDER BY ug.is_admin DESC, ug.group_id ASC
+                               LIMIT 1
+                            ) AS resolved_group_id,
                             EXISTS (
                               SELECT 1 FROM user_groups ug
                               WHERE ug.user_id = u.id AND ug.is_admin = TRUE
@@ -131,6 +138,7 @@ export async function auth(req, res, next) {
                 const isGroupAdmin = String(row.is_group_admin || "").toLowerCase() === "true" || row.is_group_admin === true;
                 req.user.is_group_admin = isGroupAdmin;
                 req.user.group_admin = isGroupAdmin;
+                req.user.resolved_group_id = Number.parseInt(String(row.resolved_group_id || ""), 10) || null;
                 req.user.is_admin = isPlatformAdminUser(req.user);
             } catch (err) {
                 if (!AUTH_DB_REFRESH_FAIL_OPEN) {
@@ -164,7 +172,6 @@ export function generateToken(user) {
     }
     const payload = { id: user.id, email: user.email, role: user.role };
     if (user.customer_id) payload.customer_id = user.customer_id;
-    if (user.customer_group_id) payload.customer_group_id = user.customer_group_id;
     if (user.tenant_database) payload.tenant_database = user.tenant_database;
     return jwt.sign(payload, JWT_SECRET, signOpts);
 }

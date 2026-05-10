@@ -15,7 +15,7 @@ import { normalizeGroupEntitlements, groupHasFeature } from "../utils/entitlemen
 import { sendInvitationEmail, loadInviteEmailTemplate, normalizeInviteEmailTemplateForSave, renderInviteTemplate } from "../utils/smtpMailer.js";
 import { loadInvitationPolicy, saveInvitationPolicy, computeInvitationExpiryDate } from "../utils/invitationLifecycle.js";
 import { DLP_SETTINGS_KEY, normalizeDlpSettings } from "../utils/dlp.js";
-import { isPlatformAdminUser } from "../utils/authorization.js";
+import { isPlatformAdminUser, resolveUserAccessContext } from "../utils/authorization.js";
 import { normalize2faDigits, normalize2faPeriod } from "../utils/twoFactor.js";
 import { AI_FEATURE_TOGGLES_SETTINGS_KEY, normalizeAiFeatureToggles, resolveEffectiveAiFeaturesForUser } from "../utils/aiFeatureToggles.js";
 import { loadAiRuntimeSettings, saveAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
@@ -38,6 +38,7 @@ export const REVISION_COMPARE_SETTINGS_KEY = "revision_compare_settings";
 const METRICS_EXPOSURE_SETTINGS_KEY = "metrics_exposure_settings";
 const EMAIL_INGEST_SETTINGS_KEY = "email_ingest_settings";
 const EMAIL_INGEST_ALLOWLIST_KEY = "email_ingest_allowlist";
+const IMPORT_PIPELINE_SETTINGS_KEY = "import_pipeline_settings";
 const TWO_FACTOR_TOTP_SETTINGS_KEY = "two_factor_totp_settings";
 const SMS_OTP_CONFIG_KEY = "sms_otp_config";
 const RAW_INSIGHT_TRANSLATION_CACHE_TTL_MS = Number.parseInt(
@@ -47,7 +48,7 @@ const RAW_INSIGHT_TRANSLATION_CACHE_TTL_MS = Number.parseInt(
 const DEFAULT_INSIGHT_TRANSLATION_CACHE_TTL_MINUTES = Number.isFinite(RAW_INSIGHT_TRANSLATION_CACHE_TTL_MS)
     ? Math.max(1, Math.round(RAW_INSIGHT_TRANSLATION_CACHE_TTL_MS / (60 * 1000)))
     : 60;
-const DEFAULT_TOTP_ISSUER = String(process.env.TWO_FACTOR_TOTP_ISSUER || "Data Insights Portal").trim() || "Data Insights Portal";
+const DEFAULT_TOTP_ISSUER = String(process.env.TWO_FACTOR_TOTP_ISSUER || "TFORN Insights").trim() || "TFORN Insights";
 const DEFAULT_TOTP_DIGITS = normalize2faDigits(process.env.TWO_FACTOR_TOTP_DIGITS || 6, 6);
 const DEFAULT_TOTP_PERIOD = normalize2faPeriod(process.env.TWO_FACTOR_TOTP_PERIOD || 30, 30);
 const REVISION_COMPARE_MAX_ROWS_CAP = 100000;
@@ -128,21 +129,40 @@ export async function listAuditLogs(req, res) {
         clauses.push(`al.resource_type = $${params.length}`);
     }
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-    let limitSql = "";
-    if (pagination.hasPagination) {
-        params.push(pagination.limit, pagination.offset);
-        limitSql = ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
+    const cursorRaw = String(req.query?.cursor || "").trim();
+    let cursor = null;
+    if (cursorRaw) {
+        try { cursor = JSON.parse(Buffer.from(cursorRaw, "base64url").toString("utf8")); } catch { cursor = null; }
     }
+    if (cursor?.createdAt && Number.isInteger(Number(cursor?.id))) {
+        params.push(String(cursor.createdAt), Number(cursor.id));
+        clauses.push(`(al.created_at < $${params.length - 1}::timestamp OR (al.created_at = $${params.length - 1}::timestamp AND al.id < $${params.length}))`);
+    }
+    const whereFinal = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const limit = pagination.hasPagination ? pagination.limit : 100;
+    params.push(limit + 1);
     const rows = await query(
         `SELECT al.id, al.actor_user_id, u.email AS actor_email, al.action, al.resource_type,
                 al.resource_id, al.request_id, al.ip, al.user_agent, al.metadata, al.created_at
            FROM audit_logs al
            LEFT JOIN users u ON u.id = al.actor_user_id
-          ${where}
-          ORDER BY al.created_at DESC${limitSql}`,
+          ${whereFinal}
+          ORDER BY al.created_at DESC, al.id DESC
+          LIMIT $${params.length}`,
         params
     );
-    res.json(rows);
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    const last = items[items.length - 1];
+    const nextCursor = hasMore && last
+        ? Buffer.from(JSON.stringify({ createdAt: last.created_at, id: last.id }), "utf8").toString("base64url")
+        : null;
+    res.set("X-Next-Cursor", nextCursor || "");
+    res.set("X-Has-More", hasMore ? "1" : "0");
+    if (String(req.query?.cursor_mode || "").toLowerCase() === "body") {
+        return res.json({ items, nextCursor, hasMore });
+    }
+    return res.json(items);
 }
 
 export async function getAiUsageSummary(req, res) {
@@ -232,8 +252,8 @@ export async function getAiUsageSummary(req, res) {
 }
 
 async function getAdminGroups(userId) {
-    const res = await query('SELECT group_id FROM user_groups WHERE user_id = $1 AND is_admin = TRUE', [userId]);
-    return res.map(r => r.group_id);
+    const access = await resolveUserAccessContext({ id: userId });
+    return access.managedGroupIds;
 }
 
 async function loadGroupForAdminAction(groupId) {
@@ -1864,6 +1884,47 @@ export function normalizeEmailIngestSettings(raw = {}) {
     };
 }
 
+export function normalizeImportPipelineSettings(raw = {}) {
+    const enabled = raw?.importStreamingEnabled;
+    const v2 = raw?.queuedImportStreamingV2Enabled;
+    const stagingWrite = raw?.importStagingWriteEnabled;
+    const stagingFinalize = raw?.importStagingFinalizeEnabled;
+    return {
+        importStreamingEnabled: enabled === true || String(enabled).trim().toLowerCase() === "true",
+        queuedImportStreamingV2Enabled: v2 === true || String(v2).trim().toLowerCase() === "true",
+        importStagingWriteEnabled: stagingWrite === true || String(stagingWrite).trim().toLowerCase() === "true",
+        importStagingFinalizeEnabled: stagingFinalize === true || String(stagingFinalize).trim().toLowerCase() === "true",
+    };
+}
+
+export async function getImportPipelineSetting(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [IMPORT_PIPELINE_SETTINGS_KEY]);
+    const current = normalizeImportPipelineSettings(rows?.[0]?.value || {});
+    return res.json(current);
+}
+
+export async function setImportPipelineSetting(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    assertAllowedKeys(req.body || {}, ["importStreamingEnabled", "queuedImportStreamingV2Enabled", "importStagingWriteEnabled", "importStagingFinalizeEnabled"]);
+    const next = normalizeImportPipelineSettings(req.body || {});
+    await query(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+         ON CONFLICT (key)
+         DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+        [IMPORT_PIPELINE_SETTINGS_KEY, JSON.stringify(next)]
+    );
+    await writeAuditLog({
+        req,
+        action: "import_pipeline.settings_updated",
+        resourceType: "app_settings",
+        resourceId: IMPORT_PIPELINE_SETTINGS_KEY,
+        metadata: next,
+    });
+    return res.json({ success: true, ...next });
+}
+
 export function normalizeEmailIngestSenderAllowlist(raw = {}) {
     const allowedSenderDomains = Array.isArray(raw?.allowedSenderDomains)
         ? raw.allowedSenderDomains
@@ -1955,6 +2016,20 @@ export async function setAiRuntimeSetting(req, res) {
     try {
         if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
         const incoming = req.body && typeof req.body === "object" ? { ...req.body } : {};
+        assertAllowedKeys(incoming, [
+            "aiRuntimePreset", "aiProvider", "providerConfigs",
+            "globalAiDisabled", "chatEnabled", "chatAudioEnabled", "dashboardTranslationEnabled", "businessClassificationEnabled", "insightAiEnabled",
+            "chatMaxInputChars", "chatHistoryWindowMessages", "dashboardTranslateMaxItems", "dashboardTranslateMaxCharsPerItem",
+            "chatPromptBudgetEnabled",
+            "businessClassificationModel", "businessClassificationApplyUploads", "businessClassificationApplyEmailIngest", "businessClassificationApplyAutosync",
+            "businessClassificationMaxSampleRows", "businessClassificationMaxPromptChars", "businessClassificationMaxOutputTokens",
+            "llmMaxOutputTokens", "openaiModel", "openaiBaseUrl", "openaiTimeoutMs", "openaiTemperature", "openaiMaxOutputTokens",
+            "openaiInputCostPer1M", "openaiOutputCostPer1M", "translationOpenaiModel", "translationTemperature", "translationMaxOutputTokens",
+            "insightAiModel", "insightAiMaxSeriesPoints", "insightAiMaxPromptChars",
+            "chatAudioMaxChars", "chatAudioTtsModelEn", "chatAudioTtsModelDefault", "chatAudioTtsVoice", "chatAudioTtsSpeed",
+            "aiBaseUrlAllowlistEnabled", "aiBaseUrlAllowlistBypass", "aiBaseUrlAllowlist",
+            "importStreamingEnabled",
+        ]);
         const aiProvider = String(incoming.aiProvider || "openai").trim().toLowerCase();
         const providerConfigs = incoming.providerConfigs && typeof incoming.providerConfigs === "object" ? incoming.providerConfigs : {};
         const providerModel = String(providerConfigs?.[aiProvider]?.model || "").trim();
@@ -1981,7 +2056,15 @@ export async function setAiRuntimeSetting(req, res) {
             action: "ai_runtime.settings_updated",
             resourceType: "app_settings",
             resourceId: "ai_runtime_settings:global",
-            metadata: { ...next, groupId: null },
+            metadata: {
+                ...next,
+                groupId: null,
+                aiBaseUrlPolicy: {
+                    allowlistEnabled: next.aiBaseUrlAllowlistEnabled === true,
+                    allowlistBypass: next.aiBaseUrlAllowlistBypass === true,
+                    allowlistSize: Array.isArray(next.aiBaseUrlAllowlist) ? next.aiBaseUrlAllowlist.length : 0,
+                },
+            },
         });
         return res.json({ success: true, ...next, groupId: null });
     } catch (err) {
