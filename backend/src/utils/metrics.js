@@ -1,7 +1,11 @@
 const appStartMs = Date.now();
 const httpRequestTotals = new Map();
 const httpRequestDurationMs = new Map();
+const ingestionLatencyMs = [];
+let importWorkerQueueDepth = 0;
+let importWorkerActiveJobs = 0;
 const MAX_METRIC_SERIES = Number.parseInt(process.env.METRICS_MAX_SERIES || "2000", 10);
+const MAX_INGESTION_SAMPLES = Number.parseInt(process.env.METRICS_INGESTION_SAMPLE_SIZE || "2000", 10);
 
 export function normalizeRouteLabel(route) {
   const raw = String(route || "unknown").split("?")[0] || "unknown";
@@ -51,6 +55,23 @@ export function recordHttpRequest({ method, route, statusCode, durationMs }) {
   incrementCapped(httpRequestDurationMs, durationKey);
 }
 
+export function recordIngestionLatencyMs(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n < 0) return;
+  ingestionLatencyMs.push(n);
+  if (ingestionLatencyMs.length > MAX_INGESTION_SAMPLES) ingestionLatencyMs.shift();
+}
+
+export function setImportWorkerQueueDepth(depth) {
+  const n = Number(depth);
+  importWorkerQueueDepth = Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+}
+
+export function setImportWorkerActiveJobs(count) {
+  const n = Number(count);
+  importWorkerActiveJobs = Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+}
+
 export function renderPrometheusMetrics() {
   const lines = [];
   const uptimeSeconds = Math.max(0, Math.floor((Date.now() - appStartMs) / 1000));
@@ -84,6 +105,36 @@ export function renderPrometheusMetrics() {
     lines.push(
       `app_http_request_duration_bucket_count{method="${sanitizeLabel(method)}",route="${sanitizeLabel(route)}",bucket="${sanitizeLabel(bucket)}"} ${value}`
     );
+  }
+
+  lines.push("# HELP app_import_worker_queue_depth Number of queued/retryable import jobs");
+  lines.push("# TYPE app_import_worker_queue_depth gauge");
+  lines.push(`app_import_worker_queue_depth ${importWorkerQueueDepth}`);
+
+  lines.push("# HELP app_import_worker_active_jobs Number of currently running import jobs");
+  lines.push("# TYPE app_import_worker_active_jobs gauge");
+  lines.push(`app_import_worker_active_jobs ${importWorkerActiveJobs}`);
+
+  const ingestionBuckets = new Map([
+    ["le_100", 0],
+    ["le_500", 0],
+    ["le_1000", 0],
+    ["le_5000", 0],
+    ["le_10000", 0],
+    ["gt_10000", 0],
+  ]);
+  for (const ms of ingestionLatencyMs) {
+    if (ms <= 100) ingestionBuckets.set("le_100", ingestionBuckets.get("le_100") + 1);
+    else if (ms <= 500) ingestionBuckets.set("le_500", ingestionBuckets.get("le_500") + 1);
+    else if (ms <= 1000) ingestionBuckets.set("le_1000", ingestionBuckets.get("le_1000") + 1);
+    else if (ms <= 5000) ingestionBuckets.set("le_5000", ingestionBuckets.get("le_5000") + 1);
+    else if (ms <= 10000) ingestionBuckets.set("le_10000", ingestionBuckets.get("le_10000") + 1);
+    else ingestionBuckets.set("gt_10000", ingestionBuckets.get("gt_10000") + 1);
+  }
+  lines.push("# HELP app_ingestion_latency_ms_bucket_count Ingestion latency bucket counts (ms)");
+  lines.push("# TYPE app_ingestion_latency_ms_bucket_count gauge");
+  for (const [bucket, count] of ingestionBuckets.entries()) {
+    lines.push(`app_ingestion_latency_ms_bucket_count{bucket="${sanitizeLabel(bucket)}"} ${count}`);
   }
 
   return `${lines.join("\n")}\n`;

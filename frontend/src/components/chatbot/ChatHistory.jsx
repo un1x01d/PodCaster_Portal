@@ -430,13 +430,17 @@ export default function ChatHistory({ sheetId = null, messages, onApplyFilter, c
                 return false;
             }
 
-            await Promise.race([
-              new Promise((resolve) => {
-                audio.onended = resolve;
-                audio.onerror = resolve;
-              }),
-              new Promise((resolve) => setTimeout(resolve, 15000)),
-            ]);
+            await new Promise((resolve) => {
+                let doneOnce = false;
+                const done = () => {
+                    if (doneOnce) return;
+                    doneOnce = true;
+                    resolve();
+                };
+                audio.onended = done;
+                audio.onerror = done;
+                audio.onpause = done;
+            });
             URL.revokeObjectURL(objectUrl);
             return true;
         }
@@ -447,7 +451,15 @@ export default function ChatHistory({ sheetId = null, messages, onApplyFilter, c
         window._currentAudio = audio;
         window._audioQueue.push(audio);
         await new Promise((resolve, reject) => {
-            audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
+            let doneOnce = false;
+            const done = () => {
+                if (doneOnce) return;
+                doneOnce = true;
+                URL.revokeObjectURL(url);
+                resolve();
+            };
+            audio.onended = done;
+            audio.onpause = done;
             audio.onerror = reject;
             audio.play().catch(reject);
         });

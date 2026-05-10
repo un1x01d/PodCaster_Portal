@@ -10,6 +10,7 @@ import {
 } from "./common.js";
 
 const SFTP_TMP_PREFIX = "storage-sftp-";
+const fsp = fs.promises;
 
 function shellQuote(value) {
   const raw = String(value ?? "");
@@ -20,19 +21,19 @@ function safeAskpassScript(secretValue) {
   return `#!/bin/sh\nprintf '%s\\n' ${shellQuote(String(secretValue || ""))}\n`;
 }
 
-function cleanupStaleSftpTempArtifacts() {
+async function cleanupStaleSftpTempArtifacts() {
   try {
     const root = os.tmpdir();
     const now = Date.now();
-    const entries = fs.readdirSync(root, { withFileTypes: true });
+    const entries = await fsp.readdir(root, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isDirectory() || !entry.name.startsWith(SFTP_TMP_PREFIX)) continue;
       const target = path.join(root, entry.name);
       try {
-        const st = fs.statSync(target);
+        const st = await fsp.stat(target);
         const ageMs = now - Number(st.mtimeMs || st.ctimeMs || now);
         if (ageMs > 60 * 60 * 1000) {
-          fs.rmSync(target, { recursive: true, force: true });
+          await fsp.rm(target, { recursive: true, force: true });
         }
       } catch {}
     }
@@ -57,12 +58,12 @@ function quoteScpRemotePath(pathText) {
   return `'${raw.replaceAll("'", `'\\''`)}'`;
 }
 
-function buildSshAuthContext(cfg) {
+async function buildSshAuthContext(cfg) {
   const host = trimString(cfg?.host);
   const username = trimString(cfg?.username);
   const port = parsePositiveInt(cfg?.port) || 22;
   if (!host || !username) return null;
-  cleanupStaleSftpTempArtifacts();
+  await cleanupStaleSftpTempArtifacts();
 
   const args = [
     "-o", "BatchMode=no", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10",
@@ -74,20 +75,20 @@ function buildSshAuthContext(cfg) {
   if (trimString(cfg?.authMode, "password") === "ssh_key") {
     const privateKey = trimString(decryptSettingValue(String(cfg?.privateKey || "")));
     if (!privateKey) return null;
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), SFTP_TMP_PREFIX));
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), SFTP_TMP_PREFIX));
     const keyPath = path.join(tmpDir, "id_rsa");
-    fs.writeFileSync(keyPath, privateKey, { mode: 0o600 });
+    await fsp.writeFile(keyPath, privateKey, { mode: 0o600 });
     cleanup.push(() => {
-      try { fs.unlinkSync(keyPath); } catch {}
-      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+      fsp.unlink(keyPath).catch(() => {});
+      fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     });
     args.push("-i", keyPath, "-o", "IdentitiesOnly=yes", "-o", "PreferredAuthentications=publickey");
-    const passphrase = trimString(decryptSettingValue(String(cfg?.passphrase || "")));
+      const passphrase = trimString(decryptSettingValue(String(cfg?.passphrase || "")));
     if (passphrase) {
       const scriptPath = path.join(tmpDir, "askpass.sh");
-      fs.writeFileSync(scriptPath, safeAskpassScript(passphrase), { mode: 0o700 });
+      await fsp.writeFile(scriptPath, safeAskpassScript(passphrase), { mode: 0o700 });
       cleanup.push(() => {
-        try { fs.unlinkSync(scriptPath); } catch {}
+        fsp.unlink(scriptPath).catch(() => {});
       });
       env.SSH_ASKPASS = scriptPath;
       env.SSH_ASKPASS_REQUIRE = "force";
@@ -96,12 +97,12 @@ function buildSshAuthContext(cfg) {
   } else {
     const password = trimString(decryptSettingValue(String(cfg?.password || "")));
     if (!password) return null;
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), SFTP_TMP_PREFIX));
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), SFTP_TMP_PREFIX));
     const scriptPath = path.join(tmpDir, "askpass.sh");
-    fs.writeFileSync(scriptPath, safeAskpassScript(password), { mode: 0o700 });
+    await fsp.writeFile(scriptPath, safeAskpassScript(password), { mode: 0o700 });
     cleanup.push(() => {
-      try { fs.unlinkSync(scriptPath); } catch {}
-      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+      fsp.unlink(scriptPath).catch(() => {});
+      fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     });
     env.SSH_ASKPASS = scriptPath;
     env.SSH_ASKPASS_REQUIRE = "force";
@@ -113,7 +114,7 @@ function buildSshAuthContext(cfg) {
 }
 
 async function runSshCommand(cfg, remoteCommand, timeoutMs = PROVIDER_TIMEOUT_MS) {
-  const ctx = buildSshAuthContext(cfg);
+  const ctx = await buildSshAuthContext(cfg);
   if (!ctx) return { ok: false, error: "sftp_not_configured" };
   try {
     const proc = spawn("ssh", [...ctx.args, ctx.target, String(remoteCommand || "")], { env: ctx.env, stdio: ["ignore", "pipe", "pipe"] });
@@ -181,10 +182,10 @@ export async function fetchSftpMetadata(cfg, sourceRef) {
 }
 
 export async function downloadSftpFile(cfg, sourceRef) {
-  const ctx = buildSshAuthContext(cfg);
+  const ctx = await buildSshAuthContext(cfg);
   if (!ctx) throw new Error("sftp_not_configured");
   const filePath = sanitizeSftpSourceRef(sourceRef);
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "storage-sftp-dl-"));
+  const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "storage-sftp-dl-"));
   const localPath = path.join(tmpDir, path.basename(filePath) || "download.xlsx");
   try {
     const remotePathArg = `${ctx.target}:${quoteScpRemotePath(filePath)}`;
@@ -204,7 +205,7 @@ export async function downloadSftpFile(cfg, sourceRef) {
       });
     });
     if (code !== 0) throw new Error(`sftp_download_failed: ${String(stderr || "").slice(0, 400)}`);
-    const buf = await fs.promises.readFile(localPath);
+    const buf = await fsp.readFile(localPath);
     const lowerName = filePath.toLowerCase();
     return {
       buffer: buf,
@@ -214,7 +215,7 @@ export async function downloadSftpFile(cfg, sourceRef) {
       sftpPath: filePath,
     };
   } finally {
-    try { await fs.promises.rm(tmpDir, { recursive: true, force: true }); } catch {}
+    try { await fsp.rm(tmpDir, { recursive: true, force: true }); } catch {}
     for (const cleanupFn of ctx.cleanup || []) {
       try { cleanupFn(); } catch {}
     }

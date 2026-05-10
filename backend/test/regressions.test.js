@@ -325,6 +325,7 @@ test("chat driver ranking queries infer revenue metric and grouping dimension", 
   assert.match(source, /function inferLikelyMetricColumn/);
   assert.match(source, /isUsableMetricColumn/);
   assert.match(source, /numericHits >= Math\.max\(1, Math\.ceil\(samples\.length \/ 3\)\)/);
+  assert.match(source, /revenue growth\|sales growth\|income growth/);
 });
 
 test("insight feed locale changes force fresh translation and avoid caching unchanged cards", async () => {

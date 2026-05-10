@@ -28,6 +28,7 @@ import {
     normalizeRevisionCompareSettings,
     REVISION_COMPARE_SETTINGS_KEY,
 } from "./userController.js";
+import { recordIngestionLatencyMs, setImportWorkerActiveJobs, setImportWorkerQueueDepth } from "../utils/metrics.js";
 
 const MAX_UPLOAD_SHEETS = Number.parseInt(
     process.env.MAX_UPLOAD_SHEETS || (process.env.NODE_ENV === "production" ? "20" : "50"),
@@ -1993,6 +1994,7 @@ async function markImportJobRetryable({ id, attempts, maxAttempts, error }) {
 }
 
 async function executeQueuedImportJob(job, payloadRows = null) {
+    const t0 = Date.now();
     // Payload lives in DB until the job reaches a terminal state.
     const rows = payloadRows || await query(
         `SELECT file_bytes, payload_meta, byte_size
@@ -2107,6 +2109,7 @@ async function executeQueuedImportJob(job, payloadRows = null) {
             mode: "async_db_queue",
         },
     });
+    recordIngestionLatencyMs(Date.now() - t0);
 }
 
 async function processNextImportJob(ownerId) {
@@ -2161,6 +2164,21 @@ async function processNextImportJob(ownerId) {
 }
 
 async function processImportJobsForCurrentDb(ownerId) {
+    try {
+        const qRows = await query(
+            `SELECT
+                COUNT(*) FILTER (WHERE status IN ('queued','retryable'))::int AS queued_depth,
+                COUNT(*) FILTER (WHERE status = 'running')::int AS active_jobs
+             FROM import_jobs`,
+            []
+        );
+        const queuedDepth = Number(qRows?.[0]?.queued_depth || 0);
+        const activeJobs = Number(qRows?.[0]?.active_jobs || 0);
+        setImportWorkerQueueDepth(queuedDepth);
+        setImportWorkerActiveJobs(activeJobs);
+    } catch {
+        // no-op metrics fallback
+    }
     let claimedAny = false;
     for (let i = 0; i < IMPORT_JOB_MAX_CLAIMS_PER_TICK; i += 1) {
         const didWork = await processNextImportJob(ownerId);

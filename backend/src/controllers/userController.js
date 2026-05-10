@@ -41,6 +41,7 @@ const EMAIL_INGEST_ALLOWLIST_KEY = "email_ingest_allowlist";
 const IMPORT_PIPELINE_SETTINGS_KEY = "import_pipeline_settings";
 const TWO_FACTOR_TOTP_SETTINGS_KEY = "two_factor_totp_settings";
 const SMS_OTP_CONFIG_KEY = "sms_otp_config";
+const AI_SELF_LEARNING_SETTINGS_KEY = "ai_self_learning_settings";
 const RAW_INSIGHT_TRANSLATION_CACHE_TTL_MS = Number.parseInt(
     process.env.INSIGHT_TRANSLATION_CACHE_TTL_MS || `${60 * 60 * 1000}`,
     10
@@ -2010,6 +2011,225 @@ export async function getAiRuntimeSetting(req, res) {
     } catch (err) {
         return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
     }
+}
+
+export function normalizeAiSelfLearningSettings(raw = {}) {
+    return {
+        enabled: raw?.enabled === true || String(raw?.enabled || "").toLowerCase() === "true",
+        autoApplyApprovedRules: raw?.autoApplyApprovedRules === true || String(raw?.autoApplyApprovedRules || "").toLowerCase() === "true",
+        autoApproveAllCandidates: raw?.autoApproveAllCandidates === true || String(raw?.autoApproveAllCandidates || "").toLowerCase() === "true",
+        minConfidence: Math.max(0, Math.min(1, Number(raw?.minConfidence ?? 0.75) || 0.75)),
+    };
+}
+
+export async function getAiSelfLearningSetting(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [AI_SELF_LEARNING_SETTINGS_KEY]);
+    const current = normalizeAiSelfLearningSettings(rows?.[0]?.value || {});
+    return res.json(current);
+}
+
+export async function setAiSelfLearningSetting(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    assertAllowedKeys(req.body || {}, ["enabled", "autoApplyApprovedRules", "autoApproveAllCandidates", "minConfidence"]);
+    const next = normalizeAiSelfLearningSettings(req.body || {});
+    await query(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+         ON CONFLICT (key)
+         DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+        [AI_SELF_LEARNING_SETTINGS_KEY, JSON.stringify(next)]
+    );
+    await writeAuditLog({
+        req,
+        action: "ai_self_learning.settings_updated",
+        resourceType: "app_settings",
+        resourceId: AI_SELF_LEARNING_SETTINGS_KEY,
+        metadata: next,
+    });
+    return res.json({ success: true, ...next });
+}
+
+export async function listAiLearningFeedback(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    const status = String(req.query?.status || "pending").trim().toLowerCase();
+    const allowed = new Set(["pending", "approved", "rejected", "all"]);
+    const resolved = allowed.has(status) ? status : "pending";
+    const rows = resolved === "all"
+        ? await query(
+            `SELECT id, sheet_id, user_id, locale, question, bad_answer, expected_answer, context, status, approved_rule_id, reviewed_by, reviewed_at, created_at
+             FROM ai_learning_feedback
+             ORDER BY created_at DESC
+             LIMIT 500`
+        )
+        : await query(
+            `SELECT id, sheet_id, user_id, locale, question, bad_answer, expected_answer, context, status, approved_rule_id, reviewed_by, reviewed_at, created_at
+             FROM ai_learning_feedback
+             WHERE status = $1
+             ORDER BY created_at DESC
+             LIMIT 500`,
+            [resolved]
+        );
+    return res.json({ items: rows || [] });
+}
+
+export async function reviewAiLearningFeedback(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    const id = Number.parseInt(req.params?.id, 10);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "invalid_feedback_id" });
+    const action = String(req.body?.action || "").trim().toLowerCase();
+    if (action !== "approve" && action !== "reject") return res.status(400).json({ error: "invalid_action" });
+    const notes = String(req.body?.notes || "").trim().slice(0, 1000);
+    const client = await getClient();
+    try {
+        await client.query("BEGIN");
+        const foundRows = await client.query(
+            `SELECT id, question, expected_answer, locale, status
+             FROM ai_learning_feedback
+             WHERE id = $1
+             FOR UPDATE`,
+            [id]
+        );
+        const found = foundRows.rows?.[0];
+        if (!found) {
+            await client.query("ROLLBACK");
+            return res.status(404).json({ error: "feedback_not_found" });
+        }
+        if (String(found.status) !== "pending") {
+            await client.query("ROLLBACK");
+            return res.status(409).json({ error: "feedback_already_reviewed" });
+        }
+        let approvedRuleId = null;
+        if (action === "approve") {
+            const ruleRows = await client.query(
+                `INSERT INTO ai_learning_rules
+                   (source_feedback_id, scope, locale, phrase, mapped_intent, mapped_payload, confidence, status, approved_by)
+                 VALUES ($1, 'global', $2, $3, 'answer_shape', $4::jsonb, 1.0, 'approved', $5)
+                 RETURNING id`,
+                [
+                    id,
+                    String(found.locale || "en"),
+                    String(found.question || ""),
+                    JSON.stringify({ expectedAnswer: String(found.expected_answer || ""), notes }),
+                    Number(req.user?.id || 0) || null,
+                ]
+            );
+            approvedRuleId = ruleRows.rows?.[0]?.id || null;
+        }
+        await client.query(
+            `UPDATE ai_learning_feedback
+             SET status = $2, approved_rule_id = $3, reviewed_by = $4, reviewed_at = CURRENT_TIMESTAMP
+             WHERE id = $1`,
+            [id, action === "approve" ? "approved" : "rejected", approvedRuleId, Number(req.user?.id || 0) || null]
+        );
+        await client.query("COMMIT");
+        await writeAuditLog({
+            req,
+            action: `ai_learning.feedback_${action}`,
+            resourceType: "ai_learning_feedback",
+            resourceId: String(id),
+            metadata: { approvedRuleId, notes },
+        });
+        return res.json({ success: true, id, status: action === "approve" ? "approved" : "rejected", approvedRuleId });
+    } catch (err) {
+        try { await client.query("ROLLBACK"); } catch {}
+        return res.status(500).json({ error: "ai_learning_review_failed", detail: String(err?.message || "internal_server_error") });
+    } finally {
+        client.release();
+    }
+}
+
+export async function listAiLearningCandidates(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    const status = String(req.query?.status || "pending").trim().toLowerCase();
+    const allowed = new Set(["pending", "approved", "rejected", "all"]);
+    const resolved = allowed.has(status) ? status : "pending";
+    const rows = resolved === "all"
+        ? await query(
+            `SELECT id, locale, phrase, suggested_intent, suggested_payload, evidence_count, confidence, status, approved_rule_id, reviewed_by, reviewed_at, created_at, updated_at
+             FROM ai_learning_candidates
+             ORDER BY evidence_count DESC, updated_at DESC
+             LIMIT 1000`
+        )
+        : await query(
+            `SELECT id, locale, phrase, suggested_intent, suggested_payload, evidence_count, confidence, status, approved_rule_id, reviewed_by, reviewed_at, created_at, updated_at
+             FROM ai_learning_candidates
+             WHERE status = $1
+             ORDER BY evidence_count DESC, updated_at DESC
+             LIMIT 1000`,
+            [resolved]
+        );
+    return res.json({ items: rows || [] });
+}
+
+export async function reviewAiLearningCandidate(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    const id = Number.parseInt(req.params?.id, 10);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "invalid_candidate_id" });
+    const action = String(req.body?.action || "").trim().toLowerCase();
+    if (action !== "approve" && action !== "reject") return res.status(400).json({ error: "invalid_action" });
+    const client = await getClient();
+    try {
+        await client.query("BEGIN");
+        const foundRows = await client.query(
+            `SELECT id, locale, phrase, suggested_intent, suggested_payload, status
+             FROM ai_learning_candidates
+             WHERE id = $1
+             FOR UPDATE`,
+            [id]
+        );
+        const found = foundRows.rows?.[0];
+        if (!found) {
+            await client.query("ROLLBACK");
+            return res.status(404).json({ error: "candidate_not_found" });
+        }
+        if (String(found.status) !== "pending") {
+            await client.query("ROLLBACK");
+            return res.status(409).json({ error: "candidate_already_reviewed" });
+        }
+        let approvedRuleId = null;
+        if (action === "approve") {
+            const ruleRows = await client.query(
+                `INSERT INTO ai_learning_rules
+                   (scope, locale, phrase, mapped_intent, mapped_payload, confidence, status, approved_by)
+                 VALUES ('global', $1, $2, $3, $4::jsonb, 0.9, 'approved', $5)
+                 RETURNING id`,
+                [found.locale, found.phrase, found.suggested_intent, JSON.stringify(found.suggested_payload || {}), Number(req.user?.id || 0) || null]
+            );
+            approvedRuleId = ruleRows.rows?.[0]?.id || null;
+        }
+        await client.query(
+            `UPDATE ai_learning_candidates
+             SET status = $2, approved_rule_id = $3, reviewed_by = $4, reviewed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1`,
+            [id, action === "approve" ? "approved" : "rejected", approvedRuleId, Number(req.user?.id || 0) || null]
+        );
+        await client.query("COMMIT");
+        return res.json({ success: true, id, status: action === "approve" ? "approved" : "rejected", approvedRuleId });
+    } catch (err) {
+        try { await client.query("ROLLBACK"); } catch {}
+        return res.status(500).json({ error: "ai_learning_candidate_review_failed", detail: String(err?.message || "internal_server_error") });
+    } finally {
+        client.release();
+    }
+}
+
+export async function getAiLearningImpact(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    const days = Math.max(1, Math.min(180, Number.parseInt(String(req.query?.days || "30"), 10) || 30));
+    const rows = await query(
+        `SELECT detected_intent,
+                COUNT(*)::int AS total,
+                SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END)::int AS ok_count,
+                SUM(CASE WHEN status = 'no_data' THEN 1 ELSE 0 END)::int AS no_data_count,
+                SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END)::int AS error_count
+         FROM ai_learning_events
+         WHERE created_at >= (CURRENT_TIMESTAMP - ($1::int || ' days')::interval)
+         GROUP BY detected_intent
+         ORDER BY total DESC`,
+        [days]
+    );
+    return res.json({ days, intents: rows || [] });
 }
 
 export async function setAiRuntimeSetting(req, res) {

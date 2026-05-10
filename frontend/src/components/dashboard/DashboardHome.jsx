@@ -2337,7 +2337,7 @@ export default function DashboardHome({
                 className={`rounded-md border border-slate-200 bg-white shadow-sm ${
                   card.id === "pinnedMetrics"
                     ? (queryOpen ? "p-2.5" : "min-h-[156px] p-2.5")
-                    : (kpiEditorOpen[card.id] ? "p-3" : "h-[132px] p-2.5 overflow-hidden")
+                    : (kpiEditorOpen[card.id] ? "p-3" : "min-h-[132px] p-2.5")
                 } ${!isEditingCard ? "cursor-grab active:cursor-grabbing" : "cursor-default"} ${dragCardId === card.id ? "opacity-70 ring-2 ring-blue-300" : ""} ${dropCardId === card.id ? "ring-2 ring-slate-300" : ""}`}
                 >
                 {card.id === "pinnedMetrics" ? (

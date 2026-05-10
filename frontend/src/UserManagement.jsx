@@ -597,6 +597,18 @@ export default function UserManagement({ token, user, sheetId }) {
   const [smsOtpSaving, setSmsOtpSaving] = useState(false);
   const [smsOtpSaved, setSmsOtpSaved] = useState(false);
   const [twoFactorSettingsOpen, setTwoFactorSettingsOpen] = useState(false);
+  const [aiSelfLearningSettings, setAiSelfLearningSettings] = useState({
+    enabled: false,
+    autoApplyApprovedRules: true,
+    autoApproveAllCandidates: false,
+    minConfidence: 0.75,
+  });
+  const [aiSelfLearningSaving, setAiSelfLearningSaving] = useState(false);
+  const [aiSelfLearningSaved, setAiSelfLearningSaved] = useState(false);
+  const [aiLearningCandidates, setAiLearningCandidates] = useState([]);
+  const [aiLearningCandidatesLoading, setAiLearningCandidatesLoading] = useState(false);
+  const [aiLearningReviewBusyId, setAiLearningReviewBusyId] = useState(null);
+  const [aiLearningImpact, setAiLearningImpact] = useState({ days: 30, intents: [] });
   const metricsUrl = useMemo(() => `${String(API || "").replace(/\/+$/, "")}/metrics`, []);
   const [emailIngestConfig, setEmailIngestConfig] = useState({
     enabled: true,
@@ -1840,6 +1852,23 @@ export default function UserManagement({ token, user, sheetId }) {
       console.error("fetchAiRuntimeSetting failed", e);
     }
   };
+  const fetchAiSelfLearningSetting = async () => {
+    if (!isSuperAdmin) return;
+    try {
+      const res = await axios.get(`${API}/admin/settings/ai-self-learning`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || {};
+      setAiSelfLearningSettings({
+        enabled: data.enabled === true,
+        autoApplyApprovedRules: data.autoApplyApprovedRules !== false,
+        autoApproveAllCandidates: data.autoApproveAllCandidates === true,
+        minConfidence: Number(data.minConfidence ?? 0.75),
+      });
+    } catch (e) {
+      console.error("fetchAiSelfLearningSetting failed", e);
+    }
+  };
   const fetchAiUsageSummary = async (periodMonth = aiUsagePeriodMonth) => {
     if (!isSuperAdmin) return;
     const month = String(periodMonth || "").trim() || new Date().toISOString().slice(0, 7);
@@ -1863,6 +1892,36 @@ export default function UserManagement({ token, user, sheetId }) {
       setAiUsageError(e.response?.data?.error || "Failed to load AI usage stats");
     } finally {
       setAiUsageLoading(false);
+    }
+  };
+  const fetchAiLearningCandidates = async () => {
+    if (!isSuperAdmin) return;
+    setAiLearningCandidatesLoading(true);
+    try {
+      const res = await axios.get(`${API}/admin/ai-learning/candidates`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { status: "pending" },
+      });
+      setAiLearningCandidates(Array.isArray(res?.data?.items) ? res.data.items : []);
+    } catch (e) {
+      console.error("fetchAiLearningCandidates failed", e);
+    } finally {
+      setAiLearningCandidatesLoading(false);
+    }
+  };
+  const fetchAiLearningImpact = async () => {
+    if (!isSuperAdmin) return;
+    try {
+      const res = await axios.get(`${API}/admin/ai-learning/impact`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { days: 30 },
+      });
+      setAiLearningImpact({
+        days: Number(res?.data?.days || 30),
+        intents: Array.isArray(res?.data?.intents) ? res.data.intents : [],
+      });
+    } catch (e) {
+      console.error("fetchAiLearningImpact failed", e);
     }
   };
 
@@ -2253,6 +2312,49 @@ export default function UserManagement({ token, user, sheetId }) {
       setAiRuntimeSaving(false);
     }
   };
+  const saveAiSelfLearningSetting = async () => {
+    if (!isSuperAdmin || aiSelfLearningSaving) return;
+    setAiSelfLearningSaving(true);
+    try {
+      const payload = {
+        enabled: aiSelfLearningSettings.enabled === true,
+        autoApplyApprovedRules: aiSelfLearningSettings.autoApplyApprovedRules !== false,
+        autoApproveAllCandidates: aiSelfLearningSettings.autoApproveAllCandidates === true,
+        minConfidence: Number(aiSelfLearningSettings.minConfidence ?? 0.75),
+      };
+      const res = await axios.patch(`${API}/admin/settings/ai-self-learning`, payload, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = res?.data || payload;
+      setAiSelfLearningSettings({
+        enabled: data.enabled === true,
+        autoApplyApprovedRules: data.autoApplyApprovedRules !== false,
+        autoApproveAllCandidates: data.autoApproveAllCandidates === true,
+        minConfidence: Number(data.minConfidence ?? 0.75),
+      });
+      setAiSelfLearningSaved(true);
+      setTimeout(() => setAiSelfLearningSaved(false), 1800);
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to save AI self-learning settings");
+    } finally {
+      setAiSelfLearningSaving(false);
+    }
+  };
+  const reviewAiLearningCandidate = async (id, action) => {
+    if (!isSuperAdmin || !id || !action) return;
+    setAiLearningReviewBusyId(id);
+    try {
+      await axios.post(`${API}/admin/ai-learning/candidates/${id}/review`, { action }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      await fetchAiLearningCandidates();
+      await fetchAiLearningImpact();
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to review learning candidate");
+    } finally {
+      setAiLearningReviewBusyId(null);
+    }
+  };
 
   const applyAiRuntimePreset = (preset) => {
     if (!preset || !AI_RUNTIME_PRESETS[preset]) return;
@@ -2589,6 +2691,9 @@ export default function UserManagement({ token, user, sheetId }) {
       fetchImportPipelineSetting();
       fetchRevisionCompareSetting();
       fetchAiRuntimeSetting();
+      fetchAiSelfLearningSetting();
+      fetchAiLearningCandidates();
+      fetchAiLearningImpact();
       fetchAiUsageSummary();
     }
   }, [token]);
@@ -2623,6 +2728,9 @@ export default function UserManagement({ token, user, sheetId }) {
     fetchImportPipelineSetting();
     fetchRevisionCompareSetting();
     fetchAiRuntimeSetting();
+    fetchAiSelfLearningSetting();
+    fetchAiLearningCandidates();
+    fetchAiLearningImpact();
     fetchAiUsageSummary();
   }, [token, canManageIntegrations, selectedGroupId, groups, isSuperAdmin]);
 
@@ -4217,6 +4325,108 @@ export default function UserManagement({ token, user, sheetId }) {
                   </div>
                 </>
               )}
+            </div>
+            <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">AI Self-Learning</div>
+              <div className="text-[10px] text-slate-500">Capture chat feedback and apply only admin-approved learning rules.</div>
+              <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={aiSelfLearningSettings.enabled === true}
+                  onChange={(e) => setAiSelfLearningSettings((prev) => ({ ...prev, enabled: e.target.checked }))}
+                />
+                Enabled
+              </label>
+              <label className="inline-flex items-center gap-2 pl-6 text-[11px] font-semibold text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={aiSelfLearningSettings.autoApplyApprovedRules !== false}
+                  onChange={(e) => setAiSelfLearningSettings((prev) => ({ ...prev, autoApplyApprovedRules: e.target.checked }))}
+                />
+                Auto-apply approved rules
+              </label>
+              <label className="inline-flex items-center gap-2 pl-6 text-[11px] font-semibold text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={aiSelfLearningSettings.autoApproveAllCandidates === true}
+                  onChange={(e) => setAiSelfLearningSettings((prev) => ({ ...prev, autoApproveAllCandidates: e.target.checked }))}
+                />
+                Approve all candidates by default
+              </label>
+              <div className="space-y-1">
+                <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Minimum Confidence</label>
+                <input
+                  className="input-premium py-1.5 text-[11px] font-semibold"
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={aiSelfLearningSettings.minConfidence}
+                  onChange={(e) => setAiSelfLearningSettings((prev) => ({ ...prev, minConfidence: e.target.value }))}
+                />
+              </div>
+              <button
+                type="button"
+                onClick={saveAiSelfLearningSetting}
+                disabled={aiSelfLearningSaving}
+                className={`btn-premium text-white w-full py-1.5 text-[11px] ${aiSelfLearningSaved ? "bg-emerald-600 hover:bg-emerald-600" : "bg-slate-800"} ${aiSelfLearningSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+              >
+                {aiSelfLearningSaving ? "Saving..." : aiSelfLearningSaved ? "Saved" : "Save AI Self-Learning Settings"}
+              </button>
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-2 space-y-2">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Learning Impact (Last {aiLearningImpact.days || 30} Days)</div>
+                {(aiLearningImpact.intents || []).slice(0, 6).map((row) => {
+                  const total = Number(row?.total || 0);
+                  const ok = Number(row?.ok_count || 0);
+                  const okRate = total > 0 ? ((ok / total) * 100).toFixed(1) : "0.0";
+                  return (
+                    <div key={`${row?.detected_intent || "unknown"}-${total}`} className="flex items-center justify-between text-[10px]">
+                      <span className="font-semibold text-slate-700">{String(row?.detected_intent || "unknown")}</span>
+                      <span className="text-slate-500">ok {ok}/{total} ({okRate}%)</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-2 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Pending Learning Candidates</div>
+                  <button
+                    type="button"
+                    onClick={fetchAiLearningCandidates}
+                    className="text-[10px] font-semibold text-slate-600 hover:text-slate-900"
+                  >
+                    Refresh
+                  </button>
+                </div>
+                {aiLearningCandidatesLoading && <div className="text-[10px] text-slate-500">Loading…</div>}
+                {!aiLearningCandidatesLoading && (aiLearningCandidates || []).slice(0, 12).map((item) => (
+                  <div key={item.id} className="rounded border border-slate-200 bg-white p-2 space-y-1">
+                    <div className="text-[10px] font-semibold text-slate-700">{item.phrase}</div>
+                    <div className="text-[10px] text-slate-500">intent: {item.suggested_intent} • evidence: {item.evidence_count}</div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => reviewAiLearningCandidate(item.id, "approve")}
+                        disabled={aiLearningReviewBusyId === item.id}
+                        className={`px-2 py-1 rounded text-[10px] font-semibold ${aiLearningReviewBusyId === item.id ? "bg-slate-300 text-slate-500" : "bg-emerald-600 text-white hover:bg-emerald-700"}`}
+                      >
+                        Approve
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => reviewAiLearningCandidate(item.id, "reject")}
+                        disabled={aiLearningReviewBusyId === item.id}
+                        className={`px-2 py-1 rounded text-[10px] font-semibold ${aiLearningReviewBusyId === item.id ? "bg-slate-300 text-slate-500" : "bg-slate-700 text-white hover:bg-slate-800"}`}
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                {!aiLearningCandidatesLoading && (!aiLearningCandidates || aiLearningCandidates.length === 0) && (
+                  <div className="text-[10px] text-slate-500">No pending candidates.</div>
+                )}
+              </div>
             </div>
             <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
               <div className="flex items-center justify-between gap-2">

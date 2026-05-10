@@ -20,6 +20,8 @@ import {
     getCustomerInvitationPolicy, setCustomerInvitationPolicy,
     getInsightTranslationCacheSetting, setInsightTranslationCacheSetting,
     getAiRuntimeSetting, setAiRuntimeSetting,
+    getAiSelfLearningSetting, setAiSelfLearningSetting, listAiLearningFeedback, reviewAiLearningFeedback,
+    listAiLearningCandidates, reviewAiLearningCandidate, getAiLearningImpact,
     getAiFeatureTogglesSetting, setAiFeatureTogglesSetting,
     getMyAiFeatureTogglesSetting,
     getDlpSetting, setDlpSetting,
@@ -105,6 +107,13 @@ router.get("/admin/settings/insight-translation-cache", asyncHandler(getInsightT
 router.patch("/admin/settings/insight-translation-cache", asyncHandler(setInsightTranslationCacheSetting));
 router.get("/admin/settings/ai-runtime", asyncHandler(getAiRuntimeSetting));
 router.patch("/admin/settings/ai-runtime", asyncHandler(setAiRuntimeSetting));
+router.get("/admin/settings/ai-self-learning", asyncHandler(getAiSelfLearningSetting));
+router.patch("/admin/settings/ai-self-learning", asyncHandler(setAiSelfLearningSetting));
+router.get("/admin/ai-learning/feedback", asyncHandler(listAiLearningFeedback));
+router.post("/admin/ai-learning/feedback/:id/review", asyncHandler(reviewAiLearningFeedback));
+router.get("/admin/ai-learning/candidates", asyncHandler(listAiLearningCandidates));
+router.post("/admin/ai-learning/candidates/:id/review", asyncHandler(reviewAiLearningCandidate));
+router.get("/admin/ai-learning/impact", asyncHandler(getAiLearningImpact));
 router.get("/admin/settings/ai-features", asyncHandler(getAiFeatureTogglesSetting));
 router.patch("/admin/settings/ai-features", asyncHandler(setAiFeatureTogglesSetting));
 router.get("/admin/settings/dlp", asyncHandler(getDlpSetting));

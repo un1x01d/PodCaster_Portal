@@ -1084,6 +1084,94 @@ export async function initDb(targetPool = pool, options = {}) {
     );
   `);
   await db.query(`
+    CREATE TABLE IF NOT EXISTS ai_learning_feedback (
+      id BIGSERIAL PRIMARY KEY,
+      sheet_id TEXT NULL,
+      user_id INT NULL REFERENCES users(id) ON DELETE SET NULL,
+      locale TEXT NOT NULL DEFAULT 'en',
+      question TEXT NOT NULL,
+      bad_answer TEXT NOT NULL DEFAULT '',
+      expected_answer TEXT NOT NULL,
+      context JSONB NOT NULL DEFAULT '{}'::jsonb,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+      approved_rule_id BIGINT NULL,
+      reviewed_by INT NULL REFERENCES users(id) ON DELETE SET NULL,
+      reviewed_at TIMESTAMP NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS ai_learning_rules (
+      id BIGSERIAL PRIMARY KEY,
+      source_feedback_id BIGINT NULL REFERENCES ai_learning_feedback(id) ON DELETE SET NULL,
+      scope TEXT NOT NULL DEFAULT 'global' CHECK (scope IN ('global','group')),
+      group_id INT NULL REFERENCES groups(id) ON DELETE CASCADE,
+      locale TEXT NOT NULL DEFAULT 'en',
+      phrase TEXT NOT NULL,
+      mapped_intent TEXT NOT NULL,
+      mapped_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      confidence NUMERIC NOT NULL DEFAULT 1.0,
+      status TEXT NOT NULL DEFAULT 'approved' CHECK (status IN ('approved','disabled')),
+      approved_by INT NULL REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await db.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'ai_learning_feedback_approved_rule_id_fkey'
+      ) THEN
+        ALTER TABLE ai_learning_feedback
+        ADD CONSTRAINT ai_learning_feedback_approved_rule_id_fkey
+        FOREIGN KEY (approved_rule_id) REFERENCES ai_learning_rules(id) ON DELETE SET NULL;
+      END IF;
+    END
+    $$;
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_ai_learning_feedback_status_created ON ai_learning_feedback (status, created_at DESC);`);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_ai_learning_feedback_sheet_created ON ai_learning_feedback (sheet_id, created_at DESC);`);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_ai_learning_rules_phrase_locale ON ai_learning_rules (locale, phrase);`);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS ai_learning_events (
+      id BIGSERIAL PRIMARY KEY,
+      request_id UUID NULL,
+      sheet_id TEXT NULL,
+      user_id INT NULL REFERENCES users(id) ON DELETE SET NULL,
+      locale TEXT NOT NULL DEFAULT 'en',
+      question TEXT NOT NULL,
+      answer TEXT NOT NULL DEFAULT '',
+      detected_intent TEXT NOT NULL DEFAULT 'unknown',
+      resolved_metric TEXT NULL,
+      years_detected JSONB NOT NULL DEFAULT '[]'::jsonb,
+      executed_operation TEXT NOT NULL DEFAULT 'none',
+      fallback_used BOOLEAN NOT NULL DEFAULT FALSE,
+      status TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok','no_data','error')),
+      latency_ms INT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS ai_learning_candidates (
+      id BIGSERIAL PRIMARY KEY,
+      locale TEXT NOT NULL DEFAULT 'en',
+      phrase TEXT NOT NULL,
+      suggested_intent TEXT NOT NULL,
+      suggested_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      evidence_count INT NOT NULL DEFAULT 1,
+      confidence NUMERIC NOT NULL DEFAULT 0.5,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+      approved_rule_id BIGINT NULL REFERENCES ai_learning_rules(id) ON DELETE SET NULL,
+      reviewed_by INT NULL REFERENCES users(id) ON DELETE SET NULL,
+      reviewed_at TIMESTAMP NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_ai_learning_events_created ON ai_learning_events (created_at DESC);`);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_ai_learning_events_intent ON ai_learning_events (detected_intent, created_at DESC);`);
+  await db.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_learning_candidates_unique_pending ON ai_learning_candidates (locale, phrase, suggested_intent) WHERE status = 'pending';`);
+  await db.query(`
     INSERT INTO app_settings (key, value, updated_at)
     VALUES ('google_integration', '{"enabled": true}'::jsonb, CURRENT_TIMESTAMP)
     ON CONFLICT (key) DO NOTHING;
@@ -1096,6 +1184,15 @@ export async function initDb(targetPool = pool, options = {}) {
   await db.query(`
     INSERT INTO app_settings (key, value, updated_at)
     VALUES ('onedrive_integration', '{"enabled": true}'::jsonb, CURRENT_TIMESTAMP)
+    ON CONFLICT (key) DO NOTHING;
+  `);
+  await db.query(`
+    INSERT INTO app_settings (key, value, updated_at)
+    VALUES (
+      'ai_self_learning_settings',
+      '{"enabled": false, "autoApplyApprovedRules": true, "autoApproveAllCandidates": false, "minConfidence": 0.75}'::jsonb,
+      CURRENT_TIMESTAMP
+    )
     ON CONFLICT (key) DO NOTHING;
   `);
   await db.query(
