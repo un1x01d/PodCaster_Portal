@@ -40,6 +40,7 @@ test("chat final answer pipeline applies conversational scalar style", () => {
   assert.match(source, /The \$\{metric\} for \$\{year\} is \$\{value\}\./);
   assert.match(source, /The difference in \$\{metric\} between \$\{y1\} and \$\{y2\} is \$\{value\}\./);
   assert.match(source, /The largest driver was \$\{name\} \(\$\{value\}\)\./);
+  assert.match(source, /The \$\{metricHint\} for \$\{year\} was \$\{text\}\./);
   assert.match(source, /answer = applyConversationalAnswerStyle\(answer, message, locale\);/);
 });
 

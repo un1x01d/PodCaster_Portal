@@ -2174,6 +2174,15 @@ function applyConversationalAnswerStyle(answer = "", message = "", locale = "en"
   }
 
   const bareNumeric = text.match(/^[-+]?[$€£¥]?\s*\d[\d,]*(?:\.\d+)?%?$/);
+  if (bareNumeric) {
+    const metricHint = extractMetricHintFromText(question);
+    const year = extractYearToken(question);
+    if (metricHint && year && !asksDifferenceBetweenYears(question)) {
+      if (isUk) return `${metricHint} за ${year} рік становить ${text}.`;
+      if (isRu) return `${metricHint} за ${year} год составляет ${text}.`;
+      return `The ${metricHint} for ${year} was ${text}.`;
+    }
+  }
   if (bareNumeric && asksDifferenceBetweenYears(question)) {
     const years = Array.from(String(question || "").matchAll(/\b(19\d{2}|20\d{2})\b/g), (m) => String(m?.[0] || "")).filter(Boolean);
     const y1 = years[0] || "the first period";
