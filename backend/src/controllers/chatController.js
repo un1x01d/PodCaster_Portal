@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { query } from "../config/db.js";
+import { getClient, query } from "../config/db.js";
 import { isEnglishLocale, normalizeLocale, translateDashboardItems } from "../utils/dashboardLocalization.js";
 import { checkSheetAccess, hasReportSourceOwnerAccess, isPlatformAdminUser, loadSheetPermissionSets, resolveRuntimeGroupIdForUser } from "../utils/authorization.js";
 import { estimateOpenAiCostUsd, recordAiUsage, reserveAiQueryForSheet, resolveAiGroupIdForSheet } from "../utils/aiQuota.js";
@@ -16,7 +16,7 @@ import {
 } from "../utils/sheetSemanticProfile.js";
 import { writeAuditLog } from "../utils/auditLog.js";
 import { analyzeAccountingIntent } from "../services/ai/accountingIntentAnalyzer.js";
-import { getSemanticKnowledge } from "../services/ai/semanticKnowledgeService.js";
+import { getSemanticKnowledge, invalidateLearningRulesCache } from "../services/ai/semanticKnowledgeService.js";
 import { buildDeterministicSpreadsheetPlan } from "../services/ai/deterministicSpreadsheetPlanner.js";
 import { executeDeterministicSpreadsheetPlan } from "../services/ai/deterministicSpreadsheetExecutor.js";
 import { presentDeterministicSpreadsheetResult } from "../services/ai/deterministicSpreadsheetPresenter.js";
@@ -77,6 +77,28 @@ const CHAT_RUNTIME_RULES_DEFAULTS = {
   debugHeaderResolutionResponse: false,
 };
 
+const LEARNING_DB_RETRY_ATTEMPTS = Math.max(1, Number.parseInt(process.env.LEARNING_DB_RETRY_ATTEMPTS || "3", 10));
+const LEARNING_DB_RETRY_BASE_MS = Math.max(5, Number.parseInt(process.env.LEARNING_DB_RETRY_BASE_MS || "40", 10));
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withLearningDbRetry(fn, label = "learning_db_op") {
+  let lastErr = null;
+  for (let attempt = 1; attempt <= LEARNING_DB_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt >= LEARNING_DB_RETRY_ATTEMPTS) break;
+      await sleep(LEARNING_DB_RETRY_BASE_MS * attempt);
+    }
+  }
+  console.error(`[learning_persist_failed] op=${label} attempts=${LEARNING_DB_RETRY_ATTEMPTS} error=${String(lastErr?.message || lastErr)}`);
+  return null;
+}
+
 function resolveOpenAIRequestFailureReason(error) {
   const message = String(error?.message || "");
   if (message.includes("openai_network_error:")) return "provider_network_error";
@@ -127,8 +149,7 @@ async function recordLearningEvent({
   status = "ok",
   latencyMs = null,
 }) {
-  try {
-    await query(
+  const persisted = await withLearningDbRetry(() => query(
       `INSERT INTO ai_learning_events
         (request_id, sheet_id, user_id, locale, question, answer, detected_intent, resolved_metric, years_detected, executed_operation, fallback_used, status, latency_ms)
        VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13)`,
@@ -147,11 +168,24 @@ async function recordLearningEvent({
         String(status || "ok"),
         Number.isFinite(Number(latencyMs)) ? Number(latencyMs) : null,
       ]
-    );
-  } catch {}
+    ), "record_learning_event");
+  if (!persisted) {
+    console.warn("[learning_persist] ai_learning_events write failed");
+  }
 }
 
-async function upsertLearningCandidate({ locale = "en", phrase = "", suggestedIntent = "unknown", suggestedPayload = {}, confidence = 0.5 }) {
+function isLearnablePhrase(text = "") {
+  const s = String(text || "").trim().toLowerCase();
+  if (!s) return false;
+  if (s.length < 4) return false;
+  if (/^\d+$/.test(s)) return false;
+  if (/^[\d\s.,:;!?()\-+/$%]+$/.test(s)) return false;
+  const stop = new Set(["ok", "good", "yes", "no", "thanks", "thank you", "done", "fine"]);
+  if (stop.has(s)) return false;
+  return true;
+}
+
+async function upsertLearningCandidate({ locale = "en", phrase = "", suggestedIntent = "unknown", suggestedPayload = {}, confidence = 0.5, bypassSettingsGate = false, forcePending = false }) {
   const extractLearnPhrase = (raw = "") => {
     const text = String(raw || "").trim();
     if (!text) return "";
@@ -165,53 +199,83 @@ async function upsertLearningCandidate({ locale = "en", phrase = "", suggestedIn
     return sanitized || text;
   };
   const normalizedPhrase = extractLearnPhrase(phrase).toLowerCase().slice(0, 500);
-  if (!normalizedPhrase) return;
-  try {
-    const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", ["ai_self_learning_settings"]);
-    const settings = rows?.[0]?.value && typeof rows[0].value === "object" ? rows[0].value : {};
-    const autoApproveAllCandidates = settings?.autoApproveAllCandidates === true || String(settings?.autoApproveAllCandidates || "").toLowerCase() === "true";
-    const nextStatus = autoApproveAllCandidates ? "approved" : "pending";
-    const result = await query(
-      `INSERT INTO ai_learning_candidates
-         (locale, phrase, suggested_intent, suggested_payload, evidence_count, confidence, status, updated_at)
-       VALUES ($1, $2, $3, $4::jsonb, 1, $5, $6, CURRENT_TIMESTAMP)
-       ON CONFLICT (locale, phrase, suggested_intent) WHERE status = 'pending'
-       DO UPDATE SET
-         evidence_count = ai_learning_candidates.evidence_count + 1,
-         confidence = GREATEST(ai_learning_candidates.confidence, EXCLUDED.confidence),
-         suggested_payload = EXCLUDED.suggested_payload,
-         updated_at = CURRENT_TIMESTAMP
-       RETURNING id`,
-      [String(locale || "en"), normalizedPhrase, String(suggestedIntent || "unknown"), JSON.stringify(suggestedPayload || {}), Number(confidence) || 0.5, nextStatus]
-    );
-    if (autoApproveAllCandidates) {
-      const candidateId = result?.[0]?.id || null;
-      if (candidateId) {
-        const existing = await query(
-          `SELECT id FROM ai_learning_rules WHERE locale = $1 AND phrase = $2 AND mapped_intent = $3 LIMIT 1`,
-          [String(locale || "en"), normalizedPhrase, String(suggestedIntent || "unknown")]
-        );
-        if (!existing?.[0]?.id) {
-          const ruleRows = await query(
-            `INSERT INTO ai_learning_rules
-               (scope, locale, phrase, mapped_intent, mapped_payload, confidence, status, approved_by)
-             VALUES ('global', $1, $2, $3, $4::jsonb, 0.9, 'approved', NULL)
-             RETURNING id`,
-            [String(locale || "en"), normalizedPhrase, String(suggestedIntent || "unknown"), JSON.stringify(suggestedPayload || {})]
+  if (!normalizedPhrase || !isLearnablePhrase(normalizedPhrase)) return;
+  const rows = await withLearningDbRetry(
+    () => query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", ["ai_self_learning_settings"]),
+    "load_ai_self_learning_settings"
+  );
+  if (!rows) {
+    console.warn("[learning_persist] unable to load ai self-learning settings");
+    return;
+  }
+  const settings = rows?.[0]?.value && typeof rows[0].value === "object" ? rows[0].value : {};
+  if (!bypassSettingsGate && settings?.enabled === false) return;
+  const minConfidence = Number(settings?.minConfidence);
+  const effectiveMinConfidence = Number.isFinite(minConfidence) ? Math.max(0, Math.min(1, minConfidence)) : 0;
+  if (!bypassSettingsGate && Number(confidence || 0) < effectiveMinConfidence) return;
+
+  const persisted = await withLearningDbRetry(async () => {
+    const client = await getClient();
+    try {
+      await client.query("BEGIN");
+      const autoApproveAllCandidates = forcePending
+        ? false
+        : (settings?.autoApproveAllCandidates === true || String(settings?.autoApproveAllCandidates || "").toLowerCase() === "true");
+      const nextStatus = autoApproveAllCandidates ? "approved" : "pending";
+      const result = await client.query(
+        `INSERT INTO ai_learning_candidates
+           (locale, phrase, suggested_intent, suggested_payload, evidence_count, confidence, status, updated_at)
+         VALUES ($1, $2, $3, $4::jsonb, 1, $5, $6, CURRENT_TIMESTAMP)
+         ON CONFLICT (locale, phrase, suggested_intent) WHERE status = 'pending'
+         DO UPDATE SET
+           evidence_count = ai_learning_candidates.evidence_count + 1,
+           confidence = GREATEST(ai_learning_candidates.confidence, EXCLUDED.confidence),
+           suggested_payload = EXCLUDED.suggested_payload,
+           updated_at = CURRENT_TIMESTAMP
+         RETURNING id`,
+        [String(locale || "en"), normalizedPhrase, String(suggestedIntent || "unknown"), JSON.stringify(suggestedPayload || {}), Number(confidence) || 0.5, nextStatus]
+      );
+      if (autoApproveAllCandidates) {
+        const candidateId = result?.rows?.[0]?.id || null;
+        if (candidateId) {
+          const existing = await client.query(
+            `SELECT id FROM ai_learning_rules WHERE locale = $1 AND phrase = $2 AND mapped_intent = $3 LIMIT 1`,
+            [String(locale || "en"), normalizedPhrase, String(suggestedIntent || "unknown")]
           );
-          const approvedRuleId = ruleRows?.[0]?.id || null;
-          if (approvedRuleId) {
-            await query(
-              `UPDATE ai_learning_candidates
-               SET approved_rule_id = $2, reviewed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-               WHERE id = $1`,
-              [candidateId, approvedRuleId]
+          if (!existing?.rows?.[0]?.id) {
+            const ruleRows = await client.query(
+              `INSERT INTO ai_learning_rules
+                 (scope, locale, phrase, mapped_intent, mapped_payload, confidence, status, approved_by)
+               VALUES ('global', $1, $2, $3, $4::jsonb, 0.9, 'approved', NULL)
+               RETURNING id`,
+              [String(locale || "en"), normalizedPhrase, String(suggestedIntent || "unknown"), JSON.stringify(suggestedPayload || {})]
             );
+            const approvedRuleId = ruleRows?.rows?.[0]?.id || null;
+            if (approvedRuleId) {
+              await client.query(
+                `UPDATE ai_learning_candidates
+                 SET approved_rule_id = $2, reviewed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                 WHERE id = $1`,
+                [candidateId, approvedRuleId]
+              );
+              invalidateLearningRulesCache();
+            }
           }
         }
       }
+      await client.query("COMMIT");
+      return true;
+    } catch (err) {
+      try { await client.query("ROLLBACK"); } catch {}
+      throw err;
+    } finally {
+      client.release();
     }
-  } catch {}
+  }, "upsert_learning_candidate");
+
+  if (!persisted) {
+    console.warn("[learning_persist] ai_learning_candidates write failed");
+  }
 }
 
 let SEMANTIC_CACHE = null;
@@ -267,7 +331,17 @@ async function loadChatRuntimeRules() {
 function toNum(v) {
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
   if (!v) return null;
-  const n = parseFloat(String(v).replace(/[$,%\s,]/g, ""));
+  const raw = String(v).trim();
+  if (!raw) return null;
+  // Skip date-like text and mixed text values; numeric calculations should only use true numeric cells.
+  if (
+    /^\d{4}[-/]\d{2}[-/]\d{2}$/.test(raw) ||
+    /^\d{2}[-/]\d{2}[-/]\d{4}$/.test(raw) ||
+    /[a-zA-Z]/.test(raw)
+  ) return null;
+  const cleaned = raw.replace(/[$,%\s,]/g, "");
+  if (!/^[-+]?\d*\.?\d+$/.test(cleaned)) return null;
+  const n = Number(cleaned);
   return Number.isFinite(n) ? n : null;
 }
 
@@ -305,6 +379,16 @@ function buildSqlSafeDateExpr(valueExpr) {
       WHEN (${valueExpr}) ~ '^\\s*\\d{4}/\\d{2}/\\d{2}\\s*$' THEN CAST(REPLACE(TRIM(${valueExpr}), '/', '-') AS DATE)
       WHEN (${valueExpr}) ~ '^\\s*\\d{2}-\\d{2}-\\d{4}\\s*$' THEN to_date(TRIM(${valueExpr}), 'MM-DD-YYYY')
       WHEN (${valueExpr}) ~ '^\\s*\\d{2}/\\d{2}/\\d{4}\\s*$' THEN to_date(TRIM(${valueExpr}), 'MM/DD/YYYY')
+      ELSE NULL
+    END
+  )`;
+}
+
+function buildSqlSafeNumericExpr(valueExpr) {
+  const cleaned = `NULLIF(regexp_replace(${valueExpr}, '[^0-9.+-]', '', 'g'), '')`;
+  return `(
+    CASE
+      WHEN ${cleaned} ~ '^[-+]?\\d*\\.?\\d+$' THEN CAST(${cleaned} AS NUMERIC)
       ELSE NULL
     END
   )`;
@@ -539,7 +623,7 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
                 where += ` AND (${safeDateExpr} > $${valIdx}::date)`;
               } else if (numericFilterVal !== null) {
                 params[params.length - 1] = String(numericFilterVal);
-                where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) > $${valIdx}::numeric)`;
+                where += ` AND (${buildSqlSafeNumericExpr(colSql)} > $${valIdx}::numeric)`;
               } else {
                 where += ` AND (${colSql} > $${valIdx})`;
               }
@@ -550,7 +634,7 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
                 where += ` AND (${safeDateExpr} >= $${valIdx}::date)`;
               } else if (numericFilterVal !== null) {
                 params[params.length - 1] = String(numericFilterVal);
-                where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) >= $${valIdx}::numeric)`;
+                where += ` AND (${buildSqlSafeNumericExpr(colSql)} >= $${valIdx}::numeric)`;
               } else {
                 where += ` AND (${colSql} >= $${valIdx})`;
               }
@@ -561,7 +645,7 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
                 where += ` AND (${safeDateExpr} < $${valIdx}::date)`;
               } else if (numericFilterVal !== null) {
                 params[params.length - 1] = String(numericFilterVal);
-                where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) < $${valIdx}::numeric)`;
+                where += ` AND (${buildSqlSafeNumericExpr(colSql)} < $${valIdx}::numeric)`;
               } else {
                 where += ` AND (${colSql} < $${valIdx})`;
               }
@@ -572,7 +656,7 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
                 where += ` AND (${safeDateExpr} <= $${valIdx}::date)`;
               } else if (numericFilterVal !== null) {
                 params[params.length - 1] = String(numericFilterVal);
-                where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) <= $${valIdx}::numeric)`;
+                where += ` AND (${buildSqlSafeNumericExpr(colSql)} <= $${valIdx}::numeric)`;
               } else {
                 where += ` AND (${colSql} <= $${valIdx})`;
               }
@@ -611,7 +695,24 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
                 summaryParams
               );
               const v = Number(rows?.[0]?.v || 0);
-              return { answer: `${isUk ? "Сума" : (isRu ? "Сумма" : "Total")} ${targetColumn}: ${formatValue(v, locale, targetColumn)}`, previewRows: [] };
+              const metricCountParamIdx = params.length + 1;
+              const metricCountExpr = `CASE
+                WHEN (row_data->>$${metricCountParamIdx}) ~ '^\\s*[-+]?\\d{1,3}(?:,\\d{3})*(?:\\.\\d+)?\\s*%?\\s*$'
+                  OR (row_data->>$${metricCountParamIdx}) ~ '^\\s*[-+]?\\d+(?:\\.\\d+)?\\s*%?\\s*$'
+                  OR (row_data->>$${metricCountParamIdx}) ~ '^\\s*[-+]?\\.\\d+\\s*%?\\s*$'
+                THEN ${buildSqlSafeNumericExpr(`row_data->>$${metricCountParamIdx}`)}
+                ELSE NULL
+              END`;
+              const counts = await query(
+                `SELECT COUNT(*)::int AS total_rows, COUNT(${metricCountExpr})::int AS numeric_rows
+                   FROM sheet_rows ${where}`,
+                [...params, targetColumn]
+              );
+              const totalRows = Number(counts?.[0]?.total_rows || 0);
+              const numericRows = Number(counts?.[0]?.numeric_rows || 0);
+              const skippedRows = Math.max(0, totalRows - numericRows);
+              const base = `${isUk ? "Сума" : (isRu ? "Сумма" : "Total")} ${targetColumn}: ${formatValue(v, locale, targetColumn)}`;
+              return { answer: appendSkippedRowsNote(base, skippedRows, locale), previewRows: [] };
             }
 
             if (op === "avg" && !groupBy) {
@@ -625,7 +726,24 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
                 summaryParams
               );
               const v = Number(rows?.[0]?.v || 0);
-              return { answer: `${isUk ? "Середнє" : (isRu ? "Среднее" : "Average")} ${targetColumn}: ${formatValue(v, locale, targetColumn)}`, previewRows: [] };
+              const metricCountParamIdx = params.length + 1;
+              const metricCountExpr = `CASE
+                WHEN (row_data->>$${metricCountParamIdx}) ~ '^\\s*[-+]?\\d{1,3}(?:,\\d{3})*(?:\\.\\d+)?\\s*%?\\s*$'
+                  OR (row_data->>$${metricCountParamIdx}) ~ '^\\s*[-+]?\\d+(?:\\.\\d+)?\\s*%?\\s*$'
+                  OR (row_data->>$${metricCountParamIdx}) ~ '^\\s*[-+]?\\.\\d+\\s*%?\\s*$'
+                THEN ${buildSqlSafeNumericExpr(`row_data->>$${metricCountParamIdx}`)}
+                ELSE NULL
+              END`;
+              const counts = await query(
+                `SELECT COUNT(*)::int AS total_rows, COUNT(${metricCountExpr})::int AS numeric_rows
+                   FROM sheet_rows ${where}`,
+                [...params, targetColumn]
+              );
+              const totalRows = Number(counts?.[0]?.total_rows || 0);
+              const numericRows = Number(counts?.[0]?.numeric_rows || 0);
+              const skippedRows = Math.max(0, totalRows - numericRows);
+              const base = `${isUk ? "Середнє" : (isRu ? "Среднее" : "Average")} ${targetColumn}: ${formatValue(v, locale, targetColumn)}`;
+              return { answer: appendSkippedRowsNote(base, skippedRows, locale), previewRows: [] };
             }
 
             if (op === "top_n" && groupBy) {
@@ -684,7 +802,7 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
             WHEN (row_data->>$${params.length + 1}) ~ '^\\s*[-+]?\\d{1,3}(?:,\\d{3})*(?:\\.\\d+)?\\s*%?\\s*$'
               OR (row_data->>$${params.length + 1}) ~ '^\\s*[-+]?\\d+(?:\\.\\d+)?\\s*%?\\s*$'
               OR (row_data->>$${params.length + 1}) ~ '^\\s*[-+]?\\.\\d+\\s*%?\\s*$'
-            THEN CAST(NULLIF(regexp_replace(row_data->>$${params.length + 1}, '[^0-9.+-]', '', 'g'), '') AS NUMERIC)
+            THEN ${buildSqlSafeNumericExpr(`row_data->>$${params.length + 1}`)}
             ELSE NULL
           END`;
         params.push(targetColumn);
@@ -718,12 +836,20 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
 
         if (["sum", "avg", "max", "min"].includes(op)) {
             const aggOp = op.toUpperCase();
-            const res = await query(`SELECT ${aggOp}(${valSql}) as v FROM sheet_rows ${where}`, params);
+            const res = await query(
+              `SELECT ${aggOp}(${valSql}) as v, COUNT(*)::int AS total_rows, COUNT(${valSql})::int AS numeric_rows
+                 FROM sheet_rows ${where}`,
+              params
+            );
             const val = Number(res[0].v || 0);
+            const totalRows = Number(res?.[0]?.total_rows || 0);
+            const numericRows = Number(res?.[0]?.numeric_rows || 0);
+            const skippedRows = Math.max(0, totalRows - numericRows);
             const labels = isUk
               ? { SUM: "Сума", AVG: "Середнє", MAX: "Максимум", MIN: "Мінімум" }
               : (isRu ? { SUM: "Сумма", AVG: "Среднее", MAX: "Максимум", MIN: "Минимум" } : { SUM: "Total", AVG: "Average", MAX: "Max", MIN: "Min" });
-            return { answer: `${labels[aggOp]} ${targetColumn}: ${formatValue(val, locale, targetColumn)}`, previewRows: [] };
+            const base = `${labels[aggOp]} ${targetColumn}: ${formatValue(val, locale, targetColumn)}`;
+            return { answer: appendSkippedRowsNote(base, skippedRows, locale), previewRows: [] };
         }
 
     } catch (e) {
@@ -849,6 +975,26 @@ function findRevenueMetric(headers = []) {
     if (hit) return hit;
   }
   return null;
+}
+
+function isHighConfidenceSqlHotPathQuery(message = "", rules = CHAT_RUNTIME_RULES_DEFAULTS) {
+  const msg = String(message || "").toLowerCase();
+  const op = inferAggregateOperationFromMessage(msg, {}, rules);
+  if (op !== "sum") return false;
+  if (isDriverRankingQuery(msg, rules)) return false;
+  if (asksExplicitBreakdown(msg, rules)) return false;
+  if (/\b(compare|comparison|versus|vs|yoy|year over year|trend|over time|monthly|quarterly)\b/i.test(msg)) return false;
+  return true;
+}
+
+function resolveSqlHotPathMetricColumn({ message = "", headers = [], sampleRows = [], semanticProfile = null, rules = CHAT_RUNTIME_RULES_DEFAULTS }) {
+  const intent = detectQueryMetricIntent(message, rules);
+  const metricCandidates = [];
+  if (intent === "revenue") metricCandidates.push("net revenue", "revenue total", "revenue", "income", "sales");
+  if (intent === "expense") metricCandidates.push("expense", "expenses", "cost", "cogs", "opex", "spend");
+  if (intent === "profit") metricCandidates.push("net profit", "profit total", "gross profit", "profit", "margin", "ebitda");
+  const profileMetric = resolveProfileMetric(semanticProfile, message, metricCandidates);
+  return profileMetric || inferLikelyMetricColumn(headers, sampleRows, message, metricCandidates);
 }
 
 function asksExplicitBreakdown(message = "", rules = CHAT_RUNTIME_RULES_DEFAULTS) {
@@ -1085,7 +1231,7 @@ function buildChatWhereClause({ tabName = null, filters = [], rowFiltersList = [
           where += ` AND (${safeDateExpr} > $${valIdx}::date)`;
         } else if (numericFilterVal !== null) {
           params[params.length - 1] = String(numericFilterVal);
-          where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) > $${valIdx}::numeric)`;
+          where += ` AND (${buildSqlSafeNumericExpr(colSql)} > $${valIdx}::numeric)`;
         } else {
           where += ` AND (${colSql} > $${valIdx})`;
         }
@@ -1096,7 +1242,7 @@ function buildChatWhereClause({ tabName = null, filters = [], rowFiltersList = [
           where += ` AND (${safeDateExpr} >= $${valIdx}::date)`;
         } else if (numericFilterVal !== null) {
           params[params.length - 1] = String(numericFilterVal);
-          where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) >= $${valIdx}::numeric)`;
+          where += ` AND (${buildSqlSafeNumericExpr(colSql)} >= $${valIdx}::numeric)`;
         } else {
           where += ` AND (${colSql} >= $${valIdx})`;
         }
@@ -1107,7 +1253,7 @@ function buildChatWhereClause({ tabName = null, filters = [], rowFiltersList = [
           where += ` AND (${safeDateExpr} < $${valIdx}::date)`;
         } else if (numericFilterVal !== null) {
           params[params.length - 1] = String(numericFilterVal);
-          where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) < $${valIdx}::numeric)`;
+          where += ` AND (${buildSqlSafeNumericExpr(colSql)} < $${valIdx}::numeric)`;
         } else {
           where += ` AND (${colSql} < $${valIdx})`;
         }
@@ -1118,7 +1264,7 @@ function buildChatWhereClause({ tabName = null, filters = [], rowFiltersList = [
           where += ` AND (${safeDateExpr} <= $${valIdx}::date)`;
         } else if (numericFilterVal !== null) {
           params[params.length - 1] = String(numericFilterVal);
-          where += ` AND (CAST(NULLIF(regexp_replace(${colSql}, '[^0-9.-]', '', 'g'), '') AS NUMERIC) <= $${valIdx}::numeric)`;
+          where += ` AND (${buildSqlSafeNumericExpr(colSql)} <= $${valIdx}::numeric)`;
         } else {
           where += ` AND (${colSql} <= $${valIdx})`;
         }
@@ -1280,7 +1426,7 @@ export async function computeLargeDatasetAggregateFallback({
   if (!rows.length) {
     rows = await query(
       `SELECT ${bucketExpr} AS period,
-              SUM(CAST(NULLIF(regexp_replace(row_data->>$${metricParamIdx}, '[^0-9.-]', '', 'g'), '') AS NUMERIC)) AS value
+              SUM(${buildSqlSafeNumericExpr(`row_data->>$${metricParamIdx}`)}) AS value
          FROM sheet_rows
          ${where}
         GROUP BY period
@@ -1561,10 +1707,12 @@ async function computeDeterministicAnswer(operation, rows, targetColumn, groupBy
     }
     const grouped = {};
     const counts = {};
+    let numericRowCount = 0;
     rows.forEach((r) => {
       const key = String(r?.[groupBy] ?? "Unknown");
       const val = toNum(r?.[targetColumn]);
       if (val === null) return;
+      numericRowCount += 1;
       
       if (effectiveOp === "max") {
         if (grouped[key] === undefined || val > grouped[key]) grouped[key] = val;
@@ -1584,48 +1732,57 @@ async function computeDeterministicAnswer(operation, rows, targetColumn, groupBy
       .sort((a, b) => b.value - a.value);
 
     if (!sorted.length) return { answer: isUk ? "Відповідних даних не знайдено." : (isRu ? "Подходящие данные не найдены." : "No matching data."), previewRows: [] };
+    const skippedRows = Math.max(0, Number(rows.length || 0) - numericRowCount);
 
     if (effectiveOp === "max") {
-      return { answer: isUk ? `Найвище значення ${targetColumn}: ${sorted[0].label} — ${formatValue(sorted[0].value, locale, targetColumn)}` : (isRu ? `Максимум по ${targetColumn}: ${sorted[0].label} — ${formatValue(sorted[0].value, locale, targetColumn)}` : `Highest ${targetColumn}: ${sorted[0].label} with ${formatValue(sorted[0].value, locale, targetColumn)}`), previewRows: sorted.slice(0, 10) };
+      const base = isUk ? `Найвище значення ${targetColumn}: ${sorted[0].label} — ${formatValue(sorted[0].value, locale, targetColumn)}` : (isRu ? `Максимум по ${targetColumn}: ${sorted[0].label} — ${formatValue(sorted[0].value, locale, targetColumn)}` : `Highest ${targetColumn}: ${sorted[0].label} with ${formatValue(sorted[0].value, locale, targetColumn)}`);
+      return { answer: appendSkippedRowsNote(base, skippedRows, locale), previewRows: sorted.slice(0, 10) };
     }
     if (effectiveOp === "min") {
       const bottom = [...sorted].sort((a, b) => a.value - b.value)[0];
-      return { answer: isUk ? `Найнижче значення ${targetColumn}: ${bottom.label} — ${formatValue(bottom.value, locale, targetColumn)}` : (isRu ? `Минимум по ${targetColumn}: ${bottom.label} — ${formatValue(bottom.value, locale, targetColumn)}` : `Lowest ${targetColumn}: ${bottom.label} with ${formatValue(bottom.value, locale, targetColumn)}`), previewRows: [...sorted].sort((a, b) => a.value - b.value).slice(0, 10) };
+      const base = isUk ? `Найнижче значення ${targetColumn}: ${bottom.label} — ${formatValue(bottom.value, locale, targetColumn)}` : (isRu ? `Минимум по ${targetColumn}: ${bottom.label} — ${formatValue(bottom.value, locale, targetColumn)}` : `Lowest ${targetColumn}: ${bottom.label} with ${formatValue(bottom.value, locale, targetColumn)}`);
+      return { answer: appendSkippedRowsNote(base, skippedRows, locale), previewRows: [...sorted].sort((a, b) => a.value - b.value).slice(0, 10) };
     }
 
     if (nLimit === 1) {
-      return { 
-        answer: isUk
+      const base = isUk
           ? `Топ ${groupBy} за ${targetColumn}: ${sorted[0].label} — ${formatValue(sorted[0].value, locale, targetColumn)}.`
           : (isRu
             ? `Топ ${groupBy} по ${targetColumn}: ${sorted[0].label} — ${formatValue(sorted[0].value, locale, targetColumn)}.`
-            : `The top ${groupBy} by ${targetColumn} is ${sorted[0].label} with ${formatValue(sorted[0].value, locale, targetColumn)}.`),
+            : `The top ${groupBy} by ${targetColumn} is ${sorted[0].label} with ${formatValue(sorted[0].value, locale, targetColumn)}.`);
+      return { 
+        answer: appendSkippedRowsNote(base, skippedRows, locale),
         previewRows: sorted.slice(0, 1)
       };
     }
 
     return {
-      answer: (isUk ? `Топ ${nLimit} ${groupBy} за ${targetColumn}:\n` : (isRu ? `Топ ${nLimit} ${groupBy} по ${targetColumn}:\n` : `Top ${nLimit} ${groupBy} by ${targetColumn}:\n`))
-        + sorted.slice(0, nLimit).map((x, i) => `${i + 1}. ${x.label}: ${formatValue(x.value, locale, targetColumn)}`).join("\n"),
+      answer: appendSkippedRowsNote(
+        (isUk ? `Топ ${nLimit} ${groupBy} за ${targetColumn}:\n` : (isRu ? `Топ ${nLimit} ${groupBy} по ${targetColumn}:\n` : `Top ${nLimit} ${groupBy} by ${targetColumn}:\n`))
+          + sorted.slice(0, nLimit).map((x, i) => `${i + 1}. ${x.label}: ${formatValue(x.value, locale, targetColumn)}`).join("\n"),
+        skippedRows,
+        locale
+      ),
       previewRows: sorted.slice(0, nLimit)
     };
   }
 
   const nums = rows.map((r) => toNum(r?.[targetColumn])).filter((n) => n !== null);
   if (!nums.length) return { answer: isUk ? `У стовпці ${targetColumn} не знайдено числових даних.` : (isRu ? `В столбце ${targetColumn} не найдено числовых данных.` : `No numeric data found in ${targetColumn}.`), previewRows: rows.slice(0, 15) };
+  const skippedRows = Math.max(0, Number(rows.length || 0) - Number(nums.length || 0));
   
-  if (effectiveOp === "sum") return { answer: isUk ? `Сума ${targetColumn}: ${formatValue(nums.reduce((a, b) => a + b, 0), locale, targetColumn)}` : (isRu ? `Сумма ${targetColumn}: ${formatValue(nums.reduce((a, b) => a + b, 0), locale, targetColumn)}` : `Total ${targetColumn}: ${formatValue(nums.reduce((a, b) => a + b, 0), locale, targetColumn)}`), previewRows: rows.slice(0, 15) };
-  if (effectiveOp === "avg") return { answer: isUk ? `Середнє ${targetColumn}: ${formatValue(nums.reduce((a, b) => a + b, 0) / nums.length, locale, targetColumn)}` : (isRu ? `Среднее ${targetColumn}: ${formatValue(nums.reduce((a, b) => a + b, 0) / nums.length, locale, targetColumn)}` : `Average ${targetColumn}: ${formatValue(nums.reduce((a, b) => a + b, 0) / nums.length, locale, targetColumn)}`), previewRows: rows.slice(0, 15) };
+  if (effectiveOp === "sum") return { answer: appendSkippedRowsNote(isUk ? `Сума ${targetColumn}: ${formatValue(nums.reduce((a, b) => a + b, 0), locale, targetColumn)}` : (isRu ? `Сумма ${targetColumn}: ${formatValue(nums.reduce((a, b) => a + b, 0), locale, targetColumn)}` : `Total ${targetColumn}: ${formatValue(nums.reduce((a, b) => a + b, 0), locale, targetColumn)}`), skippedRows, locale), previewRows: rows.slice(0, 15) };
+  if (effectiveOp === "avg") return { answer: appendSkippedRowsNote(isUk ? `Середнє ${targetColumn}: ${formatValue(nums.reduce((a, b) => a + b, 0) / nums.length, locale, targetColumn)}` : (isRu ? `Среднее ${targetColumn}: ${formatValue(nums.reduce((a, b) => a + b, 0) / nums.length, locale, targetColumn)}` : `Average ${targetColumn}: ${formatValue(nums.reduce((a, b) => a + b, 0) / nums.length, locale, targetColumn)}`), skippedRows, locale), previewRows: rows.slice(0, 15) };
   
   if (effectiveOp === "max") {
     let max = -Infinity;
     for (let i = 0; i < nums.length; i++) if (nums[i] > max) max = nums[i];
-    return { answer: isUk ? `Максимум ${targetColumn}: ${formatValue(max, locale, targetColumn)}` : (isRu ? `Максимум ${targetColumn}: ${formatValue(max, locale, targetColumn)}` : `Max ${targetColumn}: ${formatValue(max, locale, targetColumn)}`), previewRows: rows.slice(0, 15) };
+    return { answer: appendSkippedRowsNote(isUk ? `Максимум ${targetColumn}: ${formatValue(max, locale, targetColumn)}` : (isRu ? `Максимум ${targetColumn}: ${formatValue(max, locale, targetColumn)}` : `Max ${targetColumn}: ${formatValue(max, locale, targetColumn)}`), skippedRows, locale), previewRows: rows.slice(0, 15) };
   }
   if (effectiveOp === "min") {
     let min = Infinity;
     for (let i = 0; i < nums.length; i++) if (nums[i] < min) min = nums[i];
-    return { answer: isUk ? `Мінімум ${targetColumn}: ${formatValue(min, locale, targetColumn)}` : (isRu ? `Минимум ${targetColumn}: ${formatValue(min, locale, targetColumn)}` : `Min ${targetColumn}: ${formatValue(min, locale, targetColumn)}`), previewRows: rows.slice(0, 15) };
+    return { answer: appendSkippedRowsNote(isUk ? `Мінімум ${targetColumn}: ${formatValue(min, locale, targetColumn)}` : (isRu ? `Минимум ${targetColumn}: ${formatValue(min, locale, targetColumn)}` : `Min ${targetColumn}: ${formatValue(min, locale, targetColumn)}`), skippedRows, locale), previewRows: rows.slice(0, 15) };
   }
   return { answer: "", previewRows: rows.slice(0, 15) };
 }
@@ -1986,6 +2143,65 @@ function applyTimeWindowDirectives(answer = "", message = "") {
   const prefix = lines.find((l) => /year over year|анализ год к году|аналіз рік до року|год к году/i.test(l)) || "";
   const rebuilt = [prefix, ...sliced].filter(Boolean).join("\n");
   return rebuilt || text;
+}
+
+function applyConversationalAnswerStyle(answer = "", message = "", locale = "en") {
+  const text = String(answer || "").trim();
+  if (!text) return text;
+  const isUk = String(locale || "").toLowerCase().startsWith("uk");
+  const isRu = String(locale || "").toLowerCase().startsWith("ru");
+  const question = String(message || "").trim();
+
+  const scalar = text.match(/^(Total|Average|Max|Min|Sum|Сумма|Сума|Среднее|Середнє|Максимум|Минимум)\s+([^:\n]+):\s+(.+)$/i);
+  if (scalar) {
+    const metric = String(scalar[2] || "").trim();
+    const value = String(scalar[3] || "").trim();
+    const year = extractYearToken(question);
+    if (isUk) return year ? `Значення ${metric} за ${year} рік становить ${value}.` : `Значення ${metric} становить ${value}.`;
+    if (isRu) return year ? `Значение ${metric} за ${year} год составляет ${value}.` : `Значение ${metric} составляет ${value}.`;
+    return year ? `The ${metric} for ${year} is ${value}.` : `The ${metric} is ${value}.`;
+  }
+
+  const delta = text.match(/^Delta\s+(.+?)\s+\((\d{4})\s*-\s*(\d{4})\):\s+(.+)$/i);
+  if (delta) {
+    const metric = String(delta[1] || "").trim();
+    const y2 = String(delta[2] || "").trim();
+    const y1 = String(delta[3] || "").trim();
+    const value = String(delta[4] || "").trim();
+    if (isUk) return `Різниця ${metric} між ${y1} і ${y2} становить ${value}.`;
+    if (isRu) return `Разница по ${metric} между ${y1} и ${y2} составляет ${value}.`;
+    return `The difference in ${metric} between ${y1} and ${y2} is ${value}.`;
+  }
+
+  const bareNumeric = text.match(/^[-+]?[$€£¥]?\s*\d[\d,]*(?:\.\d+)?%?$/);
+  if (bareNumeric && asksDifferenceBetweenYears(question)) {
+    const years = Array.from(String(question || "").matchAll(/\b(19\d{2}|20\d{2})\b/g), (m) => String(m?.[0] || "")).filter(Boolean);
+    const y1 = years[0] || "the first period";
+    const y2 = years[1] || "the second period";
+    if (isUk) return `Різниця між ${y1} і ${y2} становить ${text}.`;
+    if (isRu) return `Разница между ${y1} и ${y2} составляет ${text}.`;
+    return `The difference between ${y1} and ${y2} is ${text}.`;
+  }
+
+  const bareDriver = text.match(/^([^\n]+?)\s+\(([-+$€£¥\d,.\s]+)\)\s*$/);
+  if (bareDriver && !/[.!?]$/.test(text)) {
+    const name = String(bareDriver[1] || "").trim();
+    const value = String(bareDriver[2] || "").trim();
+    if (isUk) return `Найбільший внесок зробив ${name} (${value}).`;
+    if (isRu) return `Наибольший вклад внес ${name} (${value}).`;
+    return `The largest driver was ${name} (${value}).`;
+  }
+
+  return text;
+}
+
+function appendSkippedRowsNote(answer = "", skippedRows = 0, locale = "en") {
+  const skipped = Number(skippedRows || 0);
+  if (!Number.isFinite(skipped) || skipped <= 0) return String(answer || "");
+  const lang = String(locale || "en").toLowerCase();
+  if (lang.startsWith("uk")) return `${String(answer || "")} (Пропущено нечислових рядків: ${skipped})`;
+  if (lang.startsWith("ru")) return `${String(answer || "")} (Пропущено нечисловых строк: ${skipped})`;
+  return `${String(answer || "")} (Skipped non-numeric rows: ${skipped})`;
 }
 
 function isClarificationOrApologyAnswer(answer = "") {
@@ -2757,6 +2973,11 @@ function asksDifferenceBetweenYears(message = "") {
     || /\b(19\d{2}|20\d{2})\b.*\b(and|vs|versus)\b.*\b(19\d{2}|20\d{2})\b/i.test(s);
 }
 
+function isMetricConfirmationFollowup(message = "") {
+  const s = String(message || "").trim().toLowerCase();
+  return /^(is|was)\s+(this|that|it)\s+(net\s+)?(revenue|income|profit)\??$/.test(s);
+}
+
 function asksNumberOnlyResponse(message = "") {
   const s = String(message || "").toLowerCase();
   return /\b(number\s*only|just\s*number|only\s*number|numeric\s*only|digits\s*only)\b/i.test(s);
@@ -2768,6 +2989,17 @@ function extractDistinctYearsInOrder(message = "") {
     (m) => Number(m?.[0])
   ).filter((y) => Number.isInteger(y));
   return Array.from(new Set(years));
+}
+
+function mergeRecentYears(existingYears = [], incomingYears = [], maxKeep = 4) {
+  const merged = [];
+  for (const y of [...(Array.isArray(existingYears) ? existingYears : []), ...(Array.isArray(incomingYears) ? incomingYears : [])]) {
+    const n = Number(y);
+    if (!Number.isInteger(n)) continue;
+    if (!merged.includes(n)) merged.push(n);
+  }
+  if (merged.length <= maxKeep) return merged;
+  return merged.slice(-maxKeep);
 }
 
 function formatPlainNumber(value) {
@@ -3426,6 +3658,20 @@ export async function submitChatLearningFeedback(req, res) {
        RETURNING id, status, created_at`,
       [sheetId, Number(req.user?.id || 0) || null, locale, question, badAnswer, expectedAnswer, JSON.stringify({ ...context, successfulPlan })]
     );
+    await upsertLearningCandidate({
+      locale,
+      phrase: question,
+      suggestedIntent: "feedback_expected_answer",
+      suggestedPayload: {
+        expectedAnswer,
+        badAnswer,
+        sheetId: sheetId || null,
+        successfulPlan: successfulPlan || null,
+      },
+      confidence: 0.9,
+      bypassSettingsGate: true,
+      forcePending: true,
+    });
     return res.json({ success: true, feedbackId: rows?.[0]?.id, status: rows?.[0]?.status, createdAt: rows?.[0]?.created_at });
   } catch (err) {
     return res.status(500).json(aiError("feedback_store_failed", { message: String(err?.message || "internal_server_error") }));
@@ -3738,6 +3984,23 @@ export async function chatQuery(req, res) {
     userId: req.user?.id || 0,
     sheetId,
   });
+  if (isMetricConfirmationFollowup(normalizedMessage) && resolvedDeterministicContext?.context) {
+    const lastMetric = String(resolvedDeterministicContext.context.lastMetric || "").trim();
+    const lastYears = Array.isArray(resolvedDeterministicContext.context.lastYears)
+      ? resolvedDeterministicContext.context.lastYears.filter((y) => Number.isFinite(Number(y)))
+      : [];
+    const periodText = lastYears.length ? ` for ${lastYears.join(", ")}` : "";
+    const metricText = lastMetric || "the previously computed metric";
+    const confirmation = isEnglishLocale(locale)
+      ? `Yes. The previous result was for ${metricText}${periodText}.`
+      : `Yes. The previous result was for ${metricText}${periodText}.`;
+    return res.json({
+      answer: confirmation,
+      actions: { reset_filters: false, filters: [], chart: null },
+      preview_rows: [],
+      meta: { phase: "metric_confirmation_followup", metric: metricText, years: lastYears },
+    });
+  }
   const isPlatformAdmin = isPlatformAdminUser(req.user);
   const resolvedGroupId = isPlatformAdmin ? null : await resolveAiGroupIdForSheet({ sheetId, user: req.user });
   const fallbackUserGroupId = await resolveRuntimeGroupIdForUser(req.user);
@@ -3827,6 +4090,7 @@ export async function chatQuery(req, res) {
   let sampleRows = [];
   let tabNames = [];
   let semanticProfile = {};
+  let semanticProfileWithAi = null;
   if (hasSheet) {
     // PERF-01: Load only SAMPLE rows for AI context, not all 500k rows
     loadedSample = await loadAccessibleRows(sheetId, req.user, null, 100);
@@ -3840,14 +4104,6 @@ export async function chatQuery(req, res) {
     sampleRows = applyFilters(scopedSampleRows, activeDashboardFilters);
     tabNames = Array.isArray(loadedSample.tabs) ? loadedSample.tabs : [];
     semanticProfile = restrictSemanticProfileToHeaders(loadedSample.semanticProfile, aiHeaders, scopedSampleRows);
-    semanticProfile = await ensureAiHeaderUnderstanding({
-      sheetId,
-      headers: aiHeaders,
-      sampleRows: scopedSampleRows,
-      semanticProfile,
-      runtime,
-    });
-
   }
 
   if (!hasSheet) {
@@ -3875,6 +4131,75 @@ export async function chatQuery(req, res) {
       return res.status(413).json(aiError("chat_prompt_budget_exceeded", { reason, detail }));
     }
     return res.status(502).json(aiError("ai_unavailable", { reason, detail }));
+  }
+
+  if (hasSheet && isHighConfidenceSqlHotPathQuery(planningMessage, chatRuntimeRules)) {
+    const selectedTab = String(activeTab || "").trim() || null;
+    const hotTarget = resolveSqlHotPathMetricColumn({
+      message: planningMessage,
+      headers: aiHeaders,
+      sampleRows,
+      semanticProfile,
+      rules: chatRuntimeRules,
+    });
+    if (hotTarget) {
+      const year = extractYearToken(planningMessage);
+      const hotFilters = Array.isArray(activeDashboardFilters) ? [...activeDashboardFilters] : [];
+      const hotDateColumn =
+        resolveProfileDateColumn(semanticProfile, [])
+        || await inferLikelyDateColumn(aiHeaders, sampleRows, []);
+      if (year && hotDateColumn && !hotFilters.some((f) => String(f?.operator || "").toLowerCase() === "year_equals")) {
+        hotFilters.push({ column: hotDateColumn, operator: "year_equals", value: String(year) });
+      }
+      const hotAgg = await computeSqlAggregation({
+        sheetId,
+        user: req.user,
+        operation: "sum",
+        targetColumn: hotTarget,
+        groupBy: null,
+        filters: hotFilters,
+        rowFiltersList: loadedSample?.rowFiltersList || [],
+        allowedColumns: aiHeaders || baseHeaders || [],
+        limit: 1,
+        locale,
+        tabName: selectedTab,
+        actualHeaders: baseHeaders,
+      });
+      if (hotAgg?.answer) {
+        let answer = String(hotAgg.answer || "");
+        answer = formatAnswerWithBullets(answer);
+        answer = cleanAITechnicalNoise(answer);
+        answer = stripApproximationWords(answer);
+        answer = normalizeDatesAndRemoveTime(answer);
+        answer = enforceCommaThousands(answer);
+        answer = enforceTwoDecimals(answer);
+        answer = applyAnswerFormatDirectives(answer, message);
+        answer = applyTimeWindowDirectives(answer, message);
+        answer = applyConversationalAnswerStyle(answer, message, locale);
+        return res.json({
+          answer,
+          actions: { reset_filters: false, filters: [], chart: null },
+          preview_rows: [],
+          meta: {
+            phase: "chat_sql_hot_path",
+            operation: "sum",
+            target_column: hotTarget,
+            year: year || null,
+          },
+        });
+      }
+    }
+  }
+
+  if (hasSheet) {
+    semanticProfileWithAi = await ensureAiHeaderUnderstanding({
+      sheetId,
+      headers: aiHeaders,
+      sampleRows: loadedSample?.rows || [],
+      semanticProfile,
+      runtime,
+    });
+    semanticProfile = semanticProfileWithAi || semanticProfile;
   }
 
     return res.json({
@@ -3936,7 +4261,10 @@ export async function chatQuery(req, res) {
       context: resolvedDeterministicContext.context || {},
     },
   });
-  if (compiledPlan.ok) {
+  const looksLikeRankingQuestion =
+    isDriverRankingQuery(planningMessage, chatRuntimeRules)
+    || /\b(who made|most|least|lowest|highest|top|bottom|largest|smallest)\b/i.test(String(planningMessage || ""));
+  if (compiledPlan.ok && !looksLikeRankingQuestion) {
     PENDING_CLARIFICATIONS.delete(clarificationKey);
 
     // Persistence: If this was a header resolution, save it to the sheet's semantic profile
@@ -3964,6 +4292,46 @@ export async function chatQuery(req, res) {
 
 
     const selectedTab = String(activeTab || "").trim() || null;
+
+    const sqlFastPath = buildSqlFastPathFromDeterministicPlan(compiledPlan);
+    if (sqlFastPath) {
+      const sqlAgg = await computeSqlAggregation({
+        sheetId,
+        user: req.user,
+        operation: "sum",
+        targetColumn: sqlFastPath.targetColumn,
+        groupBy: null,
+        filters: sqlFastPath.filters,
+        rowFiltersList: loadedSample?.rowFiltersList || [],
+        allowedColumns: aiHeaders || baseHeaders || [],
+        limit: 1,
+        locale,
+        tabName: selectedTab,
+        actualHeaders: baseHeaders,
+      });
+      if (sqlAgg?.answer) {
+        let answer = String(sqlAgg.answer || "");
+        answer = formatAnswerWithBullets(answer);
+        answer = cleanAITechnicalNoise(answer);
+        answer = stripApproximationWords(answer);
+        answer = normalizeDatesAndRemoveTime(answer);
+        answer = enforceCommaThousands(answer);
+        answer = enforceTwoDecimals(answer);
+        answer = applyAnswerFormatDirectives(answer, message);
+        answer = applyTimeWindowDirectives(answer, message);
+        answer = applyConversationalAnswerStyle(answer, message, locale);
+        return res.json({
+          answer,
+          actions: { reset_filters: false, filters: [], chart: null },
+          preview_rows: [],
+          meta: {
+            phase: "accounting_sql_fast_path",
+            metric_requested: compiledPlan.metric,
+            target_column: sqlFastPath.targetColumn,
+          },
+        });
+      }
+    }
 
     const fullLoad = await loadAccessibleRows(sheetId, req.user, selectedTab);
     if (fullLoad?.forbidden) {
@@ -4014,9 +4382,11 @@ export async function chatQuery(req, res) {
 
     {
       const ctxKey = `${Number(req.user?.id || 0)}:${String(sheetId || "nosheet")}`;
+      const priorCtx = LAST_DETERMINISTIC_CONTEXT.get(ctxKey) || null;
+      const priorYears = Array.isArray(priorCtx?.lastYears) ? priorCtx.lastYears : [];
       const yearsFromPlan = Array.isArray(compiledPlan?.years) ? compiledPlan.years.map((y) => Number(y)).filter(Number.isFinite) : [];
       const yearsFromPeriod = Array.from(String(calcResult?.period?.label || "").matchAll(/\b(19\d{2}|20\d{2})\b/g), (m) => Number(m?.[1] || m?.[0])).filter(Number.isFinite);
-      const lastYears = yearsFromPlan.length ? yearsFromPlan : yearsFromPeriod;
+      const lastYears = mergeRecentYears(priorYears, yearsFromPlan.length ? yearsFromPlan : yearsFromPeriod);
       LAST_DETERMINISTIC_CONTEXT.set(ctxKey, {
         ts: Date.now(),
         lastOperation: String(compiledPlan?.operation || ""),
@@ -4024,6 +4394,16 @@ export async function chatQuery(req, res) {
         lastYears,
       });
     }
+    answer = formatAnswerWithBullets(answer);
+    answer = cleanAITechnicalNoise(answer);
+    answer = stripApproximationWords(answer);
+    answer = normalizeDatesAndRemoveTime(answer);
+    answer = enforceCommaThousands(answer);
+    answer = enforceTwoDecimals(answer);
+    answer = applyAnswerFormatDirectives(answer, message);
+    answer = applyTimeWindowDirectives(answer, message);
+    answer = applyConversationalAnswerStyle(answer, message, locale);
+    answer = enforcePerYearTopListSpacing(answer);
     return res.json({
       answer,
       actions: { reset_filters: false, filters: [], chart: null },
@@ -4510,6 +4890,87 @@ export async function chatQuery(req, res) {
       if (!resolvedGroupBy) {
         const dateCol = profileDateColumn || aiHeaders.find((h) => /date|period|month|year|дата|період|рік|год/i.test(String(h)));
         if (dateCol) resolvedGroupBy = dateCol;
+      }
+      const ctxMetricRaw = String(resolvedDeterministicContext?.context?.lastMetric || "").trim();
+      const ctxYears = Array.isArray(resolvedDeterministicContext?.context?.lastYears)
+        ? resolvedDeterministicContext.context.lastYears.map((y) => Number(y)).filter(Number.isFinite)
+        : [];
+      if (!resolvedTarget && ctxMetricRaw) {
+        const ctxMetricResolved = await resolveColumn(aiHeaders, ctxMetricRaw, sampleRows);
+        if (ctxMetricResolved) resolvedTarget = ctxMetricResolved;
+      }
+      if (resolvedTarget && ctxYears.length >= 2) {
+        const dedupYears = Array.from(new Set(ctxYears));
+        const y1 = Number(dedupYears[dedupYears.length - 2]);
+        const y2 = Number(dedupYears[dedupYears.length - 1]);
+        const dateCol = profileDateColumn || aiHeaders.find((h) => /date|period|month|year|дата|період|рік|год/i.test(String(h)));
+        const yearCol = aiHeaders.find((h) => /\byear\b|рік|год/i.test(String(h)));
+        const sumForYear = async (yearNum) => {
+          if (dateCol) {
+            return computeSqlAggregation({
+              sheetId,
+              user: req.user,
+              operation: "sum",
+              targetColumn: resolvedTarget,
+              groupBy: null,
+              filters: [...executionFilters.filter((f) => String(f?.operator || "").toLowerCase() !== "year_equals"), { column: dateCol, operator: "year_equals", value: yearNum }],
+              rowFiltersList: loadedSample?.rowFiltersList || [],
+              allowedColumns: aiHeaders || [],
+              limit: 1,
+              locale,
+              tabName: selectedTab,
+              actualHeaders: baseHeaders,
+            });
+          }
+          if (yearCol) {
+            return computeSqlAggregation({
+              sheetId,
+              user: req.user,
+              operation: "sum",
+              targetColumn: resolvedTarget,
+              groupBy: null,
+              filters: [...executionFilters.filter((f) => String(f?.operator || "").toLowerCase() !== "year_equals"), { column: yearCol, operator: "equals", value: yearNum }],
+              rowFiltersList: loadedSample?.rowFiltersList || [],
+              allowedColumns: aiHeaders || [],
+              limit: 1,
+              locale,
+              tabName: selectedTab,
+              actualHeaders: baseHeaders,
+            });
+          }
+          return null;
+        };
+        const parseValue = (answerText = "") => {
+          const m = String(answerText || "").match(/[-+]?\$?\s*([\d,]+(?:\.\d+)?)/);
+          if (!m) return null;
+          const n = Number(String(m[1]).replace(/,/g, ""));
+          return Number.isFinite(n) ? n : null;
+        };
+        const [sum1, sum2] = await Promise.all([sumForYear(y1), sumForYear(y2)]);
+        const v1 = parseValue(sum1?.answer || "");
+        const v2 = parseValue(sum2?.answer || "");
+        if (v1 !== null && v2 !== null) {
+          let directAnswer = `Delta ${resolvedTarget} (${y2} - ${y1}): ${formatNumberForLocale(v2 - v1, locale)}`;
+          directAnswer = formatAnswerWithBullets(directAnswer);
+          directAnswer = cleanAITechnicalNoise(directAnswer);
+          directAnswer = stripApproximationWords(directAnswer);
+          directAnswer = normalizeDatesAndRemoveTime(directAnswer);
+          directAnswer = enforceCommaThousands(directAnswer);
+          directAnswer = enforceTwoDecimals(directAnswer);
+          directAnswer = applyAnswerFormatDirectives(directAnswer, message);
+          directAnswer = applyTimeWindowDirectives(directAnswer, message);
+          directAnswer = applyConversationalAnswerStyle(directAnswer, message, locale);
+          return res.json({
+            answer: directAnswer,
+            actions: { reset_filters: false, filters: filteredAiFilters, chart: null },
+            preview_rows: [],
+            meta: {
+              phase: "contextual_delta_followup",
+              metric_requested: resolvedTarget,
+              years: [y1, y2],
+            },
+          });
+        }
       }
     }
     if (isShortReasonFollowup(message, chatRuntimeRules) && (resolvedOperation === "none" || resolvedOperation === "filter")) {
@@ -5344,6 +5805,7 @@ export async function chatQuery(req, res) {
     answer = enforceTwoDecimals(answer);
     answer = applyAnswerFormatDirectives(answer, message);
     answer = applyTimeWindowDirectives(answer, message);
+    answer = applyConversationalAnswerStyle(answer, message, locale);
     answer = enforcePerYearTopListSpacing(answer);
 
     const yearsDetected = Array.from(
@@ -5379,6 +5841,23 @@ export async function chatQuery(req, res) {
           yearsDetected,
         },
         confidence: 0.7,
+      });
+    }
+
+    {
+      const ctxKey = `${Number(req.user?.id || 0)}:${String(sheetId || "nosheet")}`;
+      const priorCtx = LAST_DETERMINISTIC_CONTEXT.get(ctxKey) || null;
+      const priorYears = Array.isArray(priorCtx?.lastYears) ? priorCtx.lastYears : [];
+      const yearsFromMessage = Array.from(
+        String(normalizedMessage || "").matchAll(/\b(19\d{2}|20\d{2})\b/g),
+        (m) => Number(m?.[0])
+      ).filter(Number.isFinite);
+      const mergedYears = mergeRecentYears(priorYears, yearsFromMessage);
+      LAST_DETERMINISTIC_CONTEXT.set(ctxKey, {
+        ts: Date.now(),
+        lastOperation: String(resolvedOperation || ai?.operation || ""),
+        lastMetric: String(resolvedTarget || ai?.target_column || ""),
+        lastYears: mergedYears,
       });
     }
 
@@ -5528,4 +6007,33 @@ function runtimeRegex(rules, key, fallback) {
   } catch {
     return new RegExp(String(fallback), "i");
   }
+}
+
+function buildSqlFastPathFromDeterministicPlan(plan) {
+  if (!plan?.ok || String(plan.operation || "") !== "single_period") return null;
+  const metric = String(plan.metric || "").trim().toLowerCase();
+  const resolution = plan?.resolution || {};
+  const mapped = resolution?.resolvedMappings || {};
+  const targetByMetric = {
+    total_revenue: mapped.total_revenue,
+    total_expense: mapped.total_expense,
+    cash: mapped.cash,
+    ar_balance: mapped.ar_balance,
+    ap_balance: mapped.ap_balance,
+    net_revenue: mapped.net_revenue,
+    gross_profit: mapped.gross_profit,
+    net_income: mapped.net_income,
+  };
+  const targetColumn = String(targetByMetric[metric] || "").trim();
+  if (!targetColumn) return null;
+  const periodYear = Number(plan?.period);
+  const dateColumn = String(
+    resolution?.resolvedMappings?.date
+      || resolution?.optionalMappings?.date
+      || ""
+  ).trim();
+  const filters = Number.isFinite(periodYear) && dateColumn
+    ? [{ column: dateColumn, operator: "year_equals", value: String(periodYear) }]
+    : [];
+  return { targetColumn, filters };
 }

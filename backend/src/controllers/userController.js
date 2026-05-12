@@ -20,6 +20,8 @@ import { normalize2faDigits, normalize2faPeriod } from "../utils/twoFactor.js";
 import { AI_FEATURE_TOGGLES_SETTINGS_KEY, normalizeAiFeatureToggles, resolveEffectiveAiFeaturesForUser } from "../utils/aiFeatureToggles.js";
 import { loadAiRuntimeSettings, saveAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
 import { fetchOpenAiOrganizationUsageSummary, normalizeUsagePeriodMonth } from "../utils/openAiUsage.js";
+import { invalidateLearningRulesCache } from "../services/ai/semanticKnowledgeService.js";
+import { normalizeText } from "../services/ai/accountingGlossary.js";
 import { randomBytes, createHash } from "crypto";
 
 const EXPOSE_TEMP_PASSWORDS = process.env.EXPOSE_TEMP_PASSWORDS
@@ -2123,13 +2125,14 @@ export async function reviewAiLearningFeedback(req, res) {
                 [
                     id,
                     String(found.locale || "en"),
-                    String(found.question || ""),
+                    normalizeText(String(found.question || "")),
                     mappedIntent,
                     JSON.stringify(mappedPayload),
                     Number(req.user?.id || 0) || null,
                 ]
             );
             approvedRuleId = ruleRows.rows?.[0]?.id || null;
+            invalidateLearningRulesCache();
         }
 
         await client.query(
@@ -2210,9 +2213,10 @@ export async function reviewAiLearningCandidate(req, res) {
                    (scope, locale, phrase, mapped_intent, mapped_payload, confidence, status, approved_by)
                  VALUES ('global', $1, $2, $3, $4::jsonb, 0.9, 'approved', $5)
                  RETURNING id`,
-                [found.locale, found.phrase, found.suggested_intent, JSON.stringify(found.suggested_payload || {}), Number(req.user?.id || 0) || null]
+                [found.locale, normalizeText(found.phrase), found.suggested_intent, JSON.stringify(found.suggested_payload || {}), Number(req.user?.id || 0) || null]
             );
             approvedRuleId = ruleRows.rows?.[0]?.id || null;
+            invalidateLearningRulesCache();
         }
         await client.query(
             `UPDATE ai_learning_candidates

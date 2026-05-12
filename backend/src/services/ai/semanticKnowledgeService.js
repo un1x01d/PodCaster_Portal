@@ -38,26 +38,31 @@ export async function getSemanticKnowledge() {
   }
 }
 
-let RULES_CACHE = null;
-let RULES_FUSE = null;
-let RULES_TS = 0;
+const RULES_CACHE_BY_LOCALE = new Map();
+
+export function invalidateLearningRulesCache() {
+  RULES_CACHE_BY_LOCALE.clear();
+}
 
 export async function getLearningRules(locale = "en") {
+  const localeKey = String(locale || "en").trim().toLowerCase() || "en";
   const now = Date.now();
-  if (RULES_CACHE && now - RULES_TS < CACHE_TTL) {
-    return { cache: RULES_CACHE, fuse: RULES_FUSE };
+  const cached = RULES_CACHE_BY_LOCALE.get(localeKey);
+  if (cached && now - Number(cached.ts || 0) < CACHE_TTL) {
+    return { cache: cached.cache, fuse: cached.fuse };
   }
 
   try {
     const rows = await query(
       `SELECT phrase, mapped_intent, mapped_payload FROM ai_learning_rules WHERE status = 'approved' AND (locale = $1 OR locale = 'en')`,
-      [locale]
+      [localeKey]
     );
     const map = new Map();
     const fuseData = [];
 
     rows.forEach((r) => {
-      const p = String(r.phrase || "").toLowerCase();
+      const p = normalizeText(String(r.phrase || ""));
+      if (!p) return;
       const entry = {
         phrase: p,
         intent: r.mapped_intent,
@@ -67,10 +72,9 @@ export async function getLearningRules(locale = "en") {
       fuseData.push(entry);
     });
 
-    RULES_CACHE = map;
-    RULES_FUSE = new Fuse(fuseData, { keys: ["phrase"], threshold: 0.3 });
-    RULES_TS = now;
-    return { cache: map, fuse: RULES_FUSE };
+    const fuse = new Fuse(fuseData, { keys: ["phrase"], threshold: 0.3 });
+    RULES_CACHE_BY_LOCALE.set(localeKey, { cache: map, fuse, ts: now });
+    return { cache: map, fuse };
   } catch (e) {
     console.error("Failed to load learning rules from DB:", e);
     return { cache: new Map(), fuse: null };
@@ -79,7 +83,8 @@ export async function getLearningRules(locale = "en") {
 
 export async function checkPhraseOverride(phrase, locale = "en") {
   const { cache, fuse } = await getLearningRules(locale);
-  const normalized = String(phrase || "").toLowerCase().trim();
+  const normalized = normalizeText(String(phrase || ""));
+  if (!normalized) return null;
   
   // Exact match first
   if (cache.has(normalized)) return cache.get(normalized);
@@ -159,4 +164,3 @@ async function autoApproveCandidate(phrase, intent, locale) {
     console.error("Auto-approval failed:", e);
   }
 }
-

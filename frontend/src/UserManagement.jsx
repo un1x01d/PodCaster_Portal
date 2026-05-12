@@ -606,8 +606,11 @@ export default function UserManagement({ token, user, sheetId }) {
   const [aiSelfLearningSaving, setAiSelfLearningSaving] = useState(false);
   const [aiSelfLearningSaved, setAiSelfLearningSaved] = useState(false);
   const [aiLearningCandidates, setAiLearningCandidates] = useState([]);
+  const [aiLearningApprovedCandidates, setAiLearningApprovedCandidates] = useState([]);
+  const [aiLearningFeedbackPending, setAiLearningFeedbackPending] = useState([]);
   const [aiLearningCandidatesLoading, setAiLearningCandidatesLoading] = useState(false);
   const [aiLearningReviewBusyId, setAiLearningReviewBusyId] = useState(null);
+  const [aiLearningApprovedOpen, setAiLearningApprovedOpen] = useState(true);
   const [aiLearningImpact, setAiLearningImpact] = useState({ days: 30, intents: [] });
   const metricsUrl = useMemo(() => `${String(API || "").replace(/\/+$/, "")}/metrics`, []);
   const [emailIngestConfig, setEmailIngestConfig] = useState({
@@ -1933,13 +1936,35 @@ export default function UserManagement({ token, user, sheetId }) {
     if (!isSuperAdmin) return;
     setAiLearningCandidatesLoading(true);
     try {
-      const res = await axios.get(`${API}/admin/ai-learning/candidates`, {
+      const [pendingRes, approvedRes] = await Promise.all([
+        axios.get(`${API}/admin/ai-learning/candidates`, {
+          headers: { Authorization: `Bearer ${token}` },
+          params: { status: "pending" },
+        }),
+        axios.get(`${API}/admin/ai-learning/candidates`, {
+          headers: { Authorization: `Bearer ${token}` },
+          params: { status: "approved" },
+        }),
+      ]);
+      setAiLearningCandidates(Array.isArray(pendingRes?.data?.items) ? pendingRes.data.items : []);
+      setAiLearningApprovedCandidates(Array.isArray(approvedRes?.data?.items) ? approvedRes.data.items : []);
+    } catch (e) {
+      console.error("fetchAiLearningCandidates failed", e);
+    } finally {
+      setAiLearningCandidatesLoading(false);
+    }
+  };
+  const fetchAiLearningFeedbackPending = async () => {
+    if (!isSuperAdmin) return;
+    setAiLearningCandidatesLoading(true);
+    try {
+      const res = await axios.get(`${API}/admin/ai-learning/feedback`, {
         headers: { Authorization: `Bearer ${token}` },
         params: { status: "pending" },
       });
-      setAiLearningCandidates(Array.isArray(res?.data?.items) ? res.data.items : []);
+      setAiLearningFeedbackPending(Array.isArray(res?.data?.items) ? res.data.items : []);
     } catch (e) {
-      console.error("fetchAiLearningCandidates failed", e);
+      console.error("fetchAiLearningFeedbackPending failed", e);
     } finally {
       setAiLearningCandidatesLoading(false);
     }
@@ -2390,6 +2415,20 @@ export default function UserManagement({ token, user, sheetId }) {
       setAiLearningReviewBusyId(null);
     }
   };
+  const reviewAiLearningFeedback = async (id, action) => {
+    if (!isSuperAdmin || !id || !action) return;
+    setAiLearningReviewBusyId(`fb-${id}`);
+    try {
+      await axios.post(`${API}/admin/ai-learning/feedback/${id}/review`, { action }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      await Promise.all([fetchAiLearningFeedbackPending(), fetchAiLearningCandidates(), fetchAiLearningImpact()]);
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to review learning feedback");
+    } finally {
+      setAiLearningReviewBusyId(null);
+    }
+  };
 
   const applyAiRuntimePreset = (preset) => {
     if (!preset || !AI_RUNTIME_PRESETS[preset]) return;
@@ -2728,6 +2767,7 @@ export default function UserManagement({ token, user, sheetId }) {
       fetchAiRuntimeSetting();
       fetchAiSelfLearningSetting();
       fetchAiLearningCandidates();
+      fetchAiLearningFeedbackPending();
       fetchAiLearningImpact();
       fetchAiUsageSummary();
     }
@@ -4431,6 +4471,46 @@ export default function UserManagement({ token, user, sheetId }) {
               </div>
               <div className="rounded-md border border-slate-200 bg-slate-50 p-2 space-y-2">
                 <div className="flex items-center justify-between">
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Pending Learning Feedback</div>
+                  <button
+                    type="button"
+                    onClick={fetchAiLearningFeedbackPending}
+                    className="text-[10px] font-semibold text-slate-600 hover:text-slate-900"
+                  >
+                    Refresh
+                  </button>
+                </div>
+                {aiLearningCandidatesLoading && <div className="text-[10px] text-slate-500">Loading…</div>}
+                {!aiLearningCandidatesLoading && (aiLearningFeedbackPending || []).slice(0, 12).map((item) => (
+                  <div key={`feedback-${item.id}`} className="rounded border border-slate-200 bg-white p-2 space-y-1">
+                    <div className="text-[10px] font-semibold text-slate-700">{item.question}</div>
+                    <div className="text-[10px] text-slate-500">expected: {item.expected_answer}</div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => reviewAiLearningFeedback(item.id, "approve")}
+                        disabled={aiLearningReviewBusyId === `fb-${item.id}`}
+                        className={`px-2 py-1 rounded text-[10px] font-semibold ${aiLearningReviewBusyId === `fb-${item.id}` ? "bg-slate-300 text-slate-500" : "bg-emerald-600 text-white hover:bg-emerald-700"}`}
+                      >
+                        Approve
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => reviewAiLearningFeedback(item.id, "reject")}
+                        disabled={aiLearningReviewBusyId === `fb-${item.id}`}
+                        className={`px-2 py-1 rounded text-[10px] font-semibold ${aiLearningReviewBusyId === `fb-${item.id}` ? "bg-slate-300 text-slate-500" : "bg-slate-700 text-white hover:bg-slate-800"}`}
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                {!aiLearningCandidatesLoading && (!aiLearningFeedbackPending || aiLearningFeedbackPending.length === 0) && (
+                  <div className="text-[10px] text-slate-500">No pending feedback.</div>
+                )}
+              </div>
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-2 space-y-2">
+                <div className="flex items-center justify-between">
                   <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Pending Learning Candidates</div>
                   <button
                     type="button"
@@ -4467,6 +4547,32 @@ export default function UserManagement({ token, user, sheetId }) {
                 ))}
                 {!aiLearningCandidatesLoading && (!aiLearningCandidates || aiLearningCandidates.length === 0) && (
                   <div className="text-[10px] text-slate-500">No pending candidates.</div>
+                )}
+              </div>
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-2 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Recently Approved Learning</div>
+                  <button
+                    type="button"
+                    onClick={() => setAiLearningApprovedOpen((prev) => !prev)}
+                    className="text-[10px] font-semibold text-slate-600 hover:text-slate-900"
+                  >
+                    {aiLearningApprovedOpen ? "Collapse" : "Expand"}
+                  </button>
+                </div>
+                {aiLearningApprovedOpen && (
+                  <>
+                    {aiLearningCandidatesLoading && <div className="text-[10px] text-slate-500">Loading…</div>}
+                    {!aiLearningCandidatesLoading && (aiLearningApprovedCandidates || []).slice(0, 12).map((item) => (
+                      <div key={`approved-${item.id}`} className="text-[10px] text-emerald-800">
+                        • <span className="font-semibold">{item.phrase}</span>
+                        <span className="text-emerald-700"> — {item.suggested_intent} (evidence {item.evidence_count})</span>
+                      </div>
+                    ))}
+                    {!aiLearningCandidatesLoading && (!aiLearningApprovedCandidates || aiLearningApprovedCandidates.length === 0) && (
+                      <div className="text-[10px] text-slate-500">No approved learning yet.</div>
+                    )}
+                  </>
                 )}
               </div>
             </div>
