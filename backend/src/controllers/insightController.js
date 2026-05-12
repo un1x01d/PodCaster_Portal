@@ -8,6 +8,7 @@ import { isAiGloballyDisabled, loadAiRuntimeSettings, loadEffectiveAiRuntimeSett
 import { resolveChatCompletionProviderConfig } from "../utils/llmProvider.js";
 import { buildChatCompletionRequestBody, extractOpenAiAssistantText, minCompletionTokensForModel } from "../utils/openAiCompat.js";
 import { enforceAiPromptBudget } from "../utils/aiBudget.js";
+import { buildRowFilterWhereClause } from "../utils/rowFilters.js";
 
 const INSIGHT_MAX_ROWS = Number.parseInt(process.env.INSIGHT_MAX_ROWS || "300000", 10);
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10);
@@ -462,40 +463,6 @@ async function callInsightRag({ metricCol, dateCol, categoryCol, series, categor
   } finally {
     clearTimeout(timeout);
   }
-}
-
-function buildRowFilterWhereClause(rowFiltersList = [], startParamIndex = 1, actualHeaders = []) {
-  const normalized = Array.isArray(rowFiltersList) ? rowFiltersList : [];
-  const hasAllowAll = normalized.some((f) => !f || Object.keys(f).length === 0);
-  if (hasAllowAll) return { sql: "", params: [] };
-
-  const groups = [];
-  const params = [];
-  let paramIdx = startParamIndex;
-
-  const headersList = Array.isArray(actualHeaders) ? actualHeaders : [];
-  const resolveColumnKey = (requested) => {
-      if (!headersList.length) return requested;
-      const exact = headersList.find((h) => h === requested);
-      if (exact) return exact;
-      const lowerRequested = String(requested).toLowerCase().trim();
-      return headersList.find((h) => String(h).toLowerCase().trim() === lowerRequested) || requested;
-  };
-
-  normalized.forEach((filters) => {
-    const entries = Object.entries(filters || {}).filter(([k]) => !!k);
-    if (!entries.length) return;
-    const predicates = entries.map(([k, v]) => {
-      const resolvedKey = resolveColumnKey(k);
-      params.push(resolvedKey, String(v));
-      const sql = `(row_data->>$${paramIdx}) = $${paramIdx + 1}`;
-      paramIdx += 2;
-      return sql;
-    });
-    if (predicates.length) groups.push(`(${predicates.join(" AND ")})`);
-  });
-  if (!groups.length) return { sql: " AND 1 = 0", params };
-  return { sql: ` AND (${groups.join(" OR ")})`, params };
 }
 
 function money(v) {

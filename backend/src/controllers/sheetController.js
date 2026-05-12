@@ -21,6 +21,9 @@ import { ensureReportSourcesSchema } from "../config/db.js";
 import { DLP_SETTINGS_KEY, normalizeDlpSettings, scanRowsForDlp, applyDlpColumnMasking } from "../utils/dlp.js";
 import { classifySheetBusinessContext } from "../utils/businessClassification.js";
 import { buildSheetSemanticProfile, loadSemanticProfileRules, mergeSheetSemanticProfileLearning } from "../utils/sheetSemanticProfile.js";
+import { loadEffectiveAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
+import { resolveChatCompletionProviderConfig } from "../utils/llmProvider.js";
+import { buildChatCompletionRequestBody, extractOpenAiAssistantText, minCompletionTokensForModel } from "../utils/openAiCompat.js";
 import {
     getAppSettingValueWithScopedFallback,
     normalizeEmailIngestSenderAllowlist,
@@ -29,6 +32,7 @@ import {
     REVISION_COMPARE_SETTINGS_KEY,
 } from "./userController.js";
 import { recordIngestionLatencyMs, setImportWorkerActiveJobs, setImportWorkerQueueDepth } from "../utils/metrics.js";
+import { buildRowFilterWhereClause } from "../utils/rowFilters.js";
 
 const MAX_UPLOAD_SHEETS = Number.parseInt(
     process.env.MAX_UPLOAD_SHEETS || (process.env.NODE_ENV === "production" ? "20" : "50"),
@@ -64,6 +68,9 @@ const AUTOSYNC_WORKER_ADVISORY_LOCK_KEY = Number.parseInt(process.env.AUTOSYNC_W
 const IMPORT_PIPELINE_SETTINGS_KEY = "import_pipeline_settings";
 const IMPORT_STAGING_WRITE_ENABLED = ["1", "true", "yes", "on"].includes(String(process.env.IMPORT_STAGING_WRITE_ENABLED || "false").trim().toLowerCase());
 const IMPORT_STAGING_FINALIZE_ENABLED = ["1", "true", "yes", "on"].includes(String(process.env.IMPORT_STAGING_FINALIZE_ENABLED || "false").trim().toLowerCase());
+const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10);
+const HEADER_AI_SAMPLE_ROWS = Math.min(120, Number.parseInt(process.env.HEADER_AI_SAMPLE_ROWS || "60", 10));
+const HEADER_AI_SAMPLE_VALUES_PER_COLUMN = Math.min(8, Number.parseInt(process.env.HEADER_AI_SAMPLE_VALUES_PER_COLUMN || "5", 10));
 
 function isRevisionCompareRequest(queryParams = {}) {
     const marker = String(
@@ -139,6 +146,160 @@ function normalizeSheetRow(row) {
     return out;
 }
 
+function uniqueColumnSamples(rows = [], header, limit = HEADER_AI_SAMPLE_VALUES_PER_COLUMN) {
+    const seen = new Set();
+    const out = [];
+    for (const row of rows) {
+        const raw = row?.[header];
+        const value = String(raw ?? "").trim();
+        if (!value) continue;
+        const key = value.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(value.slice(0, 120));
+        if (out.length >= limit) break;
+    }
+    return out;
+}
+
+function buildHeaderAiContext(headers = [], rows = []) {
+    const limitedRows = Array.isArray(rows) ? rows.slice(0, HEADER_AI_SAMPLE_ROWS) : [];
+    return (Array.isArray(headers) ? headers : []).map((header) => ({
+        header: String(header),
+        sample_values: uniqueColumnSamples(limitedRows, header, HEADER_AI_SAMPLE_VALUES_PER_COLUMN),
+    }));
+}
+
+function applyHeaderUnderstandingToProfile(profile = {}, headerUnderstanding = []) {
+    const base = profile && typeof profile === "object" ? profile : {};
+    const next = { ...base };
+    const columns = Array.isArray(base.columns)
+        ? base.columns.map((c) => ({ ...c, roles: Array.isArray(c.roles) ? [...c.roles] : [], meanings: Array.isArray(c.meanings) ? [...c.meanings] : [] }))
+        : [];
+    const defaults = { ...(base.defaults || {}) };
+    const metricColumns = { ...(defaults.metricColumns || {}) };
+    const dimensions = new Set(Array.isArray(defaults.dimensions) ? defaults.dimensions : []);
+    const metrics = new Set(Array.isArray(defaults.metrics) ? defaults.metrics : []);
+    let dateColumn = defaults.dateColumn || null;
+    let serviceLineColumn = defaults.serviceLineColumn || null;
+    let revenueModelColumn = defaults.revenueModelColumn || null;
+    let driverDimensionColumn = defaults.driverDimensionColumn || null;
+    const byName = new Map(columns.map((c) => [String(c.name), c]));
+    for (const item of (Array.isArray(headerUnderstanding) ? headerUnderstanding : [])) {
+        const header = String(item?.header || "").trim();
+        if (!header || !byName.has(header)) continue;
+        const col = byName.get(header);
+        const meaning = String(item?.meaning || "").trim();
+        const role = String(item?.role || "").trim();
+        if (meaning && !col.meanings.includes(meaning)) col.meanings.push(meaning);
+        if (role && !col.roles.includes(role)) col.roles.push(role);
+        if (role === "metric") metrics.add(header);
+        if (role === "dimension") dimensions.add(header);
+        if (role === "date" && !dateColumn) dateColumn = header;
+        if (meaning === "revenue") metricColumns.revenue = metricColumns.revenue || header;
+        if (meaning === "cost") metricColumns.cost = metricColumns.cost || header;
+        if (meaning === "profit") metricColumns.profit = metricColumns.profit || header;
+        if (meaning === "quantity") metricColumns.quantity = metricColumns.quantity || header;
+        if (meaning === "serviceLine") serviceLineColumn = serviceLineColumn || header;
+        if (meaning === "revenueModel") revenueModelColumn = revenueModelColumn || header;
+        if (!driverDimensionColumn && (meaning === "serviceLine" || meaning === "product" || meaning === "customer" || meaning === "category" || meaning === "region")) {
+            driverDimensionColumn = header;
+        }
+    }
+    next.columns = columns;
+    next.defaults = {
+        ...defaults,
+        metricColumns,
+        dateColumn,
+        serviceLineColumn,
+        revenueModelColumn,
+        driverDimensionColumn,
+        dimensions: Array.from(dimensions).slice(0, 20),
+        metrics: Array.from(metrics).slice(0, 20),
+    };
+    next.learned = {
+        ...(base.learned || {}),
+        header_understanding: Array.isArray(headerUnderstanding) ? headerUnderstanding : [],
+        header_understanding_updated_at: new Date().toISOString(),
+    };
+    return next;
+}
+
+async function inferHeaderUnderstandingWithAi({ headers = [], sampleRows = [], runtime = null }) {
+    const { provider, model, baseUrl, apiKey } = resolveChatCompletionProviderConfig(runtime || {});
+    if (!apiKey) return [];
+    const context = buildHeaderAiContext(headers, sampleRows);
+    if (!context.length) return [];
+    const system = [
+        "Classify spreadsheet headers for deterministic analytics.",
+        "Use only provided header names and sample values.",
+        "Return strict JSON only.",
+        "Allowed meanings: revenue,cost,profit,quantity,customer,serviceLine,revenueModel,product,region,category,owner,period,other",
+        "Allowed roles: metric,dimension,date,id,other",
+    ].join(" ");
+    const user = JSON.stringify({
+        task: "Map each header to at most one meaning and one role.",
+        headers: context,
+        output_schema: { mappings: [{ header: "string", meaning: "string", role: "string", confidence: "0..1" }] },
+    });
+    const requestBody = buildChatCompletionRequestBody({
+        model,
+        provider,
+        messages: [{ role: "system", content: system }, { role: "user", content: user }],
+        responseFormat: { type: "json_object" },
+        maxCompletionTokens: minCompletionTokensForModel(model, 800, 800, 768),
+        temperature: 0,
+    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), Number(runtime?.openaiTimeoutMs || OPENAI_TIMEOUT_MS));
+    try {
+        const response = await fetch(`${String(baseUrl).replace(/\/+$/, "")}/chat/completions`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+            body: JSON.stringify(requestBody),
+            signal: controller.signal,
+        });
+        if (!response.ok) return [];
+        const payload = await response.json().catch(() => ({}));
+        const raw = String(extractOpenAiAssistantText(payload) || "").trim();
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        const mappings = Array.isArray(parsed?.mappings) ? parsed.mappings : [];
+        const headerSet = new Set((Array.isArray(headers) ? headers : []).map((h) => String(h)));
+        return mappings
+            .map((m) => ({
+                header: String(m?.header || "").trim(),
+                meaning: String(m?.meaning || "other").trim(),
+                role: String(m?.role || "other").trim(),
+                confidence: Math.max(0, Math.min(1, Number(m?.confidence || 0))),
+            }))
+            .filter((m) => m.header && headerSet.has(m.header));
+    } catch {
+        return [];
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
+async function maybeEnrichSheetSemanticProfileWithAi({ sheetId, headers = [], sampleRows = [], semanticProfile = {}, groupId = null, client = null }) {
+    const hasExisting = Array.isArray(semanticProfile?.learned?.header_understanding) && semanticProfile.learned.header_understanding.length > 0;
+    if (hasExisting) return semanticProfile;
+    const runtimeBundle = await loadEffectiveAiRuntimeSettings(groupId);
+    const runtime = runtimeBundle?.runtime || null;
+    const inferred = await inferHeaderUnderstandingWithAi({ headers, sampleRows, runtime });
+    if (!inferred.length) return semanticProfile;
+    const nextProfile = applyHeaderUnderstandingToProfile(semanticProfile, inferred);
+    const db = client || { query };
+    await db.query(
+        `UPDATE sheets
+            SET semantic_profile = $2::jsonb,
+                semantic_profile_updated_at = CURRENT_TIMESTAMP
+          WHERE id = $1`,
+        [sheetId, JSON.stringify(nextProfile)]
+    ).catch(() => {});
+    return nextProfile;
+}
+
 function toPeriodKeyFromValue(value) {
     const normalized = normalizeSheetCellValue(value);
     const text = String(normalized || "").trim();
@@ -212,6 +373,73 @@ function sanitizeReportSourceName(value) {
 
 function normalizeEmailAddress(value) {
     return String(value || "").trim().toLowerCase();
+}
+
+function looksLikeZipContainer(buffer) {
+    return Buffer.isBuffer(buffer)
+        && buffer.length >= 4
+        && buffer[0] === 0x50
+        && buffer[1] === 0x4b
+        && buffer[2] === 0x03
+        && buffer[3] === 0x04;
+}
+
+function looksLikeLegacyXls(buffer) {
+    return Buffer.isBuffer(buffer)
+        && buffer.length >= 8
+        && buffer[0] === 0xd0
+        && buffer[1] === 0xcf
+        && buffer[2] === 0x11
+        && buffer[3] === 0xe0
+        && buffer[4] === 0xa1
+        && buffer[5] === 0xb1
+        && buffer[6] === 0x1a
+        && buffer[7] === 0xe1;
+}
+
+function looksLikeCsvText(buffer) {
+    if (!Buffer.isBuffer(buffer) || buffer.length === 0) return false;
+    const sample = buffer.subarray(0, Math.min(buffer.length, 512)).toString("utf8");
+    const normalized = sample.replace(/^\uFEFF/, "").trim();
+    if (!normalized) return false;
+    if (normalized.includes("\u0000")) return false;
+    return /[,\t;\n]/.test(normalized);
+}
+
+export function assertUploadSignatureMatchesExtension({ originalName = "", fileBuffer = null }) {
+    const ext = String(path.extname(String(originalName || "") || "").toLowerCase());
+    if (!Buffer.isBuffer(fileBuffer) || fileBuffer.length < 4) {
+        const err = new Error("unsupported_file_type");
+        err.statusCode = 415;
+        throw err;
+    }
+    if (ext === ".xlsx") {
+        if (!looksLikeZipContainer(fileBuffer)) {
+            const err = new Error("unsupported_file_type");
+            err.statusCode = 415;
+            throw err;
+        }
+        return;
+    }
+    if (ext === ".xls") {
+        if (!looksLikeLegacyXls(fileBuffer) && !looksLikeZipContainer(fileBuffer)) {
+            const err = new Error("unsupported_file_type");
+            err.statusCode = 415;
+            throw err;
+        }
+        return;
+    }
+    if (ext === ".csv") {
+        if (!looksLikeCsvText(fileBuffer)) {
+            const err = new Error("unsupported_file_type");
+            err.statusCode = 415;
+            throw err;
+        }
+        return;
+    }
+    const err = new Error("unsupported_file_type");
+    err.statusCode = 415;
+    throw err;
 }
 
 function hasValidEmailIngestSharedSecret(req) {
@@ -429,71 +657,6 @@ function freezeViewConfigForRefresh(config, previousHeaders = [], nextHeaders = 
     };
 }
 
-function buildRowFilterWhereClause(rowFiltersList = [], startParamIndex = 1, actualHeaders = []) {
-    const normalized = Array.isArray(rowFiltersList) ? rowFiltersList : [];
-    const hasAllowAll = normalized.some((f) => !f || Object.keys(f).length === 0);
-    if (hasAllowAll) return { sql: "", params: [] };
-
-    const groups = [];
-    const params = [];
-    let paramIdx = startParamIndex;
-
-    const headersList = Array.isArray(actualHeaders) ? actualHeaders : [];
-    const resolveColumnKey = (requested) => {
-        if (!headersList.length) return requested;
-        const exact = headersList.find((h) => h === requested);
-        if (exact) return exact;
-        const lowerRequested = String(requested).toLowerCase().trim();
-        return headersList.find((h) => String(h).toLowerCase().trim() === lowerRequested) || requested;
-    };
-
-    normalized.forEach((filters) => {
-        const entries = Object.entries(filters || {}).filter(([k]) => !!k);
-        if (!entries.length) return;
-        const predicates = entries.map(([k, v]) => {
-            const resolvedKey = resolveColumnKey(k);
-            params.push(resolvedKey);
-            const rawValues = Array.isArray(v)
-                ? v.map((item) => String(item ?? "").trim()).filter(Boolean)
-                : String(v ?? "").split(",").map((item) => item.trim()).filter(Boolean);
-            const normalizedValues = Array.from(new Set(rawValues.flatMap((value) => {
-                if (/^\d{4}-\d{2}-\d{2}T/.test(value)) {
-                    // Views may persist ISO timestamps while row data stores date-only values.
-                    return [value, value.slice(0, 10)];
-                }
-                return [value];
-            })));
-            const normalizedTextValues = normalizedValues.map((value) => value.trim().toLowerCase());
-            const normalizedNumericValues = Array.from(new Set(
-                normalizedValues
-                    .map((value) => String(value).replace(/[^0-9.-]/g, ""))
-                    .filter((value) => /^-?\d+(?:\.\d+)?$/.test(value))
-            ));
-            params.push(normalizedTextValues);
-            params.push(normalizedNumericValues);
-            const colSql = `row_data->>$${paramIdx}`;
-            const sql = `(
-                LOWER(BTRIM(COALESCE(${colSql}, ''))) = ANY($${paramIdx + 1}::text[])
-                OR (
-                  cardinality($${paramIdx + 2}::text[]) > 0
-                  AND NULLIF(regexp_replace(COALESCE(${colSql}, ''), '[^0-9.-]', '', 'g'), '') IS NOT NULL
-                  AND EXISTS (
-                    SELECT 1
-                    FROM unnest($${paramIdx + 2}::text[]) AS fval(value)
-                    WHERE CAST(NULLIF(regexp_replace(COALESCE(${colSql}, ''), '[^0-9.-]', '', 'g'), '') AS NUMERIC)
-                          = CAST(fval.value AS NUMERIC)
-                  )
-                )
-            )`;
-            paramIdx += 3;
-            return sql;
-        });
-        if (predicates.length) groups.push(`(${predicates.join(" AND ")})`);
-    });
-    if (!groups.length) return { sql: " AND 1 = 0", params };
-    return { sql: ` AND (${groups.join(" OR ")})`, params };
-}
-
 function parseJsonMaybe(value, fallback) {
     if (typeof value !== "string") return value ?? fallback;
     try {
@@ -645,6 +808,19 @@ async function resolveReportSourceForUpload(client, { reportSourceId, reportSour
     if (!name) {
         const err = new Error("report_source_name_required");
         err.statusCode = 400;
+        throw err;
+    }
+    const existingByName = await client.query(
+        `SELECT id
+           FROM report_sources
+          WHERE LOWER(TRIM(COALESCE(name, ''))) = LOWER(TRIM($1))
+          LIMIT 1`,
+        [name]
+    );
+    if (existingByName.rows.length) {
+        const err = new Error("report_source_name_exists");
+        err.statusCode = 409;
+        err.details = { existing_report_source_id: existingByName.rows[0].id };
         throw err;
     }
     const targetGroupId = autosyncConfig?.enabled && autosyncConfig?.groupId
@@ -1020,6 +1196,7 @@ function isRetryableImportError(err) {
         "report_source_not_found",
         "report_source_forbidden",
         "report_source_name_required",
+        "report_source_name_exists",
         "display_name_required",
         "unreadable_spreadsheet",
         "xlsx_worker_timeout",
@@ -1420,6 +1597,7 @@ async function carryForwardBusinessClassificationIfPrompted({
 }) {
     const sourceId = Number.parseInt(reportSourceId, 10);
     const label = String(fileLabel || "").trim();
+    const normalizedLabel = label.toLowerCase();
     if (!Number.isInteger(sourceId) || sourceId <= 0 || !sheetId || !label) return null;
 
     const priorRows = await query(
@@ -1582,7 +1760,15 @@ async function executeImportFromParsedWorkbook({
             throw err;
         }
         const semanticRules = await loadSemanticProfileRules();
-        const semanticProfile = buildSheetSemanticProfile({ headers, sampleRows: firstTabRowsRaw, rules: semanticRules });
+        let semanticProfile = buildSheetSemanticProfile({ headers, sampleRows: firstTabRowsRaw, rules: semanticRules });
+        semanticProfile = await maybeEnrichSheetSemanticProfileWithAi({
+            sheetId,
+            headers,
+            sampleRows: firstTabRowsRaw,
+            semanticProfile,
+            groupId,
+            client,
+        });
 
         const versionedFilename = await getVersionedFilename(client, reportSource.id, originalName);
         const headerDiff = buildHeaderDiff(reportSource.previousHeaders, headers);
@@ -2566,6 +2752,10 @@ export async function uploadSheet(req, res) {
             fs.unlink(filePath, () => {});
             filePath = null;
         }
+        if (!fileBuffer && filePath) {
+            fileBuffer = await fs.promises.readFile(filePath);
+        }
+        assertUploadSignatureMatchesExtension({ originalName, fileBuffer });
 
         if (shouldQueueImport) {
             // Fast path for API latency: enqueue and return; worker finalizes import.
@@ -2815,6 +3005,7 @@ export async function ingestEmailAttachment(req, res) {
             fileBuffer = await fs.promises.readFile(file.path);
         }
         if (!fileBuffer) return res.status(400).json({ error: "file_buffer_missing" });
+        assertUploadSignatureMatchesExtension({ originalName, fileBuffer });
         await persistImportJobPayload(importJobId, fileBuffer, {
             contentType: file.mimetype || "application/octet-stream",
             original_filename: originalName,
@@ -3343,6 +3534,81 @@ export async function updateReportSourceAutosync(req, res) {
     }
 }
 
+export async function deleteReportSource(req, res) {
+    const sourceId = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(sourceId) || sourceId <= 0) {
+        return res.status(400).json({ error: "invalid_report_source_id" });
+    }
+
+    const client = await getClient();
+    try {
+        await client.query("BEGIN");
+        const sourceRes = await client.query(
+            `SELECT id, name, current_sheet_id
+               FROM report_sources
+              WHERE id = $1
+              FOR UPDATE`,
+            [sourceId]
+        );
+        if (!sourceRes.rows.length) {
+            await client.query("ROLLBACK");
+            return res.status(404).json({ error: "not_found" });
+        }
+        const source = sourceRes.rows[0];
+        const canManage = await userCanApproveReportSource(client, req.user, sourceId);
+        if (!canManage) {
+            await client.query("ROLLBACK");
+            return res.status(403).json({ error: "Forbidden" });
+        }
+
+        // Prevent dangling import job pointers before deleting source/import records.
+        const jobsReg = await client.query("SELECT to_regclass('import_jobs') AS reg");
+        const hasImportJobsTable = !!jobsReg.rows?.[0]?.reg;
+        if (hasImportJobsTable) {
+            const colRes = await client.query(
+                `SELECT column_name
+                   FROM information_schema.columns
+                  WHERE table_name = 'import_jobs'
+                    AND column_name IN ('report_source_id', 'sheet_id', 'import_id')`
+            );
+            const cols = new Set((colRes.rows || []).map((r) => String(r.column_name)));
+            const sets = [];
+            if (cols.has("report_source_id")) sets.push("report_source_id = NULL");
+            if (cols.has("sheet_id")) sets.push("sheet_id = NULL");
+            if (cols.has("import_id")) sets.push("import_id = NULL");
+            if (sets.length) {
+                await client.query(
+                    `UPDATE import_jobs
+                        SET ${sets.join(", ")}
+                      WHERE report_source_id = $1`,
+                    [sourceId]
+                );
+            }
+        }
+
+        // Remove sheets tied to this source so source deletion clears its full revision history.
+        await client.query("DELETE FROM sheets WHERE report_source_id = $1", [sourceId]);
+
+        // Remove source (report_source_imports/views cascade by FK).
+        await client.query("DELETE FROM report_sources WHERE id = $1", [sourceId]);
+
+        await client.query("COMMIT");
+        await writeAuditLog({
+            req,
+            action: "report_source.deleted",
+            resourceType: "report_source",
+            resourceId: sourceId,
+            metadata: { name: source.name || null, current_sheet_id: source.current_sheet_id || null },
+        });
+        return res.json({ success: true, id: sourceId });
+    } catch (err) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw err;
+    } finally {
+        client.release();
+    }
+}
+
 export async function getReportSourceImports(req, res) {
     const sourceId = Number.parseInt(req.params.id, 10);
     if (!Number.isInteger(sourceId) || sourceId <= 0) {
@@ -3532,6 +3798,37 @@ export async function publishReportSourceImport(req, res) {
                   WHERE id = $4`,
                 [importId, record.sheet_id, record.report_source_id, record.job_id]
             );
+        }
+
+        const sheetRows = await client.query(
+            `SELECT s.headers, s.tab_name, s.semantic_profile, s.group_id
+               FROM sheets s
+               LEFT JOIN report_sources rs ON rs.id = s.report_source_id
+              WHERE s.id = $1
+              LIMIT 1`,
+            [record.sheet_id]
+        );
+        if (sheetRows.rows?.length) {
+            const row = sheetRows.rows[0];
+            const headers = normalizeStoredHeaders(row.headers);
+            const sampleRowsRes = await client.query(
+                `SELECT row_data
+                   FROM sheet_rows
+                  WHERE sheet_id = $1
+                    AND ($2::text IS NULL OR tab_name = $2)
+                  ORDER BY row_index ASC
+                  LIMIT $3`,
+                [record.sheet_id, row.tab_name || null, HEADER_AI_SAMPLE_ROWS]
+            );
+            const sampleRows = sampleRowsRes.rows.map((r) => r.row_data || {});
+            await maybeEnrichSheetSemanticProfileWithAi({
+                sheetId: record.sheet_id,
+                headers,
+                sampleRows,
+                semanticProfile: row.semantic_profile || {},
+                groupId: Number.isInteger(Number(row.group_id)) ? Number(row.group_id) : null,
+                client,
+            });
         }
         await client.query("COMMIT");
 
@@ -3983,6 +4280,43 @@ export async function getSheetData(req, res) {
             }
         }
 
+        try {
+            const [semanticRow] = await query(
+                `SELECT s.headers, s.tab_name, s.semantic_profile, s.group_id
+                   FROM sheets s
+                   LEFT JOIN report_sources rs ON rs.id = s.report_source_id
+                  WHERE s.id = $1
+                  LIMIT 1`,
+                [id]
+            );
+            if (semanticRow) {
+                const currentProfile = semanticRow.semantic_profile && typeof semanticRow.semantic_profile === "object"
+                    ? semanticRow.semantic_profile
+                    : {};
+                const missingAiCache = !Array.isArray(currentProfile?.learned?.header_understanding)
+                    || currentProfile.learned.header_understanding.length === 0;
+                if (missingAiCache) {
+                    const sampleRowsRes = await query(
+                        `SELECT row_data
+                           FROM sheet_rows
+                          WHERE sheet_id = $1
+                            AND ($2::text IS NULL OR tab_name = $2)
+                          ORDER BY row_index ASC
+                          LIMIT $3`,
+                        [id, semanticRow.tab_name || null, HEADER_AI_SAMPLE_ROWS]
+                    );
+                    const sampleRows = sampleRowsRes.map((r) => r.row_data || {});
+                    await maybeEnrichSheetSemanticProfileWithAi({
+                        sheetId: id,
+                        headers: normalizeStoredHeaders(semanticRow.headers),
+                        sampleRows,
+                        semanticProfile: currentProfile,
+                        groupId: Number.isInteger(Number(semanticRow.group_id)) ? Number(semanticRow.group_id) : null,
+                    });
+                }
+            }
+        } catch {}
+
         const resolveColumnKey = (requested) => {
             if (!sheetHeaders.length) return requested;
             const exact = sheetHeaders.find((h) => h === requested);
@@ -4243,4 +4577,48 @@ export async function deleteSheet(req, res) {
     } finally {
         client.release();
     }
+}
+import {
+    getMappingsForSource,
+    approveMapping,
+    correctMapping,
+    rejectMapping,
+} from "../services/accounting/fieldMappingService.js";
+
+export async function getSheetAccountingMappings(req, res) {
+    const sheetId = Number.parseInt(req.params.id, 10);
+    const hasAccess = await checkSheetAccess(sheetId, req.user);
+    if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
+    const rows = await getMappingsForSource({ sheetId, tenantId: req.user?.customer_id || null, userId: req.user?.id || null });
+    return res.json(rows);
+}
+
+export async function approveSheetAccountingMapping(req, res) {
+    const sheetId = Number.parseInt(req.params.id, 10);
+    const hasAccess = await checkSheetAccess(sheetId, req.user);
+    if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
+    const { header, canonicalField } = req.body || {};
+    const out = await approveMapping({ sheetId, tenantId: req.user?.customer_id || null, userId: req.user?.id || null, originalHeader: header, canonicalField, req });
+    if (!out.ok) return res.status(400).json({ error: out.error || "approve_failed" });
+    return res.json(out);
+}
+
+export async function correctSheetAccountingMapping(req, res) {
+    const sheetId = Number.parseInt(req.params.id, 10);
+    const hasAccess = await checkSheetAccess(sheetId, req.user);
+    if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
+    const { header, oldCanonicalField, newCanonicalField } = req.body || {};
+    const out = await correctMapping({ sheetId, tenantId: req.user?.customer_id || null, userId: req.user?.id || null, originalHeader: header, oldCanonicalField, newCanonicalField, req });
+    if (!out.ok) return res.status(400).json({ error: out.error || "correct_failed" });
+    return res.json(out);
+}
+
+export async function rejectSheetAccountingMapping(req, res) {
+    const sheetId = Number.parseInt(req.params.id, 10);
+    const hasAccess = await checkSheetAccess(sheetId, req.user);
+    if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
+    const { header, canonicalField, reason } = req.body || {};
+    const out = await rejectMapping({ sheetId, tenantId: req.user?.customer_id || null, userId: req.user?.id || null, originalHeader: header, canonicalField, reason, req });
+    if (!out.ok) return res.status(400).json({ error: out.error || "reject_failed" });
+    return res.json(out);
 }

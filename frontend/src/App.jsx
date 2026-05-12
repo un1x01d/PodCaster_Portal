@@ -171,6 +171,7 @@ export default function App() {
     setEmail,
     password,
     setPassword,
+    loginError,
     handleLogout: authHandleLogout,
   } = auth;
   const {
@@ -221,7 +222,10 @@ export default function App() {
   const secondaryLoadSeqRef = useRef(0);
   const primaryLatestLoadSeqRef = useRef(0);
   const secondaryLatestLoadSeqRef = useRef(0);
+  const primaryAbortControllerRef = useRef(null);
+  const secondaryAbortControllerRef = useRef(null);
   const primaryLoadedContextRef = useRef({ sheet: "", tab: "", view: "" });
+  const skipNextPrimaryAutoLoadRef = useRef(false);
 
   // Upload, filtering, and review prompt state owned by the workspace shell.
   const [openFilterCol, setOpenFilterCol] = useState(null);
@@ -941,6 +945,14 @@ export default function App() {
     const { preferCache = true, limit = BATCH_SIZE, offset = 0, append = false, context = "primary", filters = null } = options;
     
     const isPrimary = context === "primary";
+    if (!append) {
+      const abortRef = isPrimary ? primaryAbortControllerRef : secondaryAbortControllerRef;
+      try {
+        if (abortRef.current) abortRef.current.abort();
+      } catch {}
+      abortRef.current = new AbortController();
+    }
+    const requestSignal = isPrimary ? primaryAbortControllerRef.current?.signal : secondaryAbortControllerRef.current?.signal;
     const requestSeq = (isPrimary ? primaryLoadSeqRef : secondaryLoadSeqRef).current + 1;
     if (isPrimary) primaryLoadSeqRef.current = requestSeq;
     else secondaryLoadSeqRef.current = requestSeq;
@@ -1010,6 +1022,7 @@ export default function App() {
         headers: {
           Authorization: `Bearer ${token}`,
         },
+        signal: requestSignal,
       });
       const raw = res.data;
       if (requestSeq !== (isPrimary ? primaryLatestLoadSeqRef.current : secondaryLatestLoadSeqRef.current)) {
@@ -1079,6 +1092,7 @@ export default function App() {
           }
       }
     } catch (e) {
+      if (e?.name === "CanceledError" || e?.code === "ERR_CANCELED") return;
       console.error(e);
       if (context === "primary") {
         if (!append) {
@@ -1158,6 +1172,10 @@ export default function App() {
   // Re-fetch data when spreadsheet context changes.
   useEffect(() => {
     if (!sheetId || !user) return;
+    if (skipNextPrimaryAutoLoadRef.current) {
+      skipNextPrimaryAutoLoadRef.current = false;
+      return;
+    }
 
     const loaded = primaryLoadedContextRef.current || {};
     const sameContext = (
@@ -1234,6 +1252,7 @@ export default function App() {
 
   const hydrateSheetContext = async (sid, options = {}) => {
     if (!sid) return;
+    skipNextPrimaryAutoLoadRef.current = true;
     if (String(sid) !== String(sheetId)) {
       setSelectedViewId("");
     }
@@ -1248,10 +1267,21 @@ export default function App() {
       preserveFilters = false,
       preferCache = true,
     } = options;
-    const tabList = await fetchTabs(safeSid, { preferredTab, preserveActive: false });
+    const cachedTabs = tabListCacheRef.current[safeSid];
+    const hasCachedTabs = Array.isArray(cachedTabs) && cachedTabs.length > 0;
+    const immediateTab = hasCachedTabs
+      ? ((preferredTab && cachedTabs.includes(preferredTab)) ? preferredTab : cachedTabs[0])
+      : null;
+    const tabListPromise = fetchTabs(safeSid, { preferredTab, preserveActive: false });
+    if (hasCachedTabs) {
+      await loadData(safeSid, preserveFilters, immediateTab, { preferCache });
+      return;
+    }
+    const tabList = await tabListPromise;
     const resolvedTab = Array.isArray(tabList) && tabList.length
       ? ((preferredTab && tabList.includes(preferredTab)) ? preferredTab : tabList[0])
       : null;
+    await loadData(safeSid, preserveFilters, resolvedTab, { preferCache: false });
   };
 
   const refreshReportSources = React.useCallback(() => {
@@ -1378,24 +1408,31 @@ export default function App() {
         return;
       }
       if (res.data.sheetId) {
-        setSheetId(res.data.sheetId);
+        const sid = String(res.data.sheetId);
         const activeName = res.data.display_name || res.data.filename;
         setActiveFilename(activeName);
         localStorage.setItem("activeFilename", activeName);
         setUploadDisplayName("");
         setReportSourceName("");
+        
         if (res.data.tabs && res.data.tabs.length > 0) {
-          tabListCacheRef.current[String(res.data.sheetId)] = res.data.tabs;
-          setTabs(res.data.tabs);
-          setActiveTab(res.data.tabs[0]);
-          localStorage.setItem("activeTab", res.data.tabs[0]);
+          tabListCacheRef.current[sid] = res.data.tabs;
         }
+
+        // Use unified context hydration to avoid race conditions
+        await hydrateSheetContext(sid, {
+          preferredTab: (res.data.tabs && res.data.tabs.length > 0) ? res.data.tabs[0] : null,
+          preserveFilters: false,
+          preferCache: false
+        });
+
         maybePromptBusinessClassification(res.data);
-        // Refresh my files too
+        
+        // Refresh file lists
+        refreshReportSources();
         if (token) {
           axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } })
             .then(r => setMyFiles(r.data || []));
-          refreshReportSources();
         }
       }
     } catch (e) {
@@ -2230,6 +2267,7 @@ export default function App() {
                     onGoogleLogin={handleGoogleLogin}
                     onSamlLogin={handleSamlLogin}
                     googleEnabled={googleEnabled}
+                    error={loginError}
                   />
                 ) : <Navigate to="/workspace" replace />}
               </ErrorBoundary>
@@ -2396,6 +2434,7 @@ export default function App() {
                       onGoogleLogin={handleGoogleLogin}
                       onSamlLogin={handleSamlLogin}
                       googleEnabled={googleEnabled}
+                      error={loginError}
                     />
                   )
                 ) : (
@@ -2476,7 +2515,7 @@ export default function App() {
                       tableContainerRef={tableContainerRef}
                       filterAnchorRefs={filterAnchorRefs}
                       filterBtnRefs={filterBtnRefs}
-                      myFiles={myFiles} loadStored={(id) => { hydrateSheetContext(id, { preserveFilters: false, preferCache: true }); }}
+                      myFiles={myFiles} loadStored={(id, selectedName = "") => { handleSwitchSheet(id, selectedName); }}
                       tabs={tabs} setTabs={setTabs}
                       activeTab={activeTab}
                       onTabChange={handleTabChange}
@@ -2666,7 +2705,7 @@ export default function App() {
                     tableContainerRef={tableContainerRef}
                     filterAnchorRefs={filterAnchorRefs}
                     filterBtnRefs={filterBtnRefs}
-                    myFiles={myFiles} loadStored={(id) => { hydrateSheetContext(id, { preserveFilters: false, preferCache: true }); }}
+                    myFiles={myFiles} loadStored={(id, selectedName = "") => { handleSwitchSheet(id, selectedName); }}
                     tabs={tabs} setTabs={setTabs}
                     activeTab={activeTab}
                     onTabChange={handleTabChange}

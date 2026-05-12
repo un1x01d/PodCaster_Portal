@@ -15,6 +15,7 @@ import {
     listReportSources,
     updateReportSourceReviewPolicy,
     updateReportSourceAutosync,
+    deleteReportSource,
     getReportSourceImports,
     listImportJobs,
     getImportJob,
@@ -22,7 +23,11 @@ import {
     rejectReportSourceImport,
     confirmSheetBusinessClassification,
     updateSheetSemanticProfile,
-    deleteSheet
+    deleteSheet,
+    getSheetAccountingMappings,
+    approveSheetAccountingMapping,
+    correctSheetAccountingMapping,
+    rejectSheetAccountingMapping
 } from "../controllers/sheetController.js";
 import { auth } from "../middleware/auth.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
@@ -44,8 +49,6 @@ const allowedMime = new Set([
     "application/vnd.ms-excel",
     "text/csv",
     "application/csv",
-    "application/octet-stream",
-    "text/plain",
 ]);
 
 const upload = multer({
@@ -73,6 +76,7 @@ router.get("/sheets/all", asyncHandler(listAllSheets)); // For admin
 router.get("/report-sources", asyncHandler(listReportSources));
 router.patch("/report-sources/:id/review-policy", asyncHandler(updateReportSourceReviewPolicy));
 router.patch("/report-sources/:id/autosync", asyncHandler(updateReportSourceAutosync));
+router.delete("/report-sources/:id", asyncHandler(deleteReportSource));
 router.get("/report-sources/:id/imports", asyncHandler(getReportSourceImports));
 router.get("/import-jobs", asyncHandler(listImportJobs));
 router.get("/import-jobs/:id", asyncHandler(getImportJob));
@@ -86,6 +90,10 @@ router.get("/sheets/:id/tabs", asyncHandler(getSheetTabs));
 router.get("/sheets/:id/data", asyncHandler(getSheetData));
 router.get("/sheets/:id/unique-values", asyncHandler(getUniqueValues));
 router.delete("/sheets/:id", asyncHandler(deleteSheet));
+router.get("/api/sheets/:id/accounting-mappings", asyncHandler(getSheetAccountingMappings));
+router.post("/api/sheets/:id/accounting-mappings/approve", asyncHandler(approveSheetAccountingMapping));
+router.post("/api/sheets/:id/accounting-mappings/correct", asyncHandler(correctSheetAccountingMapping));
+router.post("/api/sheets/:id/accounting-mappings/reject", asyncHandler(rejectSheetAccountingMapping));
 
 // Legacy/Compatibility alias for /sheets/list logic if needed, but listAllSheets covers it
 router.get("/sheets/list", asyncHandler(listAllSheets));

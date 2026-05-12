@@ -72,7 +72,16 @@ test("object-level sheet access checks remain in chat and insights paths", () =>
   const insightController = fs.readFileSync(path.join(repoRoot, "src", "controllers", "insightController.js"), "utf8");
 
   assert.match(chatController, /const hasAccess = await checkSheetAccess\(sheetId, req\.user\)/);
-  assert.match(chatController, /if \(!hasAccess\) return res\.status\(403\)\.json\(\{ error: "Forbidden" \}\)/);
+  assert.match(chatController, /if \(!hasAccess\) return res\.status\(403\)\.json\(aiError\("Forbidden"\)\)/);
   assert.match(insightController, /const hasAccess = await checkSheetAccess\(sheetId, req\.user\)/);
-  assert.match(insightController, /if \(!hasAccess\) return res\.status\(403\)\.json\(\{ error: "Forbidden" \}\)/);
+  assert.match(insightController, /return res\.status\(403\)\.json\(\{ error: "Forbidden" \}\)/);
+});
+
+test("views scope filter SQL block is well-formed", () => {
+  const viewController = fs.readFileSync(path.join(repoRoot, "src", "controllers", "viewController.js"), "utf8");
+  assert.match(
+    viewController,
+    /const scopeFilter = `[\s\S]*OR \(v\.sheet_id = \$3\)[\s\S]*\n\s*\)\s*`/
+  );
+  assert.doesNotMatch(viewController, /\n\s*\)\s*\n\s*\)\s*`/);
 });

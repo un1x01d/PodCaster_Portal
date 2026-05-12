@@ -21,8 +21,6 @@ const allowedMime = new Set([
     "application/vnd.ms-excel",
     "text/csv",
     "application/csv",
-    "application/octet-stream",
-    "text/plain",
 ]);
 
 const upload = multer({

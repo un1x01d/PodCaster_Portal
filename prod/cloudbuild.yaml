@@ -41,7 +41,7 @@ steps:
           --image "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/backend:$COMMIT_SHA" \
           --region "${_REGION}" \
           --platform managed \
-          --allow-unauthenticated \
+          --no-allow-unauthenticated \
           --add-cloudsql-instances "${CLOUDSQL_CONN}" \
           --set-env-vars "NODE_ENV=production,PORT=8080,TENANT_DB_ISOLATION_ENABLED=true,TENANT_DB_PREFIX=tenant,TENANT_DB_POOL_MAX=3,XLSX_WORKER_DEFAULT_MEMORY_MB=512,XLSX_WORKER_MIN_MEMORY_MB=64,XLSX_WORKER_MAX_MEMORY_MB=4096,OPENAI_MODEL=gpt-4o-mini,OPENAI_BASE_URL=https://api.openai.com/v1,OPENAI_TIMEOUT_MS=60000,CHAT_AUDIO_MAX_CHARS=8000,POSTGRES_HOST=/cloudsql/${CLOUDSQL_CONN},POSTGRES_PORT=5432,POSTGRES_USER=${_DB_USER},POSTGRES_DB=${_DB_NAME}" \
           --set-secrets "POSTGRES_PASSWORD=DB_PASSWORD:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,JWT_SECRET=JWT_SECRET:latest,JWT_ISSUER=JWT_ISSUER:latest,JWT_AUDIENCE=JWT_AUDIENCE:latest,SETTINGS_CRYPTO_KEY=SETTINGS_CRYPTO_KEY:latest"

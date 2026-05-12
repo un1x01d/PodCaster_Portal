@@ -191,9 +191,19 @@ async function resolveTenantContextForUser(userRow) {
 
 export async function login(req, res) {
     const { email, password } = req.body || {};
-    if (!email || !password) return res.status(400).json({ error: "Missing credentials" });
+    if (!email || !password) {
+        return res.status(400).json({
+            error: "missing_credentials",
+            message: "Missing credentials",
+        });
+    }
     const normalizedEmail = normalizeEmail(email);
-    if (!normalizedEmail) return res.status(400).json({ error: "Missing credentials" });
+    if (!normalizedEmail) {
+        return res.status(400).json({
+            error: "missing_credentials",
+            message: "Missing credentials",
+        });
+    }
 
     try {
         const rows = await query(
@@ -211,7 +221,7 @@ export async function login(req, res) {
                 resourceId: normalizedEmail,
                 metadata: { reason: "unknown_email" },
             });
-            return res.status(401).json({ error: "Invalid credentials" });
+            return res.status(401).json({ error: "invalid_credentials", message: "Invalid credentials" });
         }
 
         const user = rows[0];
@@ -226,7 +236,7 @@ export async function login(req, res) {
                 resourceId: user.id,
                 metadata: { reason: "invalid_password" },
             });
-            return res.status(401).json({ error: "Invalid credentials" });
+            return res.status(401).json({ error: "invalid_credentials", message: "Invalid credentials" });
         }
 
         if (rehash) {
@@ -248,14 +258,17 @@ export async function login(req, res) {
                     expiresAt: challenge.expiresAt,
                 });
             } catch (twoFactorErr) {
-                return res.status(twoFactorErr?.statusCode || 503).json({ error: twoFactorErr?.message || "two_factor_unavailable" });
+                return res.status(twoFactorErr?.statusCode || 503).json({
+                    error: twoFactorErr?.message || "two_factor_unavailable",
+                    message: twoFactorErr?.message || "two_factor_unavailable",
+                });
             }
         }
 
         return finalizeAuthenticatedLogin(req, res, user);
     } catch (err) {
         console.error("[Auth] login error:", err);
-        res.status(500).json({ error: "internal_server_error" });
+        res.status(500).json({ error: "internal_server_error", message: "internal_server_error" });
     }
 }
 

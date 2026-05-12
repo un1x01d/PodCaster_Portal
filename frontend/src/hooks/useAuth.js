@@ -10,6 +10,7 @@ export function useAuth() {
   const [authChecking, setAuthChecking] = useState(true);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
 
   const [googleEnabled, setGoogleEnabled] = useState(true);
   const [dropboxEnabled, setDropboxEnabled] = useState(true);
@@ -71,6 +72,7 @@ export function useAuth() {
 
   const handleLogin = async (e) => {
     if (e) e.preventDefault();
+    setLoginError("");
     try {
       const res = await axios.post(`${API}/auth/login`, { email, password });
       clearStoredAuthTokens();
@@ -78,7 +80,12 @@ export function useAuth() {
       setUser(res.data.user);
       return res.data.user;
     } catch (err) {
-      alert("Login failed");
+      const message = String(
+        err?.response?.data?.error
+        || err?.response?.data?.message
+        || "Login failed. Check your credentials and try again."
+      );
+      setLoginError(message);
       throw err;
     }
   };
@@ -92,6 +99,7 @@ export function useAuth() {
     localStorage.removeItem("workspaceChartState:v1");
     setToken("");
     setUser(null);
+    setLoginError("");
   };
 
   return {
@@ -104,6 +112,8 @@ export function useAuth() {
     setEmail,
     password,
     setPassword,
+    loginError,
+    setLoginError,
     handleLogin,
     handleLogout,
     integrations: {

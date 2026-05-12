@@ -28,7 +28,8 @@ function sanitizeAiText(value) {
   return String(value || "")
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .trim();
 }
 
 function buildConversationHistory(messages = [], limit = 40, maxCharsPerMessage = 4000) {
@@ -352,6 +353,23 @@ export function useChatbotLogic({
     return () => window.removeEventListener("dashboard:submit-chat", onExternalSubmit);
   }, [sendMessage]); // Stable dependencies
 
+  const submitFeedback = useCallback(async ({ question, badAnswer, expectedAnswer, plan = null }) => {
+    try {
+      await api.post("/chat/feedback", {
+        sheetId,
+        question,
+        badAnswer,
+        expectedAnswer,
+        plan,
+        locale
+      });
+      return { success: true };
+    } catch (e) {
+      console.error("Feedback submission failed:", e);
+      return { success: false, error: e?.response?.data?.message || "Failed to submit feedback" };
+    }
+  }, [sheetId, locale]);
+
   return {
     messages,
     input,
@@ -361,7 +379,9 @@ export function useChatbotLogic({
     isMinimized,
     setIsMinimized,
     handleSend,
+    submitFeedback,
     messagesEndRef,
     clearMessages,
   };
 }
+

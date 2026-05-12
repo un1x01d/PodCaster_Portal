@@ -19,6 +19,8 @@ export default function StorageImportPicker({
   reportSourceOptions = [],
   selectedReportSourceId = "",
   onChangeReportSourceId = () => {},
+  newReportSourceName = "",
+  onChangeNewReportSourceName = () => {},
   labelOptions = [],
   fileLabel = "",
   onChangeFileLabel = () => {},
@@ -32,6 +34,7 @@ export default function StorageImportPicker({
   buttonLabel = "Import selected file",
 }) {
   if (!open) return null;
+  const hasReportSourceTarget = !!String(selectedReportSourceId || "").trim() || !!String(newReportSourceName || "").trim();
 
   return (
     <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-900/35 p-4">
@@ -104,6 +107,16 @@ export default function StorageImportPicker({
             className="w-full border border-slate-300 rounded-md text-xs"
             panelWidth="100%"
           />
+          {!selectedReportSourceId && (
+            <input
+              type="text"
+              value={newReportSourceName}
+              onChange={(e) => onChangeNewReportSourceName(e.target.value)}
+              placeholder="New report source name (required)"
+              className="w-full border border-slate-300 rounded-md px-3 py-1.5 text-xs focus:ring-1 focus:ring-slate-400 outline-none"
+              maxLength={180}
+            />
+          )}
           {selectedReportSourceId && labelOptions.length > 0 && (
             <SearchableSelect
               options={labelOptions}
@@ -149,11 +162,13 @@ export default function StorageImportPicker({
           </button>
           <button
             type="button"
-            disabled={!selectedEntry || !fileLabel.trim()}
+            disabled={!selectedEntry || !fileLabel.trim() || !hasReportSourceTarget}
             onClick={() => onImport(selectedEntry)}
-            className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedEntry || !fileLabel.trim() ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
+            className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedEntry || !fileLabel.trim() || !hasReportSourceTarget ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
             title={
-              (!fileLabel.trim())
+              (!hasReportSourceTarget)
+                ? "Select an existing report source or enter a new report source name"
+                : (!fileLabel.trim())
                 ? "Enter a label"
                 : !selectedEntry
                   ? "Select a file"

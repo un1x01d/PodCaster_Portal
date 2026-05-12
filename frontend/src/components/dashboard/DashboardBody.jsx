@@ -512,6 +512,7 @@ export default function DashboardBody(props) {
     const [oneDriveBreadcrumbs, setOneDriveBreadcrumbs] = useState([{ id: "root", name: "OneDrive" }]);
     const [selectedOneDriveFile, setSelectedOneDriveFile] = useState(null);
     const [isNewLabel, setIsNewLabel] = useState(false);
+    const [newReportSourceName, setNewReportSourceName] = useState("");
     const [autosyncEnabled, setAutosyncEnabled] = useState(false);
     const [autosyncToggleBusyId, setAutosyncToggleBusyId] = useState("");
     const [storagePickers, setStoragePickers] = useState({
@@ -522,6 +523,7 @@ export default function DashboardBody(props) {
             breadcrumbs: [{ path: "", name: "SFTP" }],
             selected: null,
             selectedReportSourceId: "",
+            newReportSourceName: "",
             fileLabel: "",
             isNewLabel: false,
             autosyncEnabled: false,
@@ -533,6 +535,7 @@ export default function DashboardBody(props) {
             breadcrumbs: [{ path: "", name: "Google Cloud Storage" }],
             selected: null,
             selectedReportSourceId: "",
+            newReportSourceName: "",
             fileLabel: "",
             isNewLabel: false,
             autosyncEnabled: false,
@@ -544,6 +547,7 @@ export default function DashboardBody(props) {
             breadcrumbs: [{ path: "", name: "Amazon S3" }],
             selected: null,
             selectedReportSourceId: "",
+            newReportSourceName: "",
             fileLabel: "",
             isNewLabel: false,
             autosyncEnabled: false,
@@ -555,6 +559,7 @@ export default function DashboardBody(props) {
             breadcrumbs: [{ path: "", name: "Azure Blob Storage" }],
             selected: null,
             selectedReportSourceId: "",
+            newReportSourceName: "",
             fileLabel: "",
             isNewLabel: false,
             autosyncEnabled: false,
@@ -619,6 +624,7 @@ export default function DashboardBody(props) {
                 breadcrumbs: [{ path: "", name: rootName }],
                 selected: null,
                 selectedReportSourceId: "",
+                newReportSourceName: "",
                 fileLabel: "",
                 isNewLabel: false,
                 autosyncEnabled: false,
@@ -665,6 +671,7 @@ export default function DashboardBody(props) {
             open: true,
             selected: null,
             selectedReportSourceId: "",
+            newReportSourceName: "",
             fileLabel: "",
             isNewLabel: false,
             autosyncEnabled: false,
@@ -706,6 +713,8 @@ export default function DashboardBody(props) {
         const picker = storagePickers[provider];
         const meta = storageProviderMeta[provider];
         if (!picker || !meta || !selectedEntry || !String(picker.fileLabel || "").trim()) return;
+        const sourceName = String(picker.newReportSourceName || "").trim();
+        if (!picker.selectedReportSourceId && !sourceName) return;
         try {
             const res = await axios.post(
                 `${API}/storage/${provider}/import`,
@@ -715,7 +724,7 @@ export default function DashboardBody(props) {
                     display_name: String(picker.fileLabel).trim(),
                     file_label: String(picker.fileLabel).trim(),
                     autosync_enabled: picker.autosyncEnabled ? "1" : "0",
-                    ...(picker.selectedReportSourceId ? { report_source_id: picker.selectedReportSourceId } : { report_source_name: String(picker.fileLabel).trim() }),
+                    ...(picker.selectedReportSourceId ? { report_source_id: picker.selectedReportSourceId } : { report_source_name: sourceName }),
                 },
                 { headers: { Authorization: `Bearer ${token}` } }
             );
@@ -1627,6 +1636,7 @@ export default function DashboardBody(props) {
     const labelOptions = React.useMemo(() => {
         return getLabelOptionsForSource(selectedReportSourceId);
     }, [getLabelOptionsForSource, selectedReportSourceId]);
+    const hasSelectedOrNewReportSource = !!String(selectedReportSourceId || "").trim() || !!String(newReportSourceName || "").trim();
 
     useEffect(() => {
         if (selectedReportSourceId) {
@@ -2432,11 +2442,24 @@ export default function DashboardBody(props) {
                             <SearchableSelect
                                 options={reportSourceOptions}
                                 value={selectedReportSourceId}
-                                onChange={(e) => setSelectedReportSourceId(e.target.value)}
+                                onChange={(e) => {
+                                    setSelectedReportSourceId(e.target.value);
+                                    if (e.target.value) setNewReportSourceName("");
+                                }}
                                 placeholder="Report source (optional)"
                                 className="w-full border border-slate-300 rounded-md text-xs"
                                 panelWidth="100%"
                             />
+                            {!selectedReportSourceId && (
+                                <input
+                                    type="text"
+                                    value={newReportSourceName}
+                                    onChange={(e) => setNewReportSourceName(e.target.value)}
+                                    placeholder="New report source name (required)"
+                                    className="w-full border border-slate-300 rounded-md px-3 py-1.5 text-xs focus:ring-1 focus:ring-slate-400 outline-none"
+                                    maxLength={180}
+                                />
+                            )}
                             {selectedReportSourceId && labelOptions.length > 0 && (
                                 <SearchableSelect
                                     options={labelOptions}
@@ -2481,7 +2504,7 @@ export default function DashboardBody(props) {
                             </button>
                             <button
                                 type="button"
-                                disabled={!selectedDriveFile || !fileLabel.trim()}
+                                disabled={!selectedDriveFile || !fileLabel.trim() || !hasSelectedOrNewReportSource}
                                 onClick={() => {
                                     if (!selectedDriveFile) return;
                                     handleGoogleDriveImport({
@@ -2490,16 +2513,19 @@ export default function DashboardBody(props) {
                                         mimeType: selectedDriveFile.mimeType,
                                         displayName: fileLabel,
                                         reportSourceId: selectedReportSourceId,
-                                        reportSourceName: selectedReportSourceId ? "" : fileLabel,
+                                        reportSourceName: selectedReportSourceId ? "" : String(newReportSourceName || "").trim(),
                                         fileLabel: fileLabel,
                                         autosyncEnabled,
                                     });
                                     setFileLabel("");
+                                    setNewReportSourceName("");
                                     closeDrivePicker();
                                 }}
-                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedDriveFile || !fileLabel.trim() ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
+                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedDriveFile || !fileLabel.trim() || !hasSelectedOrNewReportSource ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
                                 title={
-                                    (!fileLabel.trim())
+                                    (!hasSelectedOrNewReportSource)
+                                        ? "Select an existing report source or enter a new report source name"
+                                        : (!fileLabel.trim())
                                         ? "Enter a label"
                                         : !selectedDriveFile
                                             ? "Select a Google Drive file"
@@ -2586,11 +2612,24 @@ export default function DashboardBody(props) {
                             <SearchableSelect
                                 options={reportSourceOptions}
                                 value={selectedReportSourceId}
-                                onChange={(e) => setSelectedReportSourceId(e.target.value)}
+                                onChange={(e) => {
+                                    setSelectedReportSourceId(e.target.value);
+                                    if (e.target.value) setNewReportSourceName("");
+                                }}
                                 placeholder="Report source (optional)"
                                 className="w-full border border-slate-300 rounded-md text-xs"
                                 panelWidth="100%"
                             />
+                            {!selectedReportSourceId && (
+                                <input
+                                    type="text"
+                                    value={newReportSourceName}
+                                    onChange={(e) => setNewReportSourceName(e.target.value)}
+                                    placeholder="New report source name (required)"
+                                    className="w-full border border-slate-300 rounded-md px-3 py-1.5 text-xs focus:ring-1 focus:ring-slate-400 outline-none"
+                                    maxLength={180}
+                                />
+                            )}
                             {selectedReportSourceId && labelOptions.length > 0 && (
                                 <SearchableSelect
                                     options={labelOptions}
@@ -2635,7 +2674,7 @@ export default function DashboardBody(props) {
                             </button>
                             <button
                                 type="button"
-                                disabled={!selectedDropboxFile || !fileLabel.trim()}
+                                disabled={!selectedDropboxFile || !fileLabel.trim() || !hasSelectedOrNewReportSource}
                                 onClick={() => {
                                     if (!selectedDropboxFile) return;
                                     handleDropboxImport({
@@ -2644,16 +2683,19 @@ export default function DashboardBody(props) {
                                         name: selectedDropboxFile.name,
                                         displayName: fileLabel,
                                         reportSourceId: selectedReportSourceId,
-                                        reportSourceName: selectedReportSourceId ? "" : fileLabel,
+                                        reportSourceName: selectedReportSourceId ? "" : String(newReportSourceName || "").trim(),
                                         fileLabel: fileLabel,
                                         autosyncEnabled,
                                     });
                                     setFileLabel("");
+                                    setNewReportSourceName("");
                                     closeDropboxPicker();
                                 }}
-                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedDropboxFile || !fileLabel.trim() ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
+                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedDropboxFile || !fileLabel.trim() || !hasSelectedOrNewReportSource ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
                                 title={
-                                    (!fileLabel.trim())
+                                    (!hasSelectedOrNewReportSource)
+                                        ? "Select an existing report source or enter a new report source name"
+                                        : (!fileLabel.trim())
                                         ? "Enter a label"
                                         : !selectedDropboxFile
                                             ? "Select a Dropbox file"
@@ -2739,11 +2781,24 @@ export default function DashboardBody(props) {
                             <SearchableSelect
                                 options={reportSourceOptions}
                                 value={selectedReportSourceId}
-                                onChange={(e) => setSelectedReportSourceId(e.target.value)}
+                                onChange={(e) => {
+                                    setSelectedReportSourceId(e.target.value);
+                                    if (e.target.value) setNewReportSourceName("");
+                                }}
                                 placeholder="Report source (optional)"
                                 className="w-full border border-slate-300 rounded-md text-xs"
                                 panelWidth="100%"
                             />
+                            {!selectedReportSourceId && (
+                                <input
+                                    type="text"
+                                    value={newReportSourceName}
+                                    onChange={(e) => setNewReportSourceName(e.target.value)}
+                                    placeholder="New report source name (required)"
+                                    className="w-full border border-slate-300 rounded-md px-3 py-1.5 text-xs focus:ring-1 focus:ring-slate-400 outline-none"
+                                    maxLength={180}
+                                />
+                            )}
                             {selectedReportSourceId && labelOptions.length > 0 && (
                                 <SearchableSelect
                                     options={labelOptions}
@@ -2788,7 +2843,7 @@ export default function DashboardBody(props) {
                             </button>
                             <button
                                 type="button"
-                                disabled={!selectedOneDriveFile || !fileLabel.trim()}
+                                disabled={!selectedOneDriveFile || !fileLabel.trim() || !hasSelectedOrNewReportSource}
                                 onClick={() => {
                                     if (!selectedOneDriveFile) return;
                                     handleOneDriveImport({
@@ -2796,16 +2851,19 @@ export default function DashboardBody(props) {
                                         name: selectedOneDriveFile.name,
                                         displayName: fileLabel,
                                         reportSourceId: selectedReportSourceId,
-                                        reportSourceName: selectedReportSourceId ? "" : fileLabel,
+                                        reportSourceName: selectedReportSourceId ? "" : String(newReportSourceName || "").trim(),
                                         fileLabel: fileLabel,
                                         autosyncEnabled,
                                     });
                                     setFileLabel("");
+                                    setNewReportSourceName("");
                                     closeOneDrivePicker();
                                 }}
-                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedOneDriveFile || !fileLabel.trim() ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
+                                className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white ${!selectedOneDriveFile || !fileLabel.trim() || !hasSelectedOrNewReportSource ? "cursor-not-allowed bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
                                 title={
-                                    (!fileLabel.trim())
+                                    (!hasSelectedOrNewReportSource)
+                                        ? "Select an existing report source or enter a new report source name"
+                                        : (!fileLabel.trim())
                                         ? "Enter a label"
                                         : !selectedOneDriveFile
                                             ? "Select a OneDrive file"
@@ -2836,8 +2894,10 @@ export default function DashboardBody(props) {
                     const nextId = e.target.value;
                     const nextLabels = getLabelOptionsForSource(nextId);
                     const firstExisting = nextLabels.find((option) => option.value !== CREATE_NEW_LABEL_VALUE)?.value || "";
-                    setStoragePicker("sftp_storage", { selectedReportSourceId: nextId, fileLabel: firstExisting, isNewLabel: !firstExisting });
+                    setStoragePicker("sftp_storage", { selectedReportSourceId: nextId, newReportSourceName: "", fileLabel: firstExisting, isNewLabel: !firstExisting });
                 }}
+                newReportSourceName={storagePickers.sftp_storage.newReportSourceName}
+                onChangeNewReportSourceName={(value) => setStoragePicker("sftp_storage", { newReportSourceName: value })}
                 labelOptions={getLabelOptionsForSource(storagePickers.sftp_storage.selectedReportSourceId)}
                 fileLabel={storagePickers.sftp_storage.fileLabel}
                 onChangeFileLabel={(value) => setStoragePicker("sftp_storage", { fileLabel: value })}
@@ -2865,8 +2925,10 @@ export default function DashboardBody(props) {
                     const nextId = e.target.value;
                     const nextLabels = getLabelOptionsForSource(nextId);
                     const firstExisting = nextLabels.find((option) => option.value !== CREATE_NEW_LABEL_VALUE)?.value || "";
-                    setStoragePicker("gcs_storage", { selectedReportSourceId: nextId, fileLabel: firstExisting, isNewLabel: !firstExisting });
+                    setStoragePicker("gcs_storage", { selectedReportSourceId: nextId, newReportSourceName: "", fileLabel: firstExisting, isNewLabel: !firstExisting });
                 }}
+                newReportSourceName={storagePickers.gcs_storage.newReportSourceName}
+                onChangeNewReportSourceName={(value) => setStoragePicker("gcs_storage", { newReportSourceName: value })}
                 labelOptions={getLabelOptionsForSource(storagePickers.gcs_storage.selectedReportSourceId)}
                 fileLabel={storagePickers.gcs_storage.fileLabel}
                 onChangeFileLabel={(value) => setStoragePicker("gcs_storage", { fileLabel: value })}
@@ -2894,8 +2956,10 @@ export default function DashboardBody(props) {
                     const nextId = e.target.value;
                     const nextLabels = getLabelOptionsForSource(nextId);
                     const firstExisting = nextLabels.find((option) => option.value !== CREATE_NEW_LABEL_VALUE)?.value || "";
-                    setStoragePicker("s3_storage", { selectedReportSourceId: nextId, fileLabel: firstExisting, isNewLabel: !firstExisting });
+                    setStoragePicker("s3_storage", { selectedReportSourceId: nextId, newReportSourceName: "", fileLabel: firstExisting, isNewLabel: !firstExisting });
                 }}
+                newReportSourceName={storagePickers.s3_storage.newReportSourceName}
+                onChangeNewReportSourceName={(value) => setStoragePicker("s3_storage", { newReportSourceName: value })}
                 labelOptions={getLabelOptionsForSource(storagePickers.s3_storage.selectedReportSourceId)}
                 fileLabel={storagePickers.s3_storage.fileLabel}
                 onChangeFileLabel={(value) => setStoragePicker("s3_storage", { fileLabel: value })}
@@ -2923,8 +2987,10 @@ export default function DashboardBody(props) {
                     const nextId = e.target.value;
                     const nextLabels = getLabelOptionsForSource(nextId);
                     const firstExisting = nextLabels.find((option) => option.value !== CREATE_NEW_LABEL_VALUE)?.value || "";
-                    setStoragePicker("azure_blob_storage", { selectedReportSourceId: nextId, fileLabel: firstExisting, isNewLabel: !firstExisting });
+                    setStoragePicker("azure_blob_storage", { selectedReportSourceId: nextId, newReportSourceName: "", fileLabel: firstExisting, isNewLabel: !firstExisting });
                 }}
+                newReportSourceName={storagePickers.azure_blob_storage.newReportSourceName}
+                onChangeNewReportSourceName={(value) => setStoragePicker("azure_blob_storage", { newReportSourceName: value })}
                 labelOptions={getLabelOptionsForSource(storagePickers.azure_blob_storage.selectedReportSourceId)}
                 fileLabel={storagePickers.azure_blob_storage.fileLabel}
                 onChangeFileLabel={(value) => setStoragePicker("azure_blob_storage", { fileLabel: value })}
@@ -3111,7 +3177,7 @@ export default function DashboardBody(props) {
                                                                                         className={`group relative flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors ${isSelectedGroup ? "bg-indigo-50" : "hover:bg-indigo-50/70"} ${isVersionMenuOpen ? "z-[150]" : "z-0"}`}
                                                                                         onClick={() => {
                                                                                             const nextSheetId = String(latest?.sheet_id || "");
-                                                                                            if (nextSheetId && nextSheetId !== String(sheetId || "")) props.loadStored && props.loadStored(nextSheetId);
+                                                                                            if (nextSheetId) props.loadStored && props.loadStored(nextSheetId, label);
                                                                                             setPrimaryFileVersionMenuKey(null);
                                                                                             setPrimarySourcePickerOpen(false);
                                                                                         }}
@@ -3139,7 +3205,7 @@ export default function DashboardBody(props) {
                                                                                                                         onClick={(e) => {
                                                                                                                             e.stopPropagation();
                                                                                                                             const nextSheetId = String(v.sheet_id || "");
-                                                                                                                            if (nextSheetId && nextSheetId !== String(sheetId || "")) props.loadStored && props.loadStored(nextSheetId);
+                                                                                                                            if (nextSheetId) props.loadStored && props.loadStored(nextSheetId, label);
                                                                                                                             setPrimaryFileVersionMenuKey(null);
                                                                                                                             setPrimarySourcePickerOpen(false);
                                                                                                                         }}
@@ -3969,11 +4035,23 @@ export default function DashboardBody(props) {
                                                 value={selectedReportSourceId}
                                                 onChange={(e) => {
                                                     setSelectedReportSourceId(e.target.value);
+                                                    if (e.target.value) setNewReportSourceName("");
                                                 }}
                                                 placeholder="Select (optional)"
                                                 className="w-full mt-1"
                                                 panelWidth="100%"
                                             />
+                                            {!selectedReportSourceId && (
+                                                <input
+                                                    type="text"
+                                                    value={newReportSourceName}
+                                                    onChange={(e) => setNewReportSourceName(e.target.value)}
+                                                    placeholder="New report source name (required)"
+                                                    className="mt-2 h-12 w-full border-0 border-b border-slate-300 bg-transparent px-0 py-2 text-sm font-black text-slate-900 focus:outline-none"
+                                                    maxLength={180}
+                                                    required
+                                                />
+                                            )}
                                         </label>
 
                                         <label className="group block border-b border-slate-200 py-3">
@@ -4036,11 +4114,12 @@ export default function DashboardBody(props) {
                                         <button
                                             type="button"
                                             onClick={() => {
-                                                handleUpload(file, fileLabel, selectedReportSourceId, selectedReportSourceId ? "" : fileLabel, fileLabel);
+                                                handleUpload(file, fileLabel, selectedReportSourceId, selectedReportSourceId ? "" : String(newReportSourceName || "").trim(), fileLabel);
                                                 setFileLabel("");
+                                                setNewReportSourceName("");
                                             }}
-                                            disabled={uploadInProgress || !file || !fileLabel.trim()}
-                                            className={`group flex w-full items-center justify-between border-b border-slate-200 py-3 text-left text-sm font-black transition-colors ${uploadInProgress || !file || !fileLabel.trim() ? "cursor-not-allowed opacity-50" : "text-slate-700 hover:text-[hsl(var(--primary))]"}`}
+                                            disabled={uploadInProgress || !file || !fileLabel.trim() || !hasSelectedOrNewReportSource}
+                                            className={`group flex w-full items-center justify-between border-b border-slate-200 py-3 text-left text-sm font-black transition-colors ${uploadInProgress || !file || !fileLabel.trim() || !hasSelectedOrNewReportSource ? "cursor-not-allowed opacity-50" : "text-slate-700 hover:text-[hsl(var(--primary))]"}`}
                                         >
                                             <span>{uploadInProgress ? `Uploading ${Math.max(0, Math.min(100, uploadPercent))}%` : "Upload and load"}</span>
                                             <span className="text-slate-400 transition-transform group-hover:translate-x-0.5">→</span>

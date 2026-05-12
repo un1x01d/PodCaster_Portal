@@ -702,6 +702,11 @@ export default function UserManagement({ token, user, sheetId }) {
   // report source selection drives the current sheet used by existing permission enforcement
   const [reportSources, setReportSources] = useState([]);
   const [reviewPolicySavingId, setReviewPolicySavingId] = useState("");
+  const [reportSourceDeletingId, setReportSourceDeletingId] = useState("");
+  const [reviewRulesOpen, setReviewRulesOpen] = useState(false);
+  const [expandedReviewSourceId, setExpandedReviewSourceId] = useState("");
+  const [reportSourceDeletionOpen, setReportSourceDeletionOpen] = useState(false);
+  const [reviewRuleDraftLabelBySource, setReviewRuleDraftLabelBySource] = useState({});
   const [groupSheetHeaders, setGroupSheetHeaders] = useState([]);
 
   // Templates (now scoped by group)
@@ -975,6 +980,36 @@ export default function UserManagement({ token, user, sheetId }) {
       fetchReportSources();
     } finally {
       setReviewPolicySavingId("");
+    }
+  };
+
+  const deleteReportSource = async (source) => {
+    if (!canManageIntegrations || !source?.id || reportSourceDeletingId) return;
+    const sourceId = String(source.id);
+    const sourceName = String(source?.name || `Source ${sourceId}`);
+    const confirmed = window.confirm(
+      `Delete report source "${sourceName}"?\n\nThis will remove the source and its linked revisions.`
+    );
+    if (!confirmed) return;
+    setReportSourceDeletingId(sourceId);
+    try {
+      await axios.delete(`${API}/report-sources/${source.id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setReportSources((prev) => (prev || []).filter((item) => String(item.id) !== sourceId));
+      if (String(selectedReportSourceId || "") === sourceId) {
+        setSelectedReportSourceId(null);
+      }
+    } catch (e) {
+      if (e?.response?.status === 404) {
+        await fetchReportSources();
+        alert("Report source already removed. Refreshed list.");
+      } else {
+        alert(e.response?.data?.error || "Failed to delete report source");
+        fetchReportSources();
+      }
+    } finally {
+      setReportSourceDeletingId("");
     }
   };
 
@@ -3462,6 +3497,13 @@ export default function UserManagement({ token, user, sheetId }) {
     () => (Array.isArray(groups) ? groups.find((g) => Number(g.id) === Number(selectedGroupId)) : null),
     [groups, selectedGroupId]
   );
+  const reportSourcesForDeletion = useMemo(() => {
+    const all = Array.isArray(reviewSourceOptions) ? reviewSourceOptions : [];
+    const gid = Number.parseInt(String(selectedGroupId || ""), 10);
+    if (!Number.isInteger(gid) || gid <= 0) return all;
+    const scoped = all.filter((source) => Number(source?.sync_group_id) === gid);
+    return scoped.length ? scoped : all;
+  }, [reviewSourceOptions, selectedGroupId]);
   const inviteGroupId = useMemo(() => {
     if (Number.isInteger(Number(selectedGroupId)) && Number(selectedGroupId) > 0) return Number(selectedGroupId);
     if (!isSuperAdmin && Array.isArray(groups) && groups.length === 1) return Number(groups[0].id);
@@ -4900,106 +4942,228 @@ export default function UserManagement({ token, user, sheetId }) {
         </div>
         {!collapsedSections.integrations && (
         <>
-        <div className="mb-4 rounded-md border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="flex flex-col gap-2 border-b border-slate-200 pb-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="mb-4 rounded-md border border-slate-200 bg-white p-3 shadow-sm">
+          <button
+            type="button"
+            onClick={() => setReviewRulesOpen((prev) => !prev)}
+            className="flex w-full items-center justify-between rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-left"
+          >
             <div>
-              <h4 className="text-sm font-semibold text-slate-900">Review Rules</h4>
-              <p className="mt-1 max-w-2xl text-xs font-medium leading-5 text-slate-500">
-                Customer admins decide when a source revision must be reviewed before it becomes the published version. Super admins can manage any source they can see.
-              </p>
+              <div className="text-[11px] font-semibold text-slate-800">Review Rules</div>
+              <div className="text-[10px] text-slate-500">Source publish controls</div>
             </div>
-            <span className="shrink-0 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
-              Source publish control
-            </span>
-          </div>
+            <div className="text-[10px] font-semibold text-slate-600">{reviewRulesOpen ? "Hide" : "Show"}</div>
+          </button>
 
-          {!canManageIntegrations ? (
-            <div className="mt-4 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs font-medium text-slate-500">
-              Review rules are available to customer admins and super admins.
-            </div>
-          ) : reviewSourceOptions.length ? (
-            <div className="mt-4 space-y-3">
-              {reviewSourceOptions.map((source) => {
-                const sourceId = String(source.id);
-                const saving = reviewPolicySavingId === sourceId;
-                const labelRules = normalizeReviewLabelRules(source.review_label_rules);
-                const sourceLabels = normalizeSourceLabels(source);
-                return (
-                  <div key={`review-policy-${sourceId}`} className="rounded-md border border-slate-200 bg-slate-50 p-3">
-                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-semibold text-slate-900">{source.name || `Source ${sourceId}`}</div>
-                        <div className="mt-1 text-[11px] font-medium text-slate-500">
-                          {Number(source.import_count || 0).toLocaleString("en-US")} revisions tracked
-                        </div>
-                      </div>
-                      <div className="grid gap-2 sm:grid-cols-2 lg:min-w-[440px]">
-                        <label className={`flex items-start gap-2 rounded-md border border-slate-200 bg-white p-2 text-xs font-semibold text-slate-700 ${saving ? "opacity-60" : ""}`}>
-                          <input
-                            type="checkbox"
-                            className="mt-0.5 h-4 w-4 rounded border-slate-300 text-amber-600 focus:ring-amber-200"
-                            checked={!!source.review_required}
-                            disabled={saving}
-                            onChange={(e) => saveReviewPolicy(source, { review_required: e.target.checked })}
-                          />
-                          <span>
-                            Hold every revision
-                            <span className="block pt-0.5 text-[10px] font-medium leading-4 text-slate-500">Use for sensitive or externally supplied sources.</span>
-                          </span>
-                        </label>
-                        <label className={`flex items-start gap-2 rounded-md border border-slate-200 bg-white p-2 text-xs font-semibold text-slate-700 ${saving ? "opacity-60" : ""}`}>
-                          <input
-                            type="checkbox"
-                            className="mt-0.5 h-4 w-4 rounded border-slate-300 text-amber-600 focus:ring-amber-200"
-                            checked={source.review_schema_changes !== false}
-                            disabled={saving}
-                            onChange={(e) => saveReviewPolicy(source, { review_schema_changes: e.target.checked })}
-                          />
-                          <span>
-                            Hold schema changes
-                            <span className="block pt-0.5 text-[10px] font-medium leading-4 text-slate-500">Renamed, missing, or new fields stop before publish.</span>
-                          </span>
-                        </label>
-                      </div>
-                    </div>
+          {reviewRulesOpen && (
+            <>
+              {!canManageIntegrations ? (
+                <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 p-2 text-[11px] font-medium text-slate-500">
+                  Available to customer admins and super admins.
+                </div>
+              ) : reviewSourceOptions.length ? (
+                <div className="mt-2 space-y-1.5">
+                  {reviewSourceOptions.map((source) => {
+                    const sourceId = String(source.id);
+                    const saving = reviewPolicySavingId === sourceId;
+                    const isExpanded = expandedReviewSourceId === sourceId;
+                    const labelRules = normalizeReviewLabelRules(source.review_label_rules);
+                    const sourceLabels = normalizeSourceLabels(source);
+                    const configuredLabels = Object.keys(labelRules || {}).filter((label) => String(label || "").trim());
+                    const availableLabels = sourceLabels.filter((label) => {
+                      const target = String(label || "").trim().toLowerCase();
+                      if (!target) return false;
+                      return !configuredLabels.some((existing) => String(existing || "").trim().toLowerCase() === target);
+                    });
+                    const draftLabel = String(reviewRuleDraftLabelBySource[sourceId] || "");
+                    return (
+                      <div key={`review-policy-${sourceId}`} className="rounded-md border border-slate-200 bg-slate-50">
+                        <button
+                          type="button"
+                          onClick={() => setExpandedReviewSourceId((prev) => (prev === sourceId ? "" : sourceId))}
+                          className="flex w-full items-center justify-between px-2.5 py-1.5 text-left"
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate text-[11px] font-semibold text-slate-800">{source.name || `Source ${sourceId}`}</div>
+                            <div className="text-[9px] text-slate-500">{Number(source.import_count || 0).toLocaleString("en-US")} revisions</div>
+                          </div>
+                          <div className="text-[10px] font-semibold text-slate-600">{isExpanded ? "−" : "+"}</div>
+                        </button>
 
-                    <div className="mt-3 rounded-md border border-slate-200 bg-white p-2">
-                      <div className="mb-2 flex items-center justify-between gap-2">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Label-specific holds</div>
-                        {saving && <div className="text-[10px] font-semibold text-amber-700">Saving...</div>}
+                        {isExpanded && (
+                          <div className="border-t border-slate-200 bg-white px-2.5 py-2 space-y-2">
+                            <label className={`flex items-center gap-1.5 text-[10px] font-semibold text-slate-700 ${saving ? "opacity-60" : ""}`}>
+                              <input
+                                type="checkbox"
+                                className="h-3.5 w-3.5 rounded border-slate-300 text-amber-600 focus:ring-amber-200"
+                                checked={!!source.review_required}
+                                disabled={saving}
+                                onChange={(e) => saveReviewPolicy(source, { review_required: e.target.checked })}
+                              />
+                              Hold every revision
+                            </label>
+                            <label className={`flex items-center gap-1.5 text-[10px] font-semibold text-slate-700 ${saving ? "opacity-60" : ""}`}>
+                              <input
+                                type="checkbox"
+                                className="h-3.5 w-3.5 rounded border-slate-300 text-amber-600 focus:ring-amber-200"
+                                checked={source.review_schema_changes !== false}
+                                disabled={saving}
+                                onChange={(e) => saveReviewPolicy(source, { review_schema_changes: e.target.checked })}
+                              />
+                              Hold schema changes
+                            </label>
+
+                            <div className="pt-1 border-t border-slate-100">
+                              <div className="mb-1 flex items-center justify-between gap-2">
+                                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                  Label-specific holds {saving ? "• Saving..." : ""}
+                                </div>
+                                {Object.keys(labelRules || {}).length > 0 && (
+                                  <button
+                                    type="button"
+                                    disabled={saving}
+                                    onClick={() => saveReviewPolicy(source, { review_label_rules: {} })}
+                                    className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${
+                                      saving
+                                        ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400"
+                                        : "border-red-200 bg-white text-red-600 hover:bg-red-50"
+                                    }`}
+                                  >
+                                    Clear all
+                                  </button>
+                                )}
+                              </div>
+                              {configuredLabels.length ? (
+                                <div className="rounded border border-slate-200 bg-slate-50 divide-y divide-slate-200">
+                                  {configuredLabels.map((label) => {
+                                    const deleteRule = () => {
+                                      const trimmed = String(label || "").trim();
+                                      const candidateKeys = [
+                                        trimmed,
+                                        trimmed.toLowerCase(),
+                                      ];
+                                      const cleaned = { ...labelRules };
+                                      candidateKeys.forEach((key) => {
+                                        if (Object.prototype.hasOwnProperty.call(cleaned, key)) {
+                                          delete cleaned[key];
+                                        }
+                                      });
+                                      saveReviewPolicy(source, { review_label_rules: cleaned });
+                                    };
+                                    return (
+                                      <div key={`${sourceId}-${label}`} className={`flex items-center justify-between gap-2 px-2 py-1.5 ${saving ? "opacity-60" : ""}`}>
+                                        <span className="truncate text-[11px] font-medium text-slate-700">{label}</span>
+                                        <button
+                                          type="button"
+                                          disabled={saving}
+                                          onClick={deleteRule}
+                                          className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold leading-tight shrink-0 ${
+                                            saving
+                                              ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400"
+                                              : "border-slate-200 bg-white text-slate-600 hover:bg-red-50 hover:text-red-600 hover:border-red-200"
+                                          }`}
+                                          title={`Delete review rule for ${label}`}
+                                        >
+                                          Delete
+                                        </button>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              ) : (
+                                <div className="text-[10px] text-slate-500">No label-specific rules.</div>
+                              )}
+                              {availableLabels.length > 0 && (
+                                <div className="mt-2 flex items-center gap-2">
+                                  <select
+                                    className="input-premium py-1 text-[11px] font-medium flex-1"
+                                    value={draftLabel}
+                                    onChange={(e) => setReviewRuleDraftLabelBySource((prev) => ({ ...prev, [sourceId]: e.target.value }))}
+                                    disabled={saving}
+                                  >
+                                    <option value="">Add label rule…</option>
+                                    {availableLabels.map((label) => (
+                                      <option key={`${sourceId}-available-${label}`} value={label}>{label}</option>
+                                    ))}
+                                  </select>
+                                  <button
+                                    type="button"
+                                    disabled={saving || !draftLabel}
+                                    onClick={() => {
+                                      const nextRules = { ...labelRules, [draftLabel]: true };
+                                      saveReviewPolicy(source, { review_label_rules: nextRules });
+                                      setReviewRuleDraftLabelBySource((prev) => ({ ...prev, [sourceId]: "" }));
+                                    }}
+                                    className={`rounded border px-2 py-1 text-[10px] font-semibold ${
+                                      saving || !draftLabel
+                                        ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400"
+                                        : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                                    }`}
+                                  >
+                                    Add
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
                       </div>
-                      {sourceLabels.length ? (
-                        <div className="flex flex-wrap gap-2">
-                          {sourceLabels.map((label) => {
-                            const checked = !!labelRules[label];
-                            const nextRules = { ...labelRules, [label]: !checked };
-                            return (
-                              <label key={`${sourceId}-${label}`} className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${checked ? "border-amber-300 bg-amber-50 text-amber-800" : "border-slate-200 bg-slate-50 text-slate-600"} ${saving ? "opacity-60" : ""}`}>
-                                <input
-                                  type="checkbox"
-                                  className="h-3.5 w-3.5 rounded border-slate-300 text-amber-600 focus:ring-amber-200"
-                                  checked={checked}
-                                  disabled={saving}
-                                  onChange={() => saveReviewPolicy(source, { review_label_rules: nextRules })}
-                                />
-                                <span>{label}</span>
-                              </label>
-                            );
-                          })}
-                        </div>
-                      ) : (
-                        <div className="text-[11px] font-medium text-slate-500">
-                          Labels appear after the first import. Source and schema-change rules still apply now.
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 p-2 text-[11px] font-medium text-slate-500">
+                  No governed sources yet.
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        <div className="mb-4 rounded-md border border-slate-200 bg-white p-3 shadow-sm">
+          <button
+            type="button"
+            onClick={() => setReportSourceDeletionOpen((prev) => !prev)}
+            className="flex w-full items-center justify-between rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-left"
+          >
+            <div>
+              <div className="text-[11px] font-semibold text-slate-800">Report Source Deletion</div>
+              <div className="text-[10px] text-slate-500">Delete source and linked revisions</div>
             </div>
-          ) : (
-            <div className="mt-4 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs font-medium text-slate-500">
-              No governed sources yet. Create a source from the workspace to configure review rules.
+            <div className="text-[10px] font-semibold text-slate-600">
+              {reportSourceDeletionOpen ? "Hide" : "Show"} • {reportSourcesForDeletion.length}
+            </div>
+          </button>
+          {reportSourceDeletionOpen && (
+            <div className="mt-2">
+              {reportSourcesForDeletion.length ? (
+                <div className="space-y-1.5 max-h-48 overflow-auto pr-1 custom-scrollbar">
+                  {reportSourcesForDeletion.map((source) => {
+                    const sourceId = String(source.id);
+                    const deleting = reportSourceDeletingId === sourceId;
+                    const saving = reviewPolicySavingId === sourceId;
+                    return (
+                      <div key={`right-source-${sourceId}`} className="flex items-center justify-between gap-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5">
+                        <div className="min-w-0">
+                          <div className="truncate text-[11px] font-semibold text-slate-700">{source.name || `Source ${sourceId}`}</div>
+                          <div className="text-[9px] text-slate-500">{Number(source.import_count || 0).toLocaleString("en-US")} revisions</div>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={deleting || saving}
+                          onClick={() => deleteReportSource(source)}
+                          className={`shrink-0 rounded border px-1.5 py-0.5 text-[9px] font-semibold ${deleting || saving ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400" : "border-red-200 bg-white text-red-600 hover:bg-red-50"}`}
+                          title={`Delete ${source.name || `Source ${sourceId}`}`}
+                        >
+                          {deleting ? "..." : "Delete"}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="text-[10px] text-slate-400 italic">No sources available.</div>
+              )}
             </div>
           )}
         </div>

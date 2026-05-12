@@ -2101,21 +2101,37 @@ export async function reviewAiLearningFeedback(req, res) {
         }
         let approvedRuleId = null;
         if (action === "approve") {
+            const context = found.context || {};
+            const successfulPlan = context.successfulPlan || null;
+            
+            let mappedIntent = "answer_shape";
+            let mappedPayload = { expectedAnswer: String(found.expected_answer || ""), notes };
+
+            if (successfulPlan && typeof successfulPlan === "object" && successfulPlan.operation) {
+                mappedIntent = successfulPlan.operation;
+                mappedPayload = {
+                    ...successfulPlan,
+                    notes: `Learned from feedback ${id}: ${notes}`
+                };
+            }
+
             const ruleRows = await client.query(
                 `INSERT INTO ai_learning_rules
                    (source_feedback_id, scope, locale, phrase, mapped_intent, mapped_payload, confidence, status, approved_by)
-                 VALUES ($1, 'global', $2, $3, 'answer_shape', $4::jsonb, 1.0, 'approved', $5)
+                 VALUES ($1, 'global', $2, $3, $4, $5::jsonb, 1.0, 'approved', $6)
                  RETURNING id`,
                 [
                     id,
                     String(found.locale || "en"),
                     String(found.question || ""),
-                    JSON.stringify({ expectedAnswer: String(found.expected_answer || ""), notes }),
+                    mappedIntent,
+                    JSON.stringify(mappedPayload),
                     Number(req.user?.id || 0) || null,
                 ]
             );
             approvedRuleId = ruleRows.rows?.[0]?.id || null;
         }
+
         await client.query(
             `UPDATE ai_learning_feedback
              SET status = $2, approved_rule_id = $3, reviewed_by = $4, reviewed_at = CURRENT_TIMESTAMP

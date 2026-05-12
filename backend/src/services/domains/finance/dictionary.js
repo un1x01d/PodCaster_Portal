@@ -1,0 +1,18 @@
+export const FINANCE_DICTIONARY = {
+  cash: ["cash", "cash balance", "bank balance", "cash in bank", "cash on hand"],
+  cash_in: ["cash in", "cash inflow", "receipts", "deposits", "collections"],
+  cash_out: ["cash out", "cash outflow", "payments", "disbursements"],
+  debt: ["debt", "loans", "borrowings", "notes payable", "loan balance"],
+  equity: ["equity", "owner equity", "shareholder equity", "members equity"],
+  assets: ["assets", "total assets"],
+  liabilities: ["liabilities", "total liabilities"],
+  current_assets: ["current assets"],
+  current_liabilities: ["current liabilities"],
+  inventory: ["inventory"],
+  working_capital: ["working capital"],
+  ebitda: ["ebitda", "earnings before interest taxes depreciation amortization"],
+  capex: ["capex", "capital expenditures", "capital expense"],
+  free_cash_flow: ["free cash flow", "fcf"],
+  burn_rate: ["burn rate", "monthly burn", "cash burn"],
+  runway_months: ["runway", "cash runway", "months of runway"],
+};

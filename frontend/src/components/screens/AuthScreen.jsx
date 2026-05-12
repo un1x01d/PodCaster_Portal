@@ -12,7 +12,7 @@ import {
   themeHoverTextClass
 } from "../../utils/theme";
 
-export default function AuthScreen({ email, setEmail, password, setPassword, onSubmit, onGoogleLogin, onSamlLogin, googleEnabled }) {
+export default function AuthScreen({ email, setEmail, password, setPassword, onSubmit, onGoogleLogin, onSamlLogin, googleEnabled, error = "" }) {
   return (
     <div className={publicPageClass}>
       <div className="mx-auto grid min-h-[calc(100vh-4rem)] max-w-6xl gap-8 lg:grid-cols-[1fr_480px] lg:items-center">
@@ -54,6 +54,11 @@ export default function AuthScreen({ email, setEmail, password, setPassword, onS
           </div>
 
         <form onSubmit={onSubmit} className="space-y-2">
+          {error ? (
+            <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
+              {error}
+            </div>
+          ) : null}
           <div className="group space-y-1">
             <label className={formLabelClass}>Work email</label>
             <input

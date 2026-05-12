@@ -14,10 +14,27 @@ import {
   resolveProfileDimension,
   resolveProfileMetric,
 } from "../utils/sheetSemanticProfile.js";
+import { writeAuditLog } from "../utils/auditLog.js";
+import { analyzeAccountingIntent } from "../services/ai/accountingIntentAnalyzer.js";
+import { getSemanticKnowledge } from "../services/ai/semanticKnowledgeService.js";
+import { buildDeterministicSpreadsheetPlan } from "../services/ai/deterministicSpreadsheetPlanner.js";
+import { executeDeterministicSpreadsheetPlan } from "../services/ai/deterministicSpreadsheetExecutor.js";
+import { presentDeterministicSpreadsheetResult } from "../services/ai/deterministicSpreadsheetPresenter.js";
+import { validateDeterministicPlanContract } from "../services/ai/deterministicOperationContract.js";
+import { buildAccountingAnalysisPlan } from "../services/ai/accountingAnalysisPlanner.js";
+import { validateAnalysisPlan } from "../services/accounting/analysisPlanValidator.js";
+import { resolveAnalysisHeaders } from "../services/accounting/analysisHeaderResolver.js";
+import { executeAnalysisPlan } from "../services/accounting/analysisExecutor.js";
+import { explainAccountingAnalysis } from "../services/ai/accountingAnalysisExplainer.js";
+import { COMPLEX_QUESTION_REQUIREMENTS } from "../services/accounting/complexQuestionRequirements.js";
+import { METRIC_REGISTRY } from "../services/accounting/metricRegistry.js";
+import { classifyBusinessDomain } from "../services/chat/businessDomainClassifier.js";
+import { buildRowFilterWhereClause } from "../utils/rowFilters.js";
 export { checkSheetAccess } from "../utils/authorization.js";
 
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10);
+const CHAT_ENABLE_LEGACY_FALLBACK = String(process.env.CHAT_ENABLE_LEGACY_FALLBACK || "false").trim().toLowerCase() === "true";
 const CHAT_MAX_ROWS = Math.min(100000, Number.parseInt(process.env.CHAT_MAX_ROWS || "50000", 10));
 const CHAT_SQL_AGG_MAX_ROWS = Math.min(300000, Number.parseInt(process.env.CHAT_SQL_AGG_MAX_ROWS || "120000", 10));
 const CHAT_AUDIO_MAX_CHARS = Number.parseInt(process.env.CHAT_AUDIO_MAX_CHARS || "8000", 10);
@@ -57,6 +74,7 @@ const CHAT_RUNTIME_RULES_DEFAULTS = {
   promptTotalInYearShapeRule: "If user asks 'total <metric> in/for <year>', mirror that form directly in one sentence in output locale.",
   promptStructuredSectionsRule: "Interpret context in this order: schema_profile, conversation_history, user question, then constraints. Keep reasoning grounded to sheet data only.",
   promptCompositeDecomposeRule: "If user asks a composite question with multiple intents, decompose internally into sub-steps and return one merged concise answer.",
+  debugHeaderResolutionResponse: false,
 };
 
 function resolveOpenAIRequestFailureReason(error) {
@@ -79,6 +97,20 @@ function detectIntentLabel(message = "") {
   if (/\b(top|driver|drivers|contributor|contributors)\b|драйвер|топ/i.test(s)) return "top_n";
   if (/\b(total|sum|for\s+(19|20)\d{2}|in\s+(19|20)\d{2})\b|сумм|всього/i.test(s)) return "single_year_total";
   return "unknown";
+}
+
+async function compileDeterministicQueryPlan({ message = "", accountingIntent = {}, headers = [], semanticProfile = {}, sampleRows = [], hints = {} }) {
+  const rawPlan = await buildDeterministicSpreadsheetPlan({
+    message,
+    accountingIntent,
+    headers,
+    semanticProfile,
+    sampleRows,
+    hints,
+    context: hints?.context || {},
+  });
+  const validated = validateDeterministicPlanContract(rawPlan);
+  return validated?.ok ? rawPlan : (validated?.plan || rawPlan);
 }
 
 async function recordLearningEvent({
@@ -185,8 +217,14 @@ async function upsertLearningCandidate({ locale = "en", phrase = "", suggestedIn
 let SEMANTIC_CACHE = null;
 let RATIO_CACHE = null;
 let CACHE_TS = 0;
+const PENDING_CLARIFICATIONS = new Map();
+const CLARIFICATION_TTL_MS = 10 * 60 * 1000;
+const LAST_DETERMINISTIC_CONTEXT = new Map();
+const DETERMINISTIC_CONTEXT_TTL_MS = 30 * 60 * 1000;
 
 const CHAT_SAMPLE_ROWS = Number.parseInt(process.env.CHAT_SAMPLE_ROWS || "600", 10);
+const HEADER_AI_SAMPLE_ROWS = Math.min(120, Number.parseInt(process.env.HEADER_AI_SAMPLE_ROWS || "60", 10));
+const HEADER_AI_SAMPLE_VALUES_PER_COLUMN = Math.min(8, Number.parseInt(process.env.HEADER_AI_SAMPLE_VALUES_PER_COLUMN || "5", 10));
 
 async function loadChatTtsSettings() {
   try {
@@ -390,39 +428,6 @@ function formatValue(v, locale = "en", col = "", forSpeech = false) {
  * PERF-01: Server-Side Math
  * Executes heavy calculations in PostgreSQL instead of Node.js memory.
  */
-function buildRowFilterWhereClause(rowFiltersList = [], startParamIdx = 1, actualHeaders = []) {
-  const normalized = Array.isArray(rowFiltersList) ? rowFiltersList.filter((f) => f && typeof f === "object") : [];
-  if (!normalized.length) return { sql: "", params: [] };
-  const filterClauses = [];
-  const params = [];
-  let paramIdx = startParamIdx;
-
-  const headersList = Array.isArray(actualHeaders) ? actualHeaders : [];
-  const resolveColumnKey = (requested) => {
-      if (!headersList.length) return requested;
-      const exact = headersList.find((h) => h === requested);
-      if (exact) return exact;
-      const lowerRequested = String(requested).toLowerCase().trim();
-      return headersList.find((h) => String(h).toLowerCase().trim() === lowerRequested) || requested;
-  };
-
-  normalized.forEach((filters) => {
-    const entries = Object.entries(filters).filter(([k]) => !!k);
-    if (!entries.length) return;
-    const groupPredicates = entries.map(([k, v]) => {
-      const resolvedKey = resolveColumnKey(k);
-      const keyIdx = paramIdx++;
-      const valIdx = paramIdx++;
-      params.push(String(resolvedKey), String(v));
-      return `(row_data->>$${keyIdx}) = $${valIdx}`;
-    });
-    filterClauses.push(`(${groupPredicates.join(" AND ")})`);
-  });
-
-  if (!filterClauses.length) return { sql: "", params: [] };
-  return { sql: ` AND (${filterClauses.join(" OR ")})`, params };
-}
-
 function normalizeActiveDashboardFilters(headers = [], activeFilters = {}) {
   if (!activeFilters || typeof activeFilters !== "object" || Array.isArray(activeFilters)) return [];
   const headerList = Array.isArray(headers) ? headers : [];
@@ -1463,6 +1468,23 @@ async function computeDeterministicAnswer(operation, rows, targetColumn, groupBy
 
     const years = dropImplicitTrailingPartialYear(Object.keys(yearlySums), queryText);
     if (years.length >= 2) {
+      const explicitYears = extractDistinctYearsInOrder(queryText);
+      const asksYearDelta = asksDifferenceBetweenYears(queryText);
+      if (asksYearDelta && explicitYears.length >= 2) {
+        const startYear = explicitYears[0];
+        const endYear = explicitYears[1];
+        if (Number.isFinite(yearlySums[startYear]) && Number.isFinite(yearlySums[endYear])) {
+          const delta = yearlySums[endYear] - yearlySums[startYear];
+          if (asksNumberOnlyResponse(queryText)) {
+            return { answer: formatPlainNumber(delta), previewRows: [] };
+          }
+          return {
+            answer: `${endYear} vs ${startYear} ${targetColumn}: ${formatValue(delta, locale, targetColumn)}`,
+            previewRows: [{ from_year: startYear, to_year: endYear, change: delta }],
+          };
+        }
+      }
+
       let comparisonText = "";
       if (locale.startsWith("uk")) {
         comparisonText = `Аналіз року до року для ${targetColumn}:\n`;
@@ -1617,15 +1639,14 @@ async function loadSemanticBrain() {
     }
 
     try {
-        const dictRows = await query(`SELECT category, synonym FROM semantic_dictionary WHERE group_id IS NULL`, []);
-        const ratioRows = await query(`SELECT name, match_pattern as match, formula_type as format, required_buckets as buckets FROM financial_ratios WHERE group_id IS NULL`, []);
-
+        const knowledge = await getSemanticKnowledge();
         const bucketsMap = {};
-        dictRows.forEach(r => {
-            const cat = String(r.category || "").toLowerCase();
+        Object.entries(knowledge).forEach(([cat, synonyms]) => {
             if (!bucketsMap[cat]) bucketsMap[cat] = { key: cat, synonyms: [] };
-            bucketsMap[cat].synonyms.push(String(r.synonym || "").toLowerCase());
+            bucketsMap[cat].synonyms = Array.from(new Set([...bucketsMap[cat].synonyms, ...synonyms]));
         });
+
+        const ratioRows = await query(`SELECT name, match_pattern as match, formula_type as format, required_buckets as buckets FROM financial_ratios WHERE group_id IS NULL`, []);
 
         SEMANTIC_CACHE = Object.values(bucketsMap);
         RATIO_CACHE = ratioRows.map(r => ({
@@ -2063,6 +2084,166 @@ function compactSemanticProfileForPrompt(profile) {
       confidence: col.confidence,
     })),
   };
+}
+
+function uniqueColumnSamples(rows = [], header, limit = HEADER_AI_SAMPLE_VALUES_PER_COLUMN) {
+  const seen = new Set();
+  const out = [];
+  for (const row of rows) {
+    const raw = row?.[header];
+    const value = String(raw ?? "").trim();
+    if (!value) continue;
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(value.slice(0, 120));
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function buildHeaderAiContext(headers = [], rows = []) {
+  const limitedRows = Array.isArray(rows) ? rows.slice(0, HEADER_AI_SAMPLE_ROWS) : [];
+  return (Array.isArray(headers) ? headers : []).map((header) => ({
+    header: String(header),
+    sample_values: uniqueColumnSamples(limitedRows, header, HEADER_AI_SAMPLE_VALUES_PER_COLUMN),
+  }));
+}
+
+function applyHeaderUnderstandingToProfile(profile = {}, headerUnderstanding = []) {
+  const base = profile && typeof profile === "object" ? profile : {};
+  const next = { ...base };
+  const columns = Array.isArray(base.columns) ? base.columns.map((c) => ({ ...c, roles: Array.isArray(c.roles) ? [...c.roles] : [], meanings: Array.isArray(c.meanings) ? [...c.meanings] : [] })) : [];
+  const defaults = { ...(base.defaults || {}) };
+  const metricColumns = { ...(defaults.metricColumns || {}) };
+  const dimensions = new Set(Array.isArray(defaults.dimensions) ? defaults.dimensions : []);
+  const metrics = new Set(Array.isArray(defaults.metrics) ? defaults.metrics : []);
+  let dateColumn = defaults.dateColumn || null;
+  let serviceLineColumn = defaults.serviceLineColumn || null;
+  let revenueModelColumn = defaults.revenueModelColumn || null;
+  let driverDimensionColumn = defaults.driverDimensionColumn || null;
+
+  const byName = new Map(columns.map((c) => [String(c.name), c]));
+  for (const item of (Array.isArray(headerUnderstanding) ? headerUnderstanding : [])) {
+    const header = String(item?.header || "").trim();
+    if (!header || !byName.has(header)) continue;
+    const col = byName.get(header);
+    const meaning = String(item?.meaning || "").trim();
+    const role = String(item?.role || "").trim();
+    if (meaning && !col.meanings.includes(meaning)) col.meanings.push(meaning);
+    if (role && !col.roles.includes(role)) col.roles.push(role);
+    if (role === "metric") metrics.add(header);
+    if (role === "dimension") dimensions.add(header);
+    if (role === "date" && !dateColumn) dateColumn = header;
+    if (meaning === "revenue") metricColumns.revenue = metricColumns.revenue || header;
+    if (meaning === "cost") metricColumns.cost = metricColumns.cost || header;
+    if (meaning === "profit") metricColumns.profit = metricColumns.profit || header;
+    if (meaning === "quantity") metricColumns.quantity = metricColumns.quantity || header;
+    if (meaning === "serviceLine") serviceLineColumn = serviceLineColumn || header;
+    if (meaning === "revenueModel") revenueModelColumn = revenueModelColumn || header;
+    if (!driverDimensionColumn && (meaning === "serviceLine" || meaning === "product" || meaning === "customer" || meaning === "category" || meaning === "region")) {
+      driverDimensionColumn = header;
+    }
+  }
+
+  next.columns = columns;
+  next.defaults = {
+    ...defaults,
+    metricColumns,
+    dateColumn,
+    serviceLineColumn,
+    revenueModelColumn,
+    driverDimensionColumn,
+    dimensions: Array.from(dimensions).slice(0, 20),
+    metrics: Array.from(metrics).slice(0, 20),
+  };
+  next.learned = {
+    ...(base.learned || {}),
+    header_understanding: Array.isArray(headerUnderstanding) ? headerUnderstanding : [],
+    header_understanding_updated_at: new Date().toISOString(),
+  };
+  return next;
+}
+
+async function inferHeaderUnderstandingWithAi({ headers = [], sampleRows = [], runtime = null }) {
+  const { provider, model, baseUrl, apiKey } = resolveChatCompletionProviderConfig(runtime || {});
+  if (!apiKey) return [];
+  const context = buildHeaderAiContext(headers, sampleRows);
+  if (!context.length) return [];
+  const system = [
+    "Classify spreadsheet headers for deterministic analytics.",
+    "Use only provided header names and sample values.",
+    "Return strict JSON only.",
+    "Allowed meanings: revenue,cost,profit,quantity,customer,serviceLine,revenueModel,product,region,category,owner,period,other",
+    "Allowed roles: metric,dimension,date,id,other",
+  ].join(" ");
+  const user = JSON.stringify({
+    task: "Map each header to at most one meaning and one role.",
+    headers: context,
+    output_schema: {
+      mappings: [{ header: "string", meaning: "string", role: "string", confidence: "0..1" }],
+    },
+  });
+  const requestBody = buildChatCompletionRequestBody({
+    model,
+    provider,
+    messages: [{ role: "system", content: system }, { role: "user", content: user }],
+    responseFormat: { type: "json_object" },
+    maxCompletionTokens: minCompletionTokensForModel(model, 800, 800, 768),
+    temperature: 0,
+  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Number(runtime?.openaiTimeoutMs || OPENAI_TIMEOUT_MS));
+  try {
+    const response = await fetch(`${String(baseUrl).replace(/\/+$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(requestBody),
+      signal: controller.signal,
+    });
+    if (!response.ok) return [];
+    const payload = await response.json().catch(() => ({}));
+    const raw = String(extractOpenAiAssistantText(payload) || "").trim();
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    const mappings = Array.isArray(parsed?.mappings) ? parsed.mappings : [];
+    const headerSet = new Set((Array.isArray(headers) ? headers : []).map((h) => String(h)));
+    return mappings
+      .map((m) => ({
+        header: String(m?.header || "").trim(),
+        meaning: String(m?.meaning || "other").trim(),
+        role: String(m?.role || "other").trim(),
+        confidence: Math.max(0, Math.min(1, Number(m?.confidence || 0))),
+      }))
+      .filter((m) => m.header && headerSet.has(m.header));
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function ensureAiHeaderUnderstanding({ sheetId, headers = [], sampleRows = [], semanticProfile = {}, runtime = null }) {
+  const hasExisting = Array.isArray(semanticProfile?.learned?.header_understanding) && semanticProfile.learned.header_understanding.length > 0;
+  if (hasExisting) {
+    return applyHeaderUnderstandingToProfile(semanticProfile, semanticProfile.learned.header_understanding);
+  }
+  const inferred = await inferHeaderUnderstandingWithAi({ headers, sampleRows, runtime });
+  if (!inferred.length) return semanticProfile;
+  const nextProfile = applyHeaderUnderstandingToProfile(semanticProfile, inferred);
+  try {
+    await query(
+      `UPDATE sheets
+          SET semantic_profile = $2::jsonb,
+              semantic_profile_updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1`,
+      [sheetId, JSON.stringify(nextProfile)]
+    );
+  } catch {}
+  return nextProfile;
 }
 
 function compactSchemaProfileForPrompt(schemaProfile = {}) {
@@ -2574,6 +2755,56 @@ function asksDifferenceBetweenYears(message = "") {
   const s = String(message || "").toLowerCase();
   return /\b(difference|diff|delta|compare|comparison|vs|versus|between)\b.*\b(19\d{2}|20\d{2})\b.*\b(19\d{2}|20\d{2})\b/i.test(s)
     || /\b(19\d{2}|20\d{2})\b.*\b(and|vs|versus)\b.*\b(19\d{2}|20\d{2})\b/i.test(s);
+}
+
+function asksNumberOnlyResponse(message = "") {
+  const s = String(message || "").toLowerCase();
+  return /\b(number\s*only|just\s*number|only\s*number|numeric\s*only|digits\s*only)\b/i.test(s);
+}
+
+function extractDistinctYearsInOrder(message = "") {
+  const years = Array.from(
+    String(message || "").matchAll(/\b(19\d{2}|20\d{2})\b/g),
+    (m) => Number(m?.[0])
+  ).filter((y) => Number.isInteger(y));
+  return Array.from(new Set(years));
+}
+
+function formatPlainNumber(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return "0";
+  if (Math.abs(num % 1) < 1e-9) return String(Math.trunc(num));
+  return num.toFixed(2);
+}
+
+function buildHeaderResolutionBlockedMessage(resolution = null) {
+  const missing = resolution?.missingRequired || [];
+  const ambiguous = resolution?.ambiguous || [];
+  if (missing.length) return `I can’t calculate this yet. Missing required headers: ${missing.join(", ")}.`;
+  if (ambiguous.length) return "I can’t calculate this yet. Multiple similar headers were detected; approve a single mapping for this revision.";
+  return "I can’t calculate this yet because metric mapping is incomplete for this revision.";
+}
+
+function buildHeaderExplanationResponse({ metricKey = null, resolution = null }) {
+  const resolved = resolution?.resolvedMappings || {};
+  const missing = resolution?.missingRequired || [];
+  const ambiguous = resolution?.ambiguous || [];
+  const lines = [];
+  if (metricKey) lines.push(`Phase 1 mapping for ${metricKey}:`);
+  if (Object.keys(resolved).length) {
+    lines.push("Resolved headers:");
+    Object.entries(resolved).forEach(([k, v]) => lines.push(`- ${k} -> ${v}`));
+  }
+  if (missing.length) lines.push(`Missing required headers: ${missing.join(", ")}`);
+  if (ambiguous.length) {
+    lines.push("Ambiguous mappings found. Please choose:");
+    ambiguous.forEach((a) => {
+      const options = (a.candidates || []).map((c) => c.header).filter(Boolean);
+      lines.push(`- ${a.canonicalField}: ${options.join(" / ") || "multiple close matches"}`);
+    });
+  }
+  if (!lines.length) lines.push("I could not resolve required accounting headers.");
+  return lines.join("\n");
 }
 
 function asksDifferenceFollowupWithoutYears(message = "", rules = CHAT_RUNTIME_RULES_DEFAULTS) {
@@ -3181,6 +3412,8 @@ export async function submitChatLearningFeedback(req, res) {
     const sheetId = body.sheetId ? String(body.sheetId).trim() : null;
     const locale = String(body.locale || "en").trim().toLowerCase().slice(0, 10);
     const context = body.context && typeof body.context === "object" ? body.context : {};
+    const successfulPlan = body.plan && typeof body.plan === "object" ? body.plan : null;
+
     if (!question || !expectedAnswer) return res.status(400).json(aiError("missing_feedback_fields"));
     if (sheetId) {
       const hasAccess = await checkSheetAccess(sheetId, req.user);
@@ -3191,13 +3424,14 @@ export async function submitChatLearningFeedback(req, res) {
          (sheet_id, user_id, locale, question, bad_answer, expected_answer, context, status)
        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, 'pending')
        RETURNING id, status, created_at`,
-      [sheetId, Number(req.user?.id || 0) || null, locale, question, badAnswer, expectedAnswer, JSON.stringify(context)]
+      [sheetId, Number(req.user?.id || 0) || null, locale, question, badAnswer, expectedAnswer, JSON.stringify({ ...context, successfulPlan })]
     );
     return res.json({ success: true, feedbackId: rows?.[0]?.id, status: rows?.[0]?.status, createdAt: rows?.[0]?.created_at });
   } catch (err) {
     return res.status(500).json(aiError("feedback_store_failed", { message: String(err?.message || "internal_server_error") }));
   }
 }
+
 
 async function synthesizeChatAudioToResponse({ text, locale, runtime = null, res }) {
   let speechText = text;
@@ -3403,18 +3637,107 @@ function enforcePerYearTopListSpacing(text = "") {
     .replace(/(\$\d[\d,]*\.\d{2})\s+(Year\s+\d{4})/g, "$1\n\n$2");
 }
 
+function resolvePendingClarificationForUser({ userId = 0, sheetId = null }) {
+  const uid = Number(userId || 0);
+  if (!uid) return { key: null, pending: null };
+  const preferredKey = `${uid}:${String(sheetId || "nosheet")}`;
+  const preferred = PENDING_CLARIFICATIONS.get(preferredKey) || null;
+  if (preferred && Date.now() - Number(preferred.ts || 0) <= CLARIFICATION_TTL_MS) {
+    return { key: preferredKey, pending: preferred };
+  }
+  if (preferred) PENDING_CLARIFICATIONS.delete(preferredKey);
+
+  let best = null;
+  for (const [key, value] of PENDING_CLARIFICATIONS.entries()) {
+    if (!String(key).startsWith(`${uid}:`)) continue;
+    if (Date.now() - Number(value?.ts || 0) > CLARIFICATION_TTL_MS) {
+      PENDING_CLARIFICATIONS.delete(key);
+      continue;
+    }
+    if (!best || Number(value?.ts || 0) > Number(best.pending?.ts || 0)) {
+      best = { key, pending: value };
+    }
+  }
+  return best || { key: null, pending: null };
+}
+
+function resolveDeterministicContextForUser({ userId = 0, sheetId = null }) {
+  const key = `${Number(userId || 0)}:${String(sheetId || "nosheet")}`;
+  const ctx = LAST_DETERMINISTIC_CONTEXT.get(key) || null;
+  if (!ctx) return { key, context: null };
+  if (Date.now() - Number(ctx.ts || 0) > DETERMINISTIC_CONTEXT_TTL_MS) {
+    LAST_DETERMINISTIC_CONTEXT.delete(key);
+    return { key, context: null };
+  }
+  return { key, context: ctx };
+}
+
 export async function chatQuery(req, res) {
-  const { sheetId, activeTab = null, message, activeFilters = {}, splitContext = null, activeViewScope = null, conversationHistory = [], locale: rawLocale } = req.body || {};
+  const { sheetId: requestedSheetId, activeTab = null, message, activeFilters = {}, splitContext = null, activeViewScope = null, conversationHistory = [], locale: rawLocale } = req.body || {};
+  let sheetId = requestedSheetId ? String(requestedSheetId).trim() : null;
   const locale = normalizeLocale(rawLocale || "en");
   const normalizedMessage = normalizeRelativeYearInMessage(String(message || ""));
   if (!normalizedMessage.trim()) {
     return res.status(400).json(aiError("chat_message_required"));
   }
-  const hasSheet = Boolean(sheetId);
-  if (hasSheet) {
-    const hasAccess = await checkSheetAccess(sheetId, req.user);
-    if (!hasAccess) return res.status(403).json(aiError("Forbidden"));
+  if (!sheetId) {
+    const candidates = await query(
+      `SELECT id
+         FROM sheets
+        WHERE active = TRUE
+        ORDER BY created_at ASC NULLS LAST, id ASC
+        LIMIT 200`
+    );
+    for (const row of candidates || []) {
+      const candidateId = row?.id ? String(row.id).trim() : "";
+      if (!candidateId) continue;
+      const accessProbe = await loadAccessibleRows(candidateId, req.user, null, 1);
+      if (!accessProbe?.forbidden) {
+        sheetId = candidateId;
+        break;
+      }
+    }
   }
+  const hasSheet = Boolean(sheetId);
+  const pendingResolved = resolvePendingClarificationForUser({
+    userId: req.user?.id || 0,
+    sheetId,
+  });
+  const clarificationKey = pendingResolved.key || `${Number(req.user?.id || 0)}:${String(sheetId || "nosheet")}`;
+  const pendingClarification = pendingResolved.pending || null;
+  const clarificationSelectionMatch = String(normalizedMessage || "").trim().match(/^(\d+)(?:[\).\s].*)?$/);
+  const selectedClarificationOption = (() => {
+    if (!pendingClarification) return null;
+    const options = Array.isArray(pendingClarification.options) ? pendingClarification.options : [];
+    
+    // 1. Numeric Match (e.g., "1")
+    const n = Number.parseInt(String(clarificationSelectionMatch?.[1] || ""), 10);
+    if (Number.isFinite(n) && n >= 1 && n <= options.length) {
+      return String(options[n - 1]);
+    }
+
+    // 2. Text-based Exact Match (case-insensitive)
+    const text = String(normalizedMessage || "").trim().toLowerCase();
+    const match = options.find(opt => String(opt).toLowerCase() === text);
+    if (match) return String(match);
+
+    // 3. Text-based Fuzzy/Includes Match (if short and unique)
+    const candidates = options.filter(opt => String(opt).toLowerCase().includes(text));
+    if (candidates.length === 1) return String(candidates[0]);
+
+    return null;
+  })();
+
+  const effectiveUserMessage = (() => {
+    if (!selectedClarificationOption) return normalizedMessage;
+    const source = String(pendingClarification?.sourceMessage || "").trim();
+    return source || normalizedMessage;
+  })();
+  const planningMessage = effectiveUserMessage;
+  const resolvedDeterministicContext = resolveDeterministicContextForUser({
+    userId: req.user?.id || 0,
+    sheetId,
+  });
   const isPlatformAdmin = isPlatformAdminUser(req.user);
   const resolvedGroupId = isPlatformAdmin ? null : await resolveAiGroupIdForSheet({ sheetId, user: req.user });
   const fallbackUserGroupId = await resolveRuntimeGroupIdForUser(req.user);
@@ -3517,6 +3840,14 @@ export async function chatQuery(req, res) {
     sampleRows = applyFilters(scopedSampleRows, activeDashboardFilters);
     tabNames = Array.isArray(loadedSample.tabs) ? loadedSample.tabs : [];
     semanticProfile = restrictSemanticProfileToHeaders(loadedSample.semanticProfile, aiHeaders, scopedSampleRows);
+    semanticProfile = await ensureAiHeaderUnderstanding({
+      sheetId,
+      headers: aiHeaders,
+      sampleRows: scopedSampleRows,
+      semanticProfile,
+      runtime,
+    });
+
   }
 
   if (!hasSheet) {
@@ -3555,6 +3886,309 @@ export async function chatQuery(req, res) {
         locale,
         noSheetMode: true,
       },
+    });
+  }
+
+  const domainRoute = classifyBusinessDomain(planningMessage);
+  if (domainRoute?.safe_next_action === "ask_followup") {
+    return res.json({
+      answer: "Your question can be interpreted across multiple domains. Do you mean accounting revenue, sales performance, or marketing-attributed revenue?",
+      actions: { reset_filters: false, filters: [], chart: null },
+      preview_rows: [],
+      meta: { phase: "multi_domain_followup", domains: domainRoute.domains || [] },
+    });
+  }
+  if (domainRoute?.domains?.includes("tax") || domainRoute?.safe_next_action === "tax_not_enabled" || domainRoute?.safe_next_action === "unsupported_or_tax_not_enabled") {
+    return res.json({
+      answer: "Tax-specific analysis is not enabled yet. I can summarize tax-related fields once tax-safe logic is enabled, but I cannot provide tax advice.",
+      actions: { reset_filters: false, filters: [], chart: null },
+      preview_rows: [],
+      meta: { phase: "tax_not_enabled", domains: domainRoute.domains || [] },
+    });
+  }
+  if (domainRoute?.primary_domain && ["finance", "marketing", "sales"].includes(domainRoute.primary_domain)) {
+    return res.json({
+      answer: `I understood your question as ${domainRoute.primary_domain}. Domain classification is enabled, but deterministic ${domainRoute.primary_domain} calculations are not enabled in this chat path yet.`,
+      actions: { reset_filters: false, filters: [], chart: null },
+      preview_rows: [],
+      meta: {
+        phase: "multi_domain_classification_only",
+        domain: domainRoute.primary_domain,
+        domains: domainRoute.domains || [],
+      },
+    });
+  }
+
+  const accountingIntent = await analyzeAccountingIntent({ message: planningMessage, runtime });
+  const compiledPlan = await compileDeterministicQueryPlan({
+    message: planningMessage,
+    accountingIntent,
+    headers: baseHeaders,
+    semanticProfile,
+    sampleRows: loadedSample?.rows || [],
+    hints: {
+      metric: pendingClarification?.kind === "metric"
+        ? selectedClarificationOption
+        : (pendingClarification?.metric || undefined),
+      dateHeader: pendingClarification?.kind === "date" ? selectedClarificationOption : undefined,
+      headerChoice: pendingClarification?.kind === "header" ? selectedClarificationOption : undefined,
+      headerCanonical: pendingClarification?.kind === "header" ? String(pendingClarification?.field || "") : undefined,
+      context: resolvedDeterministicContext.context || {},
+    },
+  });
+  if (compiledPlan.ok) {
+    PENDING_CLARIFICATIONS.delete(clarificationKey);
+
+    // Persistence: If this was a header resolution, save it to the sheet's semantic profile
+    if (pendingClarification?.kind === "header" && pendingClarification?.field && selectedClarificationOption) {
+      try {
+        const currentProfile = semanticProfile || {};
+        const mappings = { ...(currentProfile.headerMappings || {}), [pendingClarification.field]: selectedClarificationOption };
+        const newProfile = { ...currentProfile, headerMappings: mappings };
+        await query(
+          "UPDATE sheets SET semantic_profile = $1 WHERE id = $2",
+          [JSON.stringify(newProfile), sheetId]
+        );
+
+        // Self-Learning: Record this successful mapping for future generalization
+        const { recordSuccessfulMapping } = await import("../services/ai/semanticKnowledgeService.js");
+        await recordSuccessfulMapping({
+          canonicalField: pendingClarification.field,
+          synonym: selectedClarificationOption,
+          locale: locale || "en"
+        });
+      } catch (e) {
+        console.error("Failed to persist header mapping choice:", e);
+      }
+    }
+
+
+    const selectedTab = String(activeTab || "").trim() || null;
+
+    const fullLoad = await loadAccessibleRows(sheetId, req.user, selectedTab);
+    if (fullLoad?.forbidden) {
+      return res.status(403).json(aiError("forbidden"));
+    }
+    const calcResult = executeDeterministicSpreadsheetPlan({
+      plan: compiledPlan,
+      rows: fullLoad?.rows || [],
+      filters: accountingIntent?.filters || [],
+      userContext: { allowedColumns: fullLoad?.allowedColumns || baseHeaders || aiHeaders, userId: req.user?.id || null, tenantId: req.user?.customer_id || null },
+    });
+    try {
+      await writeAuditLog({
+        req,
+        actorUserId: req.user?.id || null,
+        action: "accounting.metric_calculation",
+        resourceType: "sheet",
+        resourceId: sheetId || null,
+        metadata: {
+          tenantId: req.user?.customer_id || null,
+          metric: compiledPlan.metric,
+          headersUsed: calcResult?.headersUsed || {},
+          period: calcResult?.period || null,
+          comparisonPeriod: compiledPlan.comparisonPeriod || null,
+          rowCount: calcResult?.rowCount || 0,
+          invalidNumericCount: Number((calcResult?.notes || []).join(" ").match(/\d+/)?.[0] || 0),
+          success: !!calcResult?.ok,
+          errorCode: calcResult?.errorCode || null,
+          at: new Date().toISOString(),
+        },
+      });
+    } catch {}
+    let answer = await presentDeterministicSpreadsheetResult({
+      message: planningMessage,
+      plan: compiledPlan,
+      calcResult,
+      accountingIntent,
+      runtime,
+    });
+    
+    // Safety: If answer is raw JSON string, use simple fallback
+    if (typeof answer === 'string' && (answer.trim().startsWith('{') || answer.trim().startsWith('['))) {
+      try {
+        JSON.parse(answer);
+        answer = buildSimpleDeterministicAnswer({ metric: compiledPlan.metric, result: calcResult, periodLabel: calcResult?.period?.label || "selected period" });
+      } catch {}
+    }
+
+    {
+      const ctxKey = `${Number(req.user?.id || 0)}:${String(sheetId || "nosheet")}`;
+      const yearsFromPlan = Array.isArray(compiledPlan?.years) ? compiledPlan.years.map((y) => Number(y)).filter(Number.isFinite) : [];
+      const yearsFromPeriod = Array.from(String(calcResult?.period?.label || "").matchAll(/\b(19\d{2}|20\d{2})\b/g), (m) => Number(m?.[1] || m?.[0])).filter(Number.isFinite);
+      const lastYears = yearsFromPlan.length ? yearsFromPlan : yearsFromPeriod;
+      LAST_DETERMINISTIC_CONTEXT.set(ctxKey, {
+        ts: Date.now(),
+        lastOperation: String(compiledPlan?.operation || ""),
+        lastMetric: String(compiledPlan?.metric || ""),
+        lastYears,
+      });
+    }
+    return res.json({
+      answer,
+      actions: { reset_filters: false, filters: [], chart: null },
+      preview_rows: [],
+      meta: {
+        phase: "accounting_deterministic_calculation",
+        metric_requested: compiledPlan.metric,
+        calculation_result: calcResult,
+      },
+    });
+  }
+  if (compiledPlan.message || compiledPlan.clarification_needed === true) {
+    if (compiledPlan.clarification_needed === true) {
+      const options = Array.isArray(compiledPlan.clarification_options) ? compiledPlan.clarification_options : [];
+      const reasonText = String(compiledPlan.reason || "");
+      const kind = reasonText.includes("ambiguous_headers") || reasonText.includes("missing_required_headers")
+        ? "header"
+        : (reasonText.includes("date") ? "date" : "metric");
+      PENDING_CLARIFICATIONS.set(clarificationKey, {
+        ts: Date.now(),
+        kind,
+        metric: compiledPlan.metric || (typeof accountingIntent?.metric_requested === 'string' ? accountingIntent.metric_requested : null),
+        field: String(compiledPlan?.clarification_field || "").trim() || null,
+        options,
+        sourceMessage: effectiveUserMessage,
+      });
+
+      const optionsText = options.length
+        ? `\n${options.map((opt, idx) => `${idx + 1}. ${opt}`).join("\n")}`
+        : "";
+      return res.json({
+        answer: `${compiledPlan.clarification_question || "I can answer that, but I need one clarification first."}${optionsText}`,
+        actions: { reset_filters: false, filters: [], chart: null },
+        preview_rows: [],
+        meta: { phase: "accounting_clarification_required", reason: compiledPlan.reason || "clarification_needed", options },
+      });
+    }
+    if (compiledPlan.message) {
+      PENDING_CLARIFICATIONS.delete(clarificationKey);
+      return res.json({
+        answer: compiledPlan.message,
+        actions: { reset_filters: false, filters: [], chart: null },
+        preview_rows: [],
+        meta: { phase: "accounting_deterministic_preflight", reason: compiledPlan.reason || "preflight_failed" },
+      });
+    }
+    const debugHeaderResolutionResponse = chatRuntimeRules?.debugHeaderResolutionResponse === true;
+    const answer = debugHeaderResolutionResponse
+      ? buildHeaderExplanationResponse({ metricKey: null, resolution: {}, locale })
+      : "I need clarification before calculating this accounting result.";
+    PENDING_CLARIFICATIONS.delete(clarificationKey);
+    return res.json({
+      answer,
+      actions: { reset_filters: false, filters: [], chart: null },
+      preview_rows: [],
+      meta: {
+        phase: "accounting_intent_header_resolution",
+        intent: accountingIntent.intent,
+        metric_requested: null,
+        required_headers: accountingIntent.required_canonical_headers || [],
+        confidence: accountingIntent.confidence || "medium",
+        resolution: {},
+      },
+    });
+  }
+
+  const complexTypes = new Set([
+    "driver_analysis_profit",
+    "driver_analysis_gross_margin",
+    "driver_analysis_expenses",
+    "period_comparison_revenue",
+    "pnl_summary",
+    "budget_vs_actual",
+    "cash_flow_issue",
+  ]);
+  const shouldPlanComplex =
+    accountingIntent?.safe_next_action === "build_analysis_plan"
+    || complexTypes.has(String(accountingIntent?.question_type || ""));
+  if (shouldPlanComplex) {
+    const plan = await buildAccountingAnalysisPlan({
+      message: normalizedMessage,
+      analyzerResult: accountingIntent,
+      availableHeaders: aiHeaders,
+      cachedFieldMetadata: semanticProfile?.headerMappings || {},
+      supportedMetricKeys: Object.keys(METRIC_REGISTRY),
+      metricHeaderRequirements: {},
+      complexQuestionRequirements: COMPLEX_QUESTION_REQUIREMENTS,
+      runtime,
+    });
+    const canonicalHeaders = ["date", "revenue", "expenses", "cogs", "gross_profit", "gross_margin_pct", "net_income", "actual", "budget", "category", "account", "department", "store", "region", "customer", "vendor", "cash", "cash_in", "cash_out", "accounts_receivable", "accounts_payable"];
+    const validated = validateAnalysisPlan({ plan, supportedMetrics: Object.keys(METRIC_REGISTRY), supportedCanonicalHeaders: canonicalHeaders });
+    if (!validated.ok) {
+      return res.json({
+        answer: "I need clarification before running this analysis safely. Please confirm the metric and periods to compare.",
+        actions: { reset_filters: false, filters: [], chart: null },
+        preview_rows: [],
+        meta: { phase: "complex_plan_validation", error: validated.errorCode, rejectedSteps: validated.rejectedSteps || [] },
+      });
+    }
+    const headerResolution = resolveAnalysisHeaders({
+      approvedPlan: validated.approvedPlan,
+      headers: aiHeaders,
+      fieldMetadata: semanticProfile?.headerMappings || {},
+      message: normalizedMessage,
+    });
+    if (!headerResolution.ok) {
+      return res.json({
+        answer: headerResolution.message,
+        actions: { reset_filters: false, filters: [], chart: null },
+        preview_rows: [],
+        meta: { phase: "complex_header_resolution", ...headerResolution },
+      });
+    }
+    const analysisResult = executeAnalysisPlan({
+      approvedPlan: validated.approvedPlan,
+      headerResolution,
+      rows: loadedSample?.rows || [],
+      userContext: { allowedColumns: aiHeaders, userId: req.user?.id || null, tenantId: req.user?.customer_id || null },
+    });
+    try {
+      await writeAuditLog({
+        req,
+        actorUserId: req.user?.id || null,
+        action: "accounting.complex_analysis",
+        resourceType: "sheet",
+        resourceId: sheetId || null,
+        metadata: {
+          tenantId: req.user?.customer_id || null,
+          questionType: validated.approvedPlan?.question_type || null,
+          primaryMetric: validated.approvedPlan?.primary_metric || null,
+          period: validated.approvedPlan?.period || null,
+          comparisonPeriod: validated.approvedPlan?.comparison_period || null,
+          headersUsed: analysisResult?.headersUsed || {},
+          optionalHeadersMissing: analysisResult?.missingOptionalFields || [],
+          answerCompleteness: analysisResult?.answerCompleteness || null,
+          rowCounts: analysisResult?.rowCounts || {},
+          stepsExecuted: analysisResult?.stepsExecuted || [],
+          success: !!analysisResult?.ok,
+          errorCode: analysisResult?.errorCode || null,
+          at: new Date().toISOString(),
+        },
+      });
+    } catch {}
+    const answer = await explainAccountingAnalysis({
+      originalQuestion: normalizedMessage,
+      analyzerOutput: accountingIntent,
+      validatedPlan: validated.approvedPlan,
+      headerResolution,
+      analysisResult,
+      runtime,
+    });
+    return res.json({
+      answer,
+      actions: { reset_filters: false, filters: [], chart: null },
+      preview_rows: [],
+      meta: { phase: "complex_accounting_analysis", questionType: validated.approvedPlan?.question_type, analysisResult },
+    });
+  }
+
+  if (!CHAT_ENABLE_LEGACY_FALLBACK) {
+    return res.json({
+      answer: "I can answer that, but I need one clarification first. Please specify the metric, grouping, and period so I can run a deterministic calculation.",
+      actions: { reset_filters: false, filters: [], chart: null },
+      preview_rows: [],
+      meta: { phase: "deterministic_orchestrator_only", legacy_fallback_enabled: false },
     });
   }
 

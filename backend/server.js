@@ -21,6 +21,7 @@ import googleRoutes from "./src/routes/googleRoutes.js";
 import dropboxRoutes from "./src/routes/dropboxRoutes.js";
 import oneDriveRoutes from "./src/routes/oneDriveRoutes.js";
 import { ensureCsrfCookie, csrfProtect } from "./src/middleware/csrf.js";
+import { applyBodyParsingMiddleware } from "./src/middleware/bodyParsing.js";
 import { recordHttpRequest, renderPrometheusMetrics } from "./src/utils/metrics.js";
 import { cleanupOldInvitations } from "./src/utils/invitationLifecycle.js";
 import { startImportJobWorker, stopImportJobWorker, startReportSourceAutosyncWorker, stopReportSourceAutosyncWorker } from "./src/controllers/sheetController.js";
@@ -81,7 +82,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json());
+applyBodyParsingMiddleware(app, process.env);
 app.use(ensureCsrfCookie);
 app.use(csrfProtect);
 
