@@ -1,0 +1,5 @@
+full_name,email,phone,ssn,credit_card,dob,address,notes
+John Doe,john.doe@example.com,212-555-0198,123-45-6789,4111-1111-1111-1111,1988-04-12,"742 Evergreen Terrace, Springfield, IL 62704","Customer requested invoice copy"
+Jane Smith,jane.smith@acme.co,646-555-0144,987-65-4321,5555-5555-5555-4444,1992-11-30,"1600 Pennsylvania Ave NW, Washington, DC 20500","Contains PII for DLP test"
+Robert Brown,rbrown+finance@gmail.com,917-555-0102,111-22-3333,3782-822463-10005,1979-08-21,"1 Infinite Loop, Cupertino, CA 95014","AMEX test number included"
+Emily Davis,emily.davis@company.org,305-555-0111,222-33-4444,6011-0009-9013-9424,1995-06-09,"350 Fifth Ave, New York, NY 10118","Visa/Discover mixed patterns"

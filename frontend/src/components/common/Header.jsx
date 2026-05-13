@@ -30,8 +30,8 @@ export default function Header({ user = null }) {
           ))}
         </nav>
         <div className="flex shrink-0 items-center gap-2 sm:gap-3">
-          <Link to={user ? "/workspace" : "/login"} className={`hidden rounded-lg px-3 py-2 text-sm font-bold text-slate-700 ${themeHoverTextClass} sm:inline-flex`}>
-            {user ? "Workspace" : "Sign in"}
+          <Link to={user ? "/workspace/files" : "/login"} className={`hidden rounded-lg px-3 py-2 text-sm font-bold text-slate-700 ${themeHoverTextClass} sm:inline-flex`}>
+            {user ? "Dashboard" : "Sign in"}
           </Link>
           <Link
             to="/demo"

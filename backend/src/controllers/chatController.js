@@ -65,6 +65,8 @@ const CHAT_RUNTIME_RULES_DEFAULTS = {
   metricIntentProfitRegex: "\\b(profit|margin|ebit|ebitda|прибут|прибыл)\\b",
   aggregateSingleYearRegex: "(?:\\bfor\\b|\\bin\\b|\\bза\\b)\\s*(?:19|20)\\d{2}\\b",
   aggregateComparisonRegex: "\\b(yoy|year over year|year-over-year|annual growth|yearly growth|previous year|last year|vs\\.?|versus|compare|comparison|trend|over time|timeline|mom|qoq|delta|difference|between|changed|change from|growth by year|г\\/г|р\\/р|год к году|рік до року|разниц|дельт|різниц|зміна)\\b",
+  enableTopNHistoryRegex: true,
+  enableMoneyHistoryRegex: true,
   selfLearningEnabled: true,
   selfLearningRetentionDays: 90,
   selfLearningMaxMemories: 5000,
@@ -119,6 +121,27 @@ function detectIntentLabel(message = "") {
   if (/\b(top|driver|drivers|contributor|contributors)\b|драйвер|топ/i.test(s)) return "top_n";
   if (/\b(total|sum|for\s+(19|20)\d{2}|in\s+(19|20)\d{2})\b|сумм|всього/i.test(s)) return "single_year_total";
   return "unknown";
+}
+
+function toRuleFlag(value, fallback = true) {
+  if (value === undefined || value === null) return Boolean(fallback);
+  if (typeof value === "boolean") return value;
+  const s = String(value).trim().toLowerCase();
+  if (!s) return Boolean(fallback);
+  if (["1", "true", "yes", "on"].includes(s)) return true;
+  if (["0", "false", "no", "off"].includes(s)) return false;
+  return Boolean(fallback);
+}
+
+function recordRuleHit(rule, matched, meta = {}) {
+  try {
+    if (!AI_DEBUG_LOGS) return;
+    console.info("[chat_rule_hit]", {
+      rule: String(rule || "unknown"),
+      matched: matched === true,
+      ...meta,
+    });
+  } catch {}
 }
 
 async function compileDeterministicQueryPlan({ message = "", accountingIntent = {}, headers = [], semanticProfile = {}, sampleRows = [], hints = {} }) {
@@ -315,6 +338,8 @@ async function loadChatRuntimeRules() {
     return {
       ...CHAT_RUNTIME_RULES_DEFAULTS,
       ...dbCfg,
+      enableTopNHistoryRegex: toRuleFlag(dbCfg?.enableTopNHistoryRegex, CHAT_RUNTIME_RULES_DEFAULTS.enableTopNHistoryRegex),
+      enableMoneyHistoryRegex: toRuleFlag(dbCfg?.enableMoneyHistoryRegex, CHAT_RUNTIME_RULES_DEFAULTS.enableMoneyHistoryRegex),
       selfLearningEnabled: dbCfg?.selfLearningEnabled !== false,
       selfLearningRetentionDays: Number.isFinite(Number(dbCfg?.selfLearningRetentionDays)) ? Number(dbCfg.selfLearningRetentionDays) : CHAT_RUNTIME_RULES_DEFAULTS.selfLearningRetentionDays,
       selfLearningMaxMemories: Number.isFinite(Number(dbCfg?.selfLearningMaxMemories)) ? Number(dbCfg.selfLearningMaxMemories) : CHAT_RUNTIME_RULES_DEFAULTS.selfLearningMaxMemories,
@@ -2201,6 +2226,28 @@ function applyConversationalAnswerStyle(answer = "", message = "", locale = "en"
     return `The largest driver was ${name} (${value}).`;
   }
 
+  const yoyIntent = /\b(yoy|year over year|year-over-year)\b/i.test(question);
+  const yearlyRows = text
+    .split(/\r?\n/)
+    .map((line) => String(line || "").trim().replace(/^[•*-]\s*/, ""))
+    .filter(Boolean)
+    .map((line) => {
+      const m = line.match(/^(\d{4})\s*:\s*([$€£¥]?\s*[-+]?\d[\d,]*(?:\.\d+)?)/);
+      if (!m) return null;
+      return { year: m[1], value: m[2].replace(/\s+/g, " ").trim() };
+    })
+    .filter(Boolean);
+  if (yearlyRows.length >= 2 && yoyIntent) {
+    const metricHint = extractMetricHintFromText(question) || "value";
+    if (isUk) {
+      return yearlyRows.map((r) => `${metricHint} за ${r.year} рік становив ${r.value}.`).join("\n");
+    }
+    if (isRu) {
+      return yearlyRows.map((r) => `${metricHint} за ${r.year} год составил ${r.value}.`).join("\n");
+    }
+    return yearlyRows.map((r) => `The ${metricHint} for ${r.year} was ${r.value}.`).join("\n");
+  }
+
   return text;
 }
 
@@ -2936,25 +2983,17 @@ function isShortYearFollowup(message = "", rules = CHAT_RUNTIME_RULES_DEFAULTS) 
   return yearRegex.test(s) && s.length <= maxChars;
 }
 
-function isOnlyYearFollowup(message = "") {
+function parseYearFollowup(message = "") {
   const s = String(message || "").trim().toLowerCase();
-  return /^(only|just|лише|только)\s+(19\d{2}|20\d{2})\??$/.test(s);
-}
-
-function isYearOnlyFollowup(message = "") {
-  const s = String(message || "").trim().toLowerCase();
-  return /^(?:(?:in|for|за|у|в)\s+)?(19\d{2}|20\d{2})\??$/.test(s)
-    || /^(?:in|for)\s+(19\d{2}|20\d{2})\??$/.test(s);
-}
-
-function isWhatAboutYearFollowup(message = "") {
-  const s = String(message || "").trim().toLowerCase();
-  return /^(what about|how about|а как насчет|а як щодо)\s+(19\d{2}|20\d{2})\??$/.test(s);
-}
-
-function isAndYearFollowup(message = "") {
-  const s = String(message || "").trim().toLowerCase();
-  return /^(and|и|та|і)\s+(19\d{2}|20\d{2})\??$/.test(s);
+  let m = s.match(/^(only|just|лише|только)\s+(19\d{2}|20\d{2})\??$/);
+  if (m) return { kind: "only", year: Number(m[2]) };
+  m = s.match(/^(?:(?:in|for|за|у|в)\s+)?(19\d{2}|20\d{2})\??$/);
+  if (m) return { kind: "plain", year: Number(m[1]) };
+  m = s.match(/^(what about|how about|а как насчет|а як щодо)\s+(19\d{2}|20\d{2})\??$/);
+  if (m) return { kind: "what_about", year: Number(m[2]) };
+  m = s.match(/^(and|и|та|і)\s+(19\d{2}|20\d{2})\??$/);
+  if (m) return { kind: "and", year: Number(m[2]) };
+  return { kind: null, year: null };
 }
 
 function normalizeRelativeYearInMessage(message = "", now = new Date()) {
@@ -2980,6 +3019,14 @@ function asksDifferenceBetweenYears(message = "") {
   const s = String(message || "").toLowerCase();
   return /\b(difference|diff|delta|compare|comparison|vs|versus|between)\b.*\b(19\d{2}|20\d{2})\b.*\b(19\d{2}|20\d{2})\b/i.test(s)
     || /\b(19\d{2}|20\d{2})\b.*\b(and|vs|versus)\b.*\b(19\d{2}|20\d{2})\b/i.test(s);
+}
+
+function isComparisonIntent(message = "", rules = CHAT_RUNTIME_RULES_DEFAULTS) {
+  const s = String(message || "").toLowerCase();
+  const explicit = asksExplicitComparisonIntent(s, rules);
+  const explicitDelta = asksDifferenceBetweenYears(s);
+  const aggregate = runtimeRegex(rules, "aggregateComparisonRegex", CHAT_RUNTIME_RULES_DEFAULTS.aggregateComparisonRegex).test(s);
+  return explicit || explicitDelta || aggregate;
 }
 
 function isMetricConfirmationFollowup(message = "") {
@@ -3052,7 +3099,7 @@ function asksDifferenceFollowupWithoutYears(message = "", rules = CHAT_RUNTIME_R
   const s = String(message || "").toLowerCase();
   const hasAnyYear = /\b(19\d{2}|20\d{2})\b/.test(s);
   if (hasAnyYear) return false;
-  const explicitComparison = asksExplicitComparisonIntent(s, rules) || asksDifferenceBetweenYears(s);
+  const explicitComparison = isComparisonIntent(s, rules);
   if (explicitComparison) return true;
   return /\b(difference|diff|delta|compare|comparison|between (them|those years|years)|between the years)\b/i.test(s)
     || /разниц|дельт|сравн|между (ними|годами)/i.test(s)
@@ -3869,6 +3916,79 @@ function asksYoyWithPerYearDriver(message = "") {
   return (hasYoY && hasDriver && hasPerYear) || compactTopDriversYoY;
 }
 
+function asksTwoYearDeltaWithCause(message = "") {
+  const s = String(message || "").toLowerCase();
+  const years = extractDistinctYearsInOrder(s);
+  const hasDelta = /\b(compare|comparison|delta|difference|diff|change|vs|versus|between|how much|higher|lower|gap)\b/.test(s);
+  const hasCause = /\b(cause|caused|why|reason|drove|driver|driving|what changed|contributed most|top category)\b/.test(s);
+  const hasMetric = /\b(revenue|sales|income|profit|expense|cost|net revenue)\b/.test(s);
+  return years.length >= 2 && hasDelta && hasCause && hasMetric;
+}
+
+function resolveMetricDisplayLabel({ message = "", targetColumn = "" }) {
+  const q = String(message || "").toLowerCase();
+  if (/\bnet\s+revenue\b/.test(q)) return "net revenue";
+  if (/\brevenue\b/.test(q)) return "revenue";
+  if (/\bnet\s+profit\b/.test(q)) return "net profit";
+  if (/\bprofit\b/.test(q)) return "profit";
+  if (/\bexpense|cost\b/.test(q)) return "expenses";
+  const raw = String(targetColumn || "").trim();
+  if (!raw) return "value";
+  return raw.replace(/[_\s]+/g, " ").trim().toLowerCase();
+}
+
+function isTemporalDimensionHeader(header = "") {
+  const s = String(header || "").toLowerCase();
+  return /\byear\b|date|period|month|quarter|week|day|рік|год|дата|період|місяц|квартал|недел|день/.test(s);
+}
+
+function isMetricLikeHeader(header = "") {
+  const s = String(header || "").toLowerCase();
+  return /\brevenue|sales|income|profit|amount|total|sum|cost|expense|spend|margin|balance|cash|budget|fee|tax|payment|order|qty|quantity|units?\b|выруч|доход|дохід|прибут|расход|витрат/.test(s);
+}
+
+function resolveDriverDimensionForDeltaCause({ headers = [], sampleRows = [], targetColumn = "", dateColumn = "", yearColumn = "", preferredGroupBy = "" }) {
+  const excluded = [targetColumn, dateColumn, yearColumn].filter(Boolean);
+  const preferred = String(preferredGroupBy || "").trim();
+  if (preferred && !isTemporalDimensionHeader(preferred) && !isMetricLikeHeader(preferred)) {
+    return preferred;
+  }
+  const inferred = inferLikelyDimensionColumn(headers, sampleRows, excluded);
+  if (inferred && !isTemporalDimensionHeader(inferred) && !isMetricLikeHeader(inferred)) {
+    return inferred;
+  }
+  const list = Array.isArray(headers) ? headers : [];
+  for (const h of list) {
+    const col = String(h || "").trim();
+    if (!col) continue;
+    if (excluded.includes(col)) continue;
+    if (isTemporalDimensionHeader(col)) continue;
+    if (isMetricLikeHeader(col)) continue;
+    return col;
+  }
+  return null;
+}
+
+function deriveChatIntentPlan({ message = "", normalizedMessage = "", rules = CHAT_RUNTIME_RULES_DEFAULTS }) {
+  const raw = String(message || "");
+  const normalized = String(normalizedMessage || raw);
+  const years = extractDistinctYearsInOrder(raw);
+  const explicitComparison = isComparisonIntent(raw, rules);
+  const twoYearDeltaCause = asksTwoYearDeltaWithCause(raw);
+  const yoyDriverComposite = asksYoyWithPerYearDriver(raw) || (isCompositeQuery(raw) && asksPerYearNotOverall(raw));
+  const yearFollowup = parseYearFollowup(normalized);
+  const shortYearFollowup = Boolean(yearFollowup.kind);
+  return {
+    years,
+    yearFollowup,
+    explicitComparison,
+    twoYearDeltaCause,
+    yoyDriverComposite,
+    shortYearFollowup,
+    compareFollowupWithoutYears: asksDifferenceFollowupWithoutYears(normalized, rules),
+  };
+}
+
 function asksQuarterTrendSummary(message = "") {
   const s = String(message || "").toLowerCase();
   return /\b(quarter|quarterly|qoq|accelerated|declined|decline|growth)\b|квартал|квартально|ускор|упал|зниз|зрост/i.test(s);
@@ -3877,6 +3997,12 @@ function asksQuarterTrendSummary(message = "") {
 function asksAllTime(message = "") {
   const s = String(message || "").toLowerCase();
   return /\b(all time|overall|entire period|whole period|across all years|lifetime)\b|за\s+весь\s+період|за\s+весь\s+период|всего\s+за\s+период/i.test(s);
+}
+
+function asksIgnoreDashboardFilters(message = "") {
+  const s = String(message || "").toLowerCase();
+  return /\b(no extra filters|no filters|without filters|ignore filters|clear filters|unfiltered|all rows)\b/.test(s)
+    || /без\s+фильтр|без\s+фільтр|без\s+додаткових\s+фільтр/i.test(s);
 }
 
 function prefixTopListRowsWithYear(block = "", year = null) {
@@ -3932,6 +4058,7 @@ export async function chatQuery(req, res) {
   let sheetId = requestedSheetId ? String(requestedSheetId).trim() : null;
   const locale = normalizeLocale(rawLocale || "en");
   const normalizedMessage = normalizeRelativeYearInMessage(String(message || ""));
+  const ignoreDashboardFilters = asksIgnoreDashboardFilters(normalizedMessage);
   if (!normalizedMessage.trim()) {
     return res.status(400).json(aiError("chat_message_required"));
   }
@@ -4016,6 +4143,11 @@ export async function chatQuery(req, res) {
   const runtimeGroupId = isPlatformAdmin ? null : (resolvedGroupId || fallbackUserGroupId || null);
   const { runtime } = await loadEffectiveAiRuntimeSettings(runtimeGroupId || null);
   const chatRuntimeRules = await loadChatRuntimeRules();
+  const intentPlan = deriveChatIntentPlan({
+    message: planningMessage,
+    normalizedMessage,
+    rules: chatRuntimeRules,
+  });
   if (AI_DEBUG_LOGS) {
     console.info("[chat_ai_runtime] resolved", {
       groupId: runtimeGroupId || null,
@@ -4108,7 +4240,7 @@ export async function chatQuery(req, res) {
     baseHeaders = loadedSample.headers || [];
     const scopedVisibleColumns = normalizeScopeColumns(activeViewScope?.visibleColumns || [], baseHeaders);
     aiHeaders = scopedVisibleColumns.length ? scopedVisibleColumns : baseHeaders;
-    activeDashboardFilters = normalizeActiveDashboardFilters(aiHeaders, activeFilters);
+    activeDashboardFilters = ignoreDashboardFilters ? [] : normalizeActiveDashboardFilters(aiHeaders, activeFilters);
     const scopedSampleRows = projectRowsToHeaders(loadedSample.rows || [], aiHeaders);
     sampleRows = applyFilters(scopedSampleRows, activeDashboardFilters);
     tabNames = Array.isArray(loadedSample.tabs) ? loadedSample.tabs : [];
@@ -4424,8 +4556,12 @@ export async function chatQuery(req, res) {
       },
     });
   }
+  const allowCompositeDeltaCauseBypass = intentPlan.twoYearDeltaCause;
   if (compiledPlan.message || compiledPlan.clarification_needed === true) {
     if (compiledPlan.clarification_needed === true) {
+      if (allowCompositeDeltaCauseBypass) {
+        PENDING_CLARIFICATIONS.delete(clarificationKey);
+      } else {
       const options = Array.isArray(compiledPlan.clarification_options) ? compiledPlan.clarification_options : [];
       const reasonText = String(compiledPlan.reason || "");
       const kind = reasonText.includes("ambiguous_headers") || reasonText.includes("missing_required_headers")
@@ -4449,6 +4585,7 @@ export async function chatQuery(req, res) {
         preview_rows: [],
         meta: { phase: "accounting_clarification_required", reason: compiledPlan.reason || "clarification_needed", options },
       });
+      }
     }
     if (compiledPlan.message) {
       PENDING_CLARIFICATIONS.delete(clarificationKey);
@@ -4572,7 +4709,7 @@ export async function chatQuery(req, res) {
     });
   }
 
-  if (!CHAT_ENABLE_LEGACY_FALLBACK) {
+  if (!CHAT_ENABLE_LEGACY_FALLBACK && !intentPlan.twoYearDeltaCause) {
     return res.json({
       answer: "I can answer that, but I need one clarification first. Please specify the metric, grouping, and period so I can run a deterministic calculation.",
       actions: { reset_filters: false, filters: [], chart: null },
@@ -4796,13 +4933,43 @@ export async function chatQuery(req, res) {
     const historyMetricHint = extractMetricHintFromText(lastHistoryText);
     const questionMetricHint = extractMetricHintFromText(normalizedMessage);
     const explicitMetricInQuestion = !!questionMetricHint;
-    const onlyYearFollowup = isOnlyYearFollowup(normalizedMessage);
-    const yearOnlyFollowup = isYearOnlyFollowup(normalizedMessage);
-    const whatAboutYearFollowup = isWhatAboutYearFollowup(normalizedMessage);
-    const andYearFollowup = isAndYearFollowup(normalizedMessage);
-    const shortYearContextFollowup = onlyYearFollowup || yearOnlyFollowup || whatAboutYearFollowup || andYearFollowup;
-    const compareFollowupWithoutYears = asksDifferenceFollowupWithoutYears(normalizedMessage, chatRuntimeRules);
+    const yearFollowupKind = String(intentPlan?.yearFollowup?.kind || "");
+    const onlyYearFollowup = yearFollowupKind === "only";
+    const yearOnlyFollowup = yearFollowupKind === "plain";
+    const whatAboutYearFollowup = yearFollowupKind === "what_about";
+    const andYearFollowup = yearFollowupKind === "and";
+    const shortYearContextFollowup = intentPlan.shortYearFollowup;
+    const compareFollowupWithoutYears = intentPlan.compareFollowupWithoutYears;
     const allTimeIntent = asksAllTime(normalizedMessage);
+    recordRuleHit("comparisonIntentRegex", asksExplicitComparisonIntent(normalizedMessage, chatRuntimeRules), {
+      userId: req.user?.id || null,
+      sheetId: sheetId || null,
+      phase: "intent_detect",
+    });
+    recordRuleHit("aggregateComparisonRegex", runtimeRegex(chatRuntimeRules, "aggregateComparisonRegex", CHAT_RUNTIME_RULES_DEFAULTS.aggregateComparisonRegex).test(String(normalizedMessage || "").toLowerCase()), {
+      userId: req.user?.id || null,
+      sheetId: sheetId || null,
+      phase: "intent_detect",
+    });
+    recordRuleHit("comparisonIntentCanonical", intentPlan.explicitComparison, {
+      userId: req.user?.id || null,
+      sheetId: sheetId || null,
+      phase: "intent_detect",
+    });
+    recordRuleHit("isOnlyYearFollowup", onlyYearFollowup, { userId: req.user?.id || null, sheetId: sheetId || null, phase: "followup_detect" });
+    recordRuleHit("isYearOnlyFollowup", yearOnlyFollowup, { userId: req.user?.id || null, sheetId: sheetId || null, phase: "followup_detect" });
+    recordRuleHit("isWhatAboutYearFollowup", whatAboutYearFollowup, { userId: req.user?.id || null, sheetId: sheetId || null, phase: "followup_detect" });
+    recordRuleHit("isAndYearFollowup", andYearFollowup, { userId: req.user?.id || null, sheetId: sheetId || null, phase: "followup_detect" });
+    recordRuleHit("driverRankingIntentRegex", isDriverRankingQuery(normalizedMessage, chatRuntimeRules), {
+      userId: req.user?.id || null,
+      sheetId: sheetId || null,
+      phase: "intent_detect",
+    });
+    recordRuleHit("driverValueIntentRegex", runtimeRegex(chatRuntimeRules, "driverValueIntentRegex", CHAT_RUNTIME_RULES_DEFAULTS.driverValueIntentRegex).test(String(normalizedMessage || "").toLowerCase()), {
+      userId: req.user?.id || null,
+      sheetId: sheetId || null,
+      phase: "intent_detect",
+    });
     if (!explicitMetricInQuestion && !resolvedTarget && historyMetricHint) {
       const histResolved = await resolveColumn(aiHeaders, historyMetricHint, sampleRows);
       if (histResolved) resolvedTarget = histResolved;
@@ -4828,14 +4995,14 @@ export async function chatQuery(req, res) {
       }
     }
     if (isShortYearFollowup(normalizedMessage, chatRuntimeRules)) {
-      const explicitComparisonNow = asksExplicitComparisonIntent(normalizedMessage, chatRuntimeRules);
+      const explicitComparisonNow = isComparisonIntent(normalizedMessage, chatRuntimeRules);
       let singleYearHistoryRegex = /\bfor\s+(19|20)\d{2}\b/i;
       let singleYearMetricKeywordRegex = /\b(revenue|sales|income|profit|expense|cost)\b|выруч|доход|дохід|прибут|расход|витрат/i;
       try { singleYearHistoryRegex = new RegExp(String(chatRuntimeRules?.singleYearMetricHistoryRegex || CHAT_RUNTIME_RULES_DEFAULTS.singleYearMetricHistoryRegex), "i"); } catch {}
       try { singleYearMetricKeywordRegex = new RegExp(String(chatRuntimeRules?.singleYearMetricKeywordRegex || CHAT_RUNTIME_RULES_DEFAULTS.singleYearMetricKeywordRegex), "i"); } catch {}
       const priorWasSingleYearMetric =
         singleYearHistoryRegex.test(lastUserText) &&
-        !asksExplicitComparisonIntent(lastUserText, chatRuntimeRules) &&
+        !isComparisonIntent(lastUserText, chatRuntimeRules) &&
         singleYearMetricKeywordRegex.test(lastUserText);
       if (priorWasSingleYearMetric && !explicitComparisonNow) {
         resolvedOperation = "sum";
@@ -4847,7 +5014,23 @@ export async function chatQuery(req, res) {
       let moneyRegex = /\bby\s+[a-zа-яіїєґ_ ]+:\s*\$/i;
       try { topNRegex = new RegExp(String(chatRuntimeRules?.topNHistoryRegex || CHAT_RUNTIME_RULES_DEFAULTS.topNHistoryRegex), "i"); } catch {}
       try { moneyRegex = new RegExp(String(chatRuntimeRules?.moneyHistoryRegex || CHAT_RUNTIME_RULES_DEFAULTS.moneyHistoryRegex), "i"); } catch {}
-      const histIsTopN = topNRegex.test(lastHistoryText) || moneyRegex.test(lastHistoryText);
+      const enableTopNHistoryRegex = toRuleFlag(chatRuntimeRules?.enableTopNHistoryRegex, true);
+      const enableMoneyHistoryRegex = toRuleFlag(chatRuntimeRules?.enableMoneyHistoryRegex, true);
+      const topNHistoryHit = enableTopNHistoryRegex ? topNRegex.test(lastHistoryText) : false;
+      const moneyHistoryHit = enableMoneyHistoryRegex ? moneyRegex.test(lastHistoryText) : false;
+      recordRuleHit("topNHistoryRegex", topNHistoryHit, {
+        userId: req.user?.id || null,
+        sheetId: sheetId || null,
+        phase: "short_year_followup",
+        enabled: enableTopNHistoryRegex,
+      });
+      recordRuleHit("moneyHistoryRegex", moneyHistoryHit, {
+        userId: req.user?.id || null,
+        sheetId: sheetId || null,
+        phase: "short_year_followup",
+        enabled: enableMoneyHistoryRegex,
+      });
+      const histIsTopN = topNHistoryHit || moneyHistoryHit;
       if (!priorWasSingleYearMetric && histIsTopN && (resolvedOperation === "none" || resolvedOperation === "filter" || resolvedOperation === "sum")) {
         resolvedOperation = "top_n";
         if (!resolvedTarget && historyMetricHint) {
@@ -5044,10 +5227,7 @@ export async function chatQuery(req, res) {
       (m) => Number(m?.[0])
     ).filter(Number.isFinite);
     const hasMultiYearPrompt = new Set(explicitYearsInPrompt).size >= 2;
-    const explicitComparisonGuard =
-      hasMultiYearPrompt ||
-      asksExplicitComparisonIntent(message, chatRuntimeRules) ||
-      asksDifferenceBetweenYears(message);
+    const explicitComparisonGuard = hasMultiYearPrompt || intentPlan.explicitComparison;
     const explicitSingleYearMetricIntent =
       !!explicitYear &&
       !explicitComparisonGuard &&
@@ -5236,7 +5416,215 @@ export async function chatQuery(req, res) {
       aggregation: ai.chart.aggregation || "sum"
     } : null;
 
-    if (resolvedTarget && ((isCompositeQuery(message) && asksPerYearNotOverall(message)) || asksYoyWithPerYearDriver(message))) {
+    if (intentPlan.twoYearDeltaCause) {
+      try {
+        if (!resolvedTarget) {
+          resolvedTarget =
+            resolveProfileMetric(semanticProfile, message, ["net revenue", "revenue total", "revenue", "income", "sales"]) ||
+            findRevenueMetric(aiHeaders) ||
+            inferLikelyMetricColumn(aiHeaders, sampleRows, message, ["net revenue", "revenue total", "revenue", "income", "sales"]);
+        }
+        if (!resolvedTarget) {
+          throw new Error("two_year_delta_cause_metric_unresolved");
+        }
+        const years = extractDistinctYearsInOrder(message).slice(0, 2);
+        const y1 = Number(years[0]);
+        const y2 = Number(years[1]);
+        const dateCol = profileDateColumn || aiHeaders.find((h) => /date|period|month|year|дата|період|рік|год/i.test(String(h)));
+        const yearCol = aiHeaders.find((h) => /\byear\b|рік|год/i.test(String(h)));
+        const deterministicBaseFilters = [...(Array.isArray(activeDashboardFilters) ? activeDashboardFilters : [])]
+          .filter((f) => String(f?.operator || "").toLowerCase() !== "year_equals");
+        const dateCandidates = Array.from(new Set([
+          dateCol,
+          aiHeaders.includes("Start Date") ? "Start Date" : null,
+          aiHeaders.includes("Invoice Date") ? "Invoice Date" : null,
+          aiHeaders.includes("End Date") ? "End Date" : null,
+        ].filter(Boolean)));
+        const tabCandidates = Array.from(new Set([selectedTab || null, null]));
+        const sumForYear = async (yearNum) => {
+          const extractNumeric = (answerText = "") => {
+            const m = String(answerText || "").match(/[-+]?\$?\s*([\d,]+(?:\.\d+)?)/);
+            const n = m ? Number(String(m[1]).replace(/,/g, "")) : null;
+            return Number.isFinite(n) ? n : null;
+          };
+          for (const tc of tabCandidates) {
+            for (const dc of dateCandidates) {
+              const baseFilters = [...deterministicBaseFilters, { column: dc, operator: "year_equals", value: yearNum }];
+              const r = await computeSqlAggregation({
+                sheetId,
+                user: req.user,
+                operation: "sum",
+                targetColumn: resolvedTarget,
+                groupBy: null,
+                filters: baseFilters,
+                rowFiltersList: loadedSample?.rowFiltersList || [],
+                allowedColumns: aiHeaders || [],
+                limit: 1,
+                locale,
+                tabName: tc,
+                actualHeaders: baseHeaders,
+              });
+              const n = extractNumeric(r?.answer || "");
+              if (n !== null) return n;
+            }
+            if (yearCol) {
+              const baseFilters = [...deterministicBaseFilters, { column: yearCol, operator: "equals", value: yearNum }];
+              const r = await computeSqlAggregation({
+                sheetId,
+                user: req.user,
+                operation: "sum",
+                targetColumn: resolvedTarget,
+                groupBy: null,
+                filters: baseFilters,
+                rowFiltersList: loadedSample?.rowFiltersList || [],
+                allowedColumns: aiHeaders || [],
+                limit: 1,
+                locale,
+                tabName: tc,
+                actualHeaders: baseHeaders,
+              });
+              const n = extractNumeric(r?.answer || "");
+              if (n !== null) return n;
+            }
+          }
+          return null;
+        };
+        let [v1, v2] = await Promise.all([sumForYear(y1), sumForYear(y2)]);
+        if (v1 === null || v2 === null) {
+          const fullLoadForFallback = await loadAccessibleRows(sheetId, req.user, selectedTab);
+          const projected = fullLoadForFallback?.forbidden ? [] : projectRowsToHeaders(fullLoadForFallback.rows || [], aiHeaders);
+          if (projected.length) {
+            const inferYear = (row, dc, yc) => {
+              if (dc) {
+                const d = parseDateValue(row?.[dc]);
+                if (d) return d.getFullYear();
+                const m = String(row?.[dc] || "").match(/\b(19\d{2}|20\d{2})\b/);
+                if (m) return Number(m[1]);
+              }
+              if (yc) {
+                const n = Number(String(row?.[yc] || "").replace(/[^\d]/g, ""));
+                if (Number.isFinite(n)) return n;
+              }
+              return null;
+            };
+            let best = null;
+            for (const dc of dateCandidates.length ? dateCandidates : [null]) {
+              let s1 = 0;
+              let s2 = 0;
+              let hits = 0;
+              for (const row of projected) {
+                const yr = inferYear(row, dc, yearCol);
+                if (yr !== y1 && yr !== y2) continue;
+                const n = toNum(row?.[resolvedTarget]);
+                if (n === null) continue;
+                if (yr === y1) s1 += n;
+                if (yr === y2) s2 += n;
+                hits += 1;
+              }
+              if (!best || hits > best.hits) best = { s1, s2, hits };
+            }
+            if (best && best.hits > 0) {
+              if (v1 === null) v1 = best.s1;
+              if (v2 === null) v2 = best.s2;
+            }
+          }
+        }
+        if (v1 !== null && v2 !== null) {
+          const fullLoad = await loadAccessibleRows(sheetId, req.user, selectedTab);
+          const projectedRows = fullLoad?.forbidden ? [] : projectRowsToHeaders(fullLoad.rows || [], aiHeaders);
+          const topDim = resolveDriverDimensionForDeltaCause({
+            headers: aiHeaders,
+            sampleRows,
+            targetColumn: resolvedTarget,
+            dateColumn: dateCol,
+            yearColumn: yearCol,
+            preferredGroupBy: resolvedGroupBy,
+          });
+          let driverText = "";
+          if (topDim && projectedRows.length) {
+            const byKey = new Map();
+            for (const r of projectedRows) {
+              let rowYear = null;
+              if (dateCol) {
+                const d = parseDateValue(r?.[dateCol]);
+                if (d) rowYear = d.getFullYear();
+                else {
+                  const ym = String(r?.[dateCol] || "").match(/\b(19\d{2}|20\d{2})\b/);
+                  if (ym) rowYear = Number(ym[1]);
+                }
+              } else if (yearCol) {
+                const yn = Number(String(r?.[yearCol] || "").replace(/[^\d]/g, ""));
+                if (Number.isFinite(yn)) rowYear = yn;
+              }
+              if (rowYear !== y1 && rowYear !== y2) continue;
+              const key = String(r?.[topDim] || "").trim();
+              if (!key) continue;
+              const n = toNum(r?.[resolvedTarget]);
+              if (n === null) continue;
+              const cur = byKey.get(key) || { y1: 0, y2: 0 };
+              if (rowYear === y1) cur.y1 += n;
+              if (rowYear === y2) cur.y2 += n;
+              byKey.set(key, cur);
+            }
+            let best = null;
+            const totalDelta = v2 - v1;
+            for (const [name, vals] of byKey.entries()) {
+              const d = Number(vals.y2) - Number(vals.y1);
+              if (!Number.isFinite(d) || Math.abs(d) < 1e-9) continue;
+              const aligned = totalDelta === 0 ? true : (Math.sign(d) === Math.sign(totalDelta));
+              if (!aligned) continue;
+              if (!best || Math.abs(d) > Math.abs(best.delta)) best = { name, delta: d };
+            }
+            if (!best) {
+              for (const [name, vals] of byKey.entries()) {
+                const d = Number(vals.y2) - Number(vals.y1);
+                if (!Number.isFinite(d) || Math.abs(d) < 1e-9) continue;
+                if (!best || Math.abs(d) > Math.abs(best.delta)) best = { name, delta: d };
+              }
+            }
+            if (best) {
+              driverText = `The largest driver was ${best.name} (${formatNumberForLocale(best.delta, locale)}).`;
+            }
+          }
+          const metric = resolveMetricDisplayLabel({ message, targetColumn: resolvedTarget });
+          const deltaValue = v2 - v1;
+          const higherYear = v2 >= v1 ? y2 : y1;
+          const lowerYear = v2 >= v1 ? y1 : y2;
+          const absDeltaText = formatNumberForLocale(Math.abs(deltaValue), locale);
+          const answerParts = [
+            `The ${metric} for ${y1} was ${formatNumberForLocale(v1, locale)}.`,
+            `The ${metric} for ${y2} was ${formatNumberForLocale(v2, locale)}.`,
+            `${higherYear} had higher ${metric} than ${lowerYear} by ${absDeltaText}.`,
+          ];
+          if (driverText) {
+            answerParts.push(
+              driverText.replace(/^The largest driver was\s+/i, "The top category driving the gap was ")
+            );
+          } else {
+            answerParts.push("I can compute the delta, but I could not identify a valid revenue category driver from the available columns.");
+          }
+          let compositeAnswer = answerParts.join("\n");
+          compositeAnswer = cleanAITechnicalNoise(compositeAnswer);
+          compositeAnswer = stripApproximationWords(compositeAnswer);
+          compositeAnswer = normalizeDatesAndRemoveTime(compositeAnswer);
+          compositeAnswer = enforceCommaThousands(compositeAnswer);
+          compositeAnswer = enforceTwoDecimals(compositeAnswer);
+          compositeAnswer = applyAnswerFormatDirectives(compositeAnswer, message);
+          compositeAnswer = applyTimeWindowDirectives(compositeAnswer, message);
+          compositeAnswer = applyConversationalAnswerStyle(compositeAnswer, message, locale);
+          return res.json({
+            answer: compositeAnswer,
+            actions: { reset_filters: false, filters: filteredAiFilters, chart: null },
+            preview_rows: [],
+            meta: { operation: "two_year_delta_with_cause", years: [y1, y2], targetColumn: resolvedTarget, groupBy: topDim || null },
+          });
+        }
+      } catch {
+        // fall through to existing path
+      }
+    }
+
+    if (resolvedTarget && intentPlan.yoyDriverComposite) {
       try {
         const fullLoad = await loadAccessibleRows(sheetId, req.user, selectedTab);
         const projectedRows = fullLoad?.forbidden ? [] : projectRowsToHeaders(fullLoad.rows || [], aiHeaders);
@@ -5708,8 +6096,7 @@ export async function chatQuery(req, res) {
       const asksSingleYearMetric =
         !!explicitYear &&
         !hasMultiYearPrompt &&
-        !asksExplicitComparisonIntent(message, chatRuntimeRules) &&
-        !asksDifferenceBetweenYears(message) &&
+        !isComparisonIntent(message, chatRuntimeRules) &&
         /\b(revenue|sales|income|profit|expense|cost|amount|total)\b|выруч|доход|дохід|прибут|расход|витрат/i.test(String(message || "").toLowerCase());
       if (asksSingleYearMetric) {
         try {

@@ -214,6 +214,8 @@ export default function App() {
   const [secondaryHasMoreData, setSecondaryHasMoreData] = useState(true);
   const [secondarySheetId, setSecondarySheetId] = useState("");
   const [secondaryTab, setSecondaryTab] = useState(null);
+  const [primaryDlpMaskedColumns, setPrimaryDlpMaskedColumns] = useState([]);
+  const [secondaryDlpMaskedColumns, setSecondaryDlpMaskedColumns] = useState([]);
 
   const BATCH_SIZE = 200;
   const primaryLoadOffsetRef = useRef(null);
@@ -1025,6 +1027,18 @@ export default function App() {
         signal: requestSignal,
       });
       const raw = res.data;
+      const rawDlpMaskedColumns = res?.headers?.["x-dlp-masked-columns"];
+      let parsedDlpMaskedColumns = [];
+      if (typeof rawDlpMaskedColumns === "string" && rawDlpMaskedColumns.trim()) {
+        try {
+          const parsed = JSON.parse(rawDlpMaskedColumns);
+          parsedDlpMaskedColumns = Array.isArray(parsed) ? parsed.map((v) => String(v)) : [];
+        } catch {
+          parsedDlpMaskedColumns = [];
+        }
+      }
+      if (isPrimary) setPrimaryDlpMaskedColumns(parsedDlpMaskedColumns);
+      else setSecondaryDlpMaskedColumns(parsedDlpMaskedColumns);
       if (requestSeq !== (isPrimary ? primaryLatestLoadSeqRef.current : secondaryLatestLoadSeqRef.current)) {
         return;
       }
@@ -1395,7 +1409,8 @@ export default function App() {
       setUploadProgressPhase("complete");
       setUploadProgressPercent(100);
       if (res.data?.status === "queued") {
-        setUploadProgressError("Upload queued for import processing.");
+        const dlpWarning = String(res.data?.dlp?.warningMessage || "").trim();
+        setUploadProgressError(dlpWarning || "Upload queued for import processing.");
         refreshReportSources();
         return;
       }
@@ -1408,6 +1423,11 @@ export default function App() {
         return;
       }
       if (res.data.sheetId) {
+        if (res.data?.dlp?.message) {
+          setUploadProgressError(String(res.data.dlp.message));
+        } else if (res.data?.dlp?.warning && res.data?.dlp?.warningMessage) {
+          setUploadProgressError(String(res.data.dlp.warningMessage));
+        }
         const sid = String(res.data.sheetId);
         const activeName = res.data.display_name || res.data.filename;
         setActiveFilename(activeName);
@@ -2541,6 +2561,8 @@ export default function App() {
                       setSecondarySheetId={setSecondarySheetId}
                       secondaryTab={secondaryTab}
                       setSecondaryTab={setSecondaryTab}
+                      primaryDlpMaskedColumns={primaryDlpMaskedColumns}
+                      secondaryDlpMaskedColumns={secondaryDlpMaskedColumns}
                       workspaceChartStateRef={workspaceChartStateRef}
                       locale={dashboardI18n.locale}
                       copy={dashboardI18n.copy}

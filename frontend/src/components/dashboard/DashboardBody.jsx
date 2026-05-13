@@ -160,6 +160,8 @@ export default function DashboardBody(props) {
         setSecondarySheetId,
         secondaryTab,
         setSecondaryTab,
+        primaryDlpMaskedColumns = [],
+        secondaryDlpMaskedColumns = [],
         workspaceChartStateRef,
         locale = "en",
         copy = DASHBOARD_COPY_EN,
@@ -1556,6 +1558,14 @@ export default function DashboardBody(props) {
         });
         return (activeSecondaryFields || []).filter((col) => !compareCols.has(String(col)));
     }, [secondaryCompareSheetId, secondaryCompareRows, activeSecondaryFields]);
+    const primaryDlpMaskedColumnSet = React.useMemo(
+        () => new Set((Array.isArray(primaryDlpMaskedColumns) ? primaryDlpMaskedColumns : []).map((v) => String(v))),
+        [primaryDlpMaskedColumns]
+    );
+    const secondaryDlpMaskedColumnSet = React.useMemo(
+        () => new Set((Array.isArray(secondaryDlpMaskedColumns) ? secondaryDlpMaskedColumns : []).map((v) => String(v))),
+        [secondaryDlpMaskedColumns]
+    );
 
     const primaryPickerLabel = React.useMemo(() => {
         const { selectedSource, selectedImport } = getSelectedSourceMeta(sheetId);
@@ -3396,6 +3406,11 @@ export default function DashboardBody(props) {
                                         Warning: Compared revision is missing {primaryMissingColumns.length} column(s): {primaryMissingColumns.join(", ")}
                                     </div>
                                 )}
+                                {primaryDlpMaskedColumnSet.size > 0 && (
+                                    <div className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[10px] font-bold text-amber-800">
+                                        DLP Masked Columns: {Array.from(primaryDlpMaskedColumnSet).join(", ")}
+                                    </div>
+                                )}
                             </div>
                         </div>
 
@@ -3416,7 +3431,7 @@ export default function DashboardBody(props) {
                                                         if (filterAnchorRefs?.current) filterAnchorRefs.current[h] = el;
                                                     }}
                                                     style={{ width: colWidths[h] || 140, minWidth: colWidths[h] || 140 }}
-                                                    className={`table-pro-text relative border-r border-slate-200 px-3 py-1.5 text-[11px] text-left cursor-pointer group flex items-center justify-between hover:bg-slate-200 transition-colors text-slate-800 font-bold h-full ${isPrimaryColumnSelected(colIndex) ? "bg-indigo-100" : "bg-slate-100"} ${primaryMissingColumns.includes(h) ? "!bg-rose-50 !text-rose-800 ring-1 ring-inset ring-rose-200" : ""}`}
+                                                    className={`table-pro-text relative border-r border-slate-200 px-3 py-1.5 text-[11px] text-left cursor-pointer group flex items-center justify-between hover:bg-slate-200 transition-colors text-slate-800 font-bold h-full ${isPrimaryColumnSelected(colIndex) ? "bg-indigo-100" : "bg-slate-100"} ${primaryMissingColumns.includes(h) ? "!bg-rose-50 !text-rose-800 ring-1 ring-inset ring-rose-200" : ""} ${primaryDlpMaskedColumnSet.has(String(h)) ? "!bg-amber-50 !text-amber-900 ring-1 ring-inset ring-amber-300" : ""}`}
                                                     onClick={(e) => {
                                                         const isFilterBtn = e.target.closest && e.target.closest(".filter-btn");
                                                         if (selectionModeOn && !isFilterBtn) {
@@ -3517,7 +3532,7 @@ export default function DashboardBody(props) {
                                                                         <div
                                                                             key={h}
                                                                             style={{ width: colWidths[h] || 140, minWidth: colWidths[h] || 140 }}
-                                                                            className={`border-r border-slate-100 px-3 text-[11px] text-slate-700 truncate h-full flex items-center ${selectionModeOn ? "cursor-crosshair select-none" : ""} ${isPrimaryCellSelected(index, colIndex) ? "bg-indigo-100 ring-1 ring-inset ring-indigo-300" : ""} ${primaryDiffCellSet.has(`${index}::${h}`) ? "bg-amber-50 ring-1 ring-inset ring-amber-300 font-bold text-slate-900" : ""}`}
+                                                                            className={`border-r border-slate-100 px-3 text-[11px] text-slate-700 truncate h-full flex items-center ${selectionModeOn ? "cursor-crosshair select-none" : ""} ${isPrimaryCellSelected(index, colIndex) ? "bg-indigo-100 ring-1 ring-inset ring-indigo-300" : ""} ${primaryDiffCellSet.has(`${index}::${h}`) ? "bg-amber-50 ring-1 ring-inset ring-amber-300 font-bold text-slate-900" : ""} ${primaryDlpMaskedColumnSet.has(String(h)) && String(row?.[h] ?? "") === "[REDACTED]" ? "bg-amber-50 ring-1 ring-inset ring-amber-300 font-bold text-slate-900" : ""}`}
                                                                             onMouseDown={(e) => {
                                                                                 if (!selectionModeOn) return;
                                                                                 e.preventDefault();
@@ -3825,6 +3840,11 @@ export default function DashboardBody(props) {
                                             Warning: Compared revision is missing {secondaryMissingColumns.length} column(s): {secondaryMissingColumns.join(", ")}
                                         </div>
                                     )}
+                                    {secondaryDlpMaskedColumnSet.size > 0 && (
+                                        <div className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[10px] font-bold text-amber-800">
+                                            DLP Masked Columns: {Array.from(secondaryDlpMaskedColumnSet).join(", ")}
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                             {secondaryData?.length > 0 ? (
@@ -3842,7 +3862,7 @@ export default function DashboardBody(props) {
                                                             if (filterAnchorRefs?.current) filterAnchorRefs.current[`sec_${h}`] = el;
                                                         }}
                                                         style={{ width: secondaryColWidths[h] || 140, minWidth: secondaryColWidths[h] || 140 }}
-                                                        className={`px-3 py-1.5 text-[11px] font-bold text-slate-700 border-r border-slate-200 truncate h-full flex items-center justify-between group hover:bg-slate-300 transition-colors relative cursor-pointer ${selectionModeOn ? "cursor-crosshair select-none" : ""} ${isSecondaryColumnSelected(colIndex) ? "bg-indigo-100 ring-1 ring-inset ring-indigo-300" : ""} ${secondaryMissingColumns.includes(h) ? "!bg-rose-50 !text-rose-800 ring-1 ring-inset ring-rose-200" : ""}`}
+                                                        className={`px-3 py-1.5 text-[11px] font-bold text-slate-700 border-r border-slate-200 truncate h-full flex items-center justify-between group hover:bg-slate-300 transition-colors relative cursor-pointer ${selectionModeOn ? "cursor-crosshair select-none" : ""} ${isSecondaryColumnSelected(colIndex) ? "bg-indigo-100 ring-1 ring-inset ring-indigo-300" : ""} ${secondaryMissingColumns.includes(h) ? "!bg-rose-50 !text-rose-800 ring-1 ring-inset ring-rose-200" : ""} ${secondaryDlpMaskedColumnSet.has(String(h)) ? "!bg-amber-50 !text-amber-900 ring-1 ring-inset ring-amber-300" : ""}`}
                                                         onClick={(e) => {
                                                             const isFilterBtn = e.target.closest && e.target.closest(".filter-btn");
                                                             if (selectionModeOn && !isFilterBtn) {
@@ -3936,7 +3956,7 @@ export default function DashboardBody(props) {
                                                                             <div
                                                                                 key={h}
                                                                                 style={{ width: secondaryColWidths[h] || 140, minWidth: secondaryColWidths[h] || 140 }}
-                                                                                className={`border-r border-slate-100 px-3 text-[11px] text-slate-600 truncate h-full flex items-center ${selectionModeOn ? "cursor-crosshair select-none" : ""} ${isSecondaryCellSelected(index, colIndex) ? "bg-indigo-100 ring-1 ring-inset ring-indigo-300" : ""} ${secondaryDiffCellSet.has(`${index}::${h}`) ? "bg-amber-50 ring-1 ring-inset ring-amber-300 font-bold text-slate-900" : ""}`}
+                                                                                className={`border-r border-slate-100 px-3 text-[11px] text-slate-600 truncate h-full flex items-center ${selectionModeOn ? "cursor-crosshair select-none" : ""} ${isSecondaryCellSelected(index, colIndex) ? "bg-indigo-100 ring-1 ring-inset ring-indigo-300" : ""} ${secondaryDiffCellSet.has(`${index}::${h}`) ? "bg-amber-50 ring-1 ring-inset ring-amber-300 font-bold text-slate-900" : ""} ${secondaryDlpMaskedColumnSet.has(String(h)) && String(row?.[h] ?? "") === "[REDACTED]" ? "bg-amber-50 ring-1 ring-inset ring-amber-300 font-bold text-slate-900" : ""}`}
                                                                                 onMouseDown={(e) => {
                                                                                     if (!selectionModeOn) return;
                                                                                     e.preventDefault();

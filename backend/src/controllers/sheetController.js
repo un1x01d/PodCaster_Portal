@@ -829,10 +829,10 @@ async function resolveReportSourceForUpload(client, { reportSourceId, reportSour
     await assertReportSourceLimitAvailable(client, targetGroupId);
 
     const inserted = await client.query(
-        `INSERT INTO report_sources (name, created_by, is_inferred, updated_at)
-         VALUES ($1, $2, FALSE, CURRENT_TIMESTAMP)
+        `INSERT INTO report_sources (name, created_by, is_inferred, sync_group_id, updated_at)
+         VALUES ($1, $2, FALSE, $3, CURRENT_TIMESTAMP)
          RETURNING id, name`,
-        [name, user?.id || null]
+        [name, user?.id || null, targetGroupId || null]
     );
     return {
         id: inserted.rows[0].id,
@@ -1673,6 +1673,7 @@ async function executeImportFromParsedWorkbook({
 }) {
     const { sheetNames, sheets: parsedSheets, cleanup } = parsedResult || {};
     let sheets = parsedSheets;
+    let dlpOutcome = null;
     if (cleanup && (cleanup.formulasStripped || cleanup.metadataEntriesStripped)) {
         console.info(
             `[upload_cleanup] formulas_stripped=${Number(cleanup.formulasStripped || 0)} metadata_entries_stripped=${Number(cleanup.metadataEntriesStripped || 0)}`
@@ -1704,45 +1705,80 @@ async function executeImportFromParsedWorkbook({
         }
 
         const groupId = resolveImportGroupId(user, reportSource);
-        if (groupId) {
-            const groupRes = await client.query("SELECT id, entitlements FROM groups WHERE id = $1 LIMIT 1", [groupId]);
-            const group = groupRes.rows?.[0];
-            if (group && groupHasFeature(group, "dlp")) {
-                const dlp = await loadDlpSettings(client);
-                const scan = scanRowsForDlp(sheets, dlp);
-                if (scan.findings.length > 0) {
-                    await writeAuditLog({
-                        req: { id: null, user, ip: null, headers: {} },
-                        actorUserId: user?.id || null,
-                        action: "dlp.findings_detected",
-                        resourceType: "report_source",
-                        resourceId: reportSource?.id || null,
-                        metadata: {
-                            groupId,
-                            mode: dlp.mode,
-                            findingsCount: scan.findings.length,
-                            scannedCells: scan.scannedCells,
-                            capped: scan.capped,
-                            maskedColumns: scan.maskedColumns || {},
-                            findings: scan.findings,
-                        },
-                    });
-                }
-                if ((dlp.mode === "mask" || dlp.maskDetectedColumns) && scan.findings.length > 0) {
-                    sheets = applyDlpColumnMasking(sheets, scan.maskedColumns);
-                }
-                if (scan.findings.length > 0 && dlp.mode === "block") {
-                    const err = toImportError("dlp_blocked", 403, "Import blocked by DLP policy.");
-                    err.details = {
+        const dlp = await loadDlpSettings(client);
+        const isSuperAdmin = isPlatformAdminUser(user);
+        let customerDlpEnabled = true;
+        if (!isSuperAdmin) {
+            if (!groupId) {
+                customerDlpEnabled = false;
+            } else {
+                const groupRes = await client.query("SELECT id, entitlements FROM groups WHERE id = $1 LIMIT 1", [groupId]);
+                const group = groupRes.rows?.[0] || null;
+                customerDlpEnabled = !!(group && groupHasFeature(group, "dlp"));
+            }
+        }
+        if (dlp.enabled !== false && customerDlpEnabled) {
+            const scan = scanRowsForDlp(sheets, dlp);
+            if (scan.findings.length > 0) {
+                await writeAuditLog({
+                    req: { id: null, user, ip: null, headers: {} },
+                    actorUserId: user?.id || null,
+                    action: "dlp.findings_detected",
+                    resourceType: "report_source",
+                    resourceId: reportSource?.id || null,
+                    metadata: {
                         groupId,
+                        mode: dlp.mode,
                         findingsCount: scan.findings.length,
                         scannedCells: scan.scannedCells,
                         capped: scan.capped,
                         maskedColumns: scan.maskedColumns || {},
                         findings: scan.findings,
-                    };
-                    throw err;
-                }
+                    },
+                });
+            }
+            if (scan.findings.length > 0) {
+                const findingTypes = Array.from(new Set((scan.findings || []).map((f) => String(f?.type || "").trim()).filter(Boolean)));
+                const prettyType = (t) => {
+                    if (t === "ssn") return "SSN";
+                    if (t === "credit_card") return "Credit Card";
+                    if (t === "email") return "Email";
+                    if (t === "phone") return "Phone";
+                    if (t === "iban") return "IBAN";
+                    return t.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
+                };
+                const typeList = findingTypes.map(prettyType).join(", ");
+                dlpOutcome = {
+                    enabled: dlp.enabled !== false,
+                    mode: dlp.mode,
+                    findingsCount: scan.findings.length,
+                    scannedCells: Number(scan.scannedCells || 0),
+                    capped: !!scan.capped,
+                    findingTypes,
+                    maskedColumns: scan.maskedColumns || {},
+                    warning: dlp.mode === "warn",
+                    warningMessage: dlp.mode === "warn" ? `PII detected (${typeList}) in ${scan.findings.length} cell(s). Import proceeded because DLP mode is WARN.` : null,
+                    message: dlp.mode === "mask"
+                        ? `DLP masking applied for: ${typeList}. Matching values were redacted.`
+                        : (dlp.mode === "warn"
+                            ? `PII detected (${typeList}) in ${scan.findings.length} cell(s). Import proceeded because DLP mode is WARN.`
+                            : null),
+                };
+            }
+            if ((dlp.mode === "mask" || dlp.maskDetectedColumns) && scan.findings.length > 0) {
+                sheets = applyDlpColumnMasking(sheets, scan.maskedColumns);
+            }
+            if (scan.findings.length > 0 && dlp.mode === "block") {
+                const err = toImportError("dlp_blocked", 403, "Import blocked by DLP policy.");
+                err.details = {
+                    groupId,
+                    findingsCount: scan.findings.length,
+                    scannedCells: scan.scannedCells,
+                    capped: scan.capped,
+                    maskedColumns: scan.maskedColumns || {},
+                    findings: scan.findings,
+                };
+                throw err;
             }
         }
 
@@ -1769,6 +1805,18 @@ async function executeImportFromParsedWorkbook({
             groupId,
             client,
         });
+        if (dlpOutcome) {
+            semanticProfile = {
+                ...(semanticProfile || {}),
+                dlp: {
+                    mode: dlpOutcome.mode,
+                    findingsCount: Number(dlpOutcome.findingsCount || 0),
+                    scannedCells: Number(dlpOutcome.scannedCells || 0),
+                    maskedColumns: dlpOutcome.maskedColumns || {},
+                    updatedAt: new Date().toISOString(),
+                },
+            };
+        }
 
         const versionedFilename = await getVersionedFilename(client, reportSource.id, originalName);
         const headerDiff = buildHeaderDiff(reportSource.previousHeaders, headers);
@@ -1977,6 +2025,9 @@ async function executeImportFromParsedWorkbook({
             display_name: displayName,
             tabs: sheetNames
         };
+        if (dlpOutcome) {
+            responsePayload.dlp = dlpOutcome;
+        }
 
         await finishImportJob(client, {
             id: importJobId,
@@ -2043,6 +2094,7 @@ async function enqueueDbImportJob({
         reportSourceId: rawReportSourceId ? Number.parseInt(rawReportSourceId, 10) : null,
         reportSourceName: rawReportSourceName || null,
         queuedByUserId: user?.id || null,
+        queuedGroupId: Number.parseInt(user?.resolved_group_id ?? "", 10) || null,
         parseMemoryLimitMb: normalizeWorkerMemoryLimitMb(parseMemoryLimitMb),
         autosyncEnabled: !!autosyncConfig?.enabled,
         autosyncProvider: autosyncConfig?.provider || null,
@@ -2068,6 +2120,7 @@ async function enqueueDbImportJob({
             : await loadReportSourceForImport(client, rawReportSourceId);
         payloadMeta.reportSourceId = resolvedSource.id;
         payloadMeta.reportSourceName = resolvedSource.name;
+        payloadMeta.queuedGroupId = Number.parseInt(resolvedSource?.syncGroupId ?? payloadMeta.queuedGroupId ?? "", 10) || null;
 
         await createImportJob(client, {
             id: importJobId,
@@ -2230,7 +2283,11 @@ async function executeQueuedImportJob(job, payloadRows = null) {
         displayName,
         fileLabel,
         originalName: String(job.original_filename || "uploaded.xlsx"),
-        user: { id: job.requested_by || null, role: "admin" },
+        user: {
+            id: job.requested_by || null,
+            role: "admin",
+            resolved_group_id: payloadMeta.queuedGroupId || null,
+        },
         enforceOwnership: false,
         fileSizeBytes: Number(payload.byte_size || payloadMeta.fileSize || 0),
         autosyncConfig: payloadMeta.autosyncEnabled ? {
@@ -4186,6 +4243,7 @@ export async function getSheetData(req, res) {
     let viewConfig = null;
     let sheetHeaders = [];
     let forceColumnProjection = false;
+    let dlpMaskedColumnsByTab = {};
 
     // 1. Resolve Locked View if provided
     if (viewId) {
@@ -4293,6 +4351,10 @@ export async function getSheetData(req, res) {
                 const currentProfile = semanticRow.semantic_profile && typeof semanticRow.semantic_profile === "object"
                     ? semanticRow.semantic_profile
                     : {};
+                const maskedByTab = currentProfile?.dlp?.maskedColumns;
+                if (maskedByTab && typeof maskedByTab === "object" && !Array.isArray(maskedByTab)) {
+                    dlpMaskedColumnsByTab = maskedByTab;
+                }
                 const missingAiCache = !Array.isArray(currentProfile?.learned?.header_understanding)
                     || currentProfile.learned.header_understanding.length === 0;
                 if (missingAiCache) {
@@ -4472,6 +4534,19 @@ export async function getSheetData(req, res) {
         const nextCursor = (!sort_by && hasMore && items.length)
             ? Buffer.from(JSON.stringify({ rowIndex: Number(items.length ? (decodedCursor?.rowIndex || 0) + items.length : 0) }), "utf8").toString("base64url")
             : null;
+        const effectiveTab = String(tab || "").trim();
+        const dlpMaskedColumns = (() => {
+            if (effectiveTab) {
+                return Array.isArray(dlpMaskedColumnsByTab?.[effectiveTab]) ? dlpMaskedColumnsByTab[effectiveTab] : [];
+            }
+            const union = new Set();
+            Object.values(dlpMaskedColumnsByTab || {}).forEach((cols) => {
+                if (!Array.isArray(cols)) return;
+                cols.forEach((c) => union.add(String(c)));
+            });
+            return Array.from(union);
+        })();
+        res.set("X-DLP-Masked-Columns", JSON.stringify(dlpMaskedColumns));
         res.set("X-Next-Cursor", nextCursor || "");
         res.set("X-Has-More", hasMore ? "1" : "0");
         if (String(req.query?.cursor_mode || "").toLowerCase() === "body") {
