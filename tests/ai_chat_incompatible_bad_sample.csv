@@ -1,0 +1,13 @@
+Date,Year,Month,Customer,Service Line,Revenue,COGS,Expense,Gross Profit,Net Income
+Acme Corp,Consulting,Jan,2021-01-31,125000.00,Revenue,45000.00,Ops expense,GP 80000,Net 48000
+Northwind Ltd,Managed Services,Feb,2021-02-28,132000.00,Revenue,47000.00,Ops expense,GP 85000,Net 51500
+Globex Inc,Advisory,Mar,2021-03-31,118000.00,Revenue,42000.00,Ops expense,GP 76000,Net 46000
+Initech,Consulting,Apr,2021-04-30,121500.00,Revenue,43000.00,Ops expense,GP 78500,Net 48000
+Umbrella Co,Managed Services,May,2021-05-31,129000.00,Revenue,46000.00,Ops expense,GP 83000,Net 50500
+Acme Corp,Advisory,Jun,2021-06-30,134500.00,Revenue,48000.00,Ops expense,GP 86500,Net 52500
+Northwind Ltd,Consulting,Jul,2021-07-31,127500.00,Revenue,45500.00,Ops expense,GP 82000,Net 49000
+Globex Inc,Managed Services,Aug,2021-08-31,136000.00,Revenue,48500.00,Ops expense,GP 87500,Net 53000
+Initech,Advisory,Sep,2021-09-30,140000.00,Revenue,50000.00,Ops expense,GP 90000,Net 54500
+Umbrella Co,Consulting,Oct,2021-10-31,145000.00,Revenue,52000.00,Ops expense,GP 93000,Net 56500
+Acme Corp,Managed Services,Nov,2021-11-30,149500.00,Revenue,53500.00,Ops expense,GP 96000,Net 59000
+Northwind Ltd,Advisory,Dec,2021-12-31,153000.00,Revenue,55000.00,Ops expense,GP 98000,Net 60000

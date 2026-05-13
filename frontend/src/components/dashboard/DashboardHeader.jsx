@@ -83,15 +83,39 @@ export default function DashboardHeader({
         return null;
     };
     const fileLabel = (item) => item?.file_label || item?.display_name || item?.import_name || item?.original_filename || item?.filename || `Version ${item?.import_version || ""}`.trim();
+    const getSourceImports = React.useCallback((sourceId) => {
+        const key = String(sourceId || "");
+        const fromApi = Array.isArray(reportSourceImports?.[key]) ? reportSourceImports[key] : [];
+        const derived = (Array.isArray(myFiles) ? myFiles : [])
+            .filter((f) => String(f?.report_source_id || "") === key)
+            .map((f) => ({
+                id: `sheet:${f.id}`,
+                sheet_id: f.id,
+                import_version: Number(f?.source_version || 0) || 0,
+                file_label: f?.display_name || f?.filename || `File ${f.id}`,
+                display_name: f?.display_name || "",
+                filename: f?.filename || "",
+                uploaded_at: f?.uploaded_at || null,
+                created_at: f?.uploaded_at || null,
+                imported_by_name: null,
+            }))
+            .sort((a, b) => new Date(b.uploaded_at || b.created_at || 0) - new Date(a.uploaded_at || a.created_at || 0));
+        const bySheetId = new Map();
+        derived.forEach((item) => bySheetId.set(String(item?.sheet_id || ""), item));
+        fromApi.forEach((item) => bySheetId.set(String(item?.sheet_id || ""), item));
+        return Array.from(bySheetId.values()).sort(
+            (a, b) => new Date(b?.uploaded_at || b?.created_at || 0) - new Date(a?.uploaded_at || a?.created_at || 0)
+        );
+    }, [reportSourceImports, myFiles]);
     const explicitSources = React.useMemo(() => (
         (reportSources || [])
             .filter((source) => source && !source.is_inferred)
             .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
     ), [reportSources]);
     const selectedSource = explicitSources.find((source) => String(source.current_sheet_id) === String(sheetId))
-        || explicitSources.find((source) => (reportSourceImports[String(source.id)] || []).some((item) => String(item.sheet_id) === String(sheetId)));
+        || explicitSources.find((source) => getSourceImports(source.id).some((item) => String(item.sheet_id) === String(sheetId)));
     const selectedImport = selectedSource
-        ? (reportSourceImports[String(selectedSource.id)] || []).find((item) => String(item.sheet_id) === String(sheetId))
+        ? getSourceImports(selectedSource.id).find((item) => String(item.sheet_id) === String(sheetId))
         : null;
     const selectedPickerLabel = selectedImport
         ? `${selectedSource?.name || "Report source"} / ${fileLabel(selectedImport)}`
@@ -100,7 +124,7 @@ export default function DashboardHeader({
     const visibleSources = explicitSources.filter((source) => {
         if (!normalizedQuery) return true;
         const sourceName = String(source.name || "").toLowerCase();
-        const imports = reportSourceImports[String(source.id)] || [];
+        const imports = getSourceImports(source.id);
         return sourceName.includes(normalizedQuery)
             || imports.some((item) => String(fileLabel(item)).toLowerCase().includes(normalizedQuery));
     });
@@ -172,7 +196,7 @@ export default function DashboardHeader({
                                 <div className="max-h-80 overflow-auto custom-scrollbar space-y-1">
                                     {visibleSources.length ? visibleSources.map((source) => {
                                         const key = String(source.id);
-                                        const imports = reportSourceImports[key] || [];
+                                        const imports = getSourceImports(key);
                                         const sizes = imports.map((item) => importSizeBytes(item));
                                         const hasUnknownSizes = sizes.some((size) => size == null);
                                         const totalSizeBytes = sizes.reduce((sum, size) => sum + (size || 0), 0);

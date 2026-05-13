@@ -2036,6 +2036,24 @@ export default function DashboardHome({
     (reportSources || []).filter((source) => source && !source.is_inferred)
   ), [reportSources]);
 
+  const aiCompatibilityBySheetId = React.useMemo(() => {
+    const out = new Map();
+    (Array.isArray(myFiles) ? myFiles : []).forEach((file) => {
+      const sid = String(file?.id || "").trim();
+      if (!sid) return;
+      const backendStatus = file?.ai_chat_compatibility && typeof file.ai_chat_compatibility === "object"
+        ? file.ai_chat_compatibility
+        : null;
+      out.set(sid, {
+        ready: !!backendStatus?.ready,
+        missing: Array.isArray(backendStatus?.missing) && backendStatus.missing.length
+          ? backendStatus.missing.map((m) => String(m))
+          : (backendStatus ? [] : ["compatibility not evaluated yet"]),
+      });
+    });
+    return out;
+  }, [myFiles]);
+
   const allImportRows = React.useMemo(() => {
     const rows = [];
     explicitReportSources.forEach((source) => {
@@ -2070,6 +2088,7 @@ export default function DashboardHome({
         rows.push({
         id: item?.id || `${source.id}:${item?.sheet_id || item?.import_version || rows.length}`,
         importId: item?.id || "",
+        sheetId: item?.sheet_id || "",
         sourceId: source.id,
         source: source.name || `Report source ${source.id}`,
         latestFile: item?.file_label || item?.display_name || item?.original_filename || item?.filename || "Untitled import",
@@ -2182,18 +2201,36 @@ export default function DashboardHome({
           <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
             <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
               <div>
-                <h3 className="text-sm font-black text-slate-950">Files & review queue</h3>
+                <h3 className="text-sm font-black text-slate-950">Files</h3>
                 <p className="mt-0.5 text-xs font-semibold text-slate-500">Imported financial files, revision state, schema checks, and publish status</p>
               </div>
               <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-black text-emerald-700">
                 {publishedImports} published
               </span>
             </div>
+            <div className="border-b border-slate-100 bg-white px-4 py-3">
+              <div className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Schema Types</div>
+              <div className="mt-1 text-xs font-semibold text-slate-600">
+                <span className="font-black text-slate-800">Waiting:</span> no revision has been uploaded yet, so schema checks have not run.
+              </div>
+              <div className="mt-1 text-xs font-semibold text-slate-600">
+                <span className="font-black text-slate-800">Tracked:</span> schema is being monitored for this report source revision.
+              </div>
+              <div className="mt-1 text-xs font-semibold text-slate-600">
+                Other values (for example changed/mismatch) come from backend schema checks and indicate detected structure differences in that revision.
+              </div>
+              <div className="mt-3 border-t border-slate-100 pt-3">
+                <div className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">AI Chat Requirements</div>
+                <div className="mt-1 text-xs font-semibold text-slate-600">
+                  Ready requires both: a mapped date or year column, and at least one mapped metric column such as revenue, expense, or profit.
+                </div>
+              </div>
+            </div>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[680px] text-left">
                 <thead className="border-b border-slate-100 bg-white">
                   <tr>
-                    {["Source", "File", "Revision", "Publish state", "Schema"].map((head) => (
+                    {["Source", "File", "Revision", "Publish state", "Schema", "AI Chat"].map((head) => (
                       <th key={head} className="px-4 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{head}</th>
                     ))}
                   </tr>
@@ -2210,10 +2247,26 @@ export default function DashboardHome({
                         </span>
                       </td>
                       <td className="px-4 py-3 text-xs font-black capitalize text-slate-500">{String(row.schema || "").replace(/_/g, " ")}</td>
+                      <td className="px-4 py-3 text-xs">
+                        {row.sheetId ? (
+                          aiCompatibilityBySheetId.get(String(row.sheetId || ""))?.ready ? (
+                            <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-black text-emerald-700">Ready</span>
+                          ) : (
+                            <div className="space-y-1">
+                              <span className="rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-black text-amber-700">Setup Required</span>
+                              <div className="text-[10px] font-semibold text-amber-700">
+                                Missing: {(aiCompatibilityBySheetId.get(String(row.sheetId || ""))?.missing || []).join(", ") || "date/year mapping and metric mappings are required"}
+                              </div>
+                            </div>
+                          )
+                        ) : (
+                          <span className="text-slate-400">-</span>
+                        )}
+                      </td>
                     </tr>
                   )) : (
                     <tr>
-                      <td colSpan="5" className="px-4 py-8 text-center text-sm font-semibold text-slate-500">
+                      <td colSpan="6" className="px-4 py-8 text-center text-sm font-semibold text-slate-500">
                         No governed financial sources yet. Open the workspace to create a source and upload the first revision.
                       </td>
                     </tr>

@@ -6,6 +6,8 @@ export default function CustomerFormModal({
   firstName,
   lastName,
   companyName,
+  productBundle,
+  productBundleOptions,
   email,
   phone,
   onClose,
@@ -13,6 +15,7 @@ export default function CustomerFormModal({
   onFirstNameChange,
   onLastNameChange,
   onCompanyNameChange,
+  onProductBundleChange,
   onEmailChange,
   onPhoneChange,
 }) {
@@ -30,6 +33,22 @@ export default function CustomerFormModal({
           <input className="input-premium py-1.5 text-[11px] font-semibold md:col-span-2" placeholder="Company Name" value={companyName} onChange={(e) => onCompanyNameChange(e.target.value)} />
           <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="Email" value={email} onChange={(e) => onEmailChange(e.target.value)} />
           <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="Phone (optional)" value={phone} onChange={(e) => onPhoneChange(e.target.value)} />
+          {mode !== "edit" ? (
+            <div className="md:col-span-2 space-y-1">
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Product Bundle</div>
+              <select
+                className="input-premium py-1.5 text-[11px] font-semibold w-full"
+                value={productBundle}
+                onChange={(e) => onProductBundleChange(e.target.value)}
+              >
+                {(productBundleOptions || []).map((bundle) => (
+                  <option key={bundle.key} value={bundle.key}>
+                    {bundle.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
         </div>
         <div className="flex justify-end">
           <button type="button" className="btn-premium bg-slate-800 text-white px-4 py-1.5 text-[11px]" onClick={onSave}>Save</button>

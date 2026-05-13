@@ -66,8 +66,10 @@ const IMPORT_JOB_PAYLOAD_TTL_HOURS = Math.max(1, Number.parseInt(process.env.IMP
 const IMPORT_WORKER_ADVISORY_LOCK_KEY = Number.parseInt(process.env.IMPORT_WORKER_ADVISORY_LOCK_KEY || "814001", 10);
 const AUTOSYNC_WORKER_ADVISORY_LOCK_KEY = Number.parseInt(process.env.AUTOSYNC_WORKER_ADVISORY_LOCK_KEY || "814002", 10);
 const IMPORT_PIPELINE_SETTINGS_KEY = "import_pipeline_settings";
+const REVIEW_DEFAULTS_SETTINGS_KEY = "review_defaults_settings";
 const IMPORT_STAGING_WRITE_ENABLED = ["1", "true", "yes", "on"].includes(String(process.env.IMPORT_STAGING_WRITE_ENABLED || "false").trim().toLowerCase());
 const IMPORT_STAGING_FINALIZE_ENABLED = ["1", "true", "yes", "on"].includes(String(process.env.IMPORT_STAGING_FINALIZE_ENABLED || "false").trim().toLowerCase());
+const AI_CHAT_COMPATIBILITY_ENFORCE_IMPORT = ["1", "true", "yes", "on"].includes(String(process.env.AI_CHAT_COMPATIBILITY_ENFORCE_IMPORT || "true").trim().toLowerCase());
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10);
 const HEADER_AI_SAMPLE_ROWS = Math.min(120, Number.parseInt(process.env.HEADER_AI_SAMPLE_ROWS || "60", 10));
 const HEADER_AI_SAMPLE_VALUES_PER_COLUMN = Math.min(8, Number.parseInt(process.env.HEADER_AI_SAMPLE_VALUES_PER_COLUMN || "5", 10));
@@ -319,6 +321,115 @@ function toNumericOrNull(value) {
     return Number.isFinite(num) ? num : null;
 }
 
+function isDateLikeHeaderName(header = "") {
+    return /date|period|month|year|quarter|time|day/i.test(String(header || ""));
+}
+
+function evaluateAiChatCompatibilityForImport({ semanticProfile = {}, sampleRows = [] }) {
+    const defaults = semanticProfile && typeof semanticProfile === "object" ? (semanticProfile.defaults || {}) : {};
+    const dateColumn = String(defaults?.dateColumn || "").trim();
+    const metricColumnsMap = defaults?.metricColumns && typeof defaults.metricColumns === "object"
+        ? Object.fromEntries(
+            Object.entries(defaults.metricColumns)
+                .map(([k, v]) => [String(k || "").trim(), String(v || "").trim()])
+                .filter(([k, v]) => k && v)
+        )
+        : [];
+    const metricColumns = Object.values(metricColumnsMap);
+    const rows = Array.isArray(sampleRows) ? sampleRows.slice(0, 300) : [];
+    const availableHeaders = rows.length ? Object.keys(rows[0] || {}).filter(Boolean) : [];
+
+    const missing = [];
+    if (!dateColumn) {
+        missing.push(
+            `date/year mapping is missing (set semantic_profile.defaults.dateColumn). Detected headers: ${availableHeaders.slice(0, 8).join(", ") || "none"}.`
+        );
+    }
+    if (!metricColumns.length) {
+        missing.push(
+            "metric mappings are missing (set semantic_profile.defaults.metricColumns.<metric>)."
+        );
+    }
+    if (dateColumn && !isDateLikeHeaderName(dateColumn)) {
+        missing.push(`date/year mapping points to '${dateColumn}', which does not look like a date/period header.`);
+    }
+
+    if (dateColumn) {
+        const dateVals = rows
+            .map((r) => r?.[dateColumn])
+            .filter((v) => v !== null && v !== undefined && String(v).trim() !== "");
+        const dateHits = dateVals.filter((v) => !!toPeriodKeyFromValue(v)).length;
+        const dateRatio = dateVals.length ? (dateHits / dateVals.length) : 0;
+        if (dateVals.length < 5 || dateRatio < 0.6) {
+            missing.push(`date/year column '${dateColumn}' values are not consistently valid dates (valid ratio ${(dateRatio * 100).toFixed(0)}%).`);
+        }
+    }
+
+    if (metricColumns.length) {
+        let hasValidMetric = false;
+        const colStats = new Map();
+        for (const col of metricColumns) {
+            const vals = rows
+                .map((r) => r?.[col])
+                .filter((v) => v !== null && v !== undefined && String(v).trim() !== "");
+            if (vals.length < 5) continue;
+            const numericHits = vals.filter((v) => toNumericOrNull(v) !== null).length;
+            const numericRatio = vals.length ? (numericHits / vals.length) : 0;
+            colStats.set(col, { count: vals.length, ratio: numericRatio });
+            if (numericRatio >= 0.6) {
+                hasValidMetric = true;
+            }
+        }
+        const strictCanonicals = ["revenue", "profit", "cost", "expense", "income", "net_income", "total_revenue", "total_expense"];
+        for (const [canonical, mappedCol] of Object.entries(metricColumnsMap)) {
+            if (!strictCanonicals.some((k) => canonical.toLowerCase().includes(k))) continue;
+            const stats = colStats.get(mappedCol);
+            if (!stats || stats.count < 5 || stats.ratio < 0.6) {
+                missing.push(`${canonical} mapping ('${mappedCol}') is not consistently numeric.`);
+            }
+        }
+        if (!hasValidMetric) {
+            missing.push("mapped metric columns are not consistently numeric (need at least one numeric metric column).");
+        }
+    }
+
+    return {
+        ready: missing.length === 0,
+        missing,
+    };
+}
+
+async function enrichSheetsWithAiChatCompatibility(rows = []) {
+    const list = Array.isArray(rows) ? rows : [];
+    const evaluate = async (row) => {
+        const profile = row?.semantic_profile && typeof row.semantic_profile === "object" ? row.semantic_profile : {};
+
+        const sampleRows = await query(
+            `SELECT row_data
+               FROM sheet_rows
+              WHERE sheet_id = $1
+              ORDER BY row_index ASC
+              LIMIT 200`,
+            [row.id]
+        );
+        const values = sampleRows.map((r) => r.row_data || {});
+        const compatibility = evaluateAiChatCompatibilityForImport({
+            semanticProfile: profile,
+            sampleRows: values,
+        });
+
+        return {
+            ...row,
+            ai_chat_compatibility: {
+                ready: compatibility.ready,
+                missing: compatibility.missing,
+            },
+        };
+    };
+
+    return Promise.all(list.map(evaluate));
+}
+
 function buildInsightSummaryRows({ sheetId, sheetNames, sheets }) {
     const out = [];
     for (const tabName of sheetNames || []) {
@@ -565,7 +676,7 @@ async function resolveOrCreateEmailReportSource(client, { groupId, recipientAddr
             AND rs.sync_group_id = $1
             AND rs.sync_source_ref = $2
           LIMIT 1
-          FOR UPDATE`,
+          FOR UPDATE OF rs`,
         [groupId, sourceRef]
     );
     if (existing.rows.length) {
@@ -828,17 +939,18 @@ async function resolveReportSourceForUpload(client, { reportSourceId, reportSour
         : resolveImportGroupId(user, null);
     await assertReportSourceLimitAvailable(client, targetGroupId);
 
+    const firstUploadRequiresReview = await firstUploadRequiresReviewBySettings();
     const inserted = await client.query(
-        `INSERT INTO report_sources (name, created_by, is_inferred, sync_group_id, updated_at)
-         VALUES ($1, $2, FALSE, $3, CURRENT_TIMESTAMP)
+        `INSERT INTO report_sources (name, created_by, is_inferred, sync_group_id, review_required, updated_at)
+         VALUES ($1, $2, FALSE, $3, $4, CURRENT_TIMESTAMP)
          RETURNING id, name`,
-        [name, user?.id || null, targetGroupId || null]
+        [name, user?.id || null, targetGroupId || null, firstUploadRequiresReview]
     );
     return {
         id: inserted.rows[0].id,
         name: inserted.rows[0].name,
         syncGroupId: Number.parseInt(user?.resolved_group_id ?? "", 10) || null,
-        reviewRequired: false,
+        reviewRequired: firstUploadRequiresReview,
         reviewSchemaChanges: true,
         reviewLabelRules: {},
         previousSheetId: null,
@@ -861,7 +973,7 @@ async function loadReportSourceForImport(client, reportSourceId) {
          FROM report_sources rs
          LEFT JOIN sheets s ON s.id = rs.current_sheet_id
          WHERE rs.id = $1
-         FOR UPDATE`,
+         FOR UPDATE OF rs`,
         [sourceId]
     );
     if (!source.rows.length) {
@@ -1005,6 +1117,16 @@ async function importStagingFinalizeEnabledBySettings() {
         if (enabled === true || String(enabled || "").trim().toLowerCase() === "true") return true;
     } catch {}
     return IMPORT_STAGING_FINALIZE_ENABLED;
+}
+
+async function firstUploadRequiresReviewBySettings() {
+    try {
+        const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [REVIEW_DEFAULTS_SETTINGS_KEY]);
+        const enabled = rows?.[0]?.value?.firstUploadRequiresReview;
+        if (enabled === undefined || enabled === null || String(enabled).trim() === "") return true;
+        return enabled === true || String(enabled).trim().toLowerCase() === "true";
+    } catch {}
+    return true;
 }
 
 async function shouldUseQueuedImport(req) {
@@ -1817,12 +1939,30 @@ async function executeImportFromParsedWorkbook({
                 },
             };
         }
+        const aiChatCompatibility = evaluateAiChatCompatibilityForImport({
+            semanticProfile,
+            sampleRows: firstTabRowsRaw,
+        });
+        semanticProfile = {
+            ...(semanticProfile || {}),
+            learned: {
+                ...((semanticProfile && typeof semanticProfile === "object" && semanticProfile.learned && typeof semanticProfile.learned === "object")
+                    ? semanticProfile.learned
+                    : {}),
+                ai_chat_compatibility: {
+                    ...aiChatCompatibility,
+                    evaluatedAt: new Date().toISOString(),
+                },
+            },
+        };
+        const compatibilityReviewRequired = AI_CHAT_COMPATIBILITY_ENFORCE_IMPORT && !aiChatCompatibility.ready;
 
         const versionedFilename = await getVersionedFilename(client, reportSource.id, originalName);
         const headerDiff = buildHeaderDiff(reportSource.previousHeaders, headers);
         const schemaStatus = getSchemaStatus(headerDiff);
         const reviewPolicy = resolveReviewPolicy(reportSource, fileLabel, schemaStatus, approvalRequired);
-        const reviewRequired = !!reviewPolicy.required;
+        const baseReviewReasons = Array.isArray(reviewPolicy?.reasons) ? reviewPolicy.reasons : [];
+        const reviewRequired = !!reviewPolicy.required || compatibilityReviewRequired;
         const versionRes = await client.query(
             "SELECT COALESCE(MAX(import_version), 0)::int + 1 AS next_version FROM report_source_imports WHERE report_source_id = $1 AND file_label = $2",
             [reportSource.id, fileLabel]
@@ -2016,7 +2156,9 @@ async function executeImportFromParsedWorkbook({
             schema_status: schemaStatus,
             schema_diff: headerDiff,
             review_required: reviewRequired,
-            review_reasons: reviewPolicy.reasons,
+            review_reasons: compatibilityReviewRequired
+                ? [...baseReviewReasons, ...aiChatCompatibility.missing.map((reason) => `AI chat compatibility: ${reason}`)]
+                : baseReviewReasons,
             semantic_profile: semanticProfile,
             headers,
             rows: totalRows,
@@ -3320,7 +3462,8 @@ export async function listMySheets(req, res) {
              ORDER BY s.uploaded_at DESC${suffix}`,
             paginationParams
         );
-        return res.json(rows);
+        const enriched = await enrichSheetsWithAiChatCompatibility(rows);
+        return res.json(enriched);
     }
 
     const rows = await query(
@@ -3355,7 +3498,8 @@ export async function listMySheets(req, res) {
          ORDER BY s.uploaded_at DESC${pagination.hasPagination ? " LIMIT $2 OFFSET $3" : ""}`,
         pagination.hasPagination ? [userId, pagination.limit, pagination.offset] : [userId]
     );
-    res.json(rows);
+    const enriched = await enrichSheetsWithAiChatCompatibility(rows);
+    res.json(enriched);
 }
 
 export async function listAllSheets(req, res) {
@@ -3375,7 +3519,8 @@ export async function listAllSheets(req, res) {
          ORDER BY s.uploaded_at DESC${pagination.hasPagination ? " LIMIT $1 OFFSET $2" : ""}`,
         pagination.hasPagination ? [pagination.limit, pagination.offset] : []
     );
-    res.json(rows);
+    const enriched = await enrichSheetsWithAiChatCompatibility(rows);
+    res.json(enriched);
 }
 
 export async function listReportSources(req, res) {
@@ -3813,6 +3958,47 @@ export async function publishReportSourceImport(req, res) {
                 sheet_id: record.sheet_id,
                 status: "published",
             });
+        }
+
+        if (AI_CHAT_COMPATIBILITY_ENFORCE_IMPORT) {
+            const preflightRows = await client.query(
+                `SELECT s.headers, s.tab_name, s.semantic_profile
+                   FROM sheets s
+                  WHERE s.id = $1
+                  LIMIT 1`,
+                [record.sheet_id]
+            );
+            if (preflightRows.rows?.length) {
+                const sheet = preflightRows.rows[0];
+                const sampleRowsRes = await client.query(
+                    `SELECT row_data
+                       FROM sheet_rows
+                      WHERE sheet_id = $1
+                        AND ($2::text IS NULL OR tab_name = $2)
+                      ORDER BY row_index ASC
+                      LIMIT 300`,
+                    [record.sheet_id, sheet.tab_name || null]
+                );
+                const sampleRows = sampleRowsRes.rows.map((r) => r.row_data || {});
+                const compatibility = evaluateAiChatCompatibilityForImport({
+                    semanticProfile: sheet.semantic_profile || {},
+                    sampleRows,
+                });
+                if (!compatibility.ready) {
+                    await client.query("ROLLBACK");
+                    return res.status(422).json({
+                        error: "ai_chat_compatibility_blocked",
+                        message: "Publish blocked: spreadsheet is not AI-chat compatible.",
+                        details: {
+                            reasons: compatibility.missing,
+                            required: [
+                                "mapped date/year column with valid date values",
+                                "at least one mapped metric column with numeric values",
+                            ],
+                        },
+                    });
+                }
+            }
         }
 
         await client.query("UPDATE sheets SET active = TRUE WHERE id = $1", [record.sheet_id]);

@@ -559,6 +559,9 @@ export default function UserManagement({ token, user, sheetId }) {
   const [revisionCompareSettings, setRevisionCompareSettings] = useState({ maxRows: 100000, maxAllowedRows: 100000 });
   const [revisionCompareSaving, setRevisionCompareSaving] = useState(false);
   const [revisionCompareSaved, setRevisionCompareSaved] = useState(false);
+  const [reviewDefaultsSettings, setReviewDefaultsSettings] = useState({ firstUploadRequiresReview: true });
+  const [reviewDefaultsSaving, setReviewDefaultsSaving] = useState(false);
+  const [reviewDefaultsSaved, setReviewDefaultsSaved] = useState(false);
   const [aiRuntimeSettings, setAiRuntimeSettingsState] = useState({ ...AI_RUNTIME_PRESETS.mid });
   const aiRuntimeSettingsRef = useRef(aiRuntimeSettings);
   const setAiRuntimeSettings = useCallback((updater) => {
@@ -611,6 +614,7 @@ export default function UserManagement({ token, user, sheetId }) {
   const [aiLearningCandidatesLoading, setAiLearningCandidatesLoading] = useState(false);
   const [aiLearningReviewBusyId, setAiLearningReviewBusyId] = useState(null);
   const [aiLearningApprovedOpen, setAiLearningApprovedOpen] = useState(true);
+  const [aiSelfLearningOpen, setAiSelfLearningOpen] = useState(true);
   const [aiLearningImpact, setAiLearningImpact] = useState({ days: 30, intents: [] });
   const metricsUrl = useMemo(() => `${String(API || "").replace(/\/+$/, "")}/metrics`, []);
   const [emailIngestConfig, setEmailIngestConfig] = useState({
@@ -647,6 +651,7 @@ export default function UserManagement({ token, user, sheetId }) {
   const [newCustomerCompanyName, setNewCustomerCompanyName] = useState("");
   const [newCustomerEmail, setNewCustomerEmail] = useState("");
   const [newCustomerPhone, setNewCustomerPhone] = useState("");
+  const [newCustomerBundleTier, setNewCustomerBundleTier] = useState("core");
   const [customerFormOpen, setCustomerFormOpen] = useState(false);
   const [customerFormMode, setCustomerFormMode] = useState("create");
   const [editingCustomerId, setEditingCustomerId] = useState(null);
@@ -1824,6 +1829,20 @@ export default function UserManagement({ token, user, sheetId }) {
     }
   };
 
+  const fetchReviewDefaultsSetting = async () => {
+    if (!isSuperAdmin) return;
+    try {
+      const res = await axios.get(`${API}/admin/settings/review-defaults`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setReviewDefaultsSettings({
+        firstUploadRequiresReview: res?.data?.firstUploadRequiresReview !== false,
+      });
+    } catch (e) {
+      console.error("fetchReviewDefaultsSetting failed", e);
+    }
+  };
+
   const fetchAiRuntimeSetting = async () => {
     if (!isSuperAdmin) return;
     const requestSeq = ++aiRuntimeRequestSeqRef.current;
@@ -2204,6 +2223,29 @@ export default function UserManagement({ token, user, sheetId }) {
       alert(e.response?.data?.error || "Failed to save revision compare settings");
     } finally {
       setRevisionCompareSaving(false);
+    }
+  };
+
+  const saveReviewDefaultsSetting = async () => {
+    if (!isSuperAdmin || reviewDefaultsSaving) return;
+    setReviewDefaultsSaving(true);
+    setReviewDefaultsSaved(false);
+    try {
+      const payload = {
+        firstUploadRequiresReview: reviewDefaultsSettings.firstUploadRequiresReview === true,
+      };
+      const res = await axios.patch(`${API}/admin/settings/review-defaults`, payload, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setReviewDefaultsSettings({
+        firstUploadRequiresReview: res?.data?.firstUploadRequiresReview !== false,
+      });
+      setReviewDefaultsSaved(true);
+      setTimeout(() => setReviewDefaultsSaved(false), 1800);
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to save review defaults");
+    } finally {
+      setReviewDefaultsSaving(false);
     }
   };
 
@@ -2764,6 +2806,7 @@ export default function UserManagement({ token, user, sheetId }) {
       fetchAutosyncIntervalSetting();
       fetchImportPipelineSetting();
       fetchRevisionCompareSetting();
+      fetchReviewDefaultsSetting();
       fetchAiRuntimeSetting();
       fetchAiSelfLearningSetting();
       fetchAiLearningCandidates();
@@ -2802,6 +2845,7 @@ export default function UserManagement({ token, user, sheetId }) {
     fetchAutosyncIntervalSetting();
     fetchImportPipelineSetting();
     fetchRevisionCompareSetting();
+    fetchReviewDefaultsSetting();
     fetchAiRuntimeSetting();
     fetchAiSelfLearningSetting();
     fetchAiLearningCandidates();
@@ -3200,6 +3244,7 @@ export default function UserManagement({ token, user, sheetId }) {
         customerCompanyName: companyName,
         customerEmail,
         customerPhone,
+        entitlements: buildBundleEntitlements(newCustomerBundleTier),
       }, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -3223,6 +3268,7 @@ export default function UserManagement({ token, user, sheetId }) {
     setNewCustomerCompanyName("");
     setNewCustomerEmail("");
     setNewCustomerPhone("");
+    setNewCustomerBundleTier("core");
     setCustomerFormOpen(true);
   };
 
@@ -3262,6 +3308,7 @@ export default function UserManagement({ token, user, sheetId }) {
           headers: { Authorization: `Bearer ${token}` },
         });
       } else {
+        payload.entitlements = buildBundleEntitlements(newCustomerBundleTier);
         await axios.post(`${API}/groups`, payload, {
           headers: { Authorization: `Bearer ${token}` },
         });
@@ -3273,10 +3320,35 @@ export default function UserManagement({ token, user, sheetId }) {
       setNewCustomerCompanyName("");
       setNewCustomerEmail("");
       setNewCustomerPhone("");
+      setNewCustomerBundleTier("core");
       fetchGroups();
     } catch (e) {
       alert(e.response?.data?.error || "Failed to save customer");
     }
+  };
+
+  const buildBundleEntitlements = (bundleTierRaw) => {
+    const bundleTier = BUNDLE_KEYS.includes(String(bundleTierRaw || "").toLowerCase())
+      ? String(bundleTierRaw || "").toLowerCase()
+      : "core";
+    const features = { ...(BUNDLE_DEFAULT_FEATURES[bundleTier] || {}) };
+    const aiLimits = BUNDLE_AI_LIMITS[bundleTier] || {};
+    const capacityLimits = BUNDLE_DEFAULT_CAPACITY_LIMITS[bundleTier] || {};
+    return {
+      bundleTier,
+      features,
+      maxAiQueriesPerMonth: aiLimits.maxAiQueriesPerMonth ?? null,
+      aiMonthlyBudgetUsd: aiLimits.aiMonthlyBudgetUsd ?? null,
+      maxUsers: capacityLimits.maxUsers ?? null,
+      maxReportSources: capacityLimits.maxReportSources ?? null,
+      bundleFeatureSets: { [bundleTier]: features },
+      bundleCapacityLimits: {
+        [bundleTier]: {
+          maxUsers: capacityLimits.maxUsers ?? null,
+          maxReportSources: capacityLimits.maxReportSources ?? null,
+        },
+      },
+    };
   };
 
   const updateGroup = async (gid, data) => {
@@ -3540,9 +3612,8 @@ export default function UserManagement({ token, user, sheetId }) {
   const reportSourcesForDeletion = useMemo(() => {
     const all = Array.isArray(reviewSourceOptions) ? reviewSourceOptions : [];
     const gid = Number.parseInt(String(selectedGroupId || ""), 10);
-    if (!Number.isInteger(gid) || gid <= 0) return all;
-    const scoped = all.filter((source) => Number(source?.sync_group_id) === gid);
-    return scoped.length ? scoped : all;
+    if (!Number.isInteger(gid) || gid <= 0) return [];
+    return all.filter((source) => Number(source?.sync_group_id) === gid);
   }, [reviewSourceOptions, selectedGroupId]);
   const inviteGroupId = useMemo(() => {
     if (Number.isInteger(Number(selectedGroupId)) && Number(selectedGroupId) > 0) return Number(selectedGroupId);
@@ -4409,7 +4480,18 @@ export default function UserManagement({ token, user, sheetId }) {
               )}
             </div>
             <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
-              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">AI Self-Learning</div>
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">AI Self-Learning</div>
+                <button
+                  type="button"
+                  onClick={() => setAiSelfLearningOpen((prev) => !prev)}
+                  className="text-[10px] font-semibold text-slate-600 hover:text-slate-900"
+                >
+                  {aiSelfLearningOpen ? "Collapse" : "Expand"}
+                </button>
+              </div>
+              {aiSelfLearningOpen && (
+                <>
               <div className="text-[10px] text-slate-500">Capture chat feedback and apply only admin-approved learning rules.</div>
               <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700">
                 <input
@@ -4575,6 +4657,8 @@ export default function UserManagement({ token, user, sheetId }) {
                   </>
                 )}
               </div>
+                </>
+              )}
             </div>
             <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
               <div className="flex items-center justify-between gap-2">
@@ -4978,6 +5062,28 @@ export default function UserManagement({ token, user, sheetId }) {
               </button>
             </div>
             <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Review Defaults</div>
+              <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={reviewDefaultsSettings.firstUploadRequiresReview === true}
+                  onChange={(e) => setReviewDefaultsSettings((prev) => ({ ...prev, firstUploadRequiresReview: e.target.checked }))}
+                />
+                First upload of a new source requires approval
+              </label>
+              <div className="text-[10px] text-slate-500">
+                When enabled, the initial import for newly created sources is held in pending approval before publish.
+              </div>
+              <button
+                type="button"
+                onClick={saveReviewDefaultsSetting}
+                disabled={reviewDefaultsSaving}
+                className={`btn-premium text-white w-full py-2 ${reviewDefaultsSaved ? "bg-emerald-600 hover:bg-emerald-600" : "bg-slate-800"} ${reviewDefaultsSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+              >
+                {reviewDefaultsSaving ? "Saving..." : reviewDefaultsSaved ? "Saved" : "Save Review Defaults"}
+              </button>
+            </div>
+            <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
               <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Invite Email Template</div>
               <input
                 className="input-premium"
@@ -5063,6 +5169,27 @@ export default function UserManagement({ token, user, sheetId }) {
 
           {reviewRulesOpen && (
             <>
+              {isSuperAdmin && (
+                <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 p-2 space-y-2">
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Review Defaults</div>
+                  <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={reviewDefaultsSettings.firstUploadRequiresReview === true}
+                      onChange={(e) => setReviewDefaultsSettings((prev) => ({ ...prev, firstUploadRequiresReview: e.target.checked }))}
+                    />
+                    First upload of a new source requires approval
+                  </label>
+                  <button
+                    type="button"
+                    onClick={saveReviewDefaultsSetting}
+                    disabled={reviewDefaultsSaving}
+                    className={`btn-premium text-white w-full py-1.5 text-[11px] ${reviewDefaultsSaved ? "bg-emerald-600 hover:bg-emerald-600" : "bg-slate-800"} ${reviewDefaultsSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+                  >
+                    {reviewDefaultsSaving ? "Saving..." : reviewDefaultsSaved ? "Saved" : "Save Review Defaults"}
+                  </button>
+                </div>
+              )}
               {!canManageIntegrations ? (
                 <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 p-2 text-[11px] font-medium text-slate-500">
                   Available to customer admins and super admins.
@@ -5376,6 +5503,8 @@ export default function UserManagement({ token, user, sheetId }) {
         firstName={newCustomerFirstName}
         lastName={newCustomerLastName}
         companyName={newCustomerCompanyName}
+        productBundle={newCustomerBundleTier}
+        productBundleOptions={PRODUCT_BUNDLES}
         email={newCustomerEmail}
         phone={newCustomerPhone}
         onClose={() => setCustomerFormOpen(false)}
@@ -5383,6 +5512,7 @@ export default function UserManagement({ token, user, sheetId }) {
         onFirstNameChange={setNewCustomerFirstName}
         onLastNameChange={setNewCustomerLastName}
         onCompanyNameChange={setNewCustomerCompanyName}
+        onProductBundleChange={setNewCustomerBundleTier}
         onEmailChange={setNewCustomerEmail}
         onPhoneChange={setNewCustomerPhone}
       />

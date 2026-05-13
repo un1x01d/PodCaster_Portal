@@ -41,6 +41,7 @@ const METRICS_EXPOSURE_SETTINGS_KEY = "metrics_exposure_settings";
 const EMAIL_INGEST_SETTINGS_KEY = "email_ingest_settings";
 const EMAIL_INGEST_ALLOWLIST_KEY = "email_ingest_allowlist";
 const IMPORT_PIPELINE_SETTINGS_KEY = "import_pipeline_settings";
+const REVIEW_DEFAULTS_SETTINGS_KEY = "review_defaults_settings";
 const TWO_FACTOR_TOTP_SETTINGS_KEY = "two_factor_totp_settings";
 const SMS_OTP_CONFIG_KEY = "sms_otp_config";
 const AI_SELF_LEARNING_SETTINGS_KEY = "ai_self_learning_settings";
@@ -1898,6 +1899,41 @@ export function normalizeImportPipelineSettings(raw = {}) {
         importStagingWriteEnabled: stagingWrite === true || String(stagingWrite).trim().toLowerCase() === "true",
         importStagingFinalizeEnabled: stagingFinalize === true || String(stagingFinalize).trim().toLowerCase() === "true",
     };
+}
+
+export function normalizeReviewDefaultsSettings(raw = {}) {
+    const firstUploadRequiresReview = raw?.firstUploadRequiresReview;
+    return {
+        firstUploadRequiresReview: firstUploadRequiresReview === true || String(firstUploadRequiresReview || "").trim().toLowerCase() === "true",
+    };
+}
+
+export async function getReviewDefaultsSetting(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    const rows = await query("SELECT value FROM app_settings WHERE key = $1 LIMIT 1", [REVIEW_DEFAULTS_SETTINGS_KEY]);
+    const current = normalizeReviewDefaultsSettings(rows?.[0]?.value || { firstUploadRequiresReview: true });
+    return res.json(current);
+}
+
+export async function setReviewDefaultsSetting(req, res) {
+    if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
+    assertAllowedKeys(req.body || {}, ["firstUploadRequiresReview"]);
+    const next = normalizeReviewDefaultsSettings(req.body || {});
+    await query(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+         ON CONFLICT (key)
+         DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+        [REVIEW_DEFAULTS_SETTINGS_KEY, JSON.stringify(next)]
+    );
+    await writeAuditLog({
+        req,
+        action: "review_defaults.settings_updated",
+        resourceType: "app_settings",
+        resourceId: REVIEW_DEFAULTS_SETTINGS_KEY,
+        metadata: next,
+    });
+    return res.json({ success: true, ...next });
 }
 
 export async function getImportPipelineSetting(req, res) {

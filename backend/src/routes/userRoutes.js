@@ -32,6 +32,7 @@ import {
     getRevisionCompareSetting, setRevisionCompareSetting,
     getEmailIngestSetting, setEmailIngestSetting,
     getImportPipelineSetting, setImportPipelineSetting,
+    getReviewDefaultsSetting, setReviewDefaultsSetting,
     getUserGroups,
     listGroups, createGroup, provisionGroupDatabase, updateGroup, deleteGroup, getGroupMembers, updateGroupMembers, getGroupSheets,
     addUserToGroup, removeUserFromGroup, toggleGroupAdmin,
@@ -132,6 +133,8 @@ router.get("/admin/settings/email-ingest", asyncHandler(getEmailIngestSetting));
 router.patch("/admin/settings/email-ingest", asyncHandler(setEmailIngestSetting));
 router.get("/admin/settings/import-pipeline", asyncHandler(getImportPipelineSetting));
 router.patch("/admin/settings/import-pipeline", asyncHandler(setImportPipelineSetting));
+router.get("/admin/settings/review-defaults", asyncHandler(getReviewDefaultsSetting));
+router.patch("/admin/settings/review-defaults", asyncHandler(setReviewDefaultsSetting));
 router.get("/admin/settings/sftp-storage", asyncHandler(getSftpStorageSetting));
 router.patch("/admin/settings/sftp-storage", asyncHandler(setSftpStorageSetting));
 router.post("/admin/settings/sftp-storage/test", asyncHandler(testSftpStorageSetting));

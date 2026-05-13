@@ -35,6 +35,7 @@ export { checkSheetAccess } from "../utils/authorization.js";
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10);
 const CHAT_ENABLE_LEGACY_FALLBACK = String(process.env.CHAT_ENABLE_LEGACY_FALLBACK || "false").trim().toLowerCase() === "true";
+const CHAT_PREDEFINED_SHEETS_ONLY = String(process.env.CHAT_PREDEFINED_SHEETS_ONLY || "true").trim().toLowerCase() === "true";
 const CHAT_MAX_ROWS = Math.min(100000, Number.parseInt(process.env.CHAT_MAX_ROWS || "50000", 10));
 const CHAT_SQL_AGG_MAX_ROWS = Math.min(300000, Number.parseInt(process.env.CHAT_SQL_AGG_MAX_ROWS || "120000", 10));
 const CHAT_AUDIO_MAX_CHARS = Number.parseInt(process.env.CHAT_AUDIO_MAX_CHARS || "8000", 10);
@@ -78,6 +79,81 @@ const CHAT_RUNTIME_RULES_DEFAULTS = {
   promptCompositeDecomposeRule: "If user asks a composite question with multiple intents, decompose internally into sub-steps and return one merged concise answer.",
   debugHeaderResolutionResponse: false,
 };
+
+function parseNumericLoose(value) {
+  if (value === null || value === undefined) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  const cleaned = raw.replace(/[^0-9.+-]/g, "");
+  if (!cleaned || cleaned === "." || cleaned === "-" || cleaned === "+") return null;
+  if (!/^[-+]?\d*\.?\d+$/.test(cleaned)) return null;
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
+}
+
+function sampleTypeStats(rows = [], column = "") {
+  const src = Array.isArray(rows) ? rows : [];
+  const col = String(column || "").trim();
+  const values = src
+    .slice(0, 300)
+    .map((r) => r?.[col])
+    .filter((v) => v !== null && v !== undefined && String(v).trim() !== "");
+  const nonEmpty = values.length;
+  if (!nonEmpty) return { nonEmpty: 0, numericHits: 0, dateHits: 0, numericRatio: 0, dateRatio: 0 };
+  let numericHits = 0;
+  let dateHits = 0;
+  for (const value of values) {
+    if (parseNumericLoose(value) !== null) numericHits += 1;
+    if (parseDateValue(value)) dateHits += 1;
+  }
+  return {
+    nonEmpty,
+    numericHits,
+    dateHits,
+    numericRatio: numericHits / nonEmpty,
+    dateRatio: dateHits / nonEmpty,
+  };
+}
+
+function evaluatePredefinedChatCompatibility({ semanticProfile = {}, headers = [], sampleRows = [] }) {
+  const headerSet = new Set((Array.isArray(headers) ? headers : []).map((h) => String(h)));
+  const defaults = semanticProfile && typeof semanticProfile === "object" ? (semanticProfile.defaults || {}) : {};
+  const metricColumns = defaults && typeof defaults === "object" && defaults.metricColumns && typeof defaults.metricColumns === "object"
+    ? Object.values(defaults.metricColumns).map((v) => String(v || "").trim()).filter(Boolean)
+    : [];
+  const dateColumn = String(defaults?.dateColumn || "").trim();
+
+  const presentMetrics = metricColumns.filter((col) => headerSet.has(col));
+  const hasDate = !!dateColumn && headerSet.has(dateColumn);
+  const hasMetric = presentMetrics.length > 0;
+
+  const reasons = [];
+  if (!hasMetric) reasons.push("metric mapping is missing");
+  if (!hasDate) reasons.push("date/year mapping is missing");
+  if (hasDate) {
+    const dateStats = sampleTypeStats(sampleRows, dateColumn);
+    if (dateStats.nonEmpty < 5 || dateStats.dateRatio < 0.6) {
+      reasons.push("date/year column values are not consistently valid dates");
+    }
+  }
+  if (hasMetric) {
+    const metricStats = presentMetrics.map((col) => ({ col, stats: sampleTypeStats(sampleRows, col) }));
+    const hasValidMetric = metricStats.some((m) => m.stats.nonEmpty >= 5 && m.stats.numericRatio >= 0.6);
+    if (!hasValidMetric) {
+      reasons.push("mapped metric columns are not consistently numeric");
+    }
+  }
+  const valueQualityOk = reasons.every((r) => !/consistently/.test(r));
+
+  return {
+    compatible: hasMetric && hasDate && valueQualityOk,
+    hasMetric,
+    hasDate,
+    dateColumn: hasDate ? dateColumn : null,
+    metricColumns: presentMetrics.slice(0, 4),
+    reasons,
+  };
+}
 
 const LEARNING_DB_RETRY_ATTEMPTS = Math.max(1, Number.parseInt(process.env.LEARNING_DB_RETRY_ATTEMPTS || "3", 10));
 const LEARNING_DB_RETRY_BASE_MS = Math.max(5, Number.parseInt(process.env.LEARNING_DB_RETRY_BASE_MS || "40", 10));
@@ -4248,6 +4324,14 @@ export async function chatQuery(req, res) {
   }
 
   if (!hasSheet) {
+    if (CHAT_PREDEFINED_SHEETS_ONLY) {
+      return res.json({
+        answer: "Open a predefined AI-compatible spreadsheet first. Chat is limited to configured sheets with confirmed metric and date mappings.",
+        actions: { reset_filters: false, filters: [], chart: null },
+        preview_rows: [],
+        meta: { operation: "none", locale, noSheetMode: true, predefinedOnly: true },
+      });
+    }
     const noSheetPrompt = `${normalizedMessage}\n\nNo spreadsheet is currently opened. Reply with usage guidance and safe interpretations of local workspace AI/UX rules only. Do not invent numbers or reference sheet rows.`;
     let noSheetPlan;
     try {
@@ -4341,6 +4425,26 @@ export async function chatQuery(req, res) {
       runtime,
     });
     semanticProfile = semanticProfileWithAi || semanticProfile;
+    if (CHAT_PREDEFINED_SHEETS_ONLY) {
+      const compatibility = evaluatePredefinedChatCompatibility({
+        semanticProfile,
+        headers: aiHeaders,
+        sampleRows: loadedSample?.rows || [],
+      });
+      if (!compatibility.compatible) {
+        return res.json({
+          answer: `This spreadsheet is not AI-chat compatible yet: ${compatibility.reasons.join(" and ")}. Please confirm the sheet type and semantic mappings first, then retry.`,
+          actions: { reset_filters: false, filters: [], chart: null },
+          preview_rows: [],
+          meta: {
+            phase: "predefined_sheet_required",
+            compatible: false,
+            reasons: compatibility.reasons,
+            required: ["date/year column mapping", "at least one metric column mapping"],
+          },
+        });
+      }
+    }
   }
 
     return res.json({
@@ -4356,7 +4460,7 @@ export async function chatQuery(req, res) {
   }
 
   const domainRoute = classifyBusinessDomain(planningMessage);
-  if (domainRoute?.safe_next_action === "ask_followup") {
+  if (!CHAT_PREDEFINED_SHEETS_ONLY && domainRoute?.safe_next_action === "ask_followup") {
     return res.json({
       answer: "Your question can be interpreted across multiple domains. Do you mean accounting revenue, sales performance, or marketing-attributed revenue?",
       actions: { reset_filters: false, filters: [], chart: null },
@@ -4364,7 +4468,7 @@ export async function chatQuery(req, res) {
       meta: { phase: "multi_domain_followup", domains: domainRoute.domains || [] },
     });
   }
-  if (domainRoute?.domains?.includes("tax") || domainRoute?.safe_next_action === "tax_not_enabled" || domainRoute?.safe_next_action === "unsupported_or_tax_not_enabled") {
+  if (!CHAT_PREDEFINED_SHEETS_ONLY && (domainRoute?.domains?.includes("tax") || domainRoute?.safe_next_action === "tax_not_enabled" || domainRoute?.safe_next_action === "unsupported_or_tax_not_enabled")) {
     return res.json({
       answer: "Tax-specific analysis is not enabled yet. I can summarize tax-related fields once tax-safe logic is enabled, but I cannot provide tax advice.",
       actions: { reset_filters: false, filters: [], chart: null },
@@ -4372,7 +4476,7 @@ export async function chatQuery(req, res) {
       meta: { phase: "tax_not_enabled", domains: domainRoute.domains || [] },
     });
   }
-  if (domainRoute?.primary_domain && ["finance", "marketing", "sales"].includes(domainRoute.primary_domain)) {
+  if (!CHAT_PREDEFINED_SHEETS_ONLY && domainRoute?.primary_domain && ["finance", "marketing", "sales"].includes(domainRoute.primary_domain)) {
     return res.json({
       answer: `I understood your question as ${domainRoute.primary_domain}. Domain classification is enabled, but deterministic ${domainRoute.primary_domain} calculations are not enabled in this chat path yet.`,
       actions: { reset_filters: false, filters: [], chart: null },

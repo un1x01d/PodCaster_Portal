@@ -121,7 +121,61 @@ function pickHeaderByKeywords(headers = [], keywords = []) {
   return null;
 }
 
+function normalizeHeaderToken(value = "") {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractQuotedPhrases(message = "") {
+  const text = String(message || "");
+  const out = [];
+  const patterns = [
+    /"([^"]{2,80})"/g,
+    /'([^']{2,80})'/g,
+    /`([^`]{2,80})`/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const phrase = String(match?.[1] || "").trim();
+      if (phrase) out.push(phrase);
+    }
+  }
+  return Array.from(new Set(out));
+}
+
+function resolveExplicitHeaderHint(message = "", headers = []) {
+  const list = Array.isArray(headers) ? headers.map((h) => String(h || "")).filter(Boolean) : [];
+  if (!list.length) return { header: null, ambiguity: [], hintedText: "" };
+  const normalizedHeaders = list.map((h) => ({ raw: h, norm: normalizeHeaderToken(h) })).filter((h) => h.norm);
+
+  const quoted = extractQuotedPhrases(message);
+  const hintCandidates = quoted.length ? quoted : [String(message || "")];
+  for (const hintedTextRaw of hintCandidates) {
+    const hintedText = String(hintedTextRaw || "").trim();
+    const hintedNorm = normalizeHeaderToken(hintedText);
+    if (!hintedNorm || hintedNorm.length < 3) continue;
+
+    const exact = normalizedHeaders.find((h) => h.norm === hintedNorm);
+    if (exact) return { header: exact.raw, ambiguity: [], hintedText };
+
+    const contains = normalizedHeaders.filter((h) => h.norm.includes(hintedNorm) || hintedNorm.includes(h.norm));
+    if (contains.length === 1) return { header: contains[0].raw, ambiguity: [], hintedText };
+    if (contains.length > 1) return {
+      header: null,
+      ambiguity: contains.slice(0, 6).map((h) => h.raw),
+      hintedText,
+    };
+  }
+  return { header: null, ambiguity: [], hintedText: "" };
+}
+
 function resolveDimensionHeader(message = "", headers = []) {
+  const explicit = resolveExplicitHeaderHint(message, headers);
+  if (explicit.header) return explicit.header;
   const s = String(message || "").toLowerCase();
   const map = [
     { test: /\baccount\b/, keys: ["account"] },
@@ -139,6 +193,8 @@ function resolveDimensionHeader(message = "", headers = []) {
 }
 
 function resolveValueHeader(message = "", headers = []) {
+  const explicit = resolveExplicitHeaderHint(message, headers);
+  if (explicit.header) return explicit.header;
   const s = String(message || "").toLowerCase();
   if (/\bgross\s*profit|profit\b/.test(s)) {
     return pickHeaderByKeywords(headers, ["gross profit", "net income", "profit"]);
@@ -334,6 +390,14 @@ export async function buildDeterministicSpreadsheetPlan({
   const causeFollowup = /\b(what caused it|what caused this|what caused that|what caused|what drove it|what drove this|why|reason)\b/i.test(String(message || ""));
 
   const projectionIntent = detectProjectionIntent(message) || accountingIntent?.intent === "projection";
+  const explicitHeaderHint = resolveExplicitHeaderHint(message, headers);
+  if (!explicitHeaderHint.header && explicitHeaderHint.ambiguity.length) {
+    return makeClarification(
+      "explicit_header_ambiguous",
+      `I can answer that, but I need one clarification first. You mentioned "${explicitHeaderHint.hintedText}". Which exact column should I use?`,
+      explicitHeaderHint.ambiguity
+    );
+  }
 
   const rankingIntent = detectRankingIntent(message);
   if (rankingIntent) {
