@@ -58,6 +58,10 @@ export default function SearchableSelect({
         if (!open) setQ("");
     }, [open]);
 
+    useEffect(() => {
+        setOpen(false);
+    }, [value]);
+
     return (
         <div className={`relative flex align-top ${className}`}>
             <button
@@ -87,7 +91,7 @@ export default function SearchableSelect({
                         value={q}
                         onChange={(e) => setQ(e.target.value)}
                         placeholder="Type to search…"
-                        className={`w-full border border-gray-200 rounded-md px-2 py-1 mb-1.5 focus:outline-none focus:ring focus:ring-slate-100 placeholder:text-gray-400 text-xs ${searchInputClassName}`}
+                        className={`w-full border border-slate-200 rounded-md px-2 py-1 mb-1.5 focus:outline-none focus:ring focus:ring-slate-100 placeholder:text-slate-400 text-xs ${searchInputClassName}`}
                         style={searchInputStyle}
                     />
                     <div className="max-h-56 overflow-auto custom-scrollbar">
@@ -95,13 +99,20 @@ export default function SearchableSelect({
                             filtered.map((o) => (
                                 <div
                                     key={String(o.value)}
-                                    className={`px-2 py-1 rounded-md flex items-center justify-between group cursor-pointer hover:bg-blue-50 ${optionClassName} ${String(o.value) === String(value) ? selectedOptionClassName : ""}
+                                    className={`px-2 py-1 rounded-md flex items-center justify-between group cursor-pointer hover:bg-slate-100 ${optionClassName} ${String(o.value) === String(value) ? selectedOptionClassName : ""}
                                         `}
                                     title={o.label}
                                     style={String(o.value) === String(value) ? { ...optionStyle, ...selectedOptionStyle } : optionStyle}
-                                    onClick={() => {
-                                        onChange({ target: { value: o.value } });
+                                    onMouseDown={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
                                         setOpen(false);
+                                        setQ("");
+                                        try {
+                                            onChange({ target: { value: o.value } });
+                                        } catch {
+                                            // Keep menu closed even if parent handler throws.
+                                        }
                                     }}
                                 >
                                     <div

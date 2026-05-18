@@ -10,7 +10,6 @@ export default function Hero() {
       <div className={`absolute left-1/2 top-0 h-72 w-[48rem] -translate-x-1/2 rounded-full ${themeGlowClass} blur-3xl`} />
       <div className="relative mx-auto grid max-w-7xl gap-12 lg:grid-cols-[0.92fr_1.08fr] lg:items-center">
         <div>
-          <Badge tone="blue">The spreadsheet trust layer</Badge>
           <h1 className="mt-6 max-w-3xl text-4xl font-black tracking-tight text-slate-950 sm:text-5xl lg:text-6xl">
             The last spreadsheet your clients have to chase.
           </h1>

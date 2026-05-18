@@ -484,6 +484,7 @@ export default function DashboardHome({
   onTabChange,
   headers = [],
   sortedData = [],
+  dlpMaskedColumns = [],
   columnFilters = {},
   views = [],
   pivotOn,
@@ -526,6 +527,7 @@ export default function DashboardHome({
   const [kpiEditorOpen, setKpiEditorOpen] = React.useState({});
   const [kpiOverridesLoaded, setKpiOverridesLoaded] = React.useState(false);
   const [reviewBusyId, setReviewBusyId] = React.useState("");
+  const [reviewInlineErrorByImportId, setReviewInlineErrorByImportId] = React.useState({});
   const reviewQueueRef = React.useRef(null);
   const [topCategoriesConfig, setTopCategoriesConfig] = React.useState({
     title: "",
@@ -557,6 +559,24 @@ export default function DashboardHome({
   const pinnedTitleTranslateCooldownRef = React.useRef(new Map());
   const pinnedConfigRef = React.useRef(null);
   const aiRequestByPendingKeyRef = React.useRef({});
+  const maskedColumnSet = React.useMemo(() => {
+    const out = new Set();
+    (Array.isArray(dlpMaskedColumns) ? dlpMaskedColumns : []).forEach((col) => {
+      const normalized = String(col || "").trim().toLowerCase();
+      if (normalized) out.add(normalized);
+    });
+    return out;
+  }, [dlpMaskedColumns]);
+
+  const isMaskedColumn = React.useCallback((col) => {
+    const normalized = String(col || "").trim().toLowerCase();
+    return !!normalized && maskedColumnSet.has(normalized);
+  }, [maskedColumnSet]);
+
+  const allowedHeaders = React.useMemo(
+    () => headers.filter((h) => !isMaskedColumn(h)),
+    [headers, isMaskedColumn]
+  );
 
   React.useEffect(() => {
     pinnedConfigRef.current = pinnedConfig;
@@ -634,7 +654,7 @@ export default function DashboardHome({
       /\b(count|how many|number of)\b/.test(q) ? "count" :
       "sum";
 
-    const bestColumn = headers
+    const bestColumn = allowedHeaders
       .map((h) => {
         const key = String(h || "").toLowerCase();
         let score = 0;
@@ -675,7 +695,7 @@ export default function DashboardHome({
         categoryColumn: prev?.[id]?.categoryColumn || kpiOverrides?.[id]?.categoryColumn || "",
       },
     }));
-  }, [headers, sortedData, kpiOverrides]);
+  }, [allowedHeaders, sortedData, kpiOverrides]);
 
   const submitChartPromptToAI = React.useCallback((ticketId, query) => {
     const id = String(ticketId || "").trim();
@@ -685,16 +705,16 @@ export default function DashboardHome({
   }, [submitDashboardPrompt]);
 
   const { metricCol, dateCol, categoryCol, profitCol, incomeCol, revenueCol, expenseCol } = React.useMemo(
-    () => detectColumns(headers, sortedData),
-    [headers, sortedData]
+    () => detectColumns(allowedHeaders, sortedData),
+    [allowedHeaders, sortedData]
   );
   const revenueMetricCol = revenueCol || metricCol;
   const incomeMetricCol = incomeCol || profitCol;
   const canDeriveExpense = !expenseCol && !!revenueMetricCol && !!incomeMetricCol;
 
   const sheetStructureSignature = React.useMemo(
-    () => headers.map((h) => String(h || "").trim().toLowerCase()).join("|"),
-    [headers]
+    () => allowedHeaders.map((h) => String(h || "").trim().toLowerCase()).join("|"),
+    [allowedHeaders]
   );
 
   const kpiEditorDefaults = React.useMemo(() => {
@@ -802,7 +822,7 @@ export default function DashboardHome({
   }, [headers, metricCol, incomeMetricCol, revenueMetricCol, categoryCol, sheetStructureSignature, kpiEditorDefaults]);
 
   const numericHeaderOptions = React.useMemo(() => {
-    return headers.filter((h) => {
+    return allowedHeaders.filter((h) => {
       let nonEmpty = 0;
       let numeric = 0;
       for (let i = 0; i < Math.min(sortedData.length, 400); i += 1) {
@@ -813,10 +833,10 @@ export default function DashboardHome({
       }
       return nonEmpty > 0 && numeric / nonEmpty >= 0.65;
     });
-  }, [headers, sortedData]);
+  }, [allowedHeaders, sortedData]);
 
   const categoryHeaderOptions = React.useMemo(() => {
-    return headers.filter((h) => {
+    return allowedHeaders.filter((h) => {
       if (numericHeaderOptions.includes(h)) return false;
       const seen = new Set();
       for (let i = 0; i < Math.min(sortedData.length, 400); i += 1) {
@@ -826,14 +846,14 @@ export default function DashboardHome({
       }
       return seen.size >= 2 && seen.size <= 80;
     });
-  }, [headers, numericHeaderOptions, sortedData]);
+  }, [allowedHeaders, numericHeaderOptions, sortedData]);
 
   React.useEffect(() => {
     setTopCategoriesConfig((prev) => {
       const hasCategory = String(prev.categoryColumn || "").trim().length > 0;
       const hasValue = String(prev.valueColumn || "").trim().length > 0;
-      const categoryValid = hasCategory && headers.includes(prev.categoryColumn);
-      const valueValid = hasValue && headers.includes(prev.valueColumn);
+      const categoryValid = hasCategory && allowedHeaders.includes(prev.categoryColumn);
+      const valueValid = hasValue && allowedHeaders.includes(prev.valueColumn);
 
       const nextCategory = categoryValid
         ? prev.categoryColumn
@@ -851,7 +871,50 @@ export default function DashboardHome({
         valueColumn: nextValue,
       };
     });
-  }, [categoryCol, metricCol, headers, sheetStructureSignature]);
+  }, [categoryCol, metricCol, allowedHeaders, sheetStructureSignature]);
+
+  React.useEffect(() => {
+    setKpiOverrides((prev) => {
+      if (!prev || typeof prev !== "object") return prev;
+      let changed = false;
+      const next = { ...prev };
+      Object.entries(next).forEach(([id, cfg]) => {
+        if (!cfg || typeof cfg !== "object") return;
+        const col = String(cfg.column || "").trim();
+        if (col && isMaskedColumn(col)) {
+          next[id] = { ...cfg, column: "" };
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+    setKpiDraftOverrides((prev) => {
+      if (!prev || typeof prev !== "object") return prev;
+      let changed = false;
+      const next = { ...prev };
+      Object.entries(next).forEach(([id, cfg]) => {
+        if (!cfg || typeof cfg !== "object") return;
+        const col = String(cfg.column || "").trim();
+        if (col && isMaskedColumn(col)) {
+          next[id] = { ...cfg, column: "" };
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+    setTrendConfig((prev) => {
+      const lines = Array.isArray(prev?.lines) ? prev.lines : [];
+      const filtered = lines.filter((line) => !isMaskedColumn(line?.column));
+      if (filtered.length === lines.length) return prev;
+      return { ...prev, lines: filtered };
+    });
+    setTopCategoriesConfig((prev) => {
+      const nextCategory = isMaskedColumn(prev?.categoryColumn) ? "" : prev?.categoryColumn;
+      const nextValue = isMaskedColumn(prev?.valueColumn) ? "" : prev?.valueColumn;
+      if (nextCategory === prev?.categoryColumn && nextValue === prev?.valueColumn) return prev;
+      return { ...prev, categoryColumn: nextCategory, valueColumn: nextValue };
+    });
+  }, [isMaskedColumn]);
 
   const PIE_COLORS = ["#2563eb", "#16a34a", "#fb923c", "#7c3aed", "#0369a1", "#0f766e", "#be185d", "#e11d48"];
 
@@ -1954,7 +2017,7 @@ export default function DashboardHome({
         }
     }
 
-    if (!column || !headers.includes(column)) {
+    if (!column || !allowedHeaders.includes(column) || isMaskedColumn(column)) {
       return {
         ...card,
         label: labelOverride || card.label,
@@ -2004,7 +2067,7 @@ export default function DashboardHome({
         : card.sparkline,
       sparklineType: agg === "count" ? "count" : (agg === "percent" ? "percent" : "currency"),
     };
-  }, [kpiOverrides, effectiveRows, dateCol, headers, sparklineGranularity]);
+  }, [kpiOverrides, effectiveRows, dateCol, allowedHeaders, sparklineGranularity, isMaskedColumn]);
 
   const cardsWithOverrides = React.useMemo(
     () => cards.map((card) => applyKpiOverride(card)),
@@ -2046,6 +2109,7 @@ export default function DashboardHome({
         : null;
       out.set(sid, {
         ready: !!backendStatus?.ready,
+        approvalReady: backendStatus?.approval_ready === true || !!backendStatus?.ready,
         missing: Array.isArray(backendStatus?.missing) && backendStatus.missing.length
           ? backendStatus.missing.map((m) => String(m))
           : (backendStatus ? [] : ["compatibility not evaluated yet"]),
@@ -2070,6 +2134,7 @@ export default function DashboardHome({
           status: "needs_source",
           statusLabel: "Needs source",
           schema: "Waiting",
+          uploadedBy: "",
           uploadedAt: "",
         });
         return;
@@ -2083,7 +2148,7 @@ export default function DashboardHome({
             : status === "rejected"
               ? "Rejected"
               : status === "superseded"
-                ? "Superseded"
+                ? ((Number(item?.import_version || 0) > 1) ? "Updated" : "Published")
                 : "Review";
         rows.push({
         id: item?.id || `${source.id}:${item?.sheet_id || item?.import_version || rows.length}`,
@@ -2096,6 +2161,7 @@ export default function DashboardHome({
         status,
         statusLabel,
         schema: item?.schema_status || "tracked",
+        uploadedBy: item?.imported_by_name || "",
         uploadedAt: item?.uploaded_at || item?.created_at || "",
         });
       });
@@ -2116,12 +2182,42 @@ export default function DashboardHome({
 
   const handleReviewAction = React.useCallback(async (row, action) => {
     if (!row?.importId || reviewBusyId) return;
+    const importKey = String(row.importId);
+    setReviewInlineErrorByImportId((prev) => {
+      if (!prev?.[importKey]) return prev;
+      const next = { ...prev };
+      delete next[importKey];
+      return next;
+    });
     setReviewBusyId(`${action}:${row.importId}`);
     try {
       await api.post(`/report-source-imports/${row.importId}/${action}`);
       await refreshReportSources?.();
     } catch (error) {
-      alert(error?.response?.data?.error || `Failed to ${action} import`);
+      const apiError = String(error?.response?.data?.error || "");
+      if (action === "publish" && apiError === "ai_chat_compatibility_blocked") {
+        setReviewInlineErrorByImportId((prev) => ({
+          ...(prev || {}),
+          [importKey]: "Cannot publish: sensitive content or required fields are blocking this file.",
+        }));
+      } else {
+        alert(error?.response?.data?.error || `Failed to ${action} import`);
+      }
+    } finally {
+      setReviewBusyId("");
+    }
+  }, [reviewBusyId, refreshReportSources]);
+
+  const handleDeleteRejectedImport = React.useCallback(async (row) => {
+    if (!row?.importId || reviewBusyId) return;
+    const confirmed = window.confirm(`Delete rejected file "${row.latestFile}" (${row.revision})?`);
+    if (!confirmed) return;
+    setReviewBusyId(`delete:${row.importId}`);
+    try {
+      await api.delete(`/report-source-imports/${row.importId}`);
+      await refreshReportSources?.();
+    } catch (error) {
+      alert(error?.response?.data?.error || "Failed to delete rejected import");
     } finally {
       setReviewBusyId("");
     }
@@ -2132,21 +2228,37 @@ export default function DashboardHome({
     return role === "admin" || role === "super_admin" || role === "superadmin" || !!user?.is_admin || !!user?.super_admin || !!user?.is_group_admin || !!user?.group_admin;
   }, [user]);
 
-  const statusBadgeClass = (status) => {
+  const statusBadgeClass = (status, revision = "") => {
+    const revNum = Number(String(revision || "").replace(/^v/i, ""));
     if (status === "published") return "bg-emerald-50 text-emerald-700";
+    if (status === "superseded" && Number.isFinite(revNum) && revNum <= 1) return "bg-emerald-50 text-emerald-700";
     if (status === "pending_approval") return "bg-amber-50 text-amber-700";
     if (status === "rejected") return "bg-rose-50 text-rose-700";
     if (status === "superseded") return "bg-slate-100 text-slate-500";
     return "bg-blue-50 text-blue-700";
   };
 
-  const sourceStats = [
-    ["Active sources", explicitReportSources.length.toLocaleString("en-US"), "Durable financial sources"],
-    ["File revisions", totalImports.toLocaleString("en-US"), "Versioned uploads and imports"],
-    ["Review required", reviewRows.length.toLocaleString("en-US"), "Imports held before publishing"],
-    ["Current source fields", headers.length.toLocaleString("en-US"), "Detected columns in active source"],
-  ];
+  const summarizeCompatibilityMissing = React.useCallback((missingList = []) => {
+    const text = (Array.isArray(missingList) ? missingList : []).map((m) => String(m || "").toLowerCase());
+    if (!text.length) return "Required mappings are missing.";
+    if (text.some((m) => m.includes("date") || m.includes("year") || m.includes("period"))) {
+      if (text.some((m) => m.includes("metric") || m.includes("numeric"))) {
+        return "Date and metric mappings are missing.";
+      }
+      return "Date mapping is missing.";
+    }
+    if (text.some((m) => m.includes("metric") || m.includes("numeric"))) {
+      return "Metric mapping is missing.";
+    }
+    return "Required mappings are missing.";
+  }, []);
 
+  const sourceStats = [
+    ["Uploads", totalImports.toLocaleString("en-US"), "Spreadsheets added"],
+    ["Need approval", reviewRows.length.toLocaleString("en-US"), "Waiting before publish"],
+    ["Published", publishedImports.toLocaleString("en-US"), "Ready for questions"],
+    ["Sources", explicitReportSources.length.toLocaleString("en-US"), "Data collections"],
+  ];
   React.useEffect(() => {
     if (!focusReviewQueue) return;
     window.requestAnimationFrame(() => {
@@ -2161,33 +2273,55 @@ export default function DashboardHome({
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
             <h2 className="text-2xl md:text-3xl font-black text-slate-950 tracking-tight">
-              Review sources, revisions, and publishing.
+              Upload, approve, ask, and share.
             </h2>
             <p className="mt-2 max-w-2xl text-sm font-semibold leading-6 text-slate-500">
-              Welcome {user?.name?.split(' ')[0] || user?.email?.split('@')[0]}. Review files, column changes, source rules, and published versions before numbers reach reporting.
+              {user?.name?.split(' ')[0] || user?.email?.split('@')[0]}, use this simple flow: upload a spreadsheet, preview it, approve it, ask questions, then share a view.
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
+            {/*
+              Keep top actions visually consistent: same size + same color family.
+            */}
+            <Link
+              to="/workspace/imports"
+              className="inline-flex h-10 min-w-[160px] items-center justify-center gap-2 rounded-md bg-slate-800 px-4 text-sm font-black text-white shadow-sm transition-all duration-150 hover:-translate-y-px hover:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-300"
+            >
+              <span aria-hidden="true">⬆</span>
+              <span>Upload File</span>
+            </Link>
             {onOpenWorkspace ? (
               <button
                 type="button"
                 onClick={onOpenWorkspace}
-                className="inline-flex items-center justify-center rounded-md bg-blue-600 px-4 py-2 text-sm font-black text-white shadow-sm shadow-blue-200 transition-all duration-150 hover:-translate-y-px hover:bg-blue-700 hover:shadow focus:outline-none focus:ring-2 focus:ring-blue-200"
+                className="inline-flex h-10 min-w-[160px] items-center justify-center gap-2 rounded-md bg-slate-800 px-4 text-sm font-black text-white shadow-sm transition-all duration-150 hover:-translate-y-px hover:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-300"
               >
-                {ui.openWorkspace}
+                <span>Open Workspace</span>
+                <span aria-hidden="true">→</span>
               </button>
             ) : (
               <Link
                 to="/workspace"
-                className="inline-flex items-center justify-center rounded-md bg-blue-600 px-4 py-2 text-sm font-black text-white shadow-sm shadow-blue-200 transition-all duration-150 hover:-translate-y-px hover:bg-blue-700 hover:shadow focus:outline-none focus:ring-2 focus:ring-blue-200"
+                className="inline-flex h-10 min-w-[160px] items-center justify-center gap-2 rounded-md bg-slate-800 px-4 text-sm font-black text-white shadow-sm transition-all duration-150 hover:-translate-y-px hover:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-300"
               >
-                {ui.openWorkspace}
+                <span>Open Workspace</span>
+                <span aria-hidden="true">→</span>
               </Link>
             )}
           </div>
         </div>
 
-        <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-5">
+            {["1. Upload spreadsheet", "2. Preview", "3. Approve", "4. Ask question", "5. Share view"].map((step) => (
+              <div key={step} className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700">
+                {step}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {sourceStats.map(([label, value, caption]) => (
             <div key={label} className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
               <div className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">{label}</div>
@@ -2202,35 +2336,29 @@ export default function DashboardHome({
             <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
               <div>
                 <h3 className="text-sm font-black text-slate-950">Files</h3>
-                <p className="mt-0.5 text-xs font-semibold text-slate-500">Imported financial files, revision state, schema checks, and publish status</p>
+                <p className="mt-0.5 text-xs font-semibold text-slate-500">Track uploaded files and whether they are ready to use.</p>
               </div>
               <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-black text-emerald-700">
                 {publishedImports} published
               </span>
             </div>
             <div className="border-b border-slate-100 bg-white px-4 py-3">
-              <div className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Schema Types</div>
+              <div className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Status Guide</div>
               <div className="mt-1 text-xs font-semibold text-slate-600">
-                <span className="font-black text-slate-800">Waiting:</span> no revision has been uploaded yet, so schema checks have not run.
+                <span className="font-black text-slate-800">Waiting:</span> no file uploaded yet.
               </div>
               <div className="mt-1 text-xs font-semibold text-slate-600">
-                <span className="font-black text-slate-800">Tracked:</span> schema is being monitored for this report source revision.
+                <span className="font-black text-slate-800">Review required:</span> uploaded, but not approved yet.
               </div>
               <div className="mt-1 text-xs font-semibold text-slate-600">
-                Other values (for example changed/mismatch) come from backend schema checks and indicate detected structure differences in that revision.
-              </div>
-              <div className="mt-3 border-t border-slate-100 pt-3">
-                <div className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">AI Chat Requirements</div>
-                <div className="mt-1 text-xs font-semibold text-slate-600">
-                  Ready requires both: a mapped date or year column, and at least one mapped metric column such as revenue, expense, or profit.
-                </div>
+                <span className="font-black text-slate-800">Published:</span> approved and ready for questions.
               </div>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[680px] text-left">
                 <thead className="border-b border-slate-100 bg-white">
                   <tr>
-                    {["Source", "File", "Revision", "Publish state", "Schema", "AI Chat"].map((head) => (
+                    {["Source", "File", "Revision", "Uploaded by", "Date", "Publish state"].map((head) => (
                       <th key={head} className="px-4 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{head}</th>
                     ))}
                   </tr>
@@ -2241,27 +2369,26 @@ export default function DashboardHome({
                       <td className="px-4 py-3 text-sm font-black text-slate-900">{row.source}</td>
                       <td className="px-4 py-3 text-sm font-semibold text-slate-600">{row.latestFile}</td>
                       <td className="px-4 py-3 text-xs font-black text-slate-500">{row.revision}</td>
+                      <td className="px-4 py-3 text-xs font-semibold text-slate-600">{row.uploadedBy || "-"}</td>
+                      <td className="px-4 py-3 text-xs font-semibold text-slate-600">{row.uploadedAt ? new Date(row.uploadedAt).toLocaleDateString() : "-"}</td>
                       <td className="px-4 py-3">
-                        <span className={`rounded-full px-2.5 py-1 text-[11px] font-black ${statusBadgeClass(row.status)}`}>
-                          {row.statusLabel}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-xs font-black capitalize text-slate-500">{String(row.schema || "").replace(/_/g, " ")}</td>
-                      <td className="px-4 py-3 text-xs">
-                        {row.sheetId ? (
-                          aiCompatibilityBySheetId.get(String(row.sheetId || ""))?.ready ? (
-                            <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-black text-emerald-700">Ready</span>
-                          ) : (
-                            <div className="space-y-1">
-                              <span className="rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-black text-amber-700">Setup Required</span>
-                              <div className="text-[10px] font-semibold text-amber-700">
-                                Missing: {(aiCompatibilityBySheetId.get(String(row.sheetId || ""))?.missing || []).join(", ") || "date/year mapping and metric mappings are required"}
-                              </div>
-                            </div>
-                          )
-                        ) : (
-                          <span className="text-slate-400">-</span>
-                        )}
+                        <div className="inline-flex items-center gap-2">
+                          <span className={`rounded-full px-2.5 py-1 text-[11px] font-black ${statusBadgeClass(row.status, row.revision)}`}>
+                            {row.statusLabel}
+                          </span>
+                          {canReviewImports && row.status === "rejected" && row.importId ? (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteRejectedImport(row)}
+                              disabled={!!reviewBusyId}
+                              title="Delete rejected file"
+                              aria-label="Delete rejected file"
+                              className={`inline-flex h-6 w-6 items-center justify-center rounded-md border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 ${reviewBusyId ? "opacity-60 cursor-not-allowed" : ""}`}
+                            >
+                              🗑
+                            </button>
+                          ) : null}
+                        </div>
                       </td>
                     </tr>
                   )) : (
@@ -2285,6 +2412,10 @@ export default function DashboardHome({
               {reviewRows.length ? reviewRows.slice(0, 4).map((row) => {
                 const publishBusy = reviewBusyId === `publish:${row.importId}`;
                 const rejectBusy = reviewBusyId === `reject:${row.importId}`;
+                const compatibility = aiCompatibilityBySheetId.get(String(row.sheetId || ""));
+                const publishBlockedByCompatibility = compatibility ? compatibility.approvalReady === false : false;
+                const publishDisabled = !!reviewBusyId || publishBlockedByCompatibility;
+                const inlineError = reviewInlineErrorByImportId[String(row.importId || "")] || "";
                 return (
                   <div key={`review-${row.id}`} className="rounded-lg border border-amber-200 bg-amber-50/60 p-3">
                     <div className="flex items-start justify-between gap-3">
@@ -2306,14 +2437,24 @@ export default function DashboardHome({
                         </button>
                         <button
                           type="button"
-                          disabled={!!reviewBusyId}
+                          disabled={publishDisabled}
                           onClick={() => handleReviewAction(row, "publish")}
-                          className={`rounded-md bg-emerald-600 px-2 py-1.5 text-[11px] font-black text-white hover:bg-emerald-700 ${reviewBusyId ? "opacity-60 cursor-not-allowed" : ""}`}
+                          className={`rounded-md bg-emerald-600 px-2 py-1.5 text-[11px] font-black text-white hover:bg-emerald-700 ${publishDisabled ? "opacity-60 cursor-not-allowed" : ""}`}
                         >
                           {publishBusy ? "Publishing..." : "Publish"}
                         </button>
                       </div>
                     )}
+                    {publishBlockedByCompatibility ? (
+                      <div className="mt-2 text-[10px] font-semibold text-amber-700">
+                        Cannot publish: sensitive content or required fields are blocking this file.
+                      </div>
+                    ) : null}
+                    {!publishBlockedByCompatibility && inlineError ? (
+                      <div className="mt-2 text-[10px] font-semibold text-amber-700">
+                        {inlineError}
+                      </div>
+                    ) : null}
                   </div>
                 );
               }) : (
@@ -2324,10 +2465,6 @@ export default function DashboardHome({
                   </div>
                 </div>
               )}
-              <div className="rounded-lg border border-blue-200 bg-blue-50 p-3">
-                <div className="text-xs font-black text-blue-900">Controlled answers</div>
-                <div className="mt-1 text-xs font-semibold leading-5 text-blue-800">AI output should use published revisions only; pending imports stay in review.</div>
-              </div>
             </div>
           </div>
         </div>
@@ -2551,7 +2688,7 @@ export default function DashboardHome({
                         className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-900"
                       >
                         <option value="">Column…</option>
-                        {headers.map((h) => (
+                        {allowedHeaders.map((h) => (
                           <option key={`kpi-col-${card.id}-${h}`} value={h}>{h}</option>
                         ))}
                       </select>

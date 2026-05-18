@@ -6474,6 +6474,46 @@ async function loadAccessibleRows(sheetId, user, activeTab = null, rowLimit = nu
   const rawHeaders = sheet.headers;
   let headers = Array.isArray(rawHeaders) ? rawHeaders : (typeof rawHeaders === "string" ? JSON.parse(rawHeaders || "[]") : []);
   const rows = await query(sql, params);
+
+  // Enforce DLP masking scope for chat: masked fields are never exposed to chat logic.
+  const blockedColumns = (() => {
+    const out = new Set();
+    const profile = sheet?.semantic_profile && typeof sheet.semantic_profile === "object" ? sheet.semantic_profile : {};
+    const dlp = profile?.dlp && typeof profile.dlp === "object" ? profile.dlp : {};
+    const maskedByTab = dlp?.maskedColumns && typeof dlp.maskedColumns === "object" ? dlp.maskedColumns : {};
+    const maskedCellsByTab = dlp?.maskedCells && typeof dlp.maskedCells === "object" ? dlp.maskedCells : {};
+    const collectTab = (tabName) => {
+      const cols = maskedByTab?.[tabName];
+      if (Array.isArray(cols)) cols.forEach((c) => out.add(String(c || "").trim().toLowerCase()));
+      const cells = maskedCellsByTab?.[tabName];
+      if (Array.isArray(cells)) {
+        cells.forEach((cell) => {
+          const col = String(cell?.column || "").trim().toLowerCase();
+          if (col) out.add(col);
+        });
+      }
+    };
+    if (activeTab) {
+      collectTab(activeTab);
+    } else {
+      Object.keys(maskedByTab || {}).forEach(collectTab);
+      Object.keys(maskedCellsByTab || {}).forEach(collectTab);
+    }
+    return out;
+  })();
+
+  const stripBlockedFromRow = (row = {}) => {
+    if (!row || typeof row !== "object" || blockedColumns.size === 0) return row || {};
+    const next = { ...(row || {}) };
+    Object.keys(next).forEach((k) => {
+      if (blockedColumns.has(String(k || "").trim().toLowerCase())) delete next[k];
+    });
+    return next;
+  };
+
+  if (blockedColumns.size > 0) {
+    headers = headers.filter((h) => !blockedColumns.has(String(h || "").trim().toLowerCase()));
+  }
   if (!rowLimit && rows.length > CHAT_MAX_ROWS) {
     return {
       headers,
@@ -6494,7 +6534,7 @@ async function loadAccessibleRows(sheetId, user, activeTab = null, rowLimit = nu
   return {
     headers,
     tabs: Array.isArray(sheet.tabs) ? sheet.tabs : (sheet.tab_name ? [sheet.tab_name] : []),
-    rows: rows.map(r => ({ ...(r.row_data || {}), __tab_name: r.tab_name })),
+    rows: rows.map(r => ({ ...stripBlockedFromRow(r.row_data || {}), __tab_name: r.tab_name })),
     rowFiltersList,
     allowedColumns: headers,
     semanticProfile: sheet.semantic_profile || {},

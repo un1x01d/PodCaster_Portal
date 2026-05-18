@@ -399,6 +399,34 @@ function evaluateAiChatCompatibilityForImport({ semanticProfile = {}, sampleRows
     };
 }
 
+function canApproveWithMaskedDlp({ semanticProfile = {}, compatibility = {} }) {
+    const mode = String(semanticProfile?.dlp?.mode || "").trim().toLowerCase();
+    if (mode !== "mask") return false;
+    if (compatibility?.ready === true) return true;
+
+    const defaults = semanticProfile && typeof semanticProfile === "object" ? (semanticProfile.defaults || {}) : {};
+    const dateColumn = String(defaults?.dateColumn || "").trim();
+    const metricColumnsMap = defaults?.metricColumns && typeof defaults.metricColumns === "object"
+        ? Object.fromEntries(
+            Object.entries(defaults.metricColumns)
+                .map(([k, v]) => [String(k || "").trim(), String(v || "").trim()])
+                .filter(([k, v]) => k && v)
+        )
+        : {};
+    const metricColumns = Object.values(metricColumnsMap);
+    if (!dateColumn || !isDateLikeHeaderName(dateColumn) || !metricColumns.length) return false;
+
+    const missing = Array.isArray(compatibility?.missing) ? compatibility.missing.map((m) => String(m || "").toLowerCase()) : [];
+    if (!missing.length) return true;
+    const hasStructuralFailure = missing.some((m) =>
+        m.includes("mapping is missing")
+        || m.includes("metric mappings are missing")
+        || m.includes("does not look like a date/period header")
+        || m.includes("points to")
+    );
+    return !hasStructuralFailure;
+}
+
 async function enrichSheetsWithAiChatCompatibility(rows = []) {
     const list = Array.isArray(rows) ? rows : [];
     const evaluate = async (row) => {
@@ -422,6 +450,7 @@ async function enrichSheetsWithAiChatCompatibility(rows = []) {
             ...row,
             ai_chat_compatibility: {
                 ready: compatibility.ready,
+                approval_ready: compatibility.ready || canApproveWithMaskedDlp({ semanticProfile: profile, compatibility }),
                 missing: compatibility.missing,
             },
         };
@@ -830,6 +859,18 @@ async function canWriteToReportSource(client, user, reportSourceId) {
         [reportSourceId, userId]
     );
     return res.rows.length > 0;
+}
+
+async function sheetIsPublished(sheetId) {
+    const rows = await query(
+        `SELECT 1
+           FROM report_source_imports
+          WHERE sheet_id = $1
+            AND status IN ('published', 'superseded', 'pending_approval')
+          LIMIT 1`,
+        [sheetId]
+    );
+    return rows.length > 0;
 }
 
 function buildReportSourceLimitError(entitlements, currentReportSources) {
@@ -1878,6 +1919,7 @@ async function executeImportFromParsedWorkbook({
                     capped: !!scan.capped,
                     findingTypes,
                     maskedColumns: scan.maskedColumns || {},
+                    maskedCells: scan.maskedCells || {},
                     warning: dlp.mode === "warn",
                     warningMessage: dlp.mode === "warn" ? `PII detected (${typeList}) in ${scan.findings.length} cell(s). Import proceeded because DLP mode is WARN.` : null,
                     message: dlp.mode === "mask"
@@ -1888,7 +1930,7 @@ async function executeImportFromParsedWorkbook({
                 };
             }
             if ((dlp.mode === "mask" || dlp.maskDetectedColumns) && scan.findings.length > 0) {
-                sheets = applyDlpColumnMasking(sheets, scan.maskedColumns);
+                sheets = applyDlpColumnMasking(sheets, scan.maskedColumns, "[REDACTED]", scan.maskedCells || {});
             }
             if (scan.findings.length > 0 && dlp.mode === "block") {
                 const err = toImportError("dlp_blocked", 403, "Import blocked by DLP policy.");
@@ -1935,6 +1977,7 @@ async function executeImportFromParsedWorkbook({
                     findingsCount: Number(dlpOutcome.findingsCount || 0),
                     scannedCells: Number(dlpOutcome.scannedCells || 0),
                     maskedColumns: dlpOutcome.maskedColumns || {},
+                    maskedCells: dlpOutcome.maskedCells || {},
                     updatedAt: new Date().toISOString(),
                 },
             };
@@ -1951,6 +1994,7 @@ async function executeImportFromParsedWorkbook({
                     : {}),
                 ai_chat_compatibility: {
                     ...aiChatCompatibility,
+                    approval_ready: aiChatCompatibility.ready || canApproveWithMaskedDlp({ semanticProfile, compatibility: aiChatCompatibility }),
                     evaluatedAt: new Date().toISOString(),
                 },
             },
@@ -3304,6 +3348,9 @@ export async function getUniqueValues(req, res) {
     if (!hasAccess) {
         return res.status(403).json({ error: "Forbidden" });
     }
+    if (!(await sheetIsPublished(id))) {
+        return res.status(403).json({ error: "sheet_not_published" });
+    }
 
     let hasFullAccess = isPlatformAdminUser(req.user);
     let rowFiltersList = [];
@@ -3848,7 +3895,24 @@ export async function getReportSourceImports(req, res) {
          ORDER BY rsi.import_version DESC`,
         [sourceId]
     );
-    res.json(rows);
+    const enriched = rows.map((row) => {
+        const status = String(row?.status || "").trim().toLowerCase();
+        const selectable = status === "published" || status === "superseded" || status === "pending_approval";
+        let selectableReason = "unknown";
+        if (selectable) selectableReason = "ok";
+        else if (!row?.sheet_id) selectableReason = "missing_sheet";
+        else if (status === "rejected") selectableReason = "rejected";
+        else if (status === "failed") selectableReason = "failed";
+        else if (status === "superseded") selectableReason = "superseded";
+        else if (status === "blocked") selectableReason = "blocked_by_policy";
+        else if (!status) selectableReason = "not_accessible";
+        return {
+            ...row,
+            selectable,
+            selectable_reason: selectableReason,
+        };
+    });
+    res.json(enriched);
 }
 
 export async function listImportJobs(req, res) {
@@ -3984,7 +4048,8 @@ export async function publishReportSourceImport(req, res) {
                     semanticProfile: sheet.semantic_profile || {},
                     sampleRows,
                 });
-                if (!compatibility.ready) {
+                const approvalReady = compatibility.ready || canApproveWithMaskedDlp({ semanticProfile: sheet.semantic_profile || {}, compatibility });
+                if (!approvalReady) {
                     await client.query("ROLLBACK");
                     return res.status(422).json({
                         error: "ai_chat_compatibility_blocked",
@@ -4192,9 +4257,90 @@ export async function rejectReportSourceImport(req, res) {
     }
 }
 
+export async function deleteRejectedReportSourceImport(req, res) {
+    const importId = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(importId) || importId <= 0) {
+        return res.status(400).json({ error: "invalid_import_id" });
+    }
+
+    const client = await getClient();
+    try {
+        await client.query("BEGIN");
+        const importRes = await client.query(
+            `SELECT rsi.id, rsi.report_source_id, rsi.sheet_id, rsi.status, rsi.job_id
+               FROM report_source_imports rsi
+              WHERE rsi.id = $1
+              FOR UPDATE`,
+            [importId]
+        );
+        if (!importRes.rows.length) {
+            await client.query("ROLLBACK");
+            return res.status(404).json({ error: "not_found" });
+        }
+        const record = importRes.rows[0];
+        const canApprove = await userCanApproveReportSource(client, req.user, record.report_source_id);
+        if (!canApprove) {
+            await client.query("ROLLBACK");
+            return res.status(403).json({ error: "Forbidden" });
+        }
+        if (String(record.status || "").trim().toLowerCase() !== "rejected") {
+            await client.query("ROLLBACK");
+            return res.status(409).json({ error: "only_rejected_import_can_be_deleted" });
+        }
+
+        await client.query(
+            `UPDATE report_sources
+                SET current_sheet_id = NULL
+              WHERE id = $1
+                AND current_sheet_id = $2`,
+            [record.report_source_id, record.sheet_id]
+        );
+
+        if (record.job_id) {
+            await client.query(
+                `UPDATE import_jobs
+                    SET status = 'deleted',
+                        stage = 'deleted',
+                        updated_at = CURRENT_TIMESTAMP,
+                        finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP)
+                  WHERE id = $1`,
+                [record.job_id]
+            );
+        }
+
+        await client.query(`DELETE FROM report_source_imports WHERE id = $1`, [importId]);
+        await client.query(`DELETE FROM sheets WHERE id = $1`, [record.sheet_id]);
+        await client.query("COMMIT");
+
+        await writeAuditLog({
+            req,
+            action: "import.rejected_deleted",
+            resourceType: "report_source_import",
+            resourceId: importId,
+            metadata: {
+                report_source_id: record.report_source_id,
+                sheet_id: record.sheet_id,
+            },
+        });
+        return res.json({
+            success: true,
+            import_id: importId,
+            report_source_id: record.report_source_id,
+            sheet_id: record.sheet_id,
+            status: "deleted",
+        });
+    } catch (err) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw err;
+    } finally {
+        client.release();
+    }
+}
+
 export async function getSheetDetails(req, res) {
     const hasAccess = await checkSheetAccess(req.params.id, req.user);
     if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
+    if (!(await sheetIsPublished(req.params.id))) return res.status(403).json({ error: "sheet_not_published" });
     const s = await query(
         `SELECT s.id, s.headers, s.active, s.filename, s.display_name, s.totals_column,
                 s.report_source_id, s.source_version, s.business_classification,
@@ -4390,6 +4536,7 @@ export async function getSheetTabs(req, res) {
     try {
         const hasAccess = await checkSheetAccess(req.params.id, req.user);
         if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
+        if (!(await sheetIsPublished(req.params.id))) return res.status(403).json({ error: "sheet_not_published" });
         const s = await query("SELECT tabs, tab_name FROM sheets WHERE id = $1", [req.params.id]);
         if (!s.length) return res.status(404).json({ error: "not_found" });
         const tabs = s[0].tabs || (s[0].tab_name ? [s[0].tab_name] : []);
@@ -4407,6 +4554,9 @@ export async function getSheetData(req, res) {
     const { id } = req.params;
     const { tab, sort_by, sort_order, filters: filtersRaw, viewId } = req.query;
     const userId = req.user.id;
+    if (!(await sheetIsPublished(id))) {
+        return res.status(403).json({ error: "sheet_not_published" });
+    }
     const isPlatformAdmin = isPlatformAdminUser(req.user);
     const isGroupAdmin = await isGroupAdminUser(userId);
     const canBypassViewAssignmentCheck = isPlatformAdmin || isGroupAdmin;

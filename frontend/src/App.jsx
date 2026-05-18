@@ -475,7 +475,13 @@ export default function App() {
     const resolvedValue = resolveHeader(config.valueColumn);
     const resolvedDate = resolveHeader(config.dateColumn);
     const resolvedSegment = resolveHeader(config.segmentBy);
+    const masked = new Set((Array.isArray(primaryDlpMaskedColumns) ? primaryDlpMaskedColumns : []).map((h) => String(h || "").trim().toLowerCase()).filter(Boolean));
+    const blocked = (col) => {
+      const normalized = String(col || "").trim().toLowerCase();
+      return !!normalized && masked.has(normalized);
+    };
     if (!resolvedValue) return;
+    if (blocked(resolvedValue) || blocked(resolvedDate) || blocked(resolvedSegment)) return;
 
     setTrendsOn(false);
     setPivotOn(false);
@@ -513,7 +519,7 @@ export default function App() {
       setTrendsOn(true);
       setPendingViewName(`Trend of ${resolvedValue}`);
     }
-  }, [headers]);
+  }, [headers, primaryDlpMaskedColumns]);
 
   const saveInsightView = React.useCallback((name) => {
     setPendingViewName(name || "Insight View");
@@ -2045,6 +2051,12 @@ export default function App() {
           localStorage.removeItem("activeTab");
           localStorage.removeItem("activeFilename");
           localStorage.removeItem(LAST_VIEWED_SHEET_CONTEXT_KEY);
+          if (!targetSheetId) {
+            setSheetId(null);
+            setActiveFilename("");
+            setTabs([]);
+            setActiveTab("");
+          }
         }
 
         if (targetSheetId) {
@@ -2317,6 +2329,7 @@ export default function App() {
                     onTabChange={handleTabChange}
                     headers={headers}
                     sortedData={sortedData}
+                    dlpMaskedColumns={primaryDlpMaskedColumns}
                     columnFilters={columnFilters}
                     views={views}
                     pivotOn={pivotOn}
@@ -2378,6 +2391,7 @@ export default function App() {
                     onTabChange={handleTabChange}
                     headers={headers}
                     sortedData={sortedData}
+                    dlpMaskedColumns={primaryDlpMaskedColumns}
                     columnFilters={columnFilters}
                     views={views}
                     pivotOn={pivotOn}
@@ -2581,6 +2595,7 @@ export default function App() {
                       onTabChange={handleTabChange}
                       headers={headers}
                       sortedData={sortedData}
+                      dlpMaskedColumns={primaryDlpMaskedColumns}
                       columnFilters={columnFilters}
                       views={views}
                       pivotOn={pivotOn}

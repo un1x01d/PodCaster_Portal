@@ -3610,11 +3610,8 @@ export default function UserManagement({ token, user, sheetId }) {
     [groups, selectedGroupId]
   );
   const reportSourcesForDeletion = useMemo(() => {
-    const all = Array.isArray(reviewSourceOptions) ? reviewSourceOptions : [];
-    const gid = Number.parseInt(String(selectedGroupId || ""), 10);
-    if (!Number.isInteger(gid) || gid <= 0) return [];
-    return all.filter((source) => Number(source?.sync_group_id) === gid);
-  }, [reviewSourceOptions, selectedGroupId]);
+    return Array.isArray(reviewSourceOptions) ? reviewSourceOptions : [];
+  }, [reviewSourceOptions]);
   const inviteGroupId = useMemo(() => {
     if (Number.isInteger(Number(selectedGroupId)) && Number(selectedGroupId) > 0) return Number(selectedGroupId);
     if (!isSuperAdmin && Array.isArray(groups) && groups.length === 1) return Number(groups[0].id);

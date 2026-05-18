@@ -21,6 +21,7 @@ import {
     getImportJob,
     publishReportSourceImport,
     rejectReportSourceImport,
+    deleteRejectedReportSourceImport,
     confirmSheetBusinessClassification,
     updateSheetSemanticProfile,
     deleteSheet,
@@ -82,6 +83,7 @@ router.get("/import-jobs", asyncHandler(listImportJobs));
 router.get("/import-jobs/:id", asyncHandler(getImportJob));
 router.post("/report-source-imports/:id/publish", expensiveTenantRateLimit, asyncHandler(publishReportSourceImport));
 router.post("/report-source-imports/:id/reject", expensiveTenantRateLimit, asyncHandler(rejectReportSourceImport));
+router.delete("/report-source-imports/:id", expensiveTenantRateLimit, asyncHandler(deleteRejectedReportSourceImport));
 router.get("/sheets/:id", asyncHandler(getSheetDetails));
 router.patch("/sheets/:id/business-classification", asyncHandler(confirmSheetBusinessClassification));
 router.patch("/sheets/:id/semantic-profile", asyncHandler(updateSheetSemanticProfile));

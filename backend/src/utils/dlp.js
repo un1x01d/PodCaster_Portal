@@ -43,22 +43,35 @@ export function normalizeDlpSettings(raw = {}) {
 }
 
 function pushFinding(findings, finding, maxFindings) {
-    if (findings.length >= maxFindings) return;
+    if (findings.length >= maxFindings) return false;
     findings.push(finding);
+    return true;
 }
 
 export function scanRowsForDlp(sheets, settings) {
     const cfg = normalizeDlpSettings(settings || {});
     if (cfg.enabled === false) {
-        return { findings: [], scannedCells: 0, capped: false, maskedColumns: {}, disabled: true };
+        return { findings: [], scannedCells: 0, capped: false, maskedColumns: {}, maskedCells: {}, disabled: true };
     }
     const findings = [];
     const maskedColumns = {};
+    const maskedCells = {};
     let scannedCells = 0;
+    let findingLimitReached = false;
     const ssnPattern = /\b\d{3}-\d{2}-\d{4}\b/g;
     const cardLikePattern = /\b(?:\d[ -]?){13,19}\b/g;
     const emailPattern = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
     const ibanPattern = /\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b/gi;
+    const seenCells = new Set();
+    const markMaskedCell = (sheetName, row1Based, columnName) => {
+        const key = `${sheetName}::${row1Based}::${columnName}`;
+        if (seenCells.has(key)) return;
+        seenCells.add(key);
+        maskedColumns[sheetName] = maskedColumns[sheetName] || new Set();
+        maskedColumns[sheetName].add(columnName);
+        maskedCells[sheetName] = maskedCells[sheetName] || [];
+        maskedCells[sheetName].push({ row: row1Based, column: columnName });
+    };
 
     for (const [sheetName, rows] of Object.entries(sheets || {})) {
         if (!Array.isArray(rows)) continue;
@@ -66,7 +79,13 @@ export function scanRowsForDlp(sheets, settings) {
             const row = rows[rowIndex] || {};
             for (const [columnName, raw] of Object.entries(row)) {
                 if (scannedCells >= cfg.maxCellsScanned) {
-                    return { findings, scannedCells, capped: true };
+                    return {
+                        findings,
+                        scannedCells,
+                        capped: true,
+                        maskedColumns: Object.fromEntries(Object.entries(maskedColumns).map(([k, set]) => [k, Array.from(set)])),
+                        maskedCells,
+                    };
                 }
                 scannedCells += 1;
                 const value = String(raw ?? "");
@@ -74,30 +93,30 @@ export function scanRowsForDlp(sheets, settings) {
                 if (cfg.checkSsn) {
                     const ssnMatch = value.match(ssnPattern);
                     if (ssnMatch?.length) {
-                        maskedColumns[sheetName] = maskedColumns[sheetName] || new Set();
-                        maskedColumns[sheetName].add(columnName);
-                        pushFinding(findings, {
+                        markMaskedCell(sheetName, rowIndex + 1, columnName);
+                        const added = pushFinding(findings, {
                             type: "ssn",
                             sheet: sheetName,
                             row: rowIndex + 1,
                             column: columnName,
                             sample: ssnMatch[0],
                         }, cfg.maxFindings);
+                        if (!added) findingLimitReached = true;
                     }
                 }
                 if (cfg.checkCreditCard) {
                     const candidates = value.match(cardLikePattern) || [];
                     for (const token of candidates) {
                         if (validCreditCard.number(token).isValid) {
-                            maskedColumns[sheetName] = maskedColumns[sheetName] || new Set();
-                            maskedColumns[sheetName].add(columnName);
-                            pushFinding(findings, {
+                            markMaskedCell(sheetName, rowIndex + 1, columnName);
+                            const added = pushFinding(findings, {
                                 type: "credit_card",
                                 sheet: sheetName,
                                 row: rowIndex + 1,
                                 column: columnName,
                                 sample: token,
                             }, cfg.maxFindings);
+                            if (!added) findingLimitReached = true;
                             break;
                         }
                     }
@@ -106,15 +125,15 @@ export function scanRowsForDlp(sheets, settings) {
                     const candidates = value.match(emailPattern) || [];
                     for (const token of candidates) {
                         if (isEmail(token)) {
-                            maskedColumns[sheetName] = maskedColumns[sheetName] || new Set();
-                            maskedColumns[sheetName].add(columnName);
-                            pushFinding(findings, {
+                            markMaskedCell(sheetName, rowIndex + 1, columnName);
+                            const added = pushFinding(findings, {
                                 type: "email",
                                 sheet: sheetName,
                                 row: rowIndex + 1,
                                 column: columnName,
                                 sample: token,
                             }, cfg.maxFindings);
+                            if (!added) findingLimitReached = true;
                             break;
                         }
                     }
@@ -122,41 +141,33 @@ export function scanRowsForDlp(sheets, settings) {
                 if (cfg.checkPhone) {
                     const phoneMatches = findPhoneNumbersInText(value, "US");
                     if (phoneMatches.length > 0) {
-                        maskedColumns[sheetName] = maskedColumns[sheetName] || new Set();
-                        maskedColumns[sheetName].add(columnName);
-                        pushFinding(findings, {
+                        markMaskedCell(sheetName, rowIndex + 1, columnName);
+                        const added = pushFinding(findings, {
                             type: "phone",
                             sheet: sheetName,
                             row: rowIndex + 1,
                             column: columnName,
                             sample: phoneMatches[0].number.number,
                         }, cfg.maxFindings);
+                        if (!added) findingLimitReached = true;
                     }
                 }
                 if (cfg.checkIban) {
                     const candidates = value.match(ibanPattern) || [];
                     for (const token of candidates) {
                         if (isIBAN(token)) {
-                            maskedColumns[sheetName] = maskedColumns[sheetName] || new Set();
-                            maskedColumns[sheetName].add(columnName);
-                            pushFinding(findings, {
+                            markMaskedCell(sheetName, rowIndex + 1, columnName);
+                            const added = pushFinding(findings, {
                                 type: "iban",
                                 sheet: sheetName,
                                 row: rowIndex + 1,
                                 column: columnName,
                                 sample: token,
                             }, cfg.maxFindings);
+                            if (!added) findingLimitReached = true;
                             break;
                         }
                     }
-                }
-                if (findings.length >= cfg.maxFindings) {
-                    return {
-                        findings,
-                        scannedCells,
-                        capped: true,
-                        maskedColumns: Object.fromEntries(Object.entries(maskedColumns).map(([k, set]) => [k, Array.from(set)])),
-                    };
                 }
             }
         }
@@ -164,25 +175,52 @@ export function scanRowsForDlp(sheets, settings) {
     return {
         findings,
         scannedCells,
-        capped: false,
+        capped: findingLimitReached,
         maskedColumns: Object.fromEntries(Object.entries(maskedColumns).map(([k, set]) => [k, Array.from(set)])),
+        maskedCells,
     };
 }
 
-export function applyDlpColumnMasking(sheets, maskedColumns, maskValue = "[REDACTED]") {
+export function applyDlpColumnMasking(sheets, maskedColumns, maskValue = "[REDACTED]", maskedCells = null) {
     const next = {};
     for (const [sheetName, rows] of Object.entries(sheets || {})) {
+        if (!Array.isArray(rows)) {
+            next[sheetName] = rows;
+            continue;
+        }
+        const cellsForSheet = Array.isArray(maskedCells?.[sheetName]) ? maskedCells[sheetName] : [];
+        if (cellsForSheet.length) {
+            const byRow = new Map();
+            cellsForSheet.forEach((entry) => {
+                const rowNum = Number(entry?.row);
+                const col = String(entry?.column || "");
+                if (!Number.isInteger(rowNum) || rowNum <= 0 || !col) return;
+                if (!byRow.has(rowNum)) byRow.set(rowNum, new Set());
+                byRow.get(rowNum).add(col);
+            });
+            next[sheetName] = rows.map((row, idx) => {
+                const cols = byRow.get(idx + 1);
+                if (!cols || !cols.size) return row;
+                const cloned = { ...(row || {}) };
+                for (const col of cols) {
+                    if (Object.prototype.hasOwnProperty.call(cloned, col)) {
+                        cloned[col] = maskValue;
+                    }
+                }
+                return cloned;
+            });
+            continue;
+        }
+        // Backward compatibility fallback: column-level masking when maskedCells are unavailable.
         const columns = new Set(Array.isArray(maskedColumns?.[sheetName]) ? maskedColumns[sheetName] : []);
-        if (!columns.size || !Array.isArray(rows)) {
+        if (!columns.size) {
             next[sheetName] = rows;
             continue;
         }
         next[sheetName] = rows.map((row) => {
             const cloned = { ...(row || {}) };
             for (const col of columns) {
-                if (Object.prototype.hasOwnProperty.call(cloned, col)) {
-                    cloned[col] = maskValue;
-                }
+                if (Object.prototype.hasOwnProperty.call(cloned, col)) cloned[col] = maskValue;
             }
             return cloned;
         });
