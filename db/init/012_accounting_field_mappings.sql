@@ -2,7 +2,7 @@ CREATE TABLE IF NOT EXISTS accounting_field_mappings (
   id SERIAL PRIMARY KEY,
   tenant_id INT NULL,
   user_id INT NULL,
-  sheet_id INT NULL REFERENCES sheets(id) ON DELETE CASCADE,
+  sheet_id TEXT NULL REFERENCES sheets(id) ON DELETE CASCADE,
   source_id INT NULL,
   original_header TEXT NOT NULL,
   normalized_header TEXT NOT NULL,

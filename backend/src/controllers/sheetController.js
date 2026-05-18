@@ -3,7 +3,7 @@ import path from "path";
 import fs from "fs";
 import { Worker } from "worker_threads";
 import { fileURLToPath } from "url";
-import { randomUUID, timingSafeEqual } from "crypto";
+import { randomUUID } from "crypto";
 import { forEachActiveTenantPool, query, getClient } from "../config/db.js";
 import { parsePagination } from "../utils/pagination.js";
 import {
@@ -12,7 +12,6 @@ import {
     isPlatformAdminUser,
     resolveRuntimeGroupIdForUser,
     resolveAssignedViewForSheet,
-    resolveViewColumnAllowlist as resolveViewColumnAllowlistFromAuth,
 } from "../utils/authorization.js";
 import { writeAuditLog } from "../utils/auditLog.js";
 import { normalizeGroupEntitlements, groupHasFeature } from "../utils/entitlements.js";
@@ -33,6 +32,39 @@ import {
 } from "./userController.js";
 import { recordIngestionLatencyMs, setImportWorkerActiveJobs, setImportWorkerQueueDepth } from "../utils/metrics.js";
 import { buildRowFilterWhereClause } from "../utils/rowFilters.js";
+import {
+    parseBooleanLike,
+    parsePositiveIntLike,
+    normalizeReviewLabelRules,
+    resolveReviewPolicy,
+    parseAutosyncConfig,
+} from "./sheet/reviewPolicy.js";
+import { evaluateAiChatCompatibilityForImport, canApproveWithMaskedDlp } from "./sheet/aiChatCompatibility.js";
+import {
+    sanitizeDisplayName,
+    sanitizeReportSourceName,
+    normalizeEmailAddress,
+    assertUploadSignatureMatchesExtension,
+    hasValidEmailIngestSharedSecret,
+    normalizeEmailLocalPart,
+    extractEmailAddresses,
+    senderDomainIsAllowed,
+} from "./sheet/uploadValidation.js";
+import {
+    buildHeaderDiff,
+    getSchemaStatus,
+    freezeViewConfigForRefresh,
+    parseJsonMaybe,
+    canUploadSheetsByRole,
+    resolveViewColumnAllowlist,
+    jobBackoffMs,
+    isRetryableImportError,
+    toImportError,
+    normalizeStoredHeaders,
+    sanitizeSemanticProfileDefaults,
+} from "./sheet/controllerUtils.js";
+export { assertUploadSignatureMatchesExtension } from "./sheet/uploadValidation.js";
+export { buildHeaderDiff, canUploadSheetsByRole, resolveViewColumnAllowlist } from "./sheet/controllerUtils.js";
 
 const MAX_UPLOAD_SHEETS = Number.parseInt(
     process.env.MAX_UPLOAD_SHEETS || (process.env.NODE_ENV === "production" ? "20" : "50"),
@@ -302,131 +334,6 @@ async function maybeEnrichSheetSemanticProfileWithAi({ sheetId, headers = [], sa
     return nextProfile;
 }
 
-function toPeriodKeyFromValue(value) {
-    const normalized = normalizeSheetCellValue(value);
-    const text = String(normalized || "").trim();
-    if (!text) return null;
-    const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (iso) return `${iso[1]}-${iso[2]}`;
-    const dt = new Date(text);
-    if (Number.isNaN(dt.getTime())) return null;
-    const y = dt.getUTCFullYear();
-    const m = String(dt.getUTCMonth() + 1).padStart(2, "0");
-    return `${y}-${m}`;
-}
-
-function toNumericOrNull(value) {
-    if (value === null || value === undefined || value === "") return null;
-    const num = Number.parseFloat(String(value).replace(/[^0-9.-]/g, ""));
-    return Number.isFinite(num) ? num : null;
-}
-
-function isDateLikeHeaderName(header = "") {
-    return /date|period|month|year|quarter|time|day/i.test(String(header || ""));
-}
-
-function evaluateAiChatCompatibilityForImport({ semanticProfile = {}, sampleRows = [] }) {
-    const defaults = semanticProfile && typeof semanticProfile === "object" ? (semanticProfile.defaults || {}) : {};
-    const dateColumn = String(defaults?.dateColumn || "").trim();
-    const metricColumnsMap = defaults?.metricColumns && typeof defaults.metricColumns === "object"
-        ? Object.fromEntries(
-            Object.entries(defaults.metricColumns)
-                .map(([k, v]) => [String(k || "").trim(), String(v || "").trim()])
-                .filter(([k, v]) => k && v)
-        )
-        : [];
-    const metricColumns = Object.values(metricColumnsMap);
-    const rows = Array.isArray(sampleRows) ? sampleRows.slice(0, 300) : [];
-    const availableHeaders = rows.length ? Object.keys(rows[0] || {}).filter(Boolean) : [];
-
-    const missing = [];
-    if (!dateColumn) {
-        missing.push(
-            `date/year mapping is missing (set semantic_profile.defaults.dateColumn). Detected headers: ${availableHeaders.slice(0, 8).join(", ") || "none"}.`
-        );
-    }
-    if (!metricColumns.length) {
-        missing.push(
-            "metric mappings are missing (set semantic_profile.defaults.metricColumns.<metric>)."
-        );
-    }
-    if (dateColumn && !isDateLikeHeaderName(dateColumn)) {
-        missing.push(`date/year mapping points to '${dateColumn}', which does not look like a date/period header.`);
-    }
-
-    if (dateColumn) {
-        const dateVals = rows
-            .map((r) => r?.[dateColumn])
-            .filter((v) => v !== null && v !== undefined && String(v).trim() !== "");
-        const dateHits = dateVals.filter((v) => !!toPeriodKeyFromValue(v)).length;
-        const dateRatio = dateVals.length ? (dateHits / dateVals.length) : 0;
-        if (dateVals.length < 5 || dateRatio < 0.6) {
-            missing.push(`date/year column '${dateColumn}' values are not consistently valid dates (valid ratio ${(dateRatio * 100).toFixed(0)}%).`);
-        }
-    }
-
-    if (metricColumns.length) {
-        let hasValidMetric = false;
-        const colStats = new Map();
-        for (const col of metricColumns) {
-            const vals = rows
-                .map((r) => r?.[col])
-                .filter((v) => v !== null && v !== undefined && String(v).trim() !== "");
-            if (vals.length < 5) continue;
-            const numericHits = vals.filter((v) => toNumericOrNull(v) !== null).length;
-            const numericRatio = vals.length ? (numericHits / vals.length) : 0;
-            colStats.set(col, { count: vals.length, ratio: numericRatio });
-            if (numericRatio >= 0.6) {
-                hasValidMetric = true;
-            }
-        }
-        const strictCanonicals = ["revenue", "profit", "cost", "expense", "income", "net_income", "total_revenue", "total_expense"];
-        for (const [canonical, mappedCol] of Object.entries(metricColumnsMap)) {
-            if (!strictCanonicals.some((k) => canonical.toLowerCase().includes(k))) continue;
-            const stats = colStats.get(mappedCol);
-            if (!stats || stats.count < 5 || stats.ratio < 0.6) {
-                missing.push(`${canonical} mapping ('${mappedCol}') is not consistently numeric.`);
-            }
-        }
-        if (!hasValidMetric) {
-            missing.push("mapped metric columns are not consistently numeric (need at least one numeric metric column).");
-        }
-    }
-
-    return {
-        ready: missing.length === 0,
-        missing,
-    };
-}
-
-function canApproveWithMaskedDlp({ semanticProfile = {}, compatibility = {} }) {
-    const mode = String(semanticProfile?.dlp?.mode || "").trim().toLowerCase();
-    if (mode !== "mask") return false;
-    if (compatibility?.ready === true) return true;
-
-    const defaults = semanticProfile && typeof semanticProfile === "object" ? (semanticProfile.defaults || {}) : {};
-    const dateColumn = String(defaults?.dateColumn || "").trim();
-    const metricColumnsMap = defaults?.metricColumns && typeof defaults.metricColumns === "object"
-        ? Object.fromEntries(
-            Object.entries(defaults.metricColumns)
-                .map(([k, v]) => [String(k || "").trim(), String(v || "").trim()])
-                .filter(([k, v]) => k && v)
-        )
-        : {};
-    const metricColumns = Object.values(metricColumnsMap);
-    if (!dateColumn || !isDateLikeHeaderName(dateColumn) || !metricColumns.length) return false;
-
-    const missing = Array.isArray(compatibility?.missing) ? compatibility.missing.map((m) => String(m || "").toLowerCase()) : [];
-    if (!missing.length) return true;
-    const hasStructuralFailure = missing.some((m) =>
-        m.includes("mapping is missing")
-        || m.includes("metric mappings are missing")
-        || m.includes("does not look like a date/period header")
-        || m.includes("points to")
-    );
-    return !hasStructuralFailure;
-}
-
 async function enrichSheetsWithAiChatCompatibility(rows = []) {
     const list = Array.isArray(rows) ? rows : [];
     const evaluate = async (row) => {
@@ -502,126 +409,6 @@ function buildInsightSummaryRows({ sheetId, sheetNames, sheets }) {
     return out;
 }
 
-function sanitizeDisplayName(value) {
-    const text = String(value || "").trim().replace(/\s+/g, "_");
-    return text.slice(0, 120);
-}
-
-function sanitizeReportSourceName(value) {
-    return String(value || "").trim().replace(/\s+/g, " ").slice(0, 160);
-}
-
-function normalizeEmailAddress(value) {
-    return String(value || "").trim().toLowerCase();
-}
-
-function looksLikeZipContainer(buffer) {
-    return Buffer.isBuffer(buffer)
-        && buffer.length >= 4
-        && buffer[0] === 0x50
-        && buffer[1] === 0x4b
-        && buffer[2] === 0x03
-        && buffer[3] === 0x04;
-}
-
-function looksLikeLegacyXls(buffer) {
-    return Buffer.isBuffer(buffer)
-        && buffer.length >= 8
-        && buffer[0] === 0xd0
-        && buffer[1] === 0xcf
-        && buffer[2] === 0x11
-        && buffer[3] === 0xe0
-        && buffer[4] === 0xa1
-        && buffer[5] === 0xb1
-        && buffer[6] === 0x1a
-        && buffer[7] === 0xe1;
-}
-
-function looksLikeCsvText(buffer) {
-    if (!Buffer.isBuffer(buffer) || buffer.length === 0) return false;
-    const sample = buffer.subarray(0, Math.min(buffer.length, 512)).toString("utf8");
-    const normalized = sample.replace(/^\uFEFF/, "").trim();
-    if (!normalized) return false;
-    if (normalized.includes("\u0000")) return false;
-    return /[,\t;\n]/.test(normalized);
-}
-
-export function assertUploadSignatureMatchesExtension({ originalName = "", fileBuffer = null }) {
-    const ext = String(path.extname(String(originalName || "") || "").toLowerCase());
-    if (!Buffer.isBuffer(fileBuffer) || fileBuffer.length < 4) {
-        const err = new Error("unsupported_file_type");
-        err.statusCode = 415;
-        throw err;
-    }
-    if (ext === ".xlsx") {
-        if (!looksLikeZipContainer(fileBuffer)) {
-            const err = new Error("unsupported_file_type");
-            err.statusCode = 415;
-            throw err;
-        }
-        return;
-    }
-    if (ext === ".xls") {
-        if (!looksLikeLegacyXls(fileBuffer) && !looksLikeZipContainer(fileBuffer)) {
-            const err = new Error("unsupported_file_type");
-            err.statusCode = 415;
-            throw err;
-        }
-        return;
-    }
-    if (ext === ".csv") {
-        if (!looksLikeCsvText(fileBuffer)) {
-            const err = new Error("unsupported_file_type");
-            err.statusCode = 415;
-            throw err;
-        }
-        return;
-    }
-    const err = new Error("unsupported_file_type");
-    err.statusCode = 415;
-    throw err;
-}
-
-function hasValidEmailIngestSharedSecret(req) {
-    const expected = String(process.env.EMAIL_INGEST_SHARED_SECRET || "").trim();
-    if (!expected) return process.env.NODE_ENV !== "production";
-    const provided = String(
-        req.headers["x-email-ingest-secret"]
-        || req.headers["x-ingest-secret"]
-        || req.body?.ingest_secret
-        || ""
-    ).trim();
-    if (!provided) return false;
-    const a = Buffer.from(provided);
-    const b = Buffer.from(expected);
-    if (a.length !== b.length) return false;
-    return timingSafeEqual(a, b);
-}
-
-function normalizeEmailLocalPart(value) {
-    return String(value || "").trim().toLowerCase().split("+")[0].trim();
-}
-
-function extractEmailAddresses(value) {
-    const entries = Array.isArray(value)
-        ? value
-        : String(value || "")
-            .split(/[\n,;]+/)
-            .map((item) => item.trim());
-    return Array.from(new Set(entries.map((entry) => {
-        const raw = String(entry || "").trim();
-        if (!raw) return "";
-        const angle = raw.match(/<([^>]+)>/);
-        return normalizeEmailAddress(angle ? angle[1] : raw);
-    }).filter(Boolean)));
-}
-
-function emailDomainFromAddress(value) {
-    const email = normalizeEmailAddress(value);
-    const idx = email.lastIndexOf("@");
-    return idx > 0 ? email.slice(idx + 1) : "";
-}
-
 async function loadEmailIngestSettingsForGroup(groupId) {
     const settingsRows = await getAppSettingValueWithScopedFallback("email_ingest_settings", null);
     const scopedAllowlistRows = groupId
@@ -633,16 +420,6 @@ async function loadEmailIngestSettingsForGroup(groupId) {
         ...current,
         allowedSenderDomains: normalizeEmailIngestSenderAllowlist(allowlistRows || settingsRows || {}),
     };
-}
-
-function senderDomainIsAllowed(senderEmail, allowedDomains = []) {
-    const senderDomain = emailDomainFromAddress(senderEmail);
-    if (!senderDomain) return false;
-    const normalizedAllowed = Array.isArray(allowedDomains)
-        ? allowedDomains.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean)
-        : [];
-    if (!normalizedAllowed.length) return false;
-    return normalizedAllowed.some((allowed) => senderDomain === allowed || senderDomain.endsWith(`.${allowed}`));
 }
 
 async function resolveEmailIngestCustomer(client, recipients, settings) {
@@ -754,70 +531,6 @@ async function resolveOrCreateEmailReportSource(client, { groupId, recipientAddr
         previousHeaders: [],
         isNew: true,
     };
-}
-
-export function buildHeaderDiff(previousHeaders = [], nextHeaders = []) {
-    const previous = normalizeStringArray(previousHeaders);
-    const next = normalizeStringArray(nextHeaders);
-    const previousSet = new Set(previous);
-    const nextSet = new Set(next);
-    return {
-        previous,
-        next,
-        added: next.filter((h) => !previousSet.has(h)),
-        removed: previous.filter((h) => !nextSet.has(h)),
-        unchanged: next.filter((h) => previousSet.has(h)),
-    };
-}
-
-function getSchemaStatus(diff) {
-    if (!diff.previous.length) return "new";
-    if (diff.added.length || diff.removed.length) return "changed";
-    return "matched";
-}
-
-function getExplicitViewColumns(config, fallbackHeaders = []) {
-    const parsed = parseJsonMaybe(config, {}) || {};
-    const explicit = normalizeStringArray(
-        parsed.visibleColumns ?? parsed.columns ?? parsed.allowedColumns ?? parsed.allowed_columns
-    );
-    if (explicit.length > 0) return explicit;
-    return normalizeStringArray(fallbackHeaders);
-}
-
-function freezeViewConfigForRefresh(config, previousHeaders = [], nextHeaders = []) {
-    const parsed = parseJsonMaybe(config, {}) || {};
-    const previous = normalizeStringArray(previousHeaders);
-    const next = normalizeStringArray(nextHeaders);
-    const nextSet = new Set(next);
-    const explicit = getExplicitViewColumns(parsed, previous);
-    return {
-        ...parsed,
-        visibleColumns: explicit.filter((h) => nextSet.has(h)),
-    };
-}
-
-function parseJsonMaybe(value, fallback) {
-    if (typeof value !== "string") return value ?? fallback;
-    try {
-        return JSON.parse(value);
-    } catch {
-        return fallback;
-    }
-}
-
-function normalizeStringArray(value) {
-    const parsed = parseJsonMaybe(value, value);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.map((v) => String(v || "").trim()).filter(Boolean);
-}
-
-export function canUploadSheetsByRole(role) {
-    return isPlatformAdminUser({ role });
-}
-
-export function resolveViewColumnAllowlist(viewConfig, sheetHeaders = []) {
-    return resolveViewColumnAllowlistFromAuth(viewConfig, sheetHeaders);
 }
 
 async function isGroupAdminUser(userId) {
@@ -1175,74 +888,6 @@ async function shouldUseQueuedImport(req) {
     return uploadUsesDbQueue(req);
 }
 
-function parseBooleanLike(value) {
-    return ["1", "true", "yes", "on"].includes(String(value || "").trim().toLowerCase());
-}
-
-function normalizeReviewLabelRules(value) {
-    const parsed = parseJsonMaybe(value, value);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return Object.fromEntries(
-        Object.entries(parsed)
-            .map(([label, enabled]) => [String(label || "").trim(), !!enabled])
-            .filter(([label]) => !!label)
-            .slice(0, 100)
-    );
-}
-
-function resolveReviewPolicy(reportSource, fileLabel, schemaStatus, explicitRequest = false) {
-    const labelRules = normalizeReviewLabelRules(reportSource?.reviewLabelRules ?? reportSource?.review_label_rules);
-    const label = String(fileLabel || "").trim();
-    const normalizedLabel = label.toLowerCase();
-    const labelRequiresReview = label && Object.prototype.hasOwnProperty.call(labelRules, label)
-        ? !!labelRules[label]
-        : false;
-    const sourceRequiresReview = !!(reportSource?.reviewRequired ?? reportSource?.review_required);
-    const schemaReviewEnabled = (reportSource?.reviewSchemaChanges ?? reportSource?.review_schema_changes) !== false;
-    const schemaRequiresReview = schemaReviewEnabled && String(schemaStatus || "").toLowerCase() === "changed";
-    const envRequiresReview = !!explicitRequest;
-    return {
-        required: sourceRequiresReview || labelRequiresReview || schemaRequiresReview || envRequiresReview,
-        reasons: {
-            source: sourceRequiresReview,
-            label: labelRequiresReview,
-            schema: schemaRequiresReview,
-            environment: envRequiresReview,
-        },
-        labelRules,
-    };
-}
-
-function parsePositiveIntLike(value) {
-    const parsed = Number.parseInt(value, 10);
-    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
-}
-
-function parseAutosyncConfig(body = {}) {
-    const enabled = parseBooleanLike(body?.autosync_enabled ?? body?.autosyncEnabled);
-    if (!enabled) return null;
-    const provider = String(body?.autosync_provider ?? body?.autosyncProvider ?? "").trim().toLowerCase();
-    const sourceRef = String(body?.autosync_source_ref ?? body?.autosyncSourceRef ?? "").trim();
-    const groupId = parsePositiveIntLike(body?.autosync_group_id ?? body?.autosyncGroupId);
-    const userId = parsePositiveIntLike(body?.autosync_user_id ?? body?.autosyncUserId);
-    const remoteMarker = String(body?.autosync_remote_marker ?? body?.autosyncRemoteMarker ?? "").trim() || null;
-    const remoteModifiedAt = String(body?.autosync_remote_modified_at ?? body?.autosyncRemoteModifiedAt ?? "").trim() || null;
-    const displayName = String(body?.autosync_display_name ?? body?.autosyncDisplayName ?? "").trim() || null;
-    const fileLabel = String(body?.autosync_file_label ?? body?.autosyncFileLabel ?? "").trim() || null;
-    if (!provider || !sourceRef || !userId) return null;
-    return {
-        enabled: true,
-        provider,
-        sourceRef,
-        groupId,
-        userId,
-        remoteMarker,
-        remoteModifiedAt,
-        displayName,
-        fileLabel,
-    };
-}
-
 async function applyReportSourceAutosyncConfig(client, reportSourceId, autosyncConfig = null) {
     if (!autosyncConfig?.enabled) return;
     await client.query(
@@ -1343,35 +988,6 @@ async function finishImportJob(client, { id, status, reportSourceId, sheetId, im
             error || null,
         ]
     );
-}
-
-function jobBackoffMs(attempts) {
-    const attempt = Math.max(1, Number(attempts || 1));
-    return Math.min(5 * 60 * 1000, 2000 * (2 ** (attempt - 1)));
-}
-
-function isRetryableImportError(err) {
-    if (!err) return false;
-    if (Number.isInteger(err.statusCode) && err.statusCode >= 400 && err.statusCode < 500) return false;
-    const code = String(err?.message || "").trim().toLowerCase();
-    const nonRetryable = new Set([
-        "invalid_report_source_id",
-        "report_source_not_found",
-        "report_source_forbidden",
-        "report_source_name_required",
-        "report_source_name_exists",
-        "display_name_required",
-        "unreadable_spreadsheet",
-        "xlsx_worker_timeout",
-        "no_sheets",
-        "empty_sheet",
-        "too_many_sheets",
-        "too_many_columns",
-        "too_many_rows_in_sheet",
-        "too_many_total_rows",
-        "xlsx_worker_memory_limit_exceeded",
-    ]);
-    return !nonRetryable.has(code);
 }
 
 function normalizeWorkerMemoryLimitMb(value, fallback = XLSX_WORKER_DEFAULT_MEMORY_MB) {
@@ -1649,13 +1265,6 @@ function parseWorkbookFromBufferWithFallback(fileBuffer, options = {}) {
         }
     }
     throw parseError || new Error("Unable to parse workbook data with fallback readers.");
-}
-
-function toImportError(code, statusCode = 400, message = null) {
-    const err = new Error(code);
-    err.statusCode = statusCode;
-    if (message) err.publicMessage = message;
-    return err;
 }
 
 async function parseWorkbookBufferOrThrow(fileBuffer, options = {}) {
@@ -4430,53 +4039,6 @@ export async function confirmSheetBusinessClassification(req, res) {
         business_classification: next,
         business_classification_status: status,
     });
-}
-
-function normalizeStoredHeaders(value) {
-    if (Array.isArray(value)) return value.map(String);
-    if (typeof value === "string") {
-        try {
-            const parsed = JSON.parse(value || "[]");
-            return Array.isArray(parsed) ? parsed.map(String) : [];
-        } catch {
-            return [];
-        }
-    }
-    return [];
-}
-
-function sanitizeSemanticProfileDefaults(input, headers) {
-    const headerSet = new Set((Array.isArray(headers) ? headers : []).map((h) => String(h)));
-    const defaults = input && typeof input === "object" && !Array.isArray(input) ? input : {};
-    const out = {};
-    const keepColumn = (value) => {
-        const text = String(value || "").trim();
-        return text && headerSet.has(text) ? text : null;
-    };
-
-    if (defaults.metricColumns && typeof defaults.metricColumns === "object" && !Array.isArray(defaults.metricColumns)) {
-        const metricColumns = {};
-        Object.entries(defaults.metricColumns).forEach(([meaning, column]) => {
-            const safeMeaning = String(meaning || "").trim().replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 40);
-            const safeColumn = keepColumn(column);
-            if (safeMeaning && safeColumn) metricColumns[safeMeaning] = safeColumn;
-        });
-        if (Object.keys(metricColumns).length) out.metricColumns = metricColumns;
-    }
-
-    const dateColumn = keepColumn(defaults.dateColumn);
-    if (dateColumn) out.dateColumn = dateColumn;
-
-    const driverDimensionColumn = keepColumn(defaults.driverDimensionColumn);
-    if (driverDimensionColumn) out.driverDimensionColumn = driverDimensionColumn;
-
-    for (const key of ["dimensions", "metrics"]) {
-        if (!Array.isArray(defaults[key])) continue;
-        const safeList = Array.from(new Set(defaults[key].map(keepColumn).filter(Boolean))).slice(0, 50);
-        if (safeList.length) out[key] = safeList;
-    }
-
-    return out;
 }
 
 export async function updateSheetSemanticProfile(req, res) {

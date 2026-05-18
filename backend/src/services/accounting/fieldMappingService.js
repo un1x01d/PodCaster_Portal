@@ -13,7 +13,7 @@ export async function getMappingsForSource({ sourceId = null, sheetId = null, te
   return query(
     `SELECT * FROM accounting_field_mappings
       WHERE is_active = TRUE
-        AND ($1::int IS NULL OR sheet_id = $1)
+        AND ($1::text IS NULL OR sheet_id = $1)
         AND ($2::int IS NULL OR source_id = $2)
         AND ($3::int IS NULL OR tenant_id = $3)
       ORDER BY approved_by_user DESC, confidence DESC, updated_at DESC`,
@@ -25,7 +25,7 @@ export async function getApprovedMappings({ sourceId = null, sheetId = null, ten
   return query(
     `SELECT * FROM accounting_field_mappings
       WHERE is_active = TRUE AND approved_by_user = TRUE
-        AND ($1::int IS NULL OR sheet_id = $1)
+        AND ($1::text IS NULL OR sheet_id = $1)
         AND ($2::int IS NULL OR source_id = $2)
         AND ($3::int IS NULL OR tenant_id = $3)
       ORDER BY updated_at DESC`,
