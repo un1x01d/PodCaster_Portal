@@ -119,6 +119,11 @@ const UPLOADS_DIR = path.join(__dirname, "uploads");
 if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 }
+try {
+  fs.accessSync(UPLOADS_DIR, fs.constants.W_OK);
+} catch (err) {
+  console.warn(`[startup] uploads directory is not writable: ${UPLOADS_DIR}. Upload route fallback will be used when possible.`);
+}
 
 // Health
 app.get("/healthz", (_req, res) => res.json({ ok: true }));

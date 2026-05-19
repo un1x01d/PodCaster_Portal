@@ -180,6 +180,25 @@ function normalizeSheetRow(row) {
     return out;
 }
 
+function toNumericOrNull(value) {
+    if (value === null || value === undefined || value === "") return null;
+    const num = Number.parseFloat(String(value).replace(/[^0-9.-]/g, ""));
+    return Number.isFinite(num) ? num : null;
+}
+
+function toPeriodKeyFromValue(value) {
+    const normalized = normalizeSheetCellValue(value);
+    const text = String(normalized || "").trim();
+    if (!text) return null;
+    const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (iso) return `${iso[1]}-${iso[2]}`;
+    const dt = new Date(text);
+    if (Number.isNaN(dt.getTime())) return null;
+    const y = dt.getUTCFullYear();
+    const m = String(dt.getUTCMonth() + 1).padStart(2, "0");
+    return `${y}-${m}`;
+}
+
 function uniqueColumnSamples(rows = [], header, limit = HEADER_AI_SAMPLE_VALUES_PER_COLUMN) {
     const seen = new Set();
     const out = [];

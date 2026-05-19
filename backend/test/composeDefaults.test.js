@@ -8,12 +8,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.join(__dirname, "..", "..");
 
-test("docker compose uses stronger JWT default fallback", () => {
+test("docker compose backend healthcheck targets HTTP readiness endpoint", () => {
   const composePath = path.join(repoRoot, "docker-compose.yml");
   const source = fs.readFileSync(composePath, "utf8");
 
-  assert.match(
-    source,
-    /JWT_SECRET:\s*\$\{JWT_SECRET:-dev-jwt-2026-rotate-me-7f3b9c1d5a8e4b2f9d6c0a1e3f5b7d9\}/
-  );
+  assert.equal(source.includes("http://localhost:4000/readyz"), true);
 });

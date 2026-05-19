@@ -3,6 +3,7 @@ import Header from "../common/Header";
 import SectionHeading from "../common/SectionHeading";
 import CTASection from "./CTASection";
 import PricingPlanCard, { PRICING_BUNDLES } from "./PricingPlanCard";
+import FeatureCard from "./FeatureCard";
 import Icon from "../common/Icon";
 import Badge from "../common/Badge";
 import { themeGlowClass, primaryActionClass, secondaryActionClass, themeBorderClass, themeTextClass } from "../../utils/theme";
@@ -126,7 +127,6 @@ export default function PricingPage({ user = null }) {
                 ["Allowed actions", "Filters, exports, and approved answers where enabled.", "lock"],
                 ["Setup help", "Support for organizing the first rollout.", "approval"],
               ].map(([title, body, icon]) => {
-                const FeatureCard = require("./FeatureCard").default;
                 return <FeatureCard key={title} title={title} body={body} icon={icon} />;
               })}
             </div>

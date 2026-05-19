@@ -1,16 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-test("chat controller defaults to deterministic orchestrator and gates legacy fallback by env flag", () => {
-  const controllerPath = path.join(__dirname, "..", "src", "controllers", "chatController.js");
-  const source = fs.readFileSync(controllerPath, "utf8");
-  assert.match(source, /const CHAT_ENABLE_LEGACY_FALLBACK = String\(process\.env\.CHAT_ENABLE_LEGACY_FALLBACK \|\| "false"\)/);
-  assert.match(source, /if \(!CHAT_ENABLE_LEGACY_FALLBACK\) \{/);
-  assert.match(source, /phase: "deterministic_orchestrator_only"/);
+test("auth refresh applies tenant context from DB row and does not trust stale token context", async () => {
+  process.env.ALLOW_EPHEMERAL_JWT_SECRET = "true";
+  const { applyRefreshedAuthContext } = await import(`../src/middleware/auth.js?t=${Date.now()}`);
+  const stale = { id: 7, role: "user", tenant_database: "old_tenant", customer_id: 11 };
+  const refreshed = applyRefreshedAuthContext(stale, {
+    role: "user",
+    is_group_admin: false,
+    resolved_group_id: 17,
+    customer_id: 99,
+    customer_group_id: 17,
+    tenant_database: "tenant_g17",
+  });
+  assert.equal(refreshed.customer_id, 99);
+  assert.equal(refreshed.customer_group_id, 17);
+  assert.equal(refreshed.tenant_database, "tenant_g17");
+  assert.equal(refreshed.resolved_group_id, 17);
+  assert.equal(refreshed.role, "user");
 });

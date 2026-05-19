@@ -31,6 +31,21 @@ if ((JWT_ISSUER && !JWT_AUDIENCE) || (!JWT_ISSUER && JWT_AUDIENCE)) {
 
 const AUTH_COOKIE_NAME = "auth_token";
 
+export function applyRefreshedAuthContext(currentUser, row) {
+    const nextUser = { ...(currentUser || {}) };
+    const role = String(row?.role || nextUser.role || "").trim().toLowerCase();
+    if (role) nextUser.role = role;
+    const isGroupAdmin = String(row?.is_group_admin || "").toLowerCase() === "true" || row?.is_group_admin === true;
+    nextUser.is_group_admin = isGroupAdmin;
+    nextUser.group_admin = isGroupAdmin;
+    nextUser.resolved_group_id = Number.parseInt(String(row?.resolved_group_id || ""), 10) || null;
+    nextUser.customer_id = row?.customer_id ? Number.parseInt(String(row.customer_id), 10) : null;
+    nextUser.customer_group_id = row?.customer_group_id ? Number.parseInt(String(row.customer_group_id), 10) : null;
+    nextUser.tenant_database = String(row?.tenant_database || "").trim() || null;
+    nextUser.is_admin = isPlatformAdminUser(nextUser);
+    return nextUser;
+}
+
 function appendSetCookie(res, cookie) {
     const existing = res.getHeader("Set-Cookie");
     if (!existing) {
@@ -107,7 +122,7 @@ export async function auth(req, res, next) {
             verifyOpts.audience = JWT_AUDIENCE;
         }
         req.user = jwt.verify(token, JWT_SECRET, verifyOpts);
-        // Refresh privilege claims from DB so stale tokens do not keep old role/admin flags.
+        // Refresh privilege and tenant claims from DB so stale tokens do not keep old access context.
         const userId = Number.parseInt(String(req.user?.id || ""), 10);
         if (Number.isInteger(userId) && userId > 0) {
             try {
@@ -123,7 +138,34 @@ export async function auth(req, res, next) {
                             EXISTS (
                               SELECT 1 FROM user_groups ug
                               WHERE ug.user_id = u.id AND ug.is_admin = TRUE
-                            ) AS is_group_admin
+                            ) AS is_group_admin,
+                            (
+                              SELECT c.id
+                                FROM user_groups ug
+                                JOIN customers c ON c.group_id = ug.group_id
+                               WHERE ug.user_id = u.id
+                                 AND c.status = 'active'
+                               ORDER BY c.id ASC
+                               LIMIT 1
+                            ) AS customer_id,
+                            (
+                              SELECT c.group_id
+                                FROM user_groups ug
+                                JOIN customers c ON c.group_id = ug.group_id
+                               WHERE ug.user_id = u.id
+                                 AND c.status = 'active'
+                               ORDER BY c.id ASC
+                               LIMIT 1
+                            ) AS customer_group_id,
+                            (
+                              SELECT c.db_name
+                                FROM user_groups ug
+                                JOIN customers c ON c.group_id = ug.group_id
+                               WHERE ug.user_id = u.id
+                                 AND c.status = 'active'
+                               ORDER BY c.id ASC
+                               LIMIT 1
+                            ) AS tenant_database
                        FROM users u
                       WHERE u.id = $1
                       LIMIT 1`,
@@ -133,13 +175,7 @@ export async function auth(req, res, next) {
                 if (!row) {
                     return res.status(401).json({ error: "Invalid token" });
                 }
-                const role = String(row.role || req.user.role || "").trim().toLowerCase();
-                req.user.role = role || req.user.role;
-                const isGroupAdmin = String(row.is_group_admin || "").toLowerCase() === "true" || row.is_group_admin === true;
-                req.user.is_group_admin = isGroupAdmin;
-                req.user.group_admin = isGroupAdmin;
-                req.user.resolved_group_id = Number.parseInt(String(row.resolved_group_id || ""), 10) || null;
-                req.user.is_admin = isPlatformAdminUser(req.user);
+                req.user = applyRefreshedAuthContext(req.user, row);
             } catch (err) {
                 if (!AUTH_DB_REFRESH_FAIL_OPEN) {
                     console.error("[auth] failed to refresh auth claims from DB:", err?.message || err);

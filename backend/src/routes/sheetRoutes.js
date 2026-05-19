@@ -2,6 +2,7 @@ import express from "express";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
+import os from "os";
 import {
     uploadSheet,
     getActiveSheet,
@@ -34,10 +35,26 @@ import { auth } from "../middleware/auth.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { uploadRateLimit, expensiveTenantRateLimit } from "../middleware/rateLimit.js";
 
-import { fileURLToPath } from "url";
-
 const UPLOADS_DIR = path.resolve("uploads");
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+function resolveWritableUploadDir() {
+    try {
+        fs.accessSync(UPLOADS_DIR, fs.constants.W_OK);
+        return UPLOADS_DIR;
+    } catch (err) {
+        const fallback = path.join(os.tmpdir(), "tforn_uploads");
+        try {
+            fs.mkdirSync(fallback, { recursive: true });
+            fs.accessSync(fallback, fs.constants.W_OK);
+            console.warn(`[upload] uploads dir not writable (${UPLOADS_DIR}); using fallback ${fallback}`);
+            return fallback;
+        } catch {
+            console.warn(`[upload] no writable uploads directory available; upload routes may fail`);
+            return UPLOADS_DIR;
+        }
+    }
+}
+const WRITABLE_UPLOADS_DIR = resolveWritableUploadDir();
 
 const router = express.Router();
 const UPLOAD_FILE_SIZE_LIMIT_MB = Math.max(
@@ -53,7 +70,7 @@ const allowedMime = new Set([
 ]);
 
 const upload = multer({
-    dest: UPLOADS_DIR,
+    dest: WRITABLE_UPLOADS_DIR,
     limits: { fileSize: UPLOAD_FILE_SIZE_LIMIT_MB * 1024 * 1024 },
     fileFilter: (_req, file, cb) => {
         const ext = path.extname(file.originalname || "").toLowerCase();
@@ -92,6 +109,10 @@ router.get("/sheets/:id/tabs", asyncHandler(getSheetTabs));
 router.get("/sheets/:id/data", asyncHandler(getSheetData));
 router.get("/sheets/:id/unique-values", asyncHandler(getUniqueValues));
 router.delete("/sheets/:id", asyncHandler(deleteSheet));
+router.get("/sheets/:id/accounting-mappings", asyncHandler(getSheetAccountingMappings));
+router.post("/sheets/:id/accounting-mappings/approve", asyncHandler(approveSheetAccountingMapping));
+router.post("/sheets/:id/accounting-mappings/correct", asyncHandler(correctSheetAccountingMapping));
+router.post("/sheets/:id/accounting-mappings/reject", asyncHandler(rejectSheetAccountingMapping));
 router.get("/api/sheets/:id/accounting-mappings", asyncHandler(getSheetAccountingMappings));
 router.post("/api/sheets/:id/accounting-mappings/approve", asyncHandler(approveSheetAccountingMapping));
 router.post("/api/sheets/:id/accounting-mappings/correct", asyncHandler(correctSheetAccountingMapping));

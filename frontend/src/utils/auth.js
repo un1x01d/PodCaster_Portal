@@ -2,6 +2,7 @@ import axios from "axios";
 
 export const SESSION_ACTIVE_TOKEN = "cookie-session";
 export const createSessionMarker = () => `${SESSION_ACTIVE_TOKEN}:${Date.now()}`;
+let requestInterceptorId = null;
 
 export function readCookie(name) {
   if (typeof document === "undefined") return "";
@@ -41,8 +42,8 @@ export function setupAxiosInterceptors() {
   axios.defaults.withCredentials = true;
   axios.defaults.xsrfCookieName = "csrf_token";
   axios.defaults.xsrfHeaderName = "x-csrf-token";
-
-  axios.interceptors.request.use((config) => {
+  if (requestInterceptorId !== null) return;
+  requestInterceptorId = axios.interceptors.request.use((config) => {
     stripSessionMarkerBearer(config.headers);
     const method = String(config.method || "get").toUpperCase();
     if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {

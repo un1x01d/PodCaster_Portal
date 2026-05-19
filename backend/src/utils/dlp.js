@@ -18,6 +18,9 @@ const DEFAULT_DLP_SETTINGS = {
     maxFindings: 50,
 };
 
+const PHONE_SEP_PATTERN = /[()+\-\s.]/;
+const DIGITS_ONLY_PATTERN = /\d/g;
+
 function normalizePositiveInt(value, fallback, min, max) {
     const parsed = Number.parseInt(value, 10);
     if (!Number.isFinite(parsed)) return fallback;
@@ -42,6 +45,112 @@ export function normalizeDlpSettings(raw = {}) {
     };
 }
 
+function normalizeCellText(value) {
+    return String(value ?? "").trim();
+}
+
+function toNumberOrNull(value) {
+    const text = normalizeCellText(value);
+    if (!text) return null;
+    const cleaned = text.replace(/[$,%\s]/g, "");
+    const parsed = Number(cleaned);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+function analyzeColumnKind(_columnName, sampleValues = []) {
+    let nonEmpty = 0;
+    let numeric = 0;
+    let integerLike = 0;
+    let currencyLike = 0;
+    for (const value of sampleValues) {
+        const text = normalizeCellText(value);
+        if (!text) continue;
+        nonEmpty += 1;
+        const num = toNumberOrNull(text);
+        if (num !== null) {
+            numeric += 1;
+            if (Number.isInteger(num)) integerLike += 1;
+        }
+        if (/[$€£¥]|,\d{3}\b/.test(text)) currencyLike += 1;
+    }
+    const numericRatio = nonEmpty > 0 ? (numeric / nonEmpty) : 0;
+    const integerRatio = nonEmpty > 0 ? (integerLike / nonEmpty) : 0;
+    const currencyRatio = nonEmpty > 0 ? (currencyLike / nonEmpty) : 0;
+    const financialMetric = nonEmpty >= 5
+        && (
+            numericRatio >= 0.9
+            || (numericRatio >= 0.75 && currencyRatio >= 0.25)
+            || (numericRatio >= 0.85 && integerRatio >= 0.7)
+        );
+    return {
+        nonEmpty,
+        financialMetric,
+        numericRatio,
+        integerRatio,
+        currencyRatio,
+    };
+}
+
+function buildSheetColumnProfiles(rows = []) {
+    const profiles = {};
+    const sample = rows.slice(0, 500);
+    const columns = new Set();
+    sample.forEach((row) => {
+        Object.keys(row || {}).forEach((key) => columns.add(key));
+    });
+    columns.forEach((col) => {
+        const values = sample.map((row) => row?.[col]);
+        profiles[col] = analyzeColumnKind(col, values);
+    });
+    return profiles;
+}
+
+function confidenceThresholdForType(type) {
+    if (type === "phone") return 0.9;
+    if (type === "credit_card") return 0.9;
+    return 0.8;
+}
+
+function computeFindingConfidence({ type, value, token, columnName, columnProfile }) {
+    let score = 1.0;
+    const text = normalizeCellText(value);
+    const profile = columnProfile || {};
+
+    if (type === "phone") {
+        const digits = (text.match(DIGITS_ONLY_PATTERN) || []).length;
+        if (digits < 10) score -= 0.5;
+        if (!PHONE_SEP_PATTERN.test(text)) score -= 0.35;
+        if (profile.financialMetric) score -= 0.6;
+    }
+
+    if (type === "credit_card") {
+        if (profile.financialMetric) score -= 0.5;
+        if (String(token || "").replace(/\D/g, "").length < 13) score -= 0.4;
+    }
+
+    if (type === "email") {
+        if (profile.financialMetric) score -= 0.4;
+    }
+
+    return Math.max(0, Math.min(1, score));
+}
+
+function shouldAcceptSparseSensitiveCandidate({ type, columnProfile, columnCandidateCount }) {
+    if (type !== "phone" && type !== "credit_card") return true;
+    const nonEmpty = Number(columnProfile?.nonEmpty || 0);
+    if (columnCandidateCount >= 2) return true;
+    if (nonEmpty >= 200) return columnCandidateCount / nonEmpty >= 0.015;
+    if (nonEmpty >= 80) return columnCandidateCount / nonEmpty >= 0.025;
+    return false;
+}
+
+function shouldAcceptFinding({ type, confidence, columnProfile }) {
+    if ((type === "phone" || type === "credit_card") && columnProfile?.financialMetric) {
+        return false;
+    }
+    return confidence >= confidenceThresholdForType(type);
+}
+
 function pushFinding(findings, finding, maxFindings) {
     if (findings.length >= maxFindings) return false;
     findings.push(finding);
@@ -56,6 +165,8 @@ export function scanRowsForDlp(sheets, settings) {
     const findings = [];
     const maskedColumns = {};
     const maskedCells = {};
+    const candidateCountsBySheetColumnType = {};
+    const pendingFindings = [];
     let scannedCells = 0;
     let findingLimitReached = false;
     const ssnPattern = /\b\d{3}-\d{2}-\d{4}\b/g;
@@ -72,9 +183,18 @@ export function scanRowsForDlp(sheets, settings) {
         maskedCells[sheetName] = maskedCells[sheetName] || [];
         maskedCells[sheetName].push({ row: row1Based, column: columnName });
     };
+    const candidateKey = (sheetName, columnName, type) => `${sheetName}::${columnName}::${type}`;
+    const incrementCandidate = (sheetName, columnName, type) => {
+        const key = candidateKey(sheetName, columnName, type);
+        candidateCountsBySheetColumnType[key] = (candidateCountsBySheetColumnType[key] || 0) + 1;
+    };
+    const addPendingFinding = (finding) => {
+        pendingFindings.push(finding);
+    };
 
     for (const [sheetName, rows] of Object.entries(sheets || {})) {
         if (!Array.isArray(rows)) continue;
+        const columnProfiles = buildSheetColumnProfiles(rows);
         for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
             const row = rows[rowIndex] || {};
             for (const [columnName, raw] of Object.entries(row)) {
@@ -90,33 +210,39 @@ export function scanRowsForDlp(sheets, settings) {
                 scannedCells += 1;
                 const value = String(raw ?? "");
                 if (!value) continue;
+                const columnProfile = columnProfiles?.[columnName] || {};
                 if (cfg.checkSsn) {
                     const ssnMatch = value.match(ssnPattern);
                     if (ssnMatch?.length) {
-                        markMaskedCell(sheetName, rowIndex + 1, columnName);
-                        const added = pushFinding(findings, {
+                        const confidence = computeFindingConfidence({ type: "ssn", value, token: ssnMatch[0], columnName, columnProfile });
+                        if (!shouldAcceptFinding({ type: "ssn", confidence, columnProfile })) continue;
+                        const finding = {
                             type: "ssn",
                             sheet: sheetName,
                             row: rowIndex + 1,
                             column: columnName,
                             sample: ssnMatch[0],
-                        }, cfg.maxFindings);
-                        if (!added) findingLimitReached = true;
+                            confidence,
+                        };
+                        addPendingFinding(finding);
                     }
                 }
                 if (cfg.checkCreditCard) {
                     const candidates = value.match(cardLikePattern) || [];
                     for (const token of candidates) {
                         if (validCreditCard.number(token).isValid) {
-                            markMaskedCell(sheetName, rowIndex + 1, columnName);
-                            const added = pushFinding(findings, {
+                            const confidence = computeFindingConfidence({ type: "credit_card", value, token, columnName, columnProfile });
+                            if (!shouldAcceptFinding({ type: "credit_card", confidence, columnProfile })) continue;
+                            incrementCandidate(sheetName, columnName, "credit_card");
+                            const finding = {
                                 type: "credit_card",
                                 sheet: sheetName,
                                 row: rowIndex + 1,
                                 column: columnName,
                                 sample: token,
-                            }, cfg.maxFindings);
-                            if (!added) findingLimitReached = true;
+                                confidence,
+                            };
+                            addPendingFinding(finding);
                             break;
                         }
                     }
@@ -125,15 +251,17 @@ export function scanRowsForDlp(sheets, settings) {
                     const candidates = value.match(emailPattern) || [];
                     for (const token of candidates) {
                         if (isEmail(token)) {
-                            markMaskedCell(sheetName, rowIndex + 1, columnName);
-                            const added = pushFinding(findings, {
+                            const confidence = computeFindingConfidence({ type: "email", value, token, columnName, columnProfile });
+                            if (!shouldAcceptFinding({ type: "email", confidence, columnProfile })) continue;
+                            const finding = {
                                 type: "email",
                                 sheet: sheetName,
                                 row: rowIndex + 1,
                                 column: columnName,
                                 sample: token,
-                            }, cfg.maxFindings);
-                            if (!added) findingLimitReached = true;
+                                confidence,
+                            };
+                            addPendingFinding(finding);
                             break;
                         }
                     }
@@ -141,35 +269,59 @@ export function scanRowsForDlp(sheets, settings) {
                 if (cfg.checkPhone) {
                     const phoneMatches = findPhoneNumbersInText(value, "US");
                     if (phoneMatches.length > 0) {
-                        markMaskedCell(sheetName, rowIndex + 1, columnName);
-                        const added = pushFinding(findings, {
+                        const phoneToken = phoneMatches[0].number.number;
+                        const confidence = computeFindingConfidence({ type: "phone", value, token: phoneToken, columnName, columnProfile });
+                        if (!shouldAcceptFinding({ type: "phone", confidence, columnProfile })) continue;
+                        incrementCandidate(sheetName, columnName, "phone");
+                        const finding = {
                             type: "phone",
                             sheet: sheetName,
                             row: rowIndex + 1,
                             column: columnName,
-                            sample: phoneMatches[0].number.number,
-                        }, cfg.maxFindings);
-                        if (!added) findingLimitReached = true;
+                            sample: phoneToken,
+                            confidence,
+                        };
+                        addPendingFinding(finding);
                     }
                 }
                 if (cfg.checkIban) {
                     const candidates = value.match(ibanPattern) || [];
                     for (const token of candidates) {
                         if (isIBAN(token)) {
-                            markMaskedCell(sheetName, rowIndex + 1, columnName);
-                            const added = pushFinding(findings, {
+                            const confidence = computeFindingConfidence({ type: "iban", value, token, columnName, columnProfile });
+                            if (!shouldAcceptFinding({ type: "iban", confidence, columnProfile })) continue;
+                            const finding = {
                                 type: "iban",
                                 sheet: sheetName,
                                 row: rowIndex + 1,
                                 column: columnName,
                                 sample: token,
-                            }, cfg.maxFindings);
-                            if (!added) findingLimitReached = true;
+                                confidence,
+                            };
+                            addPendingFinding(finding);
                             break;
                         }
                     }
                 }
             }
+        }
+    }
+    const profileCache = {};
+    for (const [sheetName, rows] of Object.entries(sheets || {})) {
+        if (Array.isArray(rows)) profileCache[sheetName] = buildSheetColumnProfiles(rows);
+    }
+    for (const finding of pendingFindings) {
+        const columnProfile = profileCache?.[finding.sheet]?.[finding.column] || {};
+        const countKey = candidateKey(finding.sheet, finding.column, finding.type);
+        const columnCandidateCount = candidateCountsBySheetColumnType[countKey] || 0;
+        if (!shouldAcceptSparseSensitiveCandidate({ type: finding.type, columnProfile, columnCandidateCount })) {
+            continue;
+        }
+        markMaskedCell(finding.sheet, finding.row, finding.column);
+        const added = pushFinding(findings, finding, cfg.maxFindings);
+        if (!added) {
+            findingLimitReached = true;
+            break;
         }
     }
     return {

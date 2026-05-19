@@ -10,6 +10,7 @@
     "sync:app-settings": "node scripts/syncAppSettings.js",
     "migrate:tenants": "node scripts/migrateTenantDatabases.js",
     "backfill:import-sizes": "node scripts/backfillImportSizeMetadata.js",
+    "backfill:dlp-masked-columns": "node scripts/backfillDlpMaskedColumns.js",
     "cleanup:all-sheets": "node scripts/cleanupAllReportSourcesSheets.js",
     "cleanup:learning-rules": "node scripts/cleanupLowSignalLearningRules.js"
   },
