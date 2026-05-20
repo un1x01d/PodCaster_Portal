@@ -928,6 +928,12 @@ export default function DashboardBody(props) {
         if (role === "admin" || role === "super_admin" || role === "superadmin" || !!user.super_admin) return true;
         return !!(user.is_group_admin || user.group_admin || user.is_admin);
     }, [user]);
+    const canReviewImports = React.useMemo(() => {
+        if (!user) return false;
+        const role = String(user.role || "").toLowerCase().trim();
+        return role === "admin" || role === "super_admin" || role === "superadmin" || !!user.is_admin || !!user.super_admin || !!user.is_group_admin || !!user.group_admin;
+    }, [user]);
+    const [deleteImportBusyId, setDeleteImportBusyId] = useState("");
     const isPlatformAdmin = React.useMemo(() => {
         if (!user) return false;
         const role = String(user.role || "").toLowerCase().trim();
@@ -1083,6 +1089,52 @@ export default function DashboardBody(props) {
                 isCurrent: String(item.sheet_id) === String(targetSheetId),
             }));
     }, [getSelectedSourceMeta, getSourceImports, resolveFileLabel]);
+
+    const deleteImportRevisionFromPicker = React.useCallback(async (item) => {
+        const importId = Number.parseInt(String(item?.id || ""), 10);
+        if (!Number.isInteger(importId) || importId <= 0 || deleteImportBusyId) return;
+        const label = resolveFileLabel(item);
+        const revision = Number(item?.import_version || 0);
+        const confirmed = window.confirm(`Delete revision "${label}" (v${revision || "-"})?`);
+        if (!confirmed) return;
+        setDeleteImportBusyId(String(importId));
+        try {
+            await axios.delete(`${API}/report-source-imports/${importId}`, {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            await refreshReportSources?.();
+            if (String(sheetId || "") === String(item?.sheet_id || "")) {
+                setSecondarySheetId("");
+                setSecondarySourcePickerOpen(false);
+                setSecondaryFileVersionMenuKey(null);
+            }
+        } catch (e) {
+            alert(e?.response?.data?.error || "Failed to delete import revision");
+        } finally {
+            setDeleteImportBusyId("");
+        }
+    }, [API, token, deleteImportBusyId, refreshReportSources, sheetId, resolveFileLabel]);
+    const [deleteSourceBusyId, setDeleteSourceBusyId] = useState("");
+    const deleteReportSourceFromPicker = React.useCallback(async (source) => {
+        const sourceId = Number.parseInt(String(source?.id || ""), 10);
+        if (!Number.isInteger(sourceId) || sourceId <= 0 || deleteSourceBusyId) return;
+        const sourceName = String(source?.name || `Report source ${sourceId}`);
+        const confirmed = window.confirm(`Delete label "${sourceName}" and all of its revisions?`);
+        if (!confirmed) return;
+        setDeleteSourceBusyId(String(sourceId));
+        try {
+            await axios.delete(`${API}/report-sources/${sourceId}`, {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            await refreshReportSources?.();
+            setSecondarySourcePickerOpen(false);
+            setSecondaryFileVersionMenuKey(null);
+        } catch (e) {
+            alert(e?.response?.data?.error || "Failed to delete report source label");
+        } finally {
+            setDeleteSourceBusyId("");
+        }
+    }, [API, token, deleteSourceBusyId, refreshReportSources]);
 
     const normalizeRowsFromResponse = React.useCallback((raw) => {
         if (Array.isArray(raw)) return raw;
@@ -3019,6 +3071,11 @@ export default function DashboardBody(props) {
                                                         withAutosync={true}
                                                         onToggleAutosync={toggleReportSourceAutosync}
                                                         autosyncToggleBusyId={autosyncToggleBusyId}
+                                                        canManageImports={canReviewImports}
+                                                        deleteImportBusyId={deleteImportBusyId}
+                                                        deleteSourceBusyId={deleteSourceBusyId}
+                                                        onDeleteImportRevision={deleteImportRevisionFromPicker}
+                                                        onDeleteSource={deleteReportSourceFromPicker}
                                                         buttonClassName="w-full h-8 px-2.5 rounded-lg border border-slate-300 bg-white text-slate-900 text-[11px] font-bold shadow-sm hover:border-slate-400 transition-all flex items-center justify-between gap-2 overflow-hidden"
                                                         panelClassName="absolute left-0 mt-1 w-[min(620px,calc(100vw-2rem))] rounded-xl border border-slate-200 bg-white shadow-2xl z-[80] p-2"
                                                     />
@@ -3469,6 +3526,17 @@ export default function DashboardBody(props) {
                                                                         ) : (
                                                                             <span className="rounded-md border border-slate-200 bg-slate-100 px-2 py-1 text-[10px] font-semibold text-slate-400" title="Enable autosync when importing the file">Autosync off</span>
                                                                         )}
+                                                                        {canReviewImports ? (
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => deleteReportSourceFromPicker(source)}
+                                                                                disabled={deleteSourceBusyId === key}
+                                                                                className={`rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-[10px] font-semibold text-rose-700 hover:bg-rose-100 ${deleteSourceBusyId === key ? "opacity-60 cursor-not-allowed" : ""}`}
+                                                                                title="Delete this label and all revisions"
+                                                                            >
+                                                                                {deleteSourceBusyId === key ? "Deleting..." : "Delete label"}
+                                                                            </button>
+                                                                        ) : null}
                                                                     </div>
                                                                     {isExpanded && (
                                                                         <div className="bg-white border-t border-slate-100 py-1">
@@ -3506,30 +3574,58 @@ export default function DashboardBody(props) {
                                                                                                     style={{ width: `${Math.min(100, Math.max(38, String(label || "").length + 20))}ch`, maxWidth: "min(90vw, 980px)" }}
                                                                                                 >
                                                                                                     <div className="max-h-48 overflow-auto custom-scrollbar">
-                                                                                                        {group.map((v) => (
-                                                                                                            <button
-                                                                                                                key={String(v.sheet_id)}
-                                                                                                                onClick={(e) => {
-                                                                                                                    e.stopPropagation();
-                                                                                                                    const nextSheetId = String(v.sheet_id || "");
-                                                                                                                    if (nextSheetId) setSecondarySheetId(nextSheetId);
-                                                                                                                    setSecondaryFileVersionMenuKey(null);
-                                                                                                                    setSecondarySourcePickerOpen(false);
-                                                                                                                }}
-                                                                                                                className={`w-full text-left px-2 py-1.5 hover:bg-slate-50 flex items-center gap-2 ${String(v.sheet_id) === String(secondarySheetId) ? "bg-emerald-50/50" : ""}`}
-                                                                                                            >
-                                                                                                                <span className="w-7 shrink-0 text-[8px] font-black text-slate-400 text-center">v{v.import_version}</span>
-                                                                                                                <div className="min-w-0 flex-1">
-                                                                                                                    <div className="flex items-center gap-1.5 min-w-0">
-                                                                                                                        <SourceProviderIcon provider={source.sync_provider} className="h-3 w-3 shrink-0 text-slate-500" />
-                                                                                                                        <div className="text-[10px] font-bold text-slate-700 whitespace-nowrap">
-                                                                                                                            {label}
-                                                                                                                            {v.uploaded_at ? ` · Updated: ${new Date(v.uploaded_at).toLocaleDateString()}` : ""}
+                                                                                                        {group.map((v) => {
+                                                                                                            const importStatus = String(v?.status || "").trim().toLowerCase();
+                                                                                                            const importId = Number.parseInt(String(v?.id || ""), 10);
+                                                                                                            const canDeleteRevision = canReviewImports
+                                                                                                                && importStatus !== "published"
+                                                                                                                && Number.isInteger(importId)
+                                                                                                                && importId > 0;
+                                                                                                            return (
+                                                                                                                <div
+                                                                                                                    key={String(v.sheet_id)}
+                                                                                                                    className={`w-full px-2 py-1.5 hover:bg-slate-50 flex items-center gap-2 ${String(v.sheet_id) === String(secondarySheetId) ? "bg-emerald-50/50" : ""}`}
+                                                                                                                >
+                                                                                                                    <button
+                                                                                                                        type="button"
+                                                                                                                        onClick={(e) => {
+                                                                                                                            e.stopPropagation();
+                                                                                                                            const nextSheetId = String(v.sheet_id || "");
+                                                                                                                            if (nextSheetId) setSecondarySheetId(nextSheetId);
+                                                                                                                            setSecondaryFileVersionMenuKey(null);
+                                                                                                                            setSecondarySourcePickerOpen(false);
+                                                                                                                        }}
+                                                                                                                        className="min-w-0 flex-1 flex items-center gap-2 text-left"
+                                                                                                                    >
+                                                                                                                        <span className="w-7 shrink-0 text-[8px] font-black text-slate-400 text-center">v{v.import_version}</span>
+                                                                                                                        <div className="min-w-0 flex-1">
+                                                                                                                            <div className="flex items-center gap-1.5 min-w-0">
+                                                                                                                                <SourceProviderIcon provider={source.sync_provider} className="h-3 w-3 shrink-0 text-slate-500" />
+                                                                                                                                <div className="text-[10px] font-bold text-slate-700 whitespace-nowrap">
+                                                                                                                                    {label}
+                                                                                                                                    {v.uploaded_at ? ` · Updated: ${new Date(v.uploaded_at).toLocaleDateString()}` : ""}
+                                                                                                                                </div>
+                                                                                                                            </div>
                                                                                                                         </div>
-                                                                                                                    </div>
+                                                                                                                    </button>
+                                                                                                                    {canDeleteRevision ? (
+                                                                                                                        <button
+                                                                                                                            type="button"
+                                                                                                                            onClick={(e) => {
+                                                                                                                                e.stopPropagation();
+                                                                                                                                deleteImportRevisionFromPicker(v);
+                                                                                                                            }}
+                                                                                                                            disabled={deleteImportBusyId === String(importId)}
+                                                                                                                            title="Delete revision"
+                                                                                                                            aria-label="Delete revision"
+                                                                                                                            className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 ${deleteImportBusyId === String(importId) ? "opacity-60 cursor-not-allowed" : ""}`}
+                                                                                                                        >
+                                                                                                                            🗑
+                                                                                                                        </button>
+                                                                                                                    ) : null}
                                                                                                                 </div>
-                                                                                                            </button>
-                                                                                                        ))}
+                                                                                                            );
+                                                                                                        })}
                                                                                                     </div>
                                                                                                 </div>
                                                                                             )}

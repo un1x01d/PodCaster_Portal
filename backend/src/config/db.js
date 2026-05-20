@@ -1154,6 +1154,7 @@ export async function initDb(targetPool = pool, options = {}) {
   await db.query(`
     CREATE TABLE IF NOT EXISTS ai_learning_candidates (
       id BIGSERIAL PRIMARY KEY,
+      group_id INT NULL REFERENCES groups(id) ON DELETE CASCADE,
       locale TEXT NOT NULL DEFAULT 'en',
       phrase TEXT NOT NULL,
       suggested_intent TEXT NOT NULL,
@@ -1168,9 +1169,11 @@ export async function initDb(targetPool = pool, options = {}) {
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `);
+  await db.query(`ALTER TABLE ai_learning_candidates ADD COLUMN IF NOT EXISTS group_id INT NULL REFERENCES groups(id) ON DELETE CASCADE;`);
   await db.query(`CREATE INDEX IF NOT EXISTS idx_ai_learning_events_created ON ai_learning_events (created_at DESC);`);
   await db.query(`CREATE INDEX IF NOT EXISTS idx_ai_learning_events_intent ON ai_learning_events (detected_intent, created_at DESC);`);
   await db.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_learning_candidates_unique_pending ON ai_learning_candidates (locale, phrase, suggested_intent) WHERE status = 'pending';`);
+  await db.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_learning_candidates_unique_pending_group ON ai_learning_candidates (group_id, locale, phrase, suggested_intent) WHERE status = 'pending';`);
   await db.query(`
     INSERT INTO app_settings (key, value, updated_at)
     VALUES ('google_integration', '{"enabled": true}'::jsonb, CURRENT_TIMESTAMP)

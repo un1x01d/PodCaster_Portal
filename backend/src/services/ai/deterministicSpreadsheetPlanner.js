@@ -192,31 +192,40 @@ function resolveDimensionHeader(message = "", headers = []) {
   return pickHeaderByKeywords(headers, ["account", "customer", "department", "region", "channel"]);
 }
 
-function resolveValueHeader(message = "", headers = []) {
-  const explicit = resolveExplicitHeaderHint(message, headers);
-  if (explicit.header) return explicit.header;
-  const s = String(message || "").toLowerCase();
-  if (/\bgross\s*profit|profit\b/.test(s)) {
-    return pickHeaderByKeywords(headers, ["gross profit", "net income", "profit"]);
-  }
-  if (/\brevenue|sales|income\b/.test(s)) {
-    return pickHeaderByKeywords(headers, ["revenue", "sales", "income"]);
-  }
-  if (/\bexpense|expenses|cost|opex\b/.test(s)) {
-    return pickHeaderByKeywords(headers, ["expense", "cost", "opex"]);
-  }
-  return pickHeaderByKeywords(headers, ["revenue", "gross profit", "net income", "expense"]);
-}
-
 function hasExplicitMetricInMessage(message = "") {
   return /\brevenue|sales|income|profit|margin|expense|expenses|cost|opex\b/i.test(String(message || ""));
 }
 
 function listLikelyMetricOptions(headers = [], limit = 5) {
   const list = (Array.isArray(headers) ? headers : []).filter((h) =>
-    /\brevenue\b|\bsales\b|\bincome\b|\bprofit\b|\bmargin\b|\bexpense\b|\bcost\b|\bopex\b|\bamount\b|\bvalue\b/i.test(String(h))
+    /\brevenue\b|\bgross sales\b|\bnet sales\b|\bincome\b|\bprofit\b|\bmargin\b|\bexpense\b|\bcost\b|\bopex\b|\bamount\b|\bvalue\b/i.test(String(h))
   );
-  return Array.from(new Set(list.map((h) => String(h)))).slice(0, limit);
+  const filtered = list.filter((h) => !/\b(channel|account|customer|client|department|region|category|segment)\b/i.test(String(h)));
+  return Array.from(new Set(filtered.map((h) => String(h)))).slice(0, limit);
+}
+
+function pickValueHeaderFromResolution(metric = "", resolution = {}, explicitHeader = null) {
+  if (explicitHeader) return String(explicitHeader);
+  const resolved = resolution?.resolvedMappings || {};
+  const optional = resolution?.optionalMappings || {};
+  const all = { ...optional, ...resolved };
+  const preferenceByMetric = {
+    total_revenue: ["total_revenue", "net_revenue"],
+    net_revenue: ["net_revenue", "total_revenue"],
+    gross_profit: ["gross_profit", "net_income", "total_revenue"],
+    net_income: ["net_income", "gross_profit", "total_revenue"],
+    total_expense: ["total_expense"],
+    variance_amount: ["actual_amount", "budget_amount"],
+    variance_pct: ["actual_amount", "budget_amount"],
+    accounts_receivable_total: ["ar_balance"],
+    accounts_payable_total: ["ap_balance"],
+  };
+  const preference = preferenceByMetric[String(metric || "")] || [];
+  for (const key of preference) {
+    if (all[key]) return String(all[key]);
+  }
+  const values = Object.values(all).map((v) => String(v || "")).filter(Boolean);
+  return values.length ? values[0] : null;
 }
 
 function recommendHeadersForMissing(headers = [], missingRequired = []) {
@@ -235,6 +244,21 @@ function recommendHeadersForMissing(headers = [], missingRequired = []) {
   const ranked = scored.filter((x) => x.score > 0).sort((a, b) => b.score - a.score).map((x) => x.h);
   if (ranked.length) return Array.from(new Set(ranked)).slice(0, 6);
   return list.slice(0, 6);
+}
+
+function humanizeCanonicalFieldName(field = "") {
+  const map = {
+    total_revenue: "total revenue",
+    net_revenue: "net revenue",
+    total_expense: "total expense",
+    net_income: "net income",
+    gross_profit: "gross profit",
+    gross_margin_pct: "gross margin",
+    cogs: "cost of goods sold",
+    date: "date",
+  };
+  const key = String(field || "").trim();
+  return map[key] || key.replace(/_/g, " ");
 }
 
 function makeClarification(reason, question, options = []) {
@@ -364,6 +388,25 @@ function detectProjectionIntent(message = "") {
   return /(project|projection|forecast|predict|prediction|outlook|forward|expected|expecting|estimate|estimation)/i.test(String(message || ""));
 }
 
+function buildVerification({
+  method = "resolver",
+  confidence = 0.9,
+  fallbackUsed = false,
+  evidence = {},
+  ambiguityDelta = null,
+} = {}) {
+  const out = {
+    method: String(method || "resolver"),
+    evidence: evidence && typeof evidence === "object" ? evidence : { note: String(evidence || "resolver_signals") },
+    confidence: Math.max(0, Math.min(1, Number(confidence) || 0)),
+    fallback_used: fallbackUsed === true,
+  };
+  if (Number.isFinite(Number(ambiguityDelta))) {
+    out.ambiguity_delta = Math.max(0, Math.min(1, Number(ambiguityDelta)));
+  }
+  return out;
+}
+
 
 export async function buildDeterministicSpreadsheetPlan({
   message = "",
@@ -374,6 +417,7 @@ export async function buildDeterministicSpreadsheetPlan({
   hints = {},
   context = {},
 }) {
+  const plannerGroupId = Number.parseInt(String(hints?.groupId || context?.groupId || ""), 10) || null;
   const fieldMetadata = {
     ...(semanticProfile?.headerMappings || {}),
     ...buildFieldMetadataFromSemanticProfile(semanticProfile),
@@ -403,7 +447,16 @@ export async function buildDeterministicSpreadsheetPlan({
   if (rankingIntent) {
     const yearRanking = asksForYearRanking(message);
     if (yearRanking) {
-      const valueHeader = resolveValueHeader(message, headers);
+      const rankingMetric = detectMetricFromMessage(message, headers) || normalizeMetric(hints?.metric || "") || "total_revenue";
+      const rankingResolution = await resolveMetricHeaders({
+        metricKey: rankingMetric,
+        headers,
+        fieldMetadata,
+        message,
+        sampleRows,
+        groupId: plannerGroupId,
+      });
+      const valueHeader = pickValueHeaderFromResolution(rankingMetric, rankingResolution, explicitHeaderHint.header);
       if (!valueHeader) {
         const opts = listLikelyMetricOptions(headers);
         return makeClarification(
@@ -423,16 +476,33 @@ export async function buildDeterministicSpreadsheetPlan({
       return {
         ok: true,
         operation: "top_n_by_year",
+        metric: rankingMetric,
         dateHeader,
         valueHeader,
         limit: parseTopLimit(message, 1),
         direction: detectRankingDirection(message),
+        verification: buildVerification({
+          method: "ranking_header_resolution",
+          confidence: Number(rankingResolution?.confidence || 0.8),
+          fallbackUsed: false,
+          evidence: { dateHeader, valueHeader, intent: "top_n_by_year", resolvedMappings: rankingResolution?.resolvedMappings || {} },
+          ambiguityDelta: Number(rankingResolution?.ambiguous?.[0]?.delta ?? NaN),
+        }),
       };
     }
     const dimensionHeader = resolveDimensionHeader(message, headers);
     const hasExplicitMetric = /\brevenue|sales|income|profit|margin|expense|cost|opex\b/i.test(String(message || ""));
     const metricFromHint = normalizeMetric(hints?.metric || "");
-    const valueHeader = resolveValueHeader(message, headers) || (metricFromHint ? resolveValueHeader(metricFromHint, headers) : null);
+    const rankingMetric = detectMetricFromMessage(message, headers) || metricFromHint || "total_revenue";
+    const rankingResolution = await resolveMetricHeaders({
+      metricKey: rankingMetric,
+      headers,
+      fieldMetadata,
+      message,
+      sampleRows,
+      groupId: plannerGroupId,
+    });
+    const valueHeader = pickValueHeaderFromResolution(rankingMetric, rankingResolution, explicitHeaderHint.header);
     
     if (!dimensionHeader) {
       return makeClarification(
@@ -458,12 +528,19 @@ export async function buildDeterministicSpreadsheetPlan({
     return {
       ok: true,
       operation: "top_n_by_dimension",
-      metric: metricFromHint || detectMetricFromMessage(message, headers) || "total_revenue",
+      metric: rankingMetric,
       dimensionHeader,
       valueHeader,
       limit: parseTopLimit(message, 1),
       direction: detectRankingDirection(message),
       accountOnly: /\bonly\b/i.test(String(message || "")),
+      verification: buildVerification({
+        method: "ranking_dimension_resolution",
+        confidence: Number(rankingResolution?.confidence || 0.8),
+        fallbackUsed: !hasExplicitMetric,
+        evidence: { dimensionHeader, valueHeader, metricHint: metricFromHint || null, resolvedMappings: rankingResolution?.resolvedMappings || {} },
+        ambiguityDelta: Number(rankingResolution?.ambiguous?.[0]?.delta ?? NaN),
+      }),
     };
 
   }
@@ -481,9 +558,18 @@ export async function buildDeterministicSpreadsheetPlan({
       }
     }
     const explicitMetric = hasExplicitMetricInMessage(message);
-    const valueHeader = explicitMetric
-      ? (resolveValueHeader(message, headers) || resolveValueHeader(String(context?.lastMetric || ""), headers))
-      : (resolveValueHeader(String(context?.lastMetric || ""), headers) || resolveValueHeader(message, headers));
+    const driverMetric = explicitMetric
+      ? (detectMetricFromMessage(message, headers) || normalizeMetric(String(context?.lastMetric || "")) || "total_revenue")
+      : (normalizeMetric(String(context?.lastMetric || "")) || detectMetricFromMessage(message, headers) || "total_revenue");
+    const driverResolution = await resolveMetricHeaders({
+      metricKey: driverMetric,
+      headers,
+      fieldMetadata,
+      message,
+      sampleRows,
+      groupId: plannerGroupId,
+    });
+    const valueHeader = pickValueHeaderFromResolution(driverMetric, driverResolution, explicitHeaderHint.header);
     if (!valueHeader) {
       return makeClarification(
         "metric_unresolved",
@@ -510,13 +596,20 @@ export async function buildDeterministicSpreadsheetPlan({
     return {
       ok: true,
       operation: "driver_year_change",
-      metric: explicitMetric ? detectMetricFromMessage(message, headers) : (normalizeMetric(String(context?.lastMetric || "")) || "total_revenue"),
+      metric: driverMetric,
       year: Number(resolvedYears[0]),
       direction: detectDriverDirection(message),
       dateHeader,
       dimensionHeader,
       valueHeader,
       limit: 1,
+      verification: buildVerification({
+        method: "driver_resolution",
+        confidence: Number(driverResolution?.confidence || 0.82),
+        fallbackUsed: !explicitMetric,
+        evidence: { dateHeader, dimensionHeader, valueHeader, year: Number(resolvedYears[0]), resolvedMappings: driverResolution?.resolvedMappings || {} },
+        ambiguityDelta: Number(driverResolution?.ambiguous?.[0]?.delta ?? NaN),
+      }),
     };
 
   }
@@ -560,13 +653,15 @@ export async function buildDeterministicSpreadsheetPlan({
       fieldMetadata,
       message,
       sampleRows,
+      groupId: plannerGroupId,
       });
 
     if (resolution?.missingRequired?.length) {
       const first = resolution.missingRequired[0];
+      const missingHuman = resolution.missingRequired.map((f) => humanizeCanonicalFieldName(f));
       const out = makeClarification(
         "missing_required_headers",
-        `I can build a projection, but I’m missing required fields: ${resolution.missingRequired.join(", ")}. Which available column should map to these?`,
+        `I can build a projection, but I’m missing required fields: ${missingHuman.join(", ")}. Which available column should map to these?`,
         recommendHeadersForMissing(headers, resolution.missingRequired)
       );
       out.clarification_field = String(first || "").trim() || null;
@@ -581,6 +676,16 @@ export async function buildDeterministicSpreadsheetPlan({
       targetYear: Number(finalTargetYear),
       dateHeader,
       resolution,
+      verification: buildVerification({
+        method: "metric_projection_resolver",
+        confidence: Number(resolution?.confidence || 0.8),
+        fallbackUsed: false,
+        evidence: {
+          resolvedMappings: resolution?.resolvedMappings || {},
+          optionalMappings: resolution?.optionalMappings || {},
+          targetYear: Number(finalTargetYear),
+        },
+      }),
     };
   }
 
@@ -597,6 +702,7 @@ export async function buildDeterministicSpreadsheetPlan({
     fieldMetadata,
     message,
     sampleRows,
+    groupId: plannerGroupId,
   });
 
 
@@ -610,9 +716,10 @@ export async function buildDeterministicSpreadsheetPlan({
 
   if (resolution?.missingRequired?.length) {
     const first = resolution.missingRequired[0];
+    const missingHuman = resolution.missingRequired.map((f) => humanizeCanonicalFieldName(f));
     const out = makeClarification(
       "missing_required_headers",
-      `I can answer that, but I need one clarification first. I’m missing required fields: ${resolution.missingRequired.join(", ")}. Which available column should map to these?`,
+      `I can answer that, but I need one clarification first. I’m missing required fields: ${missingHuman.join(", ")}. Which available column should map to these?`,
       recommendHeadersForMissing(headers, resolution.missingRequired)
     );
     out.clarification_field = String(first || "").trim() || null;
@@ -663,5 +770,16 @@ export async function buildDeterministicSpreadsheetPlan({
     period,
     comparisonPeriod: accountingIntent?.comparison_period || null,
     resolution,
+    verification: buildVerification({
+      method: "metric_header_resolution",
+      confidence: Number(resolution?.confidence || 0.8),
+      fallbackUsed: false,
+      evidence: {
+        resolvedMappings: resolution?.resolvedMappings || {},
+        optionalMappings: resolution?.optionalMappings || {},
+        missingRequired: resolution?.missingRequired || [],
+      },
+      ambiguityDelta: Number(resolution?.ambiguous?.[0]?.delta ?? NaN),
+    }),
   };
 }

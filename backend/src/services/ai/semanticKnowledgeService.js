@@ -2,26 +2,52 @@ import { query } from "../../config/db.js";
 import { normalizeText } from "./accountingGlossary.js";
 import Fuse from "fuse.js";
 
-let SEMANTIC_CACHE = null;
-let CACHE_TS = 0;
+const SEMANTIC_CACHE_BY_GROUP = new Map();
 const CACHE_TTL = 300000; // 5 minutes
 
-export async function getSemanticKnowledge() {
+function groupCacheKey(groupId = null) {
+  const gid = Number.parseInt(String(groupId || ""), 10);
+  return Number.isInteger(gid) && gid > 0 ? `group:${gid}` : "global";
+}
+
+export function invalidateSemanticKnowledgeCache(groupId = null) {
+  if (groupId === null || groupId === undefined) {
+    SEMANTIC_CACHE_BY_GROUP.clear();
+    return;
+  }
+  SEMANTIC_CACHE_BY_GROUP.delete(groupCacheKey(groupId));
+}
+
+export async function getSemanticKnowledge({ groupId = null } = {}) {
+  const cacheKey = groupCacheKey(groupId);
   const now = Date.now();
-  if (SEMANTIC_CACHE && now - CACHE_TS < CACHE_TTL) {
-    return SEMANTIC_CACHE;
+  const cached = SEMANTIC_CACHE_BY_GROUP.get(cacheKey);
+  if (cached && now - Number(cached.ts || 0) < CACHE_TTL) {
+    return cached.data;
   }
 
   try {
-    const rows = await query(
-      `SELECT category, synonym FROM semantic_dictionary WHERE group_id IS NULL`,
-      []
-    );
+    const gid = Number.parseInt(String(groupId || ""), 10);
+    const hasGroup = Number.isInteger(gid) && gid > 0;
+    const rows = hasGroup
+      ? await query(
+        `SELECT category, synonym, group_id
+           FROM semantic_dictionary
+          WHERE (group_id = $1 OR group_id IS NULL)`,
+        [gid]
+      )
+      : await query(
+        `SELECT category, synonym, group_id
+           FROM semantic_dictionary
+          WHERE group_id IS NULL`,
+        []
+      );
     const map = new Map();
     rows.forEach((r) => {
       const cat = String(r.category || "").toLowerCase();
       if (!map.has(cat)) map.set(cat, new Set());
-      map.get(cat).add(normalizeText(r.synonym));
+      // Keep tenant-specific terms first by appending global terms only if absent.
+      map.get(cat).add(normalizeText(String(r.synonym || "")));
     });
 
     const out = {};
@@ -29,8 +55,7 @@ export async function getSemanticKnowledge() {
       out[cat] = Array.from(synonyms);
     }
 
-    SEMANTIC_CACHE = out;
-    CACHE_TS = now;
+    SEMANTIC_CACHE_BY_GROUP.set(cacheKey, { ts: now, data: out });
     return out;
   } catch (e) {
     console.error("Failed to load semantic knowledge from DB:", e);
@@ -103,64 +128,136 @@ export async function checkPhraseOverride(phrase, locale = "en") {
 /**
  * Record a successful user mapping to potentially learn it as a global synonym.
  */
-export async function recordSuccessfulMapping({ canonicalField, synonym, locale = "en" }) {
+export async function recordSuccessfulMapping({
+  canonicalField,
+  synonym,
+  locale = "en",
+  groupId = null,
+  userId = null,
+}) {
   if (!canonicalField || !synonym) return;
   const s = normalizeText(synonym);
   if (!s) return;
+  const gid = Number.parseInt(String(groupId || ""), 10);
+  if (!Number.isInteger(gid) || gid <= 0) return;
 
   try {
-    // Proactive Learning: Upsert into candidates with high evidence
+    // Tenant-scoped governed learning: capture candidate only, no auto global approval.
     const result = await query(
       `INSERT INTO ai_learning_candidates
-         (locale, phrase, suggested_intent, suggested_payload, evidence_count, confidence, status)
-       VALUES ($1, $2, 'semantic_synonym', $3::jsonb, 1, 0.8, 'pending')
-       ON CONFLICT (locale, phrase, suggested_intent) WHERE status = 'pending'
+         (group_id, locale, phrase, suggested_intent, suggested_payload, evidence_count, confidence, status, reviewed_by)
+       VALUES ($1, $2, $3, 'semantic_synonym', $4::jsonb, 1, 0.8, 'pending', $5)
+       ON CONFLICT (group_id, locale, phrase, suggested_intent) WHERE status = 'pending'
        DO UPDATE SET
          evidence_count = ai_learning_candidates.evidence_count + 1,
-         confidence = LEAST(1.0, ai_learning_candidates.confidence + 0.05)
+         confidence = LEAST(1.0, ai_learning_candidates.confidence + 0.05),
+         updated_at = CURRENT_TIMESTAMP
        RETURNING evidence_count, confidence, status`,
-      [locale, s, JSON.stringify({ canonicalField })]
+      [gid, locale, s, JSON.stringify({ canonicalField }), Number(userId) || null]
     );
-
-    // Auto-Approve if evidence is strong (e.g., 3 separate confirmations)
-    const candidate = result?.[0];
-    if (candidate && candidate.evidence_count >= 3 && candidate.confidence >= 0.9) {
-      await autoApproveCandidate(s, 'semantic_synonym', locale);
-    }
+    return result?.[0] || null;
   } catch (e) {
     console.error("Failed to record successful mapping for learning:", e);
+    return null;
   }
 }
 
-async function autoApproveCandidate(phrase, intent, locale) {
+export async function promoteSemanticCandidate({
+  candidateId,
+  reviewerUserId,
+  promoteToGlobal = false,
+  minEvidence = 3,
+  minConfidence = 0.9,
+}) {
   try {
     const rows = await query(
-      `SELECT id, suggested_payload FROM ai_learning_candidates 
-       WHERE phrase = $1 AND suggested_intent = $2 AND locale = $3 AND status = 'pending' LIMIT 1`,
-      [phrase, intent, locale]
+      `SELECT id, group_id, locale, phrase, suggested_intent, suggested_payload, evidence_count, confidence, status
+         FROM ai_learning_candidates
+        WHERE id = $1
+        LIMIT 1`,
+      [Number(candidateId) || 0]
     );
     const candidate = rows?.[0];
-    if (!candidate) return;
+    if (!candidate) return { ok: false, error: "candidate_not_found" };
+    if (String(candidate.status || "") !== "pending") return { ok: false, error: "candidate_not_pending" };
+    if (Number(candidate.evidence_count || 0) < Number(minEvidence || 3)) return { ok: false, error: "insufficient_evidence" };
+    if (Number(candidate.confidence || 0) < Number(minConfidence || 0.9)) return { ok: false, error: "insufficient_confidence" };
 
-    if (intent === 'semantic_synonym') {
-      const payload = candidate.suggested_payload || {};
-      if (payload.canonicalField) {
-        await query(
-          "INSERT INTO semantic_dictionary (category, language, synonym) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
-          [payload.canonicalField, locale, phrase]
-        );
-      }
-    }
+    const payload = candidate.suggested_payload || {};
+    const canonicalField = String(payload?.canonicalField || "").trim();
+    if (!canonicalField) return { ok: false, error: "candidate_payload_invalid" };
+
+    const gid = promoteToGlobal ? null : (Number.parseInt(String(candidate.group_id || ""), 10) || null);
+    if (!promoteToGlobal && !gid) return { ok: false, error: "group_scope_required" };
 
     await query(
-      "UPDATE ai_learning_candidates SET status = 'approved', reviewed_at = CURRENT_TIMESTAMP WHERE id = $1",
-      [candidate.id]
+      `INSERT INTO semantic_dictionary (category, language, synonym, group_id)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT DO NOTHING`,
+      [canonicalField, String(candidate.locale || "en"), String(candidate.phrase || ""), gid]
     );
-    
-    // Clear caches to pick up new knowledge
-    SEMANTIC_CACHE = null;
-    CACHE_TS = 0;
+
+    const ruleRows = await query(
+      `INSERT INTO ai_learning_rules
+         (scope, group_id, locale, phrase, mapped_intent, mapped_payload, confidence, status, approved_by)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, 'approved', $8)
+       RETURNING id`,
+      [
+        promoteToGlobal ? "global" : "group",
+        gid,
+        String(candidate.locale || "en"),
+        String(candidate.phrase || ""),
+        "semantic_synonym",
+        JSON.stringify({ canonicalField }),
+        Number(candidate.confidence || 0.9),
+        Number(reviewerUserId) || null,
+      ]
+    );
+    const approvedRuleId = ruleRows?.[0]?.id || null;
+
+    await query(
+      `UPDATE ai_learning_candidates
+          SET status = 'approved',
+              approved_rule_id = $2,
+              reviewed_by = $3,
+              reviewed_at = CURRENT_TIMESTAMP,
+              updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1`,
+      [candidate.id, approvedRuleId, Number(reviewerUserId) || null]
+    );
+
+    invalidateSemanticKnowledgeCache(candidate.group_id || null);
+    if (promoteToGlobal) {
+      invalidateSemanticKnowledgeCache(null);
+    }
+    return { ok: true, candidateId: candidate.id, approvedRuleId, scope: promoteToGlobal ? "global" : "group" };
   } catch (e) {
-    console.error("Auto-approval failed:", e);
+    console.error("Semantic candidate promotion failed:", e);
+    return { ok: false, error: "promotion_failed" };
+  }
+}
+
+export async function rollbackSemanticRule({ ruleId, reviewerUserId = null }) {
+  try {
+    await query(
+      `UPDATE ai_learning_rules
+          SET status = 'disabled'
+        WHERE id = $1`,
+      [Number(ruleId) || 0]
+    );
+    await query(
+      `UPDATE ai_learning_candidates
+          SET status = 'rejected',
+              reviewed_by = COALESCE($2, reviewed_by),
+              reviewed_at = CURRENT_TIMESTAMP,
+              updated_at = CURRENT_TIMESTAMP
+        WHERE approved_rule_id = $1`,
+      [Number(ruleId) || 0, Number(reviewerUserId) || null]
+    );
+    invalidateSemanticKnowledgeCache(null);
+    return { ok: true };
+  } catch (e) {
+    console.error("Semantic rule rollback failed:", e);
+    return { ok: false, error: "rollback_failed" };
   }
 }

@@ -261,6 +261,7 @@ export function useChatbotLogic({
         timestamp: new Date(),
         isFilter: filters.length > 0,
         filterCol: filters[0]?.column,
+        meta: body?.meta && typeof body.meta === "object" ? body.meta : null,
       }]);
     } catch (e) {
       const code = String(e?.response?.data?.error || "").trim();
@@ -384,4 +385,3 @@ export function useChatbotLogic({
     clearMessages,
   };
 }
-

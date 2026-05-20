@@ -2257,6 +2257,8 @@ export default function App() {
         <AuthenticatedAppHeader
           user={user}
           onLogout={handleLogout}
+          apiBase={API}
+          token={token}
           myFiles={myFiles}
           reportSources={reportSources}
           reportSourceImports={reportSourceImports}
@@ -2264,6 +2266,7 @@ export default function App() {
           activeFilename={activeFilename}
           onSwitchSheet={handleSwitchSheet}
           onDeleteSheet={deleteSheet}
+          refreshReportSources={refreshReportSources}
           onSaveView={() => setShowColumnSelector(true)}
           locale={dashboardI18n.locale}
           setLocale={dashboardI18n.setLocale}

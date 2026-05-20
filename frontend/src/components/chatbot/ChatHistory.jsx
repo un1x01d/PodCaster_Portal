@@ -1,7 +1,7 @@
 import React, { useRef, useEffect } from 'react';
 import { DASHBOARD_COPY_EN } from "../../hooks/useDashboardI18n";
 
-export default function ChatHistory({ sheetId = null, messages, onApplyFilter, copy = DASHBOARD_COPY_EN, locale = "en" }) {
+export default function ChatHistory({ sheetId = null, messages, copy = DASHBOARD_COPY_EN, locale = "en" }) {
     const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
     const containerRef = useRef(null);
     const [speakingIndex, setSpeakingIndex] = React.useState(null);
@@ -101,6 +101,62 @@ export default function ChatHistory({ sheetId = null, messages, onApplyFilter, c
     }, [API]);
 
     const [voices, setVoices] = React.useState([]);
+    const [showWorkByMessage, setShowWorkByMessage] = React.useState({});
+
+    const toggleShowWork = React.useCallback((index) => {
+        setShowWorkByMessage((prev) => ({ ...prev, [index]: !prev[index] }));
+    }, []);
+
+    const normalizeConfidencePct = (value) => {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return null;
+        return Math.max(0, Math.min(100, Math.round(n * 100)));
+    };
+
+    const renderVerificationAudit = (msg) => {
+        const verification = msg?.meta?.verification || null;
+        const gate = msg?.meta?.verification_gate || null;
+        if (!verification) return null;
+
+        const confidencePct = normalizeConfidencePct(verification?.confidence);
+        const ambiguityDelta = Number(verification?.ambiguity_delta);
+        const ambiguityPct = Number.isFinite(ambiguityDelta) ? normalizeConfidencePct(ambiguityDelta) : null;
+        const candidates = Array.isArray(verification?.evidence?.candidates) ? verification.evidence.candidates : [];
+        const mappings = verification?.evidence?.resolvedMappings && typeof verification.evidence.resolvedMappings === "object"
+            ? verification.evidence.resolvedMappings
+            : {};
+
+        return (
+            <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-2 text-[10px] text-slate-700">
+                <div className="font-semibold text-slate-900">Verification Audit</div>
+                <div className="mt-1">Method: {String(verification?.method || "n/a")}</div>
+                <div>Confidence: {confidencePct === null ? "n/a" : `${confidencePct}%`}</div>
+                <div>Band: {String(verification?.band || gate?.band || "n/a")}</div>
+                <div>Fallback used: {verification?.fallback_used === true ? "Yes" : "No"}</div>
+                {ambiguityPct !== null && <div>Ambiguity delta: {ambiguityPct}%</div>}
+                {Object.keys(mappings).length > 0 && (
+                    <div className="mt-1">
+                        <div className="font-semibold text-slate-900">Chosen Headers</div>
+                        {Object.entries(mappings).map(([key, value]) => (
+                            <div key={key}>{key}: {String(value)}</div>
+                        ))}
+                    </div>
+                )}
+                {candidates.length > 0 && (
+                    <div className="mt-1">
+                        <div className="font-semibold text-slate-900">Rejected Candidates</div>
+                        {candidates.map((c, idx) => {
+                            const header = String(c?.header || "unknown");
+                            const scorePct = normalizeConfidencePct(c?.confidence);
+                            return (
+                                <div key={`${header}-${idx}`}>{header}{scorePct === null ? "" : ` (${scorePct}%)`}</div>
+                            );
+                        })}
+                    </div>
+                )}
+            </div>
+        );
+    };
 
     useEffect(() => {
         const synth = window.speechSynthesis;
@@ -554,6 +610,8 @@ export default function ChatHistory({ sheetId = null, messages, onApplyFilter, c
             {messages.map((msg, i) => {
                 const isSpeaking = speakingIndex === i;
                 const botLike = msg.type !== 'user' && !msg.isSystem;
+                const hasVerification = !!(msg?.meta?.verification && typeof msg.meta.verification === "object");
+                const hasUncertaintyWarning = msg?.meta?.verification_gate?.warning === true;
                 return (
                     <div key={i} className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'} mb-1`}>
                         <div className={`rounded-xl px-2.5 py-1.5 text-[11px] leading-snug shadow-sm group relative transition-all break-words overflow-wrap-anywhere ${
@@ -582,6 +640,23 @@ export default function ChatHistory({ sheetId = null, messages, onApplyFilter, c
                                 </button>
                             )}
                             <div className="whitespace-pre-wrap font-semibold tracking-[0.01em]">{formatMessageForDisplay(msg.text)}</div>
+                            {botLike && hasUncertaintyWarning && (
+                                <div className="mt-1 inline-flex items-center rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+                                    Uncertainty: high-prob mapping
+                                </div>
+                            )}
+                            {botLike && hasVerification && (
+                                <div className="mt-1">
+                                    <button
+                                        type="button"
+                                        onClick={() => toggleShowWork(i)}
+                                        className="inline-flex items-center rounded-full border border-slate-300 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-700 hover:bg-slate-100"
+                                    >
+                                        {showWorkByMessage[i] ? "Hide Work" : "Show My Work"}
+                                    </button>
+                                    {showWorkByMessage[i] && renderVerificationAudit(msg)}
+                                </div>
+                            )}
                         </div>
                     </div>
                 );

@@ -3768,17 +3768,21 @@ export async function publishReportSourceImport(req, res) {
         }
         await client.query("COMMIT");
 
-        await writeAuditLog({
-            req,
-            action: "import.approved_published",
-            resourceType: "report_source_import",
-            resourceId: importId,
-            metadata: {
-                report_source_id: record.report_source_id,
-                sheet_id: record.sheet_id,
-                previous_status: record.status,
-            },
-        });
+        try {
+            await writeAuditLog({
+                req,
+                action: "import.approved_published",
+                resourceType: "report_source_import",
+                resourceId: importId,
+                metadata: {
+                    report_source_id: record.report_source_id,
+                    sheet_id: record.sheet_id,
+                    previous_status: record.status,
+                },
+            });
+        } catch (auditErr) {
+            console.warn("[audit] import.approved_published failed:", auditErr?.message || auditErr);
+        }
         res.json({
             success: true,
             import_id: importId,
@@ -3859,17 +3863,21 @@ export async function rejectReportSourceImport(req, res) {
         }
         await client.query("COMMIT");
 
-        await writeAuditLog({
-            req,
-            action: "import.rejected",
-            resourceType: "report_source_import",
-            resourceId: importId,
-            metadata: {
-                report_source_id: record.report_source_id,
-                sheet_id: record.sheet_id,
-                previous_status: record.status,
-            },
-        });
+        try {
+            await writeAuditLog({
+                req,
+                action: "import.rejected",
+                resourceType: "report_source_import",
+                resourceId: importId,
+                metadata: {
+                    report_source_id: record.report_source_id,
+                    sheet_id: record.sheet_id,
+                    previous_status: record.status,
+                },
+            });
+        } catch (auditErr) {
+            console.warn("[audit] import.rejected failed:", auditErr?.message || auditErr);
+        }
         res.json({
             success: true,
             import_id: importId,
@@ -3911,9 +3919,10 @@ export async function deleteRejectedReportSourceImport(req, res) {
             await client.query("ROLLBACK");
             return res.status(403).json({ error: "Forbidden" });
         }
-        if (String(record.status || "").trim().toLowerCase() !== "rejected") {
+        const importStatus = String(record.status || "").trim().toLowerCase();
+        if (importStatus === "published") {
             await client.query("ROLLBACK");
-            return res.status(409).json({ error: "only_rejected_import_can_be_deleted" });
+            return res.status(409).json({ error: "published_import_cannot_be_deleted" });
         }
 
         await client.query(
@@ -3940,16 +3949,21 @@ export async function deleteRejectedReportSourceImport(req, res) {
         await client.query(`DELETE FROM sheets WHERE id = $1`, [record.sheet_id]);
         await client.query("COMMIT");
 
-        await writeAuditLog({
-            req,
-            action: "import.rejected_deleted",
-            resourceType: "report_source_import",
-            resourceId: importId,
-            metadata: {
-                report_source_id: record.report_source_id,
-                sheet_id: record.sheet_id,
-            },
-        });
+        try {
+            await writeAuditLog({
+                req,
+                action: "import.deleted",
+                resourceType: "report_source_import",
+                resourceId: importId,
+                metadata: {
+                    report_source_id: record.report_source_id,
+                    sheet_id: record.sheet_id,
+                    previous_status: importStatus,
+                },
+            });
+        } catch (auditErr) {
+            console.warn("[audit] import.deleted failed:", auditErr?.message || auditErr);
+        }
         return res.json({
             success: true,
             import_id: importId,
@@ -4268,9 +4282,13 @@ export async function getSheetData(req, res) {
                 const currentProfile = semanticRow.semantic_profile && typeof semanticRow.semantic_profile === "object"
                     ? semanticRow.semantic_profile
                     : {};
+                const dlpMode = String(currentProfile?.dlp?.mode || "").trim().toLowerCase();
+                const maskingActive = dlpMode === "mask";
                 const maskedByTab = currentProfile?.dlp?.maskedColumns;
-                if (maskedByTab && typeof maskedByTab === "object" && !Array.isArray(maskedByTab)) {
+                if (maskingActive && maskedByTab && typeof maskedByTab === "object" && !Array.isArray(maskedByTab)) {
                     dlpMaskedColumnsByTab = maskedByTab;
+                } else {
+                    dlpMaskedColumnsByTab = {};
                 }
                 const missingAiCache = !Array.isArray(currentProfile?.learned?.header_understanding)
                     || currentProfile.learned.header_understanding.length === 0;

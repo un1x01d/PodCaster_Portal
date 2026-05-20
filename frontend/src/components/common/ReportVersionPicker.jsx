@@ -55,6 +55,13 @@ export default function ReportVersionPicker({
   onToggleAutosync = null,
   autosyncToggleBusyId = "",
   titleCharLimit = 90,
+  canManageImports = false,
+  deleteImportBusyId = "",
+  deleteSourceBusyId = "",
+  onDeleteImportRevision = null,
+  onDeleteSource = null,
+  revisionMenuAlign = "below",
+  embedRevisionMenu = false,
 }) {
   const isItemSelectable = (item) => {
     if (typeof item?.selectable === "boolean") return item.selectable === true;
@@ -139,6 +146,20 @@ export default function ReportVersionPicker({
                         {autosyncToggleBusyId === key ? "Saving..." : (source.sync_enabled ? "Autosync ON" : "Autosync OFF")}
                       </button>
                     ) : null}
+                    {canManageImports && typeof onDeleteSource === "function" ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteSource(source);
+                        }}
+                        disabled={deleteSourceBusyId === key}
+                        className={`rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-[10px] font-semibold text-rose-700 hover:bg-rose-100 ${deleteSourceBusyId === key ? "opacity-60 cursor-not-allowed" : ""}`}
+                        title="Delete this label and all revisions"
+                      >
+                        {deleteSourceBusyId === key ? "Deleting..." : "Delete label"}
+                      </button>
+                    ) : null}
                   </div>
                   {isExpanded && (
                     <div className="bg-white border-t border-slate-100 py-1">
@@ -162,7 +183,7 @@ export default function ReportVersionPicker({
                               setIsOpen(false);
                             }}
                           >
-                            <div className="relative z-20 w-10 shrink-0 flex justify-center file-version-dropdown-container">
+                            <div className={`relative z-20 w-10 shrink-0 flex file-version-dropdown-container ${revisionMenuAlign === "panel_top" ? "justify-start items-start self-stretch" : "justify-center"}`}>
                               <button
                                 type="button"
                                 onClick={(e) => {
@@ -173,35 +194,64 @@ export default function ReportVersionPicker({
                               >
                                 v{latest.import_version || "-"}<span className={`text-[8px] opacity-40 transition-transform ${fileVersionMenuKey === fileKey ? "rotate-180" : ""}`}>▼</span>
                               </button>
-                              {fileVersionMenuKey === fileKey && (
-                                <div className="absolute left-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-xl z-[100] py-1" style={{ width: `${revisionMenuChars}ch`, maxWidth: "min(90vw, 980px)" }}>
+                              {fileVersionMenuKey === fileKey && !embedRevisionMenu && (
+                                <div className={`absolute left-0 ${revisionMenuAlign === "panel_top" ? "-top-2" : revisionMenuAlign === "top" ? "top-0" : "top-full mt-0"} bg-white border border-slate-200 rounded-lg shadow-xl z-[100] py-1`} style={{ width: `${revisionMenuChars}ch`, maxWidth: "min(90vw, 980px)" }}>
                                   <div className="max-h-48 overflow-auto custom-scrollbar">
-                                    {group.map((v) => (
-                                      <button
-                                        key={String(v.sheet_id)}
-                                        disabled={!isItemSelectable(v)}
-                                        title={isItemSelectable(v) ? label : reasonLabel(v)}
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          if (!isItemSelectable(v)) return;
-                                          const sid = String(v.sheet_id || "");
-                                          if (sid) onSelectSheet(sid, label);
-                                          setFileVersionMenuKey(null);
-                                          setIsOpen(false);
-                                        }}
-                                        className={`w-full text-left px-2 py-1.5 hover:bg-slate-50 flex items-center gap-2 ${String(v.sheet_id) === String(selectedSheetId) ? "bg-indigo-50/50" : ""} ${isItemSelectable(v) ? "" : "opacity-60 cursor-not-allowed"}`}
-                                      >
-                                        <span className="w-7 shrink-0 text-[8px] font-black text-slate-400 text-center">v{v.import_version}</span>
-                                        <SourceProviderIcon provider={source.sync_provider} className="h-3 w-3 shrink-0 text-slate-500" />
-                                        <div className="min-w-0 flex-1">
-                                          <div className={`text-[10px] truncate ${String(v.sheet_id) === String(selectedSheetId) ? "font-bold text-indigo-700" : "font-bold text-slate-700"}`}>{label}</div>
-                                          <div className="text-[8px] text-slate-400">
-                                            {v.uploaded_at ? new Date(v.uploaded_at).toLocaleDateString() : ""}
-                                            {!isItemSelectable(v) ? ` • ${reasonLabel(v)}` : ""}
-                                          </div>
+                                    {group.map((v) => {
+                                      const importStatus = String(v?.status || "").trim().toLowerCase();
+                                      const importId = Number.parseInt(String(v?.id || ""), 10);
+                                      const canDeleteRevision = canManageImports
+                                        && typeof onDeleteImportRevision === "function"
+                                        && importStatus !== "published"
+                                        && Number.isInteger(importId)
+                                        && importId > 0;
+                                      return (
+                                        <div
+                                          key={String(v.sheet_id)}
+                                          className={`w-full text-left px-2 py-1.5 hover:bg-slate-50 flex items-center gap-2 ${String(v.sheet_id) === String(selectedSheetId) ? "bg-indigo-50/50" : ""} ${isItemSelectable(v) ? "" : "opacity-60"}`}
+                                        >
+                                          <button
+                                            type="button"
+                                            disabled={!isItemSelectable(v)}
+                                            title={isItemSelectable(v) ? label : reasonLabel(v)}
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              if (!isItemSelectable(v)) return;
+                                              const sid = String(v.sheet_id || "");
+                                              if (sid) onSelectSheet(sid, label);
+                                              setFileVersionMenuKey(null);
+                                              setIsOpen(false);
+                                            }}
+                                            className={`min-w-0 flex-1 text-left flex items-center gap-2 ${isItemSelectable(v) ? "" : "cursor-not-allowed"}`}
+                                          >
+                                            <span className="w-7 shrink-0 text-[8px] font-black text-slate-400 text-center">v{v.import_version}</span>
+                                            <SourceProviderIcon provider={source.sync_provider} className="h-3 w-3 shrink-0 text-slate-500" />
+                                            <div className="min-w-0 flex-1">
+                                              <div className={`text-[10px] truncate ${String(v.sheet_id) === String(selectedSheetId) ? "font-bold text-indigo-700" : "font-bold text-slate-700"}`}>{label}</div>
+                                              <div className="text-[8px] text-slate-400">
+                                                {v.uploaded_at ? new Date(v.uploaded_at).toLocaleDateString() : ""}
+                                                {!isItemSelectable(v) ? ` • ${reasonLabel(v)}` : ""}
+                                              </div>
+                                            </div>
+                                          </button>
+                                          {canDeleteRevision ? (
+                                            <button
+                                              type="button"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                onDeleteImportRevision(v);
+                                              }}
+                                              disabled={deleteImportBusyId === String(importId)}
+                                              title="Delete revision"
+                                              aria-label="Delete revision"
+                                              className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 ${deleteImportBusyId === String(importId) ? "opacity-60 cursor-not-allowed" : ""}`}
+                                            >
+                                              🗑
+                                            </button>
+                                          ) : null}
                                         </div>
-                                      </button>
-                                    ))}
+                                      );
+                                    })}
                                   </div>
                                 </div>
                               )}
@@ -215,6 +265,67 @@ export default function ReportVersionPicker({
                             {isSelectedGroup && (
                               <span className="shrink-0 rounded-full bg-emerald-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-emerald-700">Current</span>
                             )}
+                            {fileVersionMenuKey === fileKey && embedRevisionMenu ? (
+                              <div className="w-full mt-2 rounded-lg border border-slate-200 bg-white shadow-sm py-1">
+                                <div className="max-h-56 overflow-auto custom-scrollbar">
+                                  {group.map((v) => {
+                                    const importStatus = String(v?.status || "").trim().toLowerCase();
+                                    const importId = Number.parseInt(String(v?.id || ""), 10);
+                                    const canDeleteRevision = canManageImports
+                                      && typeof onDeleteImportRevision === "function"
+                                      && importStatus !== "published"
+                                      && Number.isInteger(importId)
+                                      && importId > 0;
+                                    return (
+                                      <div
+                                        key={`embedded-${String(v.sheet_id)}`}
+                                        className={`w-full text-left px-2 py-1.5 hover:bg-slate-50 flex items-center gap-2 ${String(v.sheet_id) === String(selectedSheetId) ? "bg-indigo-50/50" : ""} ${isItemSelectable(v) ? "" : "opacity-60"}`}
+                                      >
+                                        <button
+                                          type="button"
+                                          disabled={!isItemSelectable(v)}
+                                          title={isItemSelectable(v) ? label : reasonLabel(v)}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            if (!isItemSelectable(v)) return;
+                                            const sid = String(v.sheet_id || "");
+                                            if (sid) onSelectSheet(sid, label);
+                                            setFileVersionMenuKey(null);
+                                            setIsOpen(false);
+                                          }}
+                                          className={`min-w-0 flex-1 text-left flex items-center gap-2 ${isItemSelectable(v) ? "" : "cursor-not-allowed"}`}
+                                        >
+                                          <span className="w-7 shrink-0 text-[8px] font-black text-slate-400 text-center">v{v.import_version}</span>
+                                          <SourceProviderIcon provider={source.sync_provider} className="h-3 w-3 shrink-0 text-slate-500" />
+                                          <div className="min-w-0 flex-1">
+                                            <div className={`text-[10px] truncate ${String(v.sheet_id) === String(selectedSheetId) ? "font-bold text-indigo-700" : "font-bold text-slate-700"}`}>{label}</div>
+                                            <div className="text-[8px] text-slate-400">
+                                              {v.uploaded_at ? new Date(v.uploaded_at).toLocaleDateString() : ""}
+                                              {!isItemSelectable(v) ? ` • ${reasonLabel(v)}` : ""}
+                                            </div>
+                                          </div>
+                                        </button>
+                                        {canDeleteRevision ? (
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              onDeleteImportRevision(v);
+                                            }}
+                                            disabled={deleteImportBusyId === String(importId)}
+                                            title="Delete revision"
+                                            aria-label="Delete revision"
+                                            className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 ${deleteImportBusyId === String(importId) ? "opacity-60 cursor-not-allowed" : ""}`}
+                                          >
+                                            🗑
+                                          </button>
+                                        ) : null}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            ) : null}
                           </div>
                         );
                       }) : (

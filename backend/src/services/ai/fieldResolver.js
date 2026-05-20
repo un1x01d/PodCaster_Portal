@@ -17,6 +17,129 @@ function fuzzyCandidates(headers = [], aliases = []) {
   return out;
 }
 
+function toNumberOrNull(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  const cleaned = text.replace(/[$,%\s,]/g, "");
+  const num = Number(cleaned);
+  return Number.isFinite(num) ? num : null;
+}
+
+function buildColumnProfile(header, sampleRows = []) {
+  const values = (Array.isArray(sampleRows) ? sampleRows : []).slice(0, 500).map((r) => r?.[header]);
+  let nonEmpty = 0;
+  let numeric = 0;
+  let negative = 0;
+  let zero = 0;
+  let dateLike = 0;
+  const nums = [];
+  for (const value of values) {
+    const text = String(value ?? "").trim();
+    if (!text) continue;
+    nonEmpty += 1;
+    const parsedDate = new Date(text);
+    if (!Number.isNaN(parsedDate.getTime())) dateLike += 1;
+    const n = toNumberOrNull(value);
+    if (n === null) continue;
+    numeric += 1;
+    nums.push(n);
+    if (n < 0) negative += 1;
+    if (n === 0) zero += 1;
+  }
+  const absAvg = nums.length ? (nums.reduce((a, b) => a + Math.abs(b), 0) / nums.length) : 0;
+  return {
+    nonEmpty,
+    numericRatio: nonEmpty > 0 ? (numeric / nonEmpty) : 0,
+    dateRatio: nonEmpty > 0 ? (dateLike / nonEmpty) : 0,
+    negativeRatio: numeric > 0 ? (negative / numeric) : 0,
+    zeroRatio: numeric > 0 ? (zero / numeric) : 0,
+    absAvg,
+  };
+}
+
+function semanticSignalForField(canonicalField, header = "") {
+  const low = String(header || "").toLowerCase();
+  if (!low) return 0;
+  if (canonicalField === "date") {
+    return /\bdate|period|month|year|quarter|fiscal|posting\b/.test(low) ? 1 : 0;
+  }
+  if (canonicalField === "total_revenue") {
+    if (/\bnet income|net profit|profit\b/.test(low)) return 0;
+    return /\brevenue|sales|turnover|billings|top line|top-line\b/.test(low) ? 1 : 0;
+  }
+  if (canonicalField === "net_income") {
+    return /\bnet income|net profit|profit|earnings\b/.test(low) ? 1 : 0;
+  }
+  const include = {
+    total_revenue: /\brevenue|sales|turnover|gmv\b/,
+    net_revenue: /\bnet revenue|net sales|revenue net\b/,
+    total_expense: /\bexpense|cost|opex|spend|payroll\b/,
+    net_income: /\bnet income|net profit|profit|earnings\b/,
+    gross_profit: /\bgross profit|gp\b/,
+    cogs: /\bcogs|cost of goods|cost of sales\b/,
+    ar_balance: /\bar|accounts receivable\b/,
+    ap_balance: /\bap|accounts payable\b/,
+  };
+  const avoid = {
+    total_revenue: /\bexpense|cost|opex|payroll\b/,
+    total_expense: /\brevenue|sales|income\b/,
+  };
+  let score = include[canonicalField]?.test(low) ? 1 : 0;
+  if (avoid[canonicalField]?.test(low)) score = Math.max(0, score - 0.6);
+  if (canonicalField === "total_expense" && /\b(marketing|ad|ads|campaign|promo)\b/.test(low) && !/\b(total|overall|all)\b/.test(low)) {
+    score = Math.max(0, score - 0.35);
+  }
+  return score;
+}
+
+function distributionSignalForField(canonicalField, profile = {}) {
+  const numeric = Number(profile?.numericRatio || 0);
+  const dateRatio = Number(profile?.dateRatio || 0);
+  const absAvg = Number(profile?.absAvg || 0);
+  if (canonicalField === "date") {
+    if (dateRatio >= 0.9) return 1;
+    if (dateRatio >= 0.7) return 0.9;
+    if (dateRatio >= 0.4) return 0.75;
+    return 0.2;
+  }
+  if (numeric < 0.4) return 0.1;
+  if (canonicalField === "total_revenue" || canonicalField === "total_expense" || canonicalField === "net_income" || canonicalField === "gross_profit") {
+    if (absAvg > 1000000) return 0.95;
+    if (absAvg > 1000) return 0.85;
+    if (absAvg > 10) return 0.75;
+    return 0.55;
+  }
+  return 0.65;
+}
+
+function signSignalForField(canonicalField, profile = {}) {
+  const neg = Number(profile?.negativeRatio || 0);
+  if (canonicalField === "total_expense") return neg > 0.4 ? 1 : 0.65;
+  if (canonicalField === "total_revenue") return neg < 0.2 ? 1 : 0.5;
+  if (canonicalField === "net_income" || canonicalField === "gross_profit") return neg < 0.5 ? 0.8 : 0.5;
+  return 0.7;
+}
+
+function scoreCandidate({ canonicalField, candidate, sampleRows }) {
+  const profile = buildColumnProfile(candidate.header, sampleRows);
+  const lexical = Math.max(0, Math.min(1, Number(candidate.confidence || 0)));
+  const semantic = semanticSignalForField(canonicalField, candidate.header);
+  const distribution = distributionSignalForField(canonicalField, profile);
+  const sign = signSignalForField(canonicalField, profile);
+  const score = (lexical * 0.5) + (semantic * 0.3) + (distribution * 0.12) + (sign * 0.08);
+  return {
+    ...candidate,
+    confidence: Math.max(0, Math.min(1, score)),
+    signals: {
+      lexical,
+      semantic,
+      distribution,
+      sign,
+      profile,
+    },
+  };
+}
+
 function identifyContextualFallback({ canonicalField, headers, sampleRows, resolvedMappings = {} }) {
   const numericalCols = headers.filter(h => {
     const vals = (Array.isArray(sampleRows) ? sampleRows : []).map(r => r[h]);
@@ -42,7 +165,7 @@ function identifyContextualFallback({ canonicalField, headers, sampleRows, resol
   return null;
 }
 
-export async function resolveField({ canonicalField, headers = [], fieldMetadata = {}, message = "", resolvedMappings = {}, sampleRows = [] }) {
+export async function resolveField({ canonicalField, headers = [], fieldMetadata = {}, message = "", resolvedMappings = {}, sampleRows = [], groupId = null }) {
   const mappingState = fieldMetadata?.mappingState || {};
   const approved = Array.isArray(mappingState.approved) ? mappingState.approved : [];
   const corrected = Array.isArray(mappingState.corrected) ? mappingState.corrected : [];
@@ -61,7 +184,7 @@ export async function resolveField({ canonicalField, headers = [], fieldMetadata
   const normalizedMap = buildNormalizedHeaderMap(headers);
   
   // Merge hardcoded aliases with DB knowledge
-  const knowledge = await getSemanticKnowledge();
+  const knowledge = await getSemanticKnowledge({ groupId });
   const dbAliases = knowledge[canonicalField] || [];
   const hardcodedAliases = ACCOUNTING_HEADER_ALIASES[canonicalField] || [];
   const aliases = Array.from(new Set([...hardcodedAliases, ...dbAliases]));
@@ -103,8 +226,12 @@ export async function resolveField({ canonicalField, headers = [], fieldMetadata
     .filter((c) => !rejectedHeaders.has(String(c.header)))
     .sort((a, b) => b.confidence - a.confidence);
 
-  const top = unique[0];
-  const close = unique.filter((c) => top && Math.abs(c.confidence - top.confidence) <= 0.05);
+  const scored = unique.map((c) => scoreCandidate({ canonicalField, candidate: c, sampleRows }))
+    .sort((a, b) => b.confidence - a.confidence);
+  const top = scored[0];
+  const second = scored[1] || null;
+  const ambiguityDelta = top && second ? Math.abs(Number(top.confidence) - Number(second.confidence)) : 1;
+  const close = scored.filter((c) => top && Math.abs(c.confidence - top.confidence) <= 0.05);
   const msgAmbiguities = detectAmbiguousAccountingWords(message);
 
   if (msgAmbiguities.length) {
@@ -116,22 +243,21 @@ export async function resolveField({ canonicalField, headers = [], fieldMetadata
     for (const ambiguity of msgAmbiguities) {
       if (!ambiguity.options.includes(canonicalField)) continue;
       const allOptionsPresent = ambiguity.options.every((opt) => hasAliasHit(opt));
-      if (allOptionsPresent) return { status: "ambiguous", header: null, confidence: top?.confidence || 0, method: "term_ambiguity", candidates: unique.slice(0, 4) };
+      if (allOptionsPresent) return { status: "ambiguous", header: null, confidence: top?.confidence || 0, ambiguityDelta, method: "term_ambiguity", candidates: scored.slice(0, 4) };
     }
   }
 
   if (!top) {
     const fallback = identifyContextualFallback({ canonicalField, headers, sampleRows, resolvedMappings });
-    if (fallback) return { status: "resolved", header: fallback, confidence: 0.75, method: "semantic_match", candidates: [] };
+    if (fallback) return { status: "resolved", header: fallback, confidence: 0.75, method: "semantic_match", candidates: scored.slice(0, 4) };
     return { status: "missing", header: null, confidence: 0, method: "none", candidates: [] };
   }
-  if (close.length > 1) return { status: "ambiguous", header: null, confidence: top.confidence, method: "multiple_close", candidates: close.slice(0, 4) };
-  if (top.confidence < 0.8) {
+  if (close.length > 1) return { status: "ambiguous", header: null, confidence: top.confidence, ambiguityDelta, method: "multiple_close", candidates: close.slice(0, 4) };
+  const minConfidence = canonicalField === "date" ? 0.55 : 0.8;
+  if (top.confidence < minConfidence) {
     const fallback = identifyContextualFallback({ canonicalField, headers, sampleRows, resolvedMappings });
-    if (fallback) return { status: "resolved", header: fallback, confidence: 0.75, method: "semantic_match", candidates: unique.slice(0, 4) };
-    return { status: "ask_followup", header: null, confidence: top.confidence, method: top.method, candidates: unique.slice(0, 4) };
+    if (fallback) return { status: "resolved", header: fallback, confidence: 0.75, method: "semantic_match", candidates: scored.slice(0, 4) };
+    return { status: "ask_followup", header: null, confidence: top.confidence, ambiguityDelta, method: top.method, candidates: scored.slice(0, 4) };
   }
-  return { status: "resolved", header: top.header, confidence: top.confidence, method: top.method, candidates: unique.slice(0, 4) };
+  return { status: "resolved", header: top.header, confidence: top.confidence, ambiguityDelta, method: top.method, candidates: scored.slice(0, 4) };
 }
-
-

@@ -1,5 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import axios from "axios";
 import { DASHBOARD_COPY_EN, DASHBOARD_LANGUAGES, normalizeDashboardLocale } from "../../hooks/useDashboardI18n";
 import SourceProviderIcon from "../common/SourceProviderIcon";
 import ReportVersionPicker from "../common/ReportVersionPicker";
@@ -8,6 +9,8 @@ import { buildSourceImports, resolveFileLabel } from "../../utils/reportSelector
 export default function DashboardHeader({
     user,
     onLogout,
+    apiBase,
+    token,
     myFiles,
     reportSources = [],
     reportSourceImports = {},
@@ -15,6 +18,7 @@ export default function DashboardHeader({
     activeFilename,
     onSwitchSheet,
     onDeleteSheet,
+    refreshReportSources = () => Promise.resolve(),
     onSaveView,
     locale,
     setLocale,
@@ -30,6 +34,8 @@ export default function DashboardHeader({
     const [fileVersionMenuKey, setFileVersionMenuKey] = React.useState(null);
     const [sourceQuery, setSourceQuery] = React.useState("");
     const [expandedSources, setExpandedSources] = React.useState(() => new Set());
+    const [deleteImportBusyId, setDeleteImportBusyId] = React.useState("");
+    const [deleteSourceBusyId, setDeleteSourceBusyId] = React.useState("");
     const languageMenuRef = React.useRef(null);
     const sourcePickerRef = React.useRef(null);
 
@@ -125,6 +131,11 @@ export default function DashboardHeader({
     const selectedPickerLabel = selectedImport
         ? `${selectedSource?.name || "Report source"} / ${fileLabel(selectedImport)}`
         : (selectedSource?.name || activeFilename || ui.selectSheet);
+    const canManageImports = React.useMemo(() => {
+        if (!user) return false;
+        const role = String(user.role || "").toLowerCase().trim();
+        return role === "admin" || role === "super_admin" || role === "superadmin" || !!user.is_admin || !!user.super_admin || !!user.is_group_admin || !!user.group_admin;
+    }, [user]);
     const normalizedQuery = sourceQuery.trim().toLowerCase();
     const visibleSources = explicitSources.filter((source) => {
         if (!normalizedQuery) return true;
@@ -157,6 +168,43 @@ export default function DashboardHeader({
         onSwitchSheet(id, label);
         setSourcePickerOpen(false);
     };
+    const deleteImportRevision = React.useCallback(async (item) => {
+        const importId = Number.parseInt(String(item?.id || ""), 10);
+        if (!Number.isInteger(importId) || importId <= 0 || deleteImportBusyId || !apiBase || !token) return;
+        const label = fileLabel(item);
+        const revision = Number(item?.import_version || 0);
+        const confirmed = window.confirm(`Delete revision "${label}" (v${revision || "-"})?`);
+        if (!confirmed) return;
+        setDeleteImportBusyId(String(importId));
+        try {
+            await axios.delete(`${apiBase}/report-source-imports/${importId}`, {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            await refreshReportSources?.();
+        } catch (e) {
+            alert(e?.response?.data?.error || "Failed to delete import revision");
+        } finally {
+            setDeleteImportBusyId("");
+        }
+    }, [apiBase, token, deleteImportBusyId, refreshReportSources]);
+    const deleteSourceLabel = React.useCallback(async (source) => {
+        const sourceId = Number.parseInt(String(source?.id || ""), 10);
+        if (!Number.isInteger(sourceId) || sourceId <= 0 || deleteSourceBusyId || !apiBase || !token) return;
+        const sourceName = String(source?.name || `Report source ${sourceId}`);
+        const confirmed = window.confirm(`Delete label "${sourceName}" and all of its revisions?`);
+        if (!confirmed) return;
+        setDeleteSourceBusyId(String(sourceId));
+        try {
+            await axios.delete(`${apiBase}/report-sources/${sourceId}`, {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            await refreshReportSources?.();
+        } catch (e) {
+            alert(e?.response?.data?.error || "Failed to delete report source label");
+        } finally {
+            setDeleteSourceBusyId("");
+        }
+    }, [apiBase, token, deleteSourceBusyId, refreshReportSources]);
 
     return (
         <header className="border-b border-slate-200/80 bg-white/95 px-5 py-2 grid grid-cols-[auto_1fr_auto] items-center sticky top-0 z-50 shadow-[0_10px_30px_rgba(15,23,42,0.06)] backdrop-blur-xl md:px-8">
@@ -178,7 +226,7 @@ export default function DashboardHeader({
             <div className="flex items-center justify-end gap-3 lg:gap-4">
                 <div className="hidden h-8 w-px bg-slate-200/80 lg:block"></div>
 
-                    <div className="hidden flex-1 max-w-[320px] md:block md:max-w-lg lg:w-[480px]">
+                    <div className="hidden md:block w-full max-w-[420px]">
                         <ReportVersionPicker
                             pickerRef={sourcePickerRef}
                             isOpen={sourcePickerOpen}
@@ -194,8 +242,15 @@ export default function DashboardHeader({
                             selectedSheetId={sheetId}
                             selectedPickerLabel={selectedPickerLabel}
                             onSelectSheet={selectSheet}
-                            buttonClassName="w-full h-10 px-3 rounded-lg border border-slate-200 bg-slate-50 text-slate-900 text-[11px] font-bold shadow-sm hover:border-blue-200 hover:bg-white transition-all flex items-center justify-between gap-2 overflow-hidden"
-                            panelClassName="absolute right-0 mt-1 w-[min(620px,calc(100vw-2rem))] rounded-xl border border-slate-200 bg-white shadow-2xl z-50 p-2"
+                            canManageImports={canManageImports}
+                            deleteImportBusyId={deleteImportBusyId}
+                            deleteSourceBusyId={deleteSourceBusyId}
+                            onDeleteImportRevision={deleteImportRevision}
+                            onDeleteSource={deleteSourceLabel}
+                            revisionMenuAlign="top"
+                            embedRevisionMenu={true}
+                            buttonClassName="w-full h-8 px-2.5 rounded-lg border border-slate-300 bg-white text-slate-900 text-[11px] font-bold shadow-sm hover:border-slate-400 transition-all flex items-center justify-between gap-2 overflow-hidden"
+                            panelClassName="absolute left-0 mt-1 w-[min(620px,calc(100vw-2rem))] rounded-xl border border-slate-200 bg-white shadow-2xl z-50 p-2"
                         />
                     </div>
                     <div className="hidden lg:flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50/90 px-2.5 py-1.5">

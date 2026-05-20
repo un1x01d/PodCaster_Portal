@@ -19,6 +19,9 @@ export async function presentDeterministicSpreadsheetResult({
   runtime,
 }) {
   const isStrict = /(mdfc|strict|pure|direct)/i.test(message);
+  const uncertaintyBadge = plan?.verification_gate?.warning === true
+    ? " [Uncertainty: high-prob mapping]"
+    : "";
 
   if (!calcResult?.ok) {
     if (isStrict) {
@@ -76,7 +79,7 @@ export async function presentDeterministicSpreadsheetResult({
   const shouldForceScalar =
     (isDirectScalar || (String(plan?.operation || "") === "single_period" && calcResult?.period && typeof calcResult?.value === "number"))
     && plan?.operation !== "metric_projection";
-  if (shouldForceScalar) return formatValue(calcResult.value, plan?.metric || "");
+    if (shouldForceScalar) return `${formatValue(calcResult.value, plan?.metric || "")}${uncertaintyBadge}`;
 
   if (calcResult.isProjection === true) {
     const val = formatValue(calcResult.value, plan?.metric || "");
@@ -90,11 +93,12 @@ export async function presentDeterministicSpreadsheetResult({
     return `Based on the historical trend from ${calcResult.historicalPoints} data points, the projected ${calcResult.metric} for ${calcResult.period?.label} is ${val}. The recent trend is ${trend}, and this projection has ${confidenceLabel} statistical confidence (R² = ${confidence.toFixed(2)}).`;
   }
 
-  return explainAccountingResult({
+  const explained = await explainAccountingResult({
     originalQuestion: message,
     analysis: accountingIntent,
     headerResolution: plan?.resolution || {},
     calculationResult: calcResult,
     runtime,
   });
+  return `${explained}${uncertaintyBadge}`;
 }

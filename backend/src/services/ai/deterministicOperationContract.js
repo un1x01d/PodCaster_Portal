@@ -18,6 +18,10 @@ const OPERATION_CATALOG = Object.freeze([
   OPS.METRIC_PROJECTION,
 ]);
 
+const CONFIDENCE_CERTAIN_MIN = 0.88;
+const CONFIDENCE_HIGH_PROB_MIN = 0.70;
+const AMBIGUITY_DELTA_MIN = 0.03;
+
 function clarification(question, options = [], reason = "clarification_required") {
   return {
     ok: false,
@@ -35,6 +39,22 @@ function hasText(v) {
 function isYear(v) {
   const n = Number(v);
   return Number.isFinite(n) && n >= 1900 && n <= 2200;
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasEvidence(value) {
+  if (Array.isArray(value)) return value.length > 0;
+  if (isPlainObject(value)) return Object.keys(value).length > 0;
+  return hasText(value);
+}
+
+function normalizeConfidence(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(1, n));
 }
 
 export function validateDeterministicPlanContract(plan = {}) {
@@ -116,7 +136,86 @@ export function validateDeterministicPlanContract(plan = {}) {
     }
   }
 
-  return { ok: true, plan };
+  const verification = isPlainObject(plan.verification) ? plan.verification : null;
+  if (!verification) {
+    return {
+      ok: false,
+      plan: clarification(
+        "I can answer that, but I need one clarification first. I need to verify the metric/header mapping before running the calculation.",
+        [],
+        "verification_missing"
+      ),
+    };
+  }
+  if (!hasText(verification.method) || !hasEvidence(verification.evidence) || typeof verification.fallback_used !== "boolean") {
+    return {
+      ok: false,
+      plan: clarification(
+        "I can answer that, but I need one clarification first. I need verified mapping details before running the calculation.",
+        [],
+        "verification_incomplete"
+      ),
+    };
+  }
+
+  const confidence = normalizeConfidence(verification.confidence);
+  if (confidence === null) {
+    return {
+      ok: false,
+      plan: clarification(
+        "I can answer that, but I need one clarification first. Confidence verification is missing for this calculation.",
+        [],
+        "verification_confidence_missing"
+      ),
+    };
+  }
+
+  const ambiguityDelta = normalizeConfidence(verification.ambiguity_delta);
+  if (ambiguityDelta !== null && ambiguityDelta < AMBIGUITY_DELTA_MIN) {
+    return {
+      ok: false,
+      plan: clarification(
+        "I found multiple possible columns with very similar confidence. Which one should I use?",
+        [],
+        "clarification_needed_ambiguous_candidates"
+      ),
+    };
+  }
+
+  if (confidence < CONFIDENCE_HIGH_PROB_MIN) {
+    return {
+      ok: false,
+      plan: clarification(
+        "I found several possible columns. Which one should I use?",
+        [],
+        "clarification_needed_low_confidence"
+      ),
+    };
+  }
+
+  const verificationBand = confidence >= CONFIDENCE_CERTAIN_MIN ? "certain" : "high_prob";
+  return {
+    ok: true,
+    plan: {
+      ...plan,
+      verification: {
+        ...verification,
+        confidence,
+        band: verificationBand,
+      },
+      verification_gate: {
+        confidence,
+        band: verificationBand,
+        warning: verificationBand === "high_prob",
+      },
+    },
+  };
 }
 
-export { OPERATION_CATALOG, OPS };
+export {
+  AMBIGUITY_DELTA_MIN,
+  CONFIDENCE_CERTAIN_MIN,
+  CONFIDENCE_HIGH_PROB_MIN,
+  OPERATION_CATALOG,
+  OPS,
+};

@@ -59,14 +59,11 @@ export async function runCompiledPlanPhase(ctx) {
       dateHeader: pendingClarification?.kind === "date" ? selectedClarificationOption : undefined,
       headerChoice: pendingClarification?.kind === "header" ? selectedClarificationOption : undefined,
       headerCanonical: pendingClarification?.kind === "header" ? String(pendingClarification?.field || "") : undefined,
+      groupId: req.user?.customer_group_id || req.user?.resolved_group_id || null,
       context: resolvedDeterministicContext.context || {},
     },
   });
-  const looksLikeRankingQuestion =
-    isDriverRankingQuery(planningMessage, chatRuntimeRules)
-    || /\b(who made|most|least|lowest|highest|top|bottom|largest|smallest)\b/i.test(String(planningMessage || ""));
-
-  if (compiledPlan.ok && !looksLikeRankingQuestion) {
+  if (compiledPlan.ok) {
     PENDING_CLARIFICATIONS.delete(clarificationKey);
 
     if (pendingClarification?.kind === "header" && pendingClarification?.field && selectedClarificationOption) {
@@ -83,7 +80,9 @@ export async function runCompiledPlanPhase(ctx) {
         await recordSuccessfulMapping({
           canonicalField: pendingClarification.field,
           synonym: selectedClarificationOption,
-          locale: locale || "en"
+          locale: locale || "en",
+          groupId: req.user?.customer_group_id || req.user?.resolved_group_id || null,
+          userId: req.user?.id || null,
         });
       } catch (e) {
         console.error("Failed to persist header mapping choice:", e);
@@ -109,6 +108,12 @@ export async function runCompiledPlanPhase(ctx) {
       });
       if (sqlAgg?.answer) {
         let answer = String(sqlAgg.answer || "");
+        const lower = answer.trim().toLowerCase();
+        const noDataLike = lower === "no matching data found."
+          || lower.includes("no numeric data found");
+        if (noDataLike) {
+          // Fall through to deterministic executor when SQL fast path is inconclusive.
+        } else {
         answer = formatAnswerWithBullets(answer);
         answer = cleanAITechnicalNoise(answer);
         answer = stripApproximationWords(answer);
@@ -129,6 +134,7 @@ export async function runCompiledPlanPhase(ctx) {
           },
         });
         return { handled: true, accountingIntent, compiledPlan };
+        }
       }
     }
 
@@ -211,6 +217,8 @@ export async function runCompiledPlanPhase(ctx) {
         phase: "accounting_deterministic_calculation",
         metric_requested: compiledPlan.metric,
         calculation_result: calcResult,
+        verification: compiledPlan?.verification || null,
+        verification_gate: compiledPlan?.verification_gate || null,
       },
     });
     return { handled: true, accountingIntent, compiledPlan };

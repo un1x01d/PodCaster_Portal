@@ -2196,9 +2196,15 @@ export default function DashboardHome({
     } catch (error) {
       const apiError = String(error?.response?.data?.error || "");
       if (action === "publish" && apiError === "ai_chat_compatibility_blocked") {
+        const reasons = Array.isArray(error?.response?.data?.details?.reasons)
+          ? error.response.data.details.reasons.map((r) => String(r || "").trim()).filter(Boolean)
+          : [];
+        const message = reasons.length
+          ? `Cannot publish: required mappings/fields are missing.\n${reasons.slice(0, 4).map((r, i) => `${i + 1}. ${r}`).join("\n")}`
+          : "Cannot publish: required mappings/fields are missing.";
         setReviewInlineErrorByImportId((prev) => ({
           ...(prev || {}),
-          [importKey]: "Cannot publish: sensitive content or required fields are blocking this file.",
+          [importKey]: message,
         }));
       } else {
         alert(error?.response?.data?.error || `Failed to ${action} import`);
@@ -2414,6 +2420,10 @@ export default function DashboardHome({
                 const rejectBusy = reviewBusyId === `reject:${row.importId}`;
                 const compatibility = aiCompatibilityBySheetId.get(String(row.sheetId || ""));
                 const publishBlockedByCompatibility = compatibility ? compatibility.approvalReady === false : false;
+                const compatibilityBlockReason = summarizeCompatibilityMissing(compatibility?.missing || []);
+                const compatibilityMissingList = Array.isArray(compatibility?.missing)
+                  ? compatibility.missing.map((m) => String(m || "").trim()).filter(Boolean)
+                  : [];
                 const publishDisabled = !!reviewBusyId || publishBlockedByCompatibility;
                 const inlineError = reviewInlineErrorByImportId[String(row.importId || "")] || "";
                 return (
@@ -2447,7 +2457,14 @@ export default function DashboardHome({
                     )}
                     {publishBlockedByCompatibility ? (
                       <div className="mt-2 text-[10px] font-semibold text-amber-700">
-                        Cannot publish: sensitive content or required fields are blocking this file.
+                        Cannot publish: {compatibilityBlockReason}
+                        {compatibilityMissingList.length ? (
+                          <div className="mt-1 space-y-0.5 text-[10px] font-semibold text-amber-700/90">
+                            {compatibilityMissingList.slice(0, 5).map((reason, idx) => (
+                              <div key={`compat-missing-${idx}`}>{idx + 1}. {reason}</div>
+                            ))}
+                          </div>
+                        ) : null}
                       </div>
                     ) : null}
                     {!publishBlockedByCompatibility && inlineError ? (

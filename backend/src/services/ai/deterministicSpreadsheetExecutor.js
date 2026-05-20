@@ -297,7 +297,7 @@ export function executeDeterministicSpreadsheetPlan({
     };
   }
 
-  return runDeterministicCalculation({
+  const out = runDeterministicCalculation({
     rows,
     metric: plan.metric,
     headerResolution: { ok: true, ...(plan.resolution || {}) },
@@ -306,4 +306,10 @@ export function executeDeterministicSpreadsheetPlan({
     filters,
     userContext,
   });
+  if (plan.operation === "single_period" && plan.period !== null && plan.period !== undefined) {
+    if (out?.ok === true && Number(out?.rowCount || 0) <= 0) {
+      return { ok: false, errorCode: "NO_DATA_FOR_PERIOD", message: `No rows matched period ${String(plan.period)}.` };
+    }
+  }
+  return out;
 }

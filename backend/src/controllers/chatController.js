@@ -231,7 +231,7 @@ async function compileDeterministicQueryPlan({ message = "", accountingIntent = 
     context: hints?.context || {},
   });
   const validated = validateDeterministicPlanContract(rawPlan);
-  return validated?.ok ? rawPlan : (validated?.plan || rawPlan);
+  return validated?.plan || rawPlan;
 }
 
 async function recordLearningEvent({
@@ -811,6 +811,12 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
               );
               const totalRows = Number(counts?.[0]?.total_rows || 0);
               const numericRows = Number(counts?.[0]?.numeric_rows || 0);
+              if (totalRows === 0) {
+                return { answer: isUk ? "Відповідних даних не знайдено." : (isRu ? "Подходящие данные не найдены." : "No matching data found."), previewRows: [] };
+              }
+              if (numericRows === 0) {
+                return { answer: isUk ? `У стовпці ${targetColumn} не знайдено числових даних для цього періоду/фільтра.` : (isRu ? `В столбце ${targetColumn} не найдено числовых данных для этого периода/фильтра.` : `No numeric data found in ${targetColumn} for this period/filter.`), previewRows: [] };
+              }
               const skippedRows = Math.max(0, totalRows - numericRows);
               const base = `${isUk ? "Сума" : (isRu ? "Сумма" : "Total")} ${targetColumn}: ${formatValue(v, locale, targetColumn)}`;
               return { answer: appendSkippedRowsNote(base, skippedRows, locale), previewRows: [] };
@@ -842,6 +848,12 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
               );
               const totalRows = Number(counts?.[0]?.total_rows || 0);
               const numericRows = Number(counts?.[0]?.numeric_rows || 0);
+              if (totalRows === 0) {
+                return { answer: isUk ? "Відповідних даних не знайдено." : (isRu ? "Подходящие данные не найдены." : "No matching data found."), previewRows: [] };
+              }
+              if (numericRows === 0) {
+                return { answer: isUk ? `У стовпці ${targetColumn} не знайдено числових даних для цього періоду/фільтра.` : (isRu ? `В столбце ${targetColumn} не найдено числовых данных для этого периода/фильтра.` : `No numeric data found in ${targetColumn} for this period/filter.`), previewRows: [] };
+              }
               const skippedRows = Math.max(0, totalRows - numericRows);
               const base = `${isUk ? "Середнє" : (isRu ? "Среднее" : "Average")} ${targetColumn}: ${formatValue(v, locale, targetColumn)}`;
               return { answer: appendSkippedRowsNote(base, skippedRows, locale), previewRows: [] };
@@ -945,6 +957,12 @@ async function computeSqlAggregation({ sheetId, user, operation, targetColumn, g
             const val = Number(res[0].v || 0);
             const totalRows = Number(res?.[0]?.total_rows || 0);
             const numericRows = Number(res?.[0]?.numeric_rows || 0);
+            if (totalRows === 0) {
+              return { answer: isUk ? "Відповідних даних не знайдено." : (isRu ? "Подходящие данные не найдены." : "No matching data found."), previewRows: [] };
+            }
+            if (numericRows === 0) {
+              return { answer: isUk ? `У стовпці ${targetColumn} не знайдено числових даних для цього періоду/фільтра.` : (isRu ? `В столбце ${targetColumn} не найдено числовых данных для этого периода/фильтра.` : `No numeric data found in ${targetColumn} for this period/filter.`), previewRows: [] };
+            }
             const skippedRows = Math.max(0, totalRows - numericRows);
             const labels = isUk
               ? { SUM: "Сума", AVG: "Середнє", MAX: "Максимум", MIN: "Мінімум" }
@@ -4503,13 +4521,11 @@ export async function chatQuery(req, res) {
       dateHeader: pendingClarification?.kind === "date" ? selectedClarificationOption : undefined,
       headerChoice: pendingClarification?.kind === "header" ? selectedClarificationOption : undefined,
       headerCanonical: pendingClarification?.kind === "header" ? String(pendingClarification?.field || "") : undefined,
+      groupId: req.user?.customer_group_id || req.user?.resolved_group_id || null,
       context: resolvedDeterministicContext.context || {},
     },
   });
-  const looksLikeRankingQuestion =
-    isDriverRankingQuery(planningMessage, chatRuntimeRules)
-    || /\b(who made|most|least|lowest|highest|top|bottom|largest|smallest)\b/i.test(String(planningMessage || ""));
-  if (compiledPlan.ok && !looksLikeRankingQuestion) {
+  if (compiledPlan.ok) {
     PENDING_CLARIFICATIONS.delete(clarificationKey);
 
     // Persistence: If this was a header resolution, save it to the sheet's semantic profile
@@ -4528,7 +4544,9 @@ export async function chatQuery(req, res) {
         await recordSuccessfulMapping({
           canonicalField: pendingClarification.field,
           synonym: selectedClarificationOption,
-          locale: locale || "en"
+          locale: locale || "en",
+          groupId: req.user?.customer_group_id || req.user?.resolved_group_id || null,
+          userId: req.user?.id || null,
         });
       } catch (e) {
         console.error("Failed to persist header mapping choice:", e);
@@ -4556,6 +4574,12 @@ export async function chatQuery(req, res) {
       });
       if (sqlAgg?.answer) {
         let answer = String(sqlAgg.answer || "");
+        const lower = answer.trim().toLowerCase();
+        const noDataLike = lower === "no matching data found."
+          || lower.includes("no numeric data found");
+        if (noDataLike) {
+          // Fall through to deterministic executor when SQL fast path is inconclusive.
+        } else {
         answer = formatAnswerWithBullets(answer);
         answer = cleanAITechnicalNoise(answer);
         answer = stripApproximationWords(answer);
@@ -4575,6 +4599,7 @@ export async function chatQuery(req, res) {
             target_column: sqlFastPath.targetColumn,
           },
         });
+        }
       }
     }
 
@@ -4657,6 +4682,8 @@ export async function chatQuery(req, res) {
         phase: "accounting_deterministic_calculation",
         metric_requested: compiledPlan.metric,
         calculation_result: calcResult,
+        verification: compiledPlan?.verification || null,
+        verification_gate: compiledPlan?.verification_gate || null,
       },
     });
   }
