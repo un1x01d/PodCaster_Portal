@@ -347,7 +347,7 @@ export async function getUserViewPerms(req, res) {
     }
 
     let rows;
-    if (req.user.role === "admin") {
+    if (isPlatformAdminUser(req.user)) {
         rows = await query(`SELECT view_id as id FROM view_user_permissions WHERE user_id=$1`, [normalizedUserId]);
     } else {
         const isCustomerAdmin = await isGroupAdminUser(req.user.id);

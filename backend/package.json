@@ -5,17 +5,19 @@
   "private": true,
   "scripts": {
     "dev": "nodemon server.js",
+    "build": "bash -lc 'rg --files src -g \"*.js\" | xargs -n1 node --check'",
     "start": "node --max-old-space-size=8192 server.js",
     "test": "node --test",
     "sync:app-settings": "node scripts/syncAppSettings.js",
     "migrate:tenants": "node scripts/migrateTenantDatabases.js",
     "backfill:import-sizes": "node scripts/backfillImportSizeMetadata.js",
     "backfill:dlp-masked-columns": "node scripts/backfillDlpMaskedColumns.js",
-    "cleanup:all-sheets": "node scripts/cleanupAllReportSourcesSheets.js",
-    "cleanup:learning-rules": "node scripts/cleanupLowSignalLearningRules.js"
+    "cleanup:learning-rules": "node scripts/cleanupLowSignalLearningRules.js",
+    "bench:sheet-hotpaths": "node scripts/benchmarkSpreadsheetHotpaths.js"
   },
   "dependencies": {
     "@node-saml/node-saml": "^5.1.0",
+    "axios": "^1.16.1",
     "bcrypt": "^6.0.0",
     "card-validator": "^10.0.4",
     "cors": "^2.8.5",
@@ -24,11 +26,11 @@
     "dotenv": "^16.4.5",
     "express": "^4.21.3",
     "fuse.js": "^7.3.0",
-    "jsonwebtoken": "^9.0.2",
+    "jsonwebtoken": "^9.0.3",
     "libphonenumber-js": "^1.12.42",
     "multer": "^2.1.1",
     "nodemailer": "^8.0.7",
-    "pg": "^8.11.5",
+    "pg": "^8.21.0",
     "validator": "^13.15.35",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "zod": "^4.4.3"

@@ -115,13 +115,27 @@ export default function DashboardHeader({
                 : status === "rejected"
                     ? "bg-rose-50 text-rose-700 border-rose-200"
                     : "bg-slate-100 text-slate-600 border-slate-200";
+        const dlpMaskedColumnsByTab = selectedImport?.profile?.dlp?.maskedColumns;
+        const dlpMaskedColumnsCount = (() => {
+            if (!dlpMaskedColumnsByTab || typeof dlpMaskedColumnsByTab !== "object") return 0;
+            let total = 0;
+            Object.values(dlpMaskedColumnsByTab).forEach((cols) => {
+                if (!Array.isArray(cols)) return;
+                total += cols.length;
+            });
+            return total;
+        })();
         return {
             statusLabel,
             statusClass,
+            sourceName: String(selectedSource?.name || activeFilename || "No source selected"),
             revision: selectedImport?.import_version ? `v${selectedImport.import_version}` : "n/a",
-            publishedAt: selectedImport?.published_at ? new Date(selectedImport.published_at).toLocaleDateString() : "Not published",
+            lastSyncAt: selectedImport?.published_at || selectedImport?.created_at || null,
+            dlpLabel: dlpMaskedColumnsCount > 0
+                ? `Secured by TFORN DLP: Zero PII exposed (${dlpMaskedColumnsCount} protected field${dlpMaskedColumnsCount === 1 ? "" : "s"})`
+                : "Secured by TFORN DLP: Zero PII exposed",
         };
-    }, [selectedImport]);
+    }, [selectedImport, selectedSource?.name, activeFilename]);
     const selectedPickerLabel = selectedImport
         ? `${selectedSource?.name || "Report source"} / ${fileLabel(selectedImport)}`
         : (selectedSource?.name || activeFilename || ui.selectSheet);
@@ -198,12 +212,21 @@ export default function DashboardHeader({
                             panelClassName="absolute right-0 mt-1 w-[min(620px,calc(100vw-2rem))] rounded-xl border border-slate-200 bg-white shadow-2xl z-50 p-2"
                         />
                     </div>
-                    <div className="hidden lg:flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50/90 px-2.5 py-1.5">
+                    <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50/90 px-2.5 py-1.5 min-w-0 max-w-[520px]">
                         <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[9px] font-black uppercase tracking-wider ${trustMeta.statusClass}`}>
                             {trustMeta.statusLabel}
                         </span>
-                        <span className="text-[10px] font-bold text-slate-600">{trustMeta.revision}</span>
-                        <span className="text-[10px] font-semibold text-slate-500">{trustMeta.publishedAt}</span>
+                        <div className="min-w-0">
+                            <div className="truncate text-[10px] font-black text-slate-700">
+                                {trustMeta.sourceName} • {trustMeta.revision}
+                            </div>
+                            <div className="truncate text-[10px] font-semibold text-slate-500">
+                                Last sync: {trustMeta.lastSyncAt ? new Date(trustMeta.lastSyncAt).toLocaleString() : "Not synced"}
+                            </div>
+                            <div className="truncate text-[10px] font-semibold text-emerald-700">
+                                {trustMeta.dlpLabel}
+                            </div>
+                        </div>
                     </div>
 
                     {/* Admin Link (Gear) */}

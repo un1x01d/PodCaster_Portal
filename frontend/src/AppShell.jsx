@@ -160,6 +160,10 @@ function ScrollToHash() {
 }
 
 export default function App() {
+  const isFrontendAdminUser = React.useCallback((nextUser) => {
+    const role = String(nextUser?.role || "").trim().toLowerCase();
+    return role === "admin" || role === "super_admin" || role === "superadmin";
+  }, []);
   const auth = useAuth();
   const {
     user,
@@ -204,8 +208,9 @@ export default function App() {
   const [inviteRepeat, setInviteRepeat] = useState("");
 
   const dashboardI18n = useDashboardI18n({ enabled: !!user });
-  const [workspaceView, setWorkspaceView] = useState("grid");
+  const [workspaceView, setWorkspaceView] = useState("home");
   const pendingSharedViewRef = useRef({ viewId: "", sheetId: "" });
+  const landingViewInitializedForUserRef = useRef(null);
 
   // Secondary Data (Comparison Mode)
   const [secondaryData, setSecondaryData] = useState([]);
@@ -2092,6 +2097,17 @@ export default function App() {
     setValueCol("");
   };
   // Effect to load view config
+  useEffect(() => {
+    if (!user?.id) {
+      landingViewInitializedForUserRef.current = null;
+      return;
+    }
+    if (landingViewInitializedForUserRef.current === user.id) return;
+    landingViewInitializedForUserRef.current = user.id;
+    // Publish-first default for stakeholders; admins keep edit/explore-first flow.
+    setWorkspaceView(isFrontendAdminUser(user) ? "grid" : "home");
+  }, [user?.id, user, isFrontendAdminUser]);
+
   useEffect(() => {
     if (!selectedViewId) {
       setColumnFilters({});

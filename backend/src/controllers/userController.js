@@ -23,6 +23,7 @@ import { fetchOpenAiOrganizationUsageSummary, normalizeUsagePeriodMonth } from "
 import { invalidateLearningRulesCache } from "../services/ai/semanticKnowledgeService.js";
 import { normalizeText } from "../services/ai/accountingGlossary.js";
 import { randomBytes, createHash } from "crypto";
+import { jsonForbidden, jsonInternalError } from "../utils/httpResponses.js";
 
 const EXPOSE_TEMP_PASSWORDS = process.env.EXPOSE_TEMP_PASSWORDS
     ? process.env.EXPOSE_TEMP_PASSWORDS === "true"
@@ -388,7 +389,7 @@ export async function listUsers(req, res) {
         try {
             await assertGroupsCanManageUsers(adminGroups);
         } catch (err) {
-            return res.status(err.statusCode || 403).json({ error: err.message });
+            return jsonForbidden(res, err.statusCode || 403);
         }
         const totalRows = await query(
             `SELECT COUNT(DISTINCT u.id)::int AS c
@@ -420,7 +421,7 @@ export async function listUsers(req, res) {
         }
     } catch (e) {
         console.error("listUsers error:", e);
-        res.status(500).json({ error: "user_create_failed", details: { message: String(e?.message || "user_create_failed") } });
+        jsonInternalError(res, "user_create_failed");
     }
 }
 
@@ -440,7 +441,7 @@ export async function createUser(req, res) {
         try {
             await assertGroupUserLimitAvailable(targetGroupId, 1);
         } catch (err) {
-            return res.status(err.statusCode || 403).json({ error: err.message, ...(err.details || {}) });
+            return res.status(err.statusCode || 403).json({ error: "forbidden", ...(err.details || {}) });
         }
     } else if (Number.isInteger(targetGroupId)) {
         const targetGroup = await loadGroupForAdminAction(targetGroupId);
@@ -498,7 +499,7 @@ export async function createUser(req, res) {
         res.json(payload);
     } catch (e) {
         if (String(e).includes("unique constraint")) return res.status(400).json({ error: "Email exists" });
-        res.status(500).json({ error: "users_list_failed", details: { message: String(e?.message || "users_list_failed") } });
+        jsonInternalError(res, "users_list_failed");
     }
 }
 
@@ -535,7 +536,7 @@ export async function inviteCustomerUser(req, res) {
             [emailText]
         );
         const existingUser = existingUsers[0] || null;
-        if (existingUser?.role === "admin") {
+        if (String(existingUser?.role || "").trim().toLowerCase() === "admin") {
             return res.status(403).json({ error: "admin_email_not_allowed" });
         }
         if (existingUser?.id) {
@@ -595,7 +596,7 @@ export async function inviteCustomerUser(req, res) {
             expiresAt: invitation.expires_at || expiresAt.toISOString(),
         });
     } catch (err) {
-        return res.status(err.statusCode || 500).json({ error: err.message || "invitation_failed" });
+        return res.status(err.statusCode || 500).json({ error: "invitation_failed" });
     }
 }
 
@@ -766,7 +767,7 @@ export async function updateUser(req, res) {
 
         const target = await query("SELECT role FROM users WHERE id=$1", [id]);
         if (!target.length) return res.status(404).json({ error: "not_found" });
-        if (target[0].role === "admin") return res.status(403).json({ error: "Forbidden" });
+        if (String(target[0].role || "").trim().toLowerCase() === "admin") return res.status(403).json({ error: "Forbidden" });
 
         const sharesGroup = await query(`SELECT 1 FROM user_groups ug WHERE ug.user_id = $1 AND ug.group_id = ANY($2::int[])`, [id, adminGroups]);
         if (!sharesGroup.length) return res.status(403).json({ error: "Forbidden" });
@@ -783,7 +784,7 @@ export async function updateUser(req, res) {
         try {
             await assertGroupsCanManageUsers(memberships.map((row) => row.group_id));
         } catch (err) {
-            return res.status(err.statusCode || 403).json({ error: err.message });
+            return jsonForbidden(res, err.statusCode || 403);
         }
     }
 
@@ -861,7 +862,7 @@ export async function updateUser(req, res) {
             return res.status(400).json({ error: "Email exists" });
         }
         console.error("updateUser error:", e);
-        res.status(500).json({ error: "user_update_failed", details: { message: String(e?.message || "user_update_failed") } });
+        jsonInternalError(res, "user_update_failed");
     }
 }
 
@@ -876,7 +877,7 @@ export async function deleteUser(req, res) {
 
             const target = await query("SELECT role FROM users WHERE id=$1", [id]);
             if (!target.length) return res.status(404).json({ error: "not_found" });
-            if (target[0].role === "admin") return res.status(403).json({ error: "Forbidden" });
+            if (String(target[0].role || "").trim().toLowerCase() === "admin") return res.status(403).json({ error: "Forbidden" });
             const targetManagedGroups = await query(
                 "SELECT group_id FROM user_groups WHERE user_id = $1 AND group_id = ANY($2::int[])",
                 [id, adminGroups]
@@ -885,7 +886,7 @@ export async function deleteUser(req, res) {
             try {
                 await assertGroupsCanManageUsers(targetManagedGroups.map((row) => row.group_id));
             } catch (err) {
-                return res.status(err.statusCode || 403).json({ error: err.message });
+                return jsonForbidden(res, err.statusCode || 403);
             }
 
             // Instead of deleting globally, customer admin only removes the user from managed customers.
@@ -911,7 +912,7 @@ export async function deleteUser(req, res) {
         res.json({ success: true });
     } catch (e) {
         console.error("deleteUser error:", e);
-        res.status(500).json({ error: "user_delete_failed", details: { message: String(e?.message || "user_delete_failed") } });
+        jsonInternalError(res, "user_delete_failed");
     }
 }
 
@@ -933,7 +934,7 @@ export async function getGoogleIntegrationSetting(req, res) {
         const enabled = value ? !!value?.enabled : true;
         res.json({ enabled, groupId: scope.groupId || null });
     } catch (err) {
-        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -952,7 +953,7 @@ export async function setGoogleIntegrationSetting(req, res) {
         );
         res.json({ success: true, enabled, groupId: scope.groupId || null });
     } catch (err) {
-        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -1181,7 +1182,7 @@ export async function getGoogleOauthSetting(req, res) {
             groupId: scope.groupId || null,
         });
     } catch (err) {
-        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -1213,7 +1214,7 @@ export async function setGoogleOauthSetting(req, res) {
             groupId: scope.groupId || null,
         });
     } catch (err) {
-        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -1224,7 +1225,7 @@ export async function getDropboxIntegrationSetting(req, res) {
         const enabled = value ? !!value?.enabled : true;
         res.json({ enabled, groupId: scope.groupId || null });
     } catch (err) {
-        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -1243,7 +1244,7 @@ export async function setDropboxIntegrationSetting(req, res) {
         );
         res.json({ success: true, enabled, groupId: scope.groupId || null });
     } catch (err) {
-        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -1267,7 +1268,7 @@ export async function getDropboxOauthSetting(req, res) {
             groupId: scope.groupId || null,
         });
     } catch (err) {
-        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -1299,7 +1300,7 @@ export async function setDropboxOauthSetting(req, res) {
             groupId: scope.groupId || null,
         });
     } catch (err) {
-        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -1310,7 +1311,7 @@ export async function getOneDriveIntegrationSetting(req, res) {
         const enabled = value ? !!value?.enabled : true;
         res.json({ enabled, groupId: scope.groupId || null });
     } catch (err) {
-        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -1321,7 +1322,7 @@ export async function getQuickbooksIntegrationSetting(req, res) {
         const enabled = value ? !!value?.enabled : true;
         res.json({ enabled, groupId: scope.groupId || null });
     } catch (err) {
-        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -1340,7 +1341,7 @@ export async function setQuickbooksIntegrationSetting(req, res) {
         );
         res.json({ success: true, enabled, groupId: scope.groupId || null });
     } catch (err) {
-        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -1359,7 +1360,7 @@ export async function setOneDriveIntegrationSetting(req, res) {
         );
         res.json({ success: true, enabled, groupId: scope.groupId || null });
     } catch (err) {
-        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -1383,7 +1384,7 @@ export async function getOneDriveOauthSetting(req, res) {
             groupId: scope.groupId || null,
         });
     } catch (err) {
-        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -1415,7 +1416,7 @@ export async function setOneDriveOauthSetting(req, res) {
             groupId: scope.groupId || null,
         });
     } catch (err) {
-        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -1445,7 +1446,7 @@ export async function getQuickbooksOauthSetting(req, res) {
             groupId: scope.groupId || null,
         });
     } catch (err) {
-        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -1480,7 +1481,7 @@ export async function setQuickbooksOauthSetting(req, res) {
             groupId: scope.groupId || null,
         });
     } catch (err) {
-        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -1498,7 +1499,7 @@ export async function testGoogleOauthSetting(req, res) {
         if (!result.ok) return res.status(400).json({ ...result, groupId: scope.groupId || null });
         return res.json({ ...result, groupId: scope.groupId || null });
     } catch (err) {
-        return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        return jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -1509,7 +1510,7 @@ export async function testDropboxOauthSetting(req, res) {
         if (!result.ok) return res.status(400).json({ ...result, groupId: scope.groupId || null });
         return res.json({ ...result, groupId: scope.groupId || null });
     } catch (err) {
-        return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        return jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -1520,7 +1521,7 @@ export async function testOneDriveOauthSetting(req, res) {
         if (!result.ok) return res.status(400).json({ ...result, groupId: scope.groupId || null });
         return res.json({ ...result, groupId: scope.groupId || null });
     } catch (err) {
-        return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        return jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -1531,7 +1532,7 @@ export async function testQuickbooksOauthSetting(req, res) {
         if (!result.ok) return res.status(400).json({ ...result, groupId: scope.groupId || null });
         return res.json({ ...result, groupId: scope.groupId || null });
     } catch (err) {
-        return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        return jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -1592,7 +1593,7 @@ export async function getSamlSsoSetting(req, res) {
             groupId: scope.groupId || null,
         });
     } catch (err) {
-        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -1620,7 +1621,7 @@ export async function setSamlSsoSetting(req, res) {
             groupId: scope.groupId || null,
         });
     } catch (err) {
-        res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -1637,7 +1638,7 @@ export async function testSamlSsoSetting(req, res) {
         }
         return res.json({ ok: true, message: "saml_configuration_valid", groupId: scope.groupId || null });
     } catch (err) {
-        return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        return jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -2047,7 +2048,7 @@ export async function getAiRuntimeSetting(req, res) {
         const current = await loadAiRuntimeSettings(null);
         return res.json({ ...current, groupId: null });
     } catch (err) {
-        return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        return jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -2188,7 +2189,7 @@ export async function reviewAiLearningFeedback(req, res) {
         return res.json({ success: true, id, status: action === "approve" ? "approved" : "rejected", approvedRuleId });
     } catch (err) {
         try { await client.query("ROLLBACK"); } catch {}
-        return res.status(500).json({ error: "ai_learning_review_failed", detail: String(err?.message || "internal_server_error") });
+        return res.status(500).json({ error: "ai_learning_review_failed" });
     } finally {
         client.release();
     }
@@ -2264,7 +2265,7 @@ export async function reviewAiLearningCandidate(req, res) {
         return res.json({ success: true, id, status: action === "approve" ? "approved" : "rejected", approvedRuleId });
     } catch (err) {
         try { await client.query("ROLLBACK"); } catch {}
-        return res.status(500).json({ error: "ai_learning_candidate_review_failed", detail: String(err?.message || "internal_server_error") });
+        return res.status(500).json({ error: "ai_learning_candidate_review_failed" });
     } finally {
         client.release();
     }
@@ -2344,7 +2345,7 @@ export async function setAiRuntimeSetting(req, res) {
         });
         return res.json({ success: true, ...next, groupId: null });
     } catch (err) {
-        return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        return jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -2604,7 +2605,7 @@ export async function getSsoSetting(req, res) {
             enabled: resolveSsoFeatureValue(rows[0]?.entitlements || {}),
         });
     } catch (err) {
-        return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        return jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -2636,7 +2637,7 @@ export async function setSsoSetting(req, res) {
         });
         return res.json({ success: true, groupId: scope.groupId, enabled });
     } catch (err) {
-        return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+        return jsonForbidden(res, err.statusCode || 403);
     }
 }
 
@@ -2918,7 +2919,7 @@ export async function deleteGroup(req, res) {
     } catch (e) {
         await client.query("ROLLBACK");
         console.error("deleteGroup error:", e);
-        res.status(500).json({ error: "group_create_failed", details: { message: String(e?.message || "group_create_failed") } });
+        jsonInternalError(res, "group_update_failed");
     } finally {
         client.release();
     }
@@ -2932,7 +2933,7 @@ export async function getGroupMembers(req, res) {
         try {
             await assertGroupCanManageUsers(gid);
         } catch (err) {
-            return res.status(err.statusCode || 403).json({ error: err.message });
+            return jsonForbidden(res, err.statusCode || 403);
         }
     }
     const rows = await query(
@@ -2955,7 +2956,7 @@ export async function updateGroupMembers(req, res) {
         try {
             await assertGroupCanManageUsers(gid);
         } catch (err) {
-            return res.status(err.statusCode || 403).json({ error: err.message });
+            return jsonForbidden(res, err.statusCode || 403);
         }
     }
     const { userIds } = req.body; // array
@@ -2963,7 +2964,7 @@ export async function updateGroupMembers(req, res) {
     try {
         await assertGroupAllowsUserManagementForAnyActor(gid);
     } catch (err) {
-        return res.status(err.statusCode || 403).json({ error: err.message });
+        return jsonForbidden(res, err.statusCode || 403);
     }
     if (!isPlatformAdminUser(req.user)) {
         const group = await loadGroupForAdminAction(gid);
@@ -3034,7 +3035,7 @@ export async function addUserToGroup(req, res) {
     try {
         await assertGroupAllowsUserManagementForAnyActor(gid);
     } catch (err) {
-        return res.status(err.statusCode || 403).json({ error: err.message });
+        return jsonForbidden(res, err.statusCode || 403);
     }
     if (!isPlatformAdminUser(req.user)) {
         const adminGroups = await getAdminGroups(req.user.id);
@@ -3044,7 +3045,7 @@ export async function addUserToGroup(req, res) {
             if (!existing.length) await assertGroupUserLimitAvailable(gid, 1);
             else await assertGroupCanManageUsers(gid);
         } catch (err) {
-            return res.status(err.statusCode || 403).json({ error: err.message, ...(err.details || {}) });
+            return res.status(err.statusCode || 403).json({ error: "forbidden", ...(err.details || {}) });
         }
     }
     await query("INSERT INTO user_groups (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [gid, userId]);
@@ -3065,7 +3066,7 @@ export async function removeUserFromGroup(req, res) {
         try {
             await assertGroupCanManageUsers(gid);
         } catch (err) {
-            return res.status(err.statusCode || 403).json({ error: err.message });
+            return jsonForbidden(res, err.statusCode || 403);
         }
     }
     const { userId } = req.params;
@@ -3152,7 +3153,7 @@ export async function toggleGroupAdmin(req, res) {
         res.json({ success: true });
     } catch (e) {
         console.error("toggleGroupAdmin error:", e);
-        res.status(500).json({ error: "add_user_to_group_failed", details: { message: String(e?.message || "add_user_to_group_failed") } });
+        jsonInternalError(res, "add_user_to_group_failed");
     }
 }
 

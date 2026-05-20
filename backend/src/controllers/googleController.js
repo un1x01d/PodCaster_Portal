@@ -386,7 +386,7 @@ async function findOrCreateGoogleUser(googleUser, { requiredGroupId = null } = {
   const existing = await query("SELECT id, email, role FROM users WHERE email = $1 LIMIT 1", [email]);
   if (existing.length) {
     // Admin accounts must continue using manual credentials.
-    if (existing[0].role === "admin") {
+    if (String(existing[0].role || "").trim().toLowerCase() === "admin") {
       throw new Error("admin_manual_login_required");
     }
     return existing[0];

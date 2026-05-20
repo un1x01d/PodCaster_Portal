@@ -8,6 +8,18 @@ substitutions:
   _DB_USER: tforn_insights
 
 steps:
+  - name: gcr.io/cloud-builders/npm
+    args: ["--prefix", "backend", "ci"]
+
+  - name: gcr.io/cloud-builders/npm
+    args: ["--prefix", "backend", "test"]
+
+  - name: gcr.io/cloud-builders/npm
+    args: ["--prefix", "frontend", "ci"]
+
+  - name: gcr.io/cloud-builders/npm
+    args: ["--prefix", "frontend", "run", "build"]
+
   - name: gcr.io/cloud-builders/gcloud
     entrypoint: bash
     args:

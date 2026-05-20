@@ -1,6 +1,6 @@
 import { createHash } from "crypto";
 import { query } from "../../config/db.js";
-import { checkSheetAccess, hasReportSourceOwnerAccess, loadSheetPermissionSets } from "../../utils/authorization.js";
+import { checkSheetAccess, hasReportSourceOwnerAccess, isPlatformAdminUser, loadSheetPermissionSets } from "../../utils/authorization.js";
 import { loadEffectiveAiRuntimeSettings } from "../../utils/aiRuntimeSettings.js";
 import { resolveChatCompletionProviderConfig } from "../../utils/llmProvider.js";
 import { buildChatCompletionRequestBody, extractOpenAiAssistantText, minCompletionTokensForModel } from "../../utils/openAiCompat.js";
@@ -378,7 +378,7 @@ export async function loadAccessibleRows(sheetId, user) {
   const params = [sheetId];
   let where = "WHERE sheet_id = $1";
 
-  const hasFullAccess = user.role === "admin" || await hasReportSourceOwnerAccess(sheetId, user.id);
+  const hasFullAccess = isPlatformAdminUser(user) || await hasReportSourceOwnerAccess(sheetId, user.id);
   if (!hasFullAccess) {
     const { allPerms, validCols: validColsArray, rowFiltersList } = await loadSheetPermissionSets(sheetId, user.id);
     if (!allPerms.length) {
@@ -696,4 +696,3 @@ export function computeDirectionalWarnings({ series, categoryDeltas }) {
 
   return warnings.slice(0, 3);
 }
-

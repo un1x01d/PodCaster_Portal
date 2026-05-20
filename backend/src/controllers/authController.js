@@ -384,7 +384,7 @@ export async function acceptInvitation(req, res) {
         let userId = null;
         if (existingRes.rows.length) {
             const existing = existingRes.rows[0];
-            if (existing.role === "admin") {
+            if (String(existing.role || "").trim().toLowerCase() === "admin") {
                 await client.query("ROLLBACK");
                 return res.status(403).json({ error: "admin_email_not_allowed" });
             }

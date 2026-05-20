@@ -113,10 +113,6 @@ router.get("/sheets/:id/accounting-mappings", asyncHandler(getSheetAccountingMap
 router.post("/sheets/:id/accounting-mappings/approve", asyncHandler(approveSheetAccountingMapping));
 router.post("/sheets/:id/accounting-mappings/correct", asyncHandler(correctSheetAccountingMapping));
 router.post("/sheets/:id/accounting-mappings/reject", asyncHandler(rejectSheetAccountingMapping));
-router.get("/api/sheets/:id/accounting-mappings", asyncHandler(getSheetAccountingMappings));
-router.post("/api/sheets/:id/accounting-mappings/approve", asyncHandler(approveSheetAccountingMapping));
-router.post("/api/sheets/:id/accounting-mappings/correct", asyncHandler(correctSheetAccountingMapping));
-router.post("/api/sheets/:id/accounting-mappings/reject", asyncHandler(rejectSheetAccountingMapping));
 
 // Legacy/Compatibility alias for /sheets/list logic if needed, but listAllSheets covers it
 router.get("/sheets/list", asyncHandler(listAllSheets));

@@ -254,6 +254,8 @@ export function useChatbotLogic({
         ? sanitizeAiText(body.answer)
         : sanitizeAiText(copy.chatNoResponse || "I could not produce a response.");
       const actions = body.actions || {};
+      const auditBadge = String(body?.meta?.audit_badge || "").trim();
+      const assumedMapping = body?.meta?.assumed_mapping === true;
       const { filters } = applyChatActions(actions, meta);
       setMessages((prev) => [...prev, {
         type: "bot",
@@ -261,6 +263,8 @@ export function useChatbotLogic({
         timestamp: new Date(),
         isFilter: filters.length > 0,
         filterCol: filters[0]?.column,
+        auditBadge,
+        assumedMapping,
       }]);
     } catch (e) {
       const code = String(e?.response?.data?.error || "").trim();
@@ -384,4 +388,3 @@ export function useChatbotLogic({
     clearMessages,
   };
 }
-

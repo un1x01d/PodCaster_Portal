@@ -582,6 +582,18 @@ export default function ChatHistory({ sheetId = null, messages, onApplyFilter, c
                                 </button>
                             )}
                             <div className="whitespace-pre-wrap font-semibold tracking-[0.01em]">{formatMessageForDisplay(msg.text)}</div>
+                            {botLike && msg.auditBadge ? (
+                                <div className="mt-1.5">
+                                    <button
+                                        type="button"
+                                        onClick={() => window.alert(msg.assumedMapping ? `${msg.auditBadge}\nAssumption: best-match mapping was applied.` : msg.auditBadge)}
+                                        className="inline-flex items-center rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-black text-slate-600 hover:bg-white hover:border-slate-300 transition-colors"
+                                        title={msg.assumedMapping ? "View mapping assumption used for this answer" : "View calculation mapping used for this answer"}
+                                    >
+                                        {msg.auditBadge}
+                                    </button>
+                                </div>
+                            ) : null}
                         </div>
                     </div>
                 );

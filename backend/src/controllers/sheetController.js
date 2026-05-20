@@ -2775,7 +2775,7 @@ export async function uploadSheet(req, res) {
             if (e.details && typeof e.details === "object") Object.assign(body, e.details);
             return res.status(e.statusCode).json(body);
         }
-        return res.status(500).json({ error: "upload_failed", details: { message: e.message || "upload_failed" } });
+        return res.status(500).json({ error: "upload_failed" });
     } finally {
         if (filePath) {
             fs.unlink(filePath, () => {});
@@ -2954,7 +2954,7 @@ export async function ingestEmailAttachment(req, res) {
             if (e.details && typeof e.details === "object") Object.assign(body, e.details);
             return res.status(e.statusCode).json(body);
         }
-        return res.status(500).json({ error: "email_ingest_failed", details: { message: e.message || "email_ingest_failed" } });
+        return res.status(500).json({ error: "email_ingest_failed" });
     } finally {
         const file = req.file
             || req.files?.file?.[0]
@@ -3036,10 +3036,7 @@ export async function getUniqueValues(req, res) {
         res.json(values);
     } catch (e) {
         console.error("Get unique values failed:", e);
-        res.status(500).json({
-            error: "sheet_unique_values_failed",
-            details: { message: String(e?.message || "sheet_unique_values_failed") },
-        });
+        res.status(500).json({ error: "sheet_unique_values_failed" });
     }
 }
 
@@ -4124,10 +4121,7 @@ export async function getSheetTabs(req, res) {
         res.json({ tabs });
     } catch (e) {
         console.error("get tabs failed:", e);
-        res.status(500).json({
-            error: "sheet_tabs_failed",
-            details: { message: String(e?.message || "sheet_tabs_failed") },
-        });
+        res.status(500).json({ error: "sheet_tabs_failed" });
     }
 }
 
@@ -4322,7 +4316,7 @@ export async function getSheetData(req, res) {
             }
         }
 
-        let sql = `SELECT ${columnSelection} AS row_data FROM sheet_rows WHERE sheet_id = $1`;
+        let sql = `SELECT ${columnSelection} AS row_data, row_index FROM sheet_rows WHERE sheet_id = $1`;
         const params = sqlParams;
 
         if (tab) {
@@ -4385,6 +4379,16 @@ export async function getSheetData(req, res) {
             }
         }
 
+        const cursorRaw = String(req.query?.cursor || "").trim();
+        let decodedCursor = null;
+        if (cursorRaw && !sort_by) {
+            try { decodedCursor = JSON.parse(Buffer.from(cursorRaw, "base64url").toString("utf8")); } catch { decodedCursor = null; }
+            if (decodedCursor && Number.isInteger(Number(decodedCursor.rowIndex))) {
+                sql += ` AND row_index > $${params.length + 1}`;
+                params.push(Number(decodedCursor.rowIndex));
+            }
+        }
+
         // Apply sorting
         if (sort_by) {
             const direction = String(sort_order).toLowerCase() === 'desc' ? 'DESC' : 'ASC';
@@ -4404,15 +4408,6 @@ export async function getSheetData(req, res) {
             sql += ` ORDER BY row_index ASC`;
         }
 
-        const cursorRaw = String(req.query?.cursor || "").trim();
-        let decodedCursor = null;
-        if (cursorRaw && !sort_by) {
-            try { decodedCursor = JSON.parse(Buffer.from(cursorRaw, "base64url").toString("utf8")); } catch { decodedCursor = null; }
-            if (decodedCursor && Number.isInteger(Number(decodedCursor.rowIndex))) {
-                sql += ` AND row_index > $${params.length + 1}`;
-                params.push(Number(decodedCursor.rowIndex));
-            }
-        }
         const effectiveLimit = pagination.hasPagination ? pagination.limit : (SHEET_DATA_HARD_CAP > 0 ? SHEET_DATA_HARD_CAP : 1000);
         sql += ` LIMIT $${params.length + 1}`;
         params.push(effectiveLimit + 1);
@@ -4432,10 +4427,13 @@ export async function getSheetData(req, res) {
                         delete rowData[k];
                     }
                 });
-                return rowData;
+                return { __rowIndex: Number(r.row_index || 0), rowData };
             });
         } else {
-            rows = rows.map(r => typeof r.row_data === 'string' ? JSON.parse(r.row_data) : r.row_data);
+            rows = rows.map(r => ({
+                __rowIndex: Number(r.row_index || 0),
+                rowData: typeof r.row_data === 'string' ? JSON.parse(r.row_data) : r.row_data,
+            }));
         }
 
         if (!pagination.hasPagination && SHEET_DATA_HARD_CAP > 0 && rows.length > SHEET_DATA_HARD_CAP) {
@@ -4447,9 +4445,11 @@ export async function getSheetData(req, res) {
         }
 
         const hasMore = rows.length > effectiveLimit;
-        const items = hasMore ? rows.slice(0, effectiveLimit) : rows;
+        const scopedRows = hasMore ? rows.slice(0, effectiveLimit) : rows;
+        const items = scopedRows.map((r) => r.rowData);
+        const nextCursorRowIndex = scopedRows.length ? Number(scopedRows[scopedRows.length - 1].__rowIndex || 0) : 0;
         const nextCursor = (!sort_by && hasMore && items.length)
-            ? Buffer.from(JSON.stringify({ rowIndex: Number(items.length ? (decodedCursor?.rowIndex || 0) + items.length : 0) }), "utf8").toString("base64url")
+            ? Buffer.from(JSON.stringify({ rowIndex: nextCursorRowIndex }), "utf8").toString("base64url")
             : null;
         const effectiveTab = String(tab || "").trim();
         const dlpMaskedColumns = (() => {
@@ -4476,10 +4476,7 @@ export async function getSheetData(req, res) {
             .json(items);
     } catch (e) {
         console.error("Get sheet data failed:", e);
-        res.status(500).json({
-            error: "sheet_data_fetch_failed",
-            details: { message: String(e?.message || "sheet_data_fetch_failed") },
-        });
+        res.status(500).json({ error: "sheet_data_fetch_failed" });
     }
 }
 

@@ -12,6 +12,7 @@ import {
   listStorageProviderEntries,
   normalizeStorageProviderKey,
 } from "../utils/storageProviders.js";
+import { jsonForbidden, jsonInternalError } from "../utils/httpResponses.js";
 import {
   appSettingKeyForGroup,
   resolveScopedGroupForIntegrationSettings,
@@ -598,7 +599,7 @@ export async function getSftpStorageSetting(req, res) {
     const { scope, value } = await loadScopedStorageSetting(req, "sftp_storage", { globalFallback: false });
     return respondStorageSetting(res, scope, value, SFTP_FIELDS);
   } catch (err) {
-    return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    return jsonForbidden(res, err.statusCode || 403);
   }
 }
 
@@ -610,7 +611,7 @@ export async function setSftpStorageSetting(req, res) {
     await saveScopedStorageSetting("sftp_storage", scope.groupId, next);
     return respondStorageSetting(res, scope, next, SFTP_FIELDS);
   } catch (err) {
-    return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    return jsonForbidden(res, err.statusCode || 403);
   }
 }
 
@@ -620,7 +621,7 @@ export async function testSftpStorageSetting(req, res) {
     const probeResult = await testSftpConnection(value);
     return testStorageProbe(res, probeResult, scope);
   } catch (err) {
-    return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    return jsonForbidden(res, err.statusCode || 403);
   }
 }
 
@@ -629,7 +630,7 @@ export async function getGcsStorageSetting(req, res) {
     const { scope, value } = await loadScopedStorageSetting(req, "gcs_storage");
     return respondStorageSetting(res, scope, value, GCS_FIELDS);
   } catch (err) {
-    return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    return jsonForbidden(res, err.statusCode || 403);
   }
 }
 
@@ -641,7 +642,7 @@ export async function setGcsStorageSetting(req, res) {
     await saveScopedStorageSetting("gcs_storage", scope.groupId, next);
     return respondStorageSetting(res, scope, next, GCS_FIELDS);
   } catch (err) {
-    return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    return jsonForbidden(res, err.statusCode || 403);
   }
 }
 
@@ -651,7 +652,7 @@ export async function testGcsStorageSetting(req, res) {
     const probeResult = await testGcsConnection(value);
     return testStorageProbe(res, probeResult, scope);
   } catch (err) {
-    return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    return jsonForbidden(res, err.statusCode || 403);
   }
 }
 
@@ -660,7 +661,7 @@ export async function getS3StorageSetting(req, res) {
     const { scope, value } = await loadScopedStorageSetting(req, "s3_storage");
     return respondStorageSetting(res, scope, value, S3_FIELDS);
   } catch (err) {
-    return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    return jsonForbidden(res, err.statusCode || 403);
   }
 }
 
@@ -672,7 +673,7 @@ export async function setS3StorageSetting(req, res) {
     await saveScopedStorageSetting("s3_storage", scope.groupId, next);
     return respondStorageSetting(res, scope, next, S3_FIELDS);
   } catch (err) {
-    return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    return jsonForbidden(res, err.statusCode || 403);
   }
 }
 
@@ -682,7 +683,7 @@ export async function testS3StorageSetting(req, res) {
     const probeResult = await testS3Connection(value);
     return testStorageProbe(res, probeResult, scope);
   } catch (err) {
-    return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    return jsonForbidden(res, err.statusCode || 403);
   }
 }
 
@@ -691,7 +692,7 @@ export async function getAzureBlobStorageSetting(req, res) {
     const { scope, value } = await loadScopedStorageSetting(req, "azure_blob_storage");
     return respondStorageSetting(res, scope, value, AZURE_FIELDS);
   } catch (err) {
-    return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    return jsonForbidden(res, err.statusCode || 403);
   }
 }
 
@@ -703,7 +704,7 @@ export async function setAzureBlobStorageSetting(req, res) {
     await saveScopedStorageSetting("azure_blob_storage", scope.groupId, next);
     return respondStorageSetting(res, scope, next, AZURE_FIELDS);
   } catch (err) {
-    return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    return jsonForbidden(res, err.statusCode || 403);
   }
 }
 
@@ -713,7 +714,7 @@ export async function testAzureBlobStorageSetting(req, res) {
     const probeResult = await testAzureBlobConnection(value);
     return testStorageProbe(res, probeResult, scope);
   } catch (err) {
-    return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    return jsonForbidden(res, err.statusCode || 403);
   }
 }
 
@@ -734,7 +735,7 @@ export async function getStorageProviderStatus(req, res) {
     const status = await getStorageProviderRuntimeStatus(provider, scope.groupId);
     return res.json(status);
   } catch (err) {
-    return res.status(err.statusCode || 403).json({ error: err.message || "Forbidden" });
+    return jsonForbidden(res, err.statusCode || 403);
   }
 }
 
@@ -751,7 +752,7 @@ export async function listStorageProviderFiles(req, res) {
     if (msg.includes("storage_provider_disabled")) {
       return res.status(403).json({ error: "storage_provider_disabled" });
     }
-    return res.status(code).json({ error: err.message || "Forbidden" });
+    return res.status(code).json({ error: "forbidden" });
   }
 }
 
@@ -820,7 +821,7 @@ export async function importStorageProviderFile(req, res) {
     if (err?.statusCode === 413 || msg.includes("provider_file_too_large")) {
       return res.status(413).json({ error: "file_too_large", maxMB: Math.floor((err.maxBytes || 0) / (1024 * 1024)) || Math.floor(100 * 1024 * 1024 / (1024 * 1024)) });
     }
-    return res.status(500).json({ error: "storage_import_failed", details: { message: String(err?.message || "storage_import_failed") } });
+    return jsonInternalError(res, "storage_import_failed");
   } finally {
     if (tmpPath) {
       try { await fs.promises.rm(tmpPath, { force: true }); } catch {}

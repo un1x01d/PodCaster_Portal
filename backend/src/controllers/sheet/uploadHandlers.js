@@ -222,7 +222,7 @@ export function createSheetUploadHandlers(deps) {
                 if (e.details && typeof e.details === "object") Object.assign(body, e.details);
                 return res.status(e.statusCode).json(body);
             }
-            return res.status(500).json({ error: "upload_failed", details: { message: e.message || "upload_failed" } });
+            return res.status(500).json({ error: "upload_failed" });
         } finally {
             if (filePath) {
                 fs.unlink(filePath, () => {});
@@ -401,7 +401,7 @@ export function createSheetUploadHandlers(deps) {
                 if (e.details && typeof e.details === "object") Object.assign(body, e.details);
                 return res.status(e.statusCode).json(body);
             }
-            return res.status(500).json({ error: "email_ingest_failed", details: { message: e.message || "email_ingest_failed" } });
+            return res.status(500).json({ error: "email_ingest_failed" });
         } finally {
             const file = req.file
                 || req.files?.file?.[0]

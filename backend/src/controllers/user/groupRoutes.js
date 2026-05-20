@@ -11,6 +11,8 @@ const {
   provisionCustomerDatabase,
   resolveGroupAllowedColumns,
 } = deps;
+const jsonForbidden = (res, statusCode = 403) => res.status(statusCode).json({ error: "forbidden" });
+const jsonInternalError = (res, code = "internal_server_error") => res.status(500).json({ error: code });
 async function listGroups(req, res) {
     const pagination = parsePagination(req.query, { maxLimit: 1000 });
     if (pagination.error) return res.status(400).json({ error: pagination.error });
@@ -287,7 +289,7 @@ async function deleteGroup(req, res) {
     } catch (e) {
         await client.query("ROLLBACK");
         console.error("deleteGroup error:", e);
-        res.status(500).json({ error: "group_create_failed", details: { message: String(e?.message || "group_create_failed") } });
+        jsonInternalError(res, "group_update_failed");
     } finally {
         client.release();
     }
@@ -301,7 +303,7 @@ async function getGroupMembers(req, res) {
         try {
             await assertGroupCanManageUsers(gid);
         } catch (err) {
-            return res.status(err.statusCode || 403).json({ error: err.message });
+            return jsonForbidden(res, err.statusCode || 403);
         }
     }
     const rows = await query(
@@ -324,7 +326,7 @@ async function updateGroupMembers(req, res) {
         try {
             await assertGroupCanManageUsers(gid);
         } catch (err) {
-            return res.status(err.statusCode || 403).json({ error: err.message });
+            return jsonForbidden(res, err.statusCode || 403);
         }
     }
     const { userIds } = req.body; // array
@@ -332,7 +334,7 @@ async function updateGroupMembers(req, res) {
     try {
         await assertGroupAllowsUserManagementForAnyActor(gid);
     } catch (err) {
-        return res.status(err.statusCode || 403).json({ error: err.message });
+        return jsonForbidden(res, err.statusCode || 403);
     }
     if (!isPlatformAdminUser(req.user)) {
         const group = await loadGroupForAdminAction(gid);
@@ -403,7 +405,7 @@ async function addUserToGroup(req, res) {
     try {
         await assertGroupAllowsUserManagementForAnyActor(gid);
     } catch (err) {
-        return res.status(err.statusCode || 403).json({ error: err.message });
+        return jsonForbidden(res, err.statusCode || 403);
     }
     if (!isPlatformAdminUser(req.user)) {
         const adminGroups = await getAdminGroups(req.user.id);
@@ -413,7 +415,7 @@ async function addUserToGroup(req, res) {
             if (!existing.length) await assertGroupUserLimitAvailable(gid, 1);
             else await assertGroupCanManageUsers(gid);
         } catch (err) {
-            return res.status(err.statusCode || 403).json({ error: err.message, ...(err.details || {}) });
+            return res.status(err.statusCode || 403).json({ error: "forbidden", ...(err.details || {}) });
         }
     }
     await query("INSERT INTO user_groups (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [gid, userId]);
@@ -434,7 +436,7 @@ async function removeUserFromGroup(req, res) {
         try {
             await assertGroupCanManageUsers(gid);
         } catch (err) {
-            return res.status(err.statusCode || 403).json({ error: err.message });
+            return jsonForbidden(res, err.statusCode || 403);
         }
     }
     const { userId } = req.params;
@@ -521,7 +523,7 @@ async function toggleGroupAdmin(req, res) {
         res.json({ success: true });
     } catch (e) {
         console.error("toggleGroupAdmin error:", e);
-        res.status(500).json({ error: "add_user_to_group_failed", details: { message: String(e?.message || "add_user_to_group_failed") } });
+        jsonInternalError(res, "add_user_to_group_failed");
     }
 }
 

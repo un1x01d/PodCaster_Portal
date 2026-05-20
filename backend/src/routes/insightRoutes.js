@@ -2,12 +2,9 @@ import express from "express";
 import { auth } from "../middleware/auth.js";
 import { aiRateLimit, expensiveTenantRateLimit } from "../middleware/rateLimit.js";
 import { getInsights, updateInsightSettings } from "../controllers/insightController.js";
+import { asyncHandler } from "../middleware/asyncHandler.js";
 
 const router = express.Router();
-
-function asyncHandler(fn) {
-  return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
-}
 
 router.use(auth);
 router.get("/insights/:sheetId", aiRateLimit, expensiveTenantRateLimit, asyncHandler(getInsights));

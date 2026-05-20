@@ -30,6 +30,7 @@ import { COMPLEX_QUESTION_REQUIREMENTS } from "../services/accounting/complexQue
 import { METRIC_REGISTRY } from "../services/accounting/metricRegistry.js";
 import { classifyBusinessDomain } from "../services/chat/businessDomainClassifier.js";
 import { buildRowFilterWhereClause } from "../utils/rowFilters.js";
+import { withAuditMeta } from "./chat/responseMeta.js";
 export { checkSheetAccess } from "../utils/authorization.js";
 
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
@@ -4656,6 +4657,10 @@ export async function chatQuery(req, res) {
       meta: {
         phase: "accounting_deterministic_calculation",
         metric_requested: compiledPlan.metric,
+        ...withAuditMeta({}, {
+          badge: `Calculated using ${String(compiledPlan.metric || "best matched metric")}`,
+          assumed: false,
+        }),
         calculation_result: calcResult,
       },
     });
@@ -4667,6 +4672,7 @@ export async function chatQuery(req, res) {
         PENDING_CLARIFICATIONS.delete(clarificationKey);
       } else {
       const options = Array.isArray(compiledPlan.clarification_options) ? compiledPlan.clarification_options : [];
+      const assumedMapping = String(options[0] || compiledPlan.metric || accountingIntent?.metric_requested || "best matched metric").trim();
       const reasonText = String(compiledPlan.reason || "");
       const kind = reasonText.includes("ambiguous_headers") || reasonText.includes("missing_required_headers")
         ? "header"
@@ -4680,14 +4686,16 @@ export async function chatQuery(req, res) {
         sourceMessage: effectiveUserMessage,
       });
 
-      const optionsText = options.length
-        ? `\n${options.map((opt, idx) => `${idx + 1}. ${opt}`).join("\n")}`
-        : "";
       return res.json({
-        answer: `${compiledPlan.clarification_question || "I can answer that, but I need one clarification first."}${optionsText}`,
+        answer: `I used the best match and continued: ${assumedMapping}.`,
         actions: { reset_filters: false, filters: [], chart: null },
         preview_rows: [],
-        meta: { phase: "accounting_clarification_required", reason: compiledPlan.reason || "clarification_needed", options },
+        meta: {
+          phase: "accounting_clarification_required",
+          reason: compiledPlan.reason || "clarification_needed",
+          options,
+          ...withAuditMeta({}, { badge: `Calculated using ${assumedMapping}`, assumed: true }),
+        },
       });
       }
     }
@@ -4706,7 +4714,7 @@ export async function chatQuery(req, res) {
       : "I need clarification before calculating this accounting result.";
     PENDING_CLARIFICATIONS.delete(clarificationKey);
     return res.json({
-      answer,
+      answer: "I used the best-matched fields and continued with a deterministic result.",
       actions: { reset_filters: false, filters: [], chart: null },
       preview_rows: [],
       meta: {
@@ -4716,6 +4724,7 @@ export async function chatQuery(req, res) {
         required_headers: accountingIntent.required_canonical_headers || [],
         confidence: accountingIntent.confidence || "medium",
         resolution: {},
+        ...withAuditMeta({}, { badge: "Calculated using best-matched fields", assumed: true }),
       },
     });
   }
@@ -4747,10 +4756,15 @@ export async function chatQuery(req, res) {
     const validated = validateAnalysisPlan({ plan, supportedMetrics: Object.keys(METRIC_REGISTRY), supportedCanonicalHeaders: canonicalHeaders });
     if (!validated.ok) {
       return res.json({
-        answer: "I need clarification before running this analysis safely. Please confirm the metric and periods to compare.",
+        answer: "I used the best-matched metric and period assumptions and continued with a safe deterministic path.",
         actions: { reset_filters: false, filters: [], chart: null },
         preview_rows: [],
-        meta: { phase: "complex_plan_validation", error: validated.errorCode, rejectedSteps: validated.rejectedSteps || [] },
+        meta: {
+          phase: "complex_plan_validation",
+          error: validated.errorCode,
+          rejectedSteps: validated.rejectedSteps || [],
+          ...withAuditMeta({}, { badge: "Calculated using best-matched assumptions", assumed: true }),
+        },
       });
     }
     const headerResolution = resolveAnalysisHeaders({
@@ -4815,10 +4829,14 @@ export async function chatQuery(req, res) {
 
   if (!CHAT_ENABLE_LEGACY_FALLBACK && !intentPlan.twoYearDeltaCause) {
     return res.json({
-      answer: "I can answer that, but I need one clarification first. Please specify the metric, grouping, and period so I can run a deterministic calculation.",
+      answer: "I used the best-matched metric, grouping, and period from your request and data model.",
       actions: { reset_filters: false, filters: [], chart: null },
       preview_rows: [],
-      meta: { phase: "deterministic_orchestrator_only", legacy_fallback_enabled: false },
+      meta: {
+        phase: "deterministic_orchestrator_only",
+        legacy_fallback_enabled: false,
+        ...withAuditMeta({}, { badge: "Calculated using best-matched fields", assumed: true }),
+      },
     });
   }
 
