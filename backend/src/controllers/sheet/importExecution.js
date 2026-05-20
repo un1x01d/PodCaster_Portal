@@ -13,7 +13,7 @@ export function createImportExecution(deps) {
         loadDlpSettings,
         isPlatformAdminUser,
         groupHasFeature,
-        scanRowsForDlp,
+        scanRowsForDlpInWorker,
         writeAuditLog,
         applyDlpColumnMasking,
         loadSemanticProfileRules,
@@ -98,7 +98,7 @@ export function createImportExecution(deps) {
                 }
             }
             if (dlp.enabled !== false && customerDlpEnabled) {
-                const scan = scanRowsForDlp(sheets, dlp);
+                const scan = await scanRowsForDlpInWorker(sheets, dlp);
                 if (scan.findings.length > 0) {
                     await writeAuditLog({
                         req: { id: null, user, ip: null, headers: {} },

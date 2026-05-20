@@ -695,7 +695,7 @@ const executeImportFromParsedWorkbook = createImportExecution({
     loadDlpSettings,
     isPlatformAdminUser,
     groupHasFeature,
-    scanRowsForDlp,
+    scanRowsForDlpInWorker: scanRowsForDlp,
     writeAuditLog,
     applyDlpColumnMasking,
     loadSemanticProfileRules,

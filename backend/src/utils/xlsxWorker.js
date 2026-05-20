@@ -152,6 +152,7 @@ function parseWorkbookWithFallbacks(sourceBuffer, baseOptions) {
 }
 
 try {
+  (async () => {
   const { buffer, filePath, options } = workerData;
   const streamMode = options?.streamMode === true;
   assertWithinMemoryLimit("start");
@@ -169,7 +170,7 @@ try {
       WTF: false,
       ...options,
   };
-  const workbookData = filePath ? fs.readFileSync(filePath) : buffer;
+  const workbookData = filePath ? await fs.promises.readFile(filePath) : buffer;
   const wb = parseWorkbookWithFallbacks(workbookData, workbookOptions);
   assertWithinMemoryLimit("after_workbook_read");
   
@@ -219,6 +220,14 @@ try {
   } else {
     parentPort.postMessage({ success: true, result });
   }
+  })().catch((e) => {
+    if (monitor) clearInterval(monitor);
+    parentPort.postMessage({
+      success: false,
+      error: e.message,
+      memory: e.memory || (e.message === "xlsx_worker_memory_limit_exceeded" ? memorySnapshot("catch") : undefined),
+    });
+  });
 } catch (e) {
   if (monitor) clearInterval(monitor);
   parentPort.postMessage({

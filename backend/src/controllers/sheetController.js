@@ -17,7 +17,8 @@ import { writeAuditLog } from "../utils/auditLog.js";
 import { normalizeGroupEntitlements, groupHasFeature } from "../utils/entitlements.js";
 import { downloadProviderAutosyncFile, fetchProviderAutosyncMetadata } from "../utils/providerAutosync.js";
 import { ensureReportSourcesSchema } from "../config/db.js";
-import { DLP_SETTINGS_KEY, normalizeDlpSettings, scanRowsForDlp, applyDlpColumnMasking } from "../utils/dlp.js";
+import { DLP_SETTINGS_KEY, normalizeDlpSettings, applyDlpColumnMasking } from "../utils/dlp.js";
+import { scanRowsForDlpInWorker } from "./sheet/dlpWorker.js";
 import { classifySheetBusinessContext } from "../utils/businessClassification.js";
 import { buildSheetSemanticProfile, loadSemanticProfileRules, mergeSheetSemanticProfileLearning } from "../utils/sheetSemanticProfile.js";
 import { loadEffectiveAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
@@ -1509,7 +1510,7 @@ async function executeImportFromParsedWorkbook({
             }
         }
         if (dlp.enabled !== false && customerDlpEnabled) {
-            const scan = scanRowsForDlp(sheets, dlp);
+            const scan = await scanRowsForDlpInWorker(sheets, dlp);
             if (scan.findings.length > 0) {
                 await writeAuditLog({
                     req: { id: null, user, ip: null, headers: {} },
