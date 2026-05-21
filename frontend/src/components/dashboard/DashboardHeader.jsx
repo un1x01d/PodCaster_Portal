@@ -89,7 +89,7 @@ export default function DashboardHeader({
             reportSourceImports,
             myFiles,
             selectableContext: { publishedSheetIds, accessibleSheetIds },
-            includeAll: true,
+            includeAll: false,
         });
     }, [reportSourceImports, myFiles, publishedSheetIds, accessibleSheetIds]);
     const explicitSources = React.useMemo(() => (

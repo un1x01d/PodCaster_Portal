@@ -168,6 +168,13 @@ export default function ReportVersionPicker({
                         const label = resolveFileLabel(latest);
                         const fileKey = `${key}:${label}`;
                         const revisionMenuChars = Math.min(100, Math.max(38, String(label || "").length + 20));
+                        const latestImportStatus = String(latest?.status || "").trim().toLowerCase();
+                        const latestImportId = Number.parseInt(String(latest?.id || ""), 10);
+                        const canDeleteLatestRevision = canManageImports
+                          && typeof onDeleteImportRevision === "function"
+                          && latestImportStatus !== "published"
+                          && Number.isInteger(latestImportId)
+                          && latestImportId > 0;
                         const isSelectedGroup = group.some((i) => String(i.sheet_id) === String(selectedSheetId));
                         const isVersionMenuOpen = fileVersionMenuKey === fileKey;
                         return (
@@ -265,6 +272,20 @@ export default function ReportVersionPicker({
                             {isSelectedGroup && (
                               <span className="shrink-0 rounded-full bg-emerald-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-emerald-700">Current</span>
                             )}
+                            {canDeleteLatestRevision ? (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onDeleteImportRevision(latest);
+                                }}
+                                disabled={deleteImportBusyId === String(latestImportId)}
+                                className={`shrink-0 rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-[9px] font-semibold text-rose-700 hover:bg-rose-100 ${deleteImportBusyId === String(latestImportId) ? "opacity-60 cursor-not-allowed" : ""}`}
+                                title="Delete latest revision"
+                              >
+                                {deleteImportBusyId === String(latestImportId) ? "Deleting..." : "Delete revision"}
+                              </button>
+                            ) : null}
                             {fileVersionMenuKey === fileKey && embedRevisionMenu ? (
                               <div className="w-full mt-2 rounded-lg border border-slate-200 bg-white shadow-sm py-1">
                                 <div className="max-h-56 overflow-auto custom-scrollbar">

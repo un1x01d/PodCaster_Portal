@@ -53,27 +53,24 @@ export function evaluateAiChatCompatibilityForImport({ semanticProfile = {}, sam
 
   const missing = [];
   if (!dateColumn) {
-    missing.push(
-      `date/year mapping is missing (set semantic_profile.defaults.dateColumn). Detected headers: ${availableHeaders.slice(0, 8).join(", ") || "none"}.`
-    );
+    missing.push("Expected reporting date column does not exist. Expected one of: Date, Month, Quarter, Year.");
   }
   if (!metricColumns.length) {
-    missing.push(
-      "metric mappings are missing (set semantic_profile.defaults.metricColumns.<metric>)."
-    );
+    missing.push("Expected metric columns do not exist. Expected at least one of: Revenue, Cost, Profit, Net Income, Total Expense.");
   }
-  if (dateColumn && !isDateLikeHeaderName(dateColumn)) {
-    missing.push(`date/year mapping points to '${dateColumn}', which does not look like a date/period header.`);
+  const dateHeaderLooksLikePeriod = !dateColumn || isDateLikeHeaderName(dateColumn);
+  if (dateColumn && !dateHeaderLooksLikePeriod) {
+    missing.push(`Expected reporting date column, but found "${dateColumn}". Expected a period column like Date, Month, Quarter, or Year.`);
   }
 
-  if (dateColumn) {
+  if (dateColumn && dateHeaderLooksLikePeriod) {
     const dateVals = rows
       .map((r) => r?.[dateColumn])
       .filter((v) => v !== null && v !== undefined && String(v).trim() !== "");
     const dateHits = dateVals.filter((v) => !!toPeriodKeyFromValue(v)).length;
     const dateRatio = dateVals.length ? (dateHits / dateVals.length) : 0;
     if (dateVals.length < 5 || dateRatio < 0.6) {
-      missing.push(`date/year column '${dateColumn}' values are not consistently valid dates (valid ratio ${(dateRatio * 100).toFixed(0)}%).`);
+      missing.push(`Expected valid reporting dates in "${dateColumn}", but values do not match a usable reporting period format.`);
     }
   }
 
@@ -97,11 +94,11 @@ export function evaluateAiChatCompatibilityForImport({ semanticProfile = {}, sam
       if (!strictCanonicals.some((k) => canonical.toLowerCase().includes(k))) continue;
       const stats = colStats.get(mappedCol);
       if (!stats || stats.count < 5 || stats.ratio < 0.6) {
-        missing.push(`${canonical} mapping ('${mappedCol}') is not consistently numeric.`);
+        missing.push(`Expected amount values for "${canonical}" in "${mappedCol}", but this column is missing valid numeric amounts.`);
       }
     }
     if (!hasValidMetric) {
-      missing.push("mapped metric columns are not consistently numeric (need at least one numeric metric column).");
+      missing.push("Expected at least one valid amount column, but none of the mapped metric columns contain usable numeric amounts.");
     }
   }
 
@@ -109,6 +106,34 @@ export function evaluateAiChatCompatibilityForImport({ semanticProfile = {}, sam
     ready: missing.length === 0,
     missing,
   };
+}
+
+export function normalizeCompatibilityMissingReasons(reasons = []) {
+  const list = Array.isArray(reasons) ? reasons.map((r) => String(r || "").trim()).filter(Boolean) : [];
+  return list.map((reason) => {
+    const lower = reason.toLowerCase();
+    if (lower.includes("metric mappings are missing")) {
+      return "Expected metric columns do not exist. Expected at least one of: Revenue, Cost, Profit, Net Income, Total Expense.";
+    }
+    if (lower.includes("date/year mapping is missing")) {
+      return "Expected reporting date column does not exist. Expected one of: Date, Month, Quarter, Year.";
+    }
+    if (lower.includes("does not look like a date/period header") || lower.includes("date/year mapping points to")) {
+      const match = reason.match(/'([^']+)'|\"([^\"]+)\"/);
+      const found = (match?.[1] || match?.[2] || "").trim();
+      return found
+        ? `Expected reporting date column, but found "${found}". Expected a period column like Date, Month, Quarter, or Year.`
+        : "Expected reporting date column, but found a non-period field. Expected a period column like Date, Month, Quarter, or Year.";
+    }
+    if (lower.includes("values are not consistently valid dates") || lower.includes("valid ratio")) {
+      const match = reason.match(/'([^']+)'|\"([^\"]+)\"/);
+      const found = (match?.[1] || match?.[2] || "").trim();
+      return found
+        ? `Expected valid reporting dates in "${found}", but values do not match a usable reporting period format.`
+        : "Expected valid reporting dates, but values do not match a usable reporting period format.";
+    }
+    return reason;
+  });
 }
 
 export function canApproveWithMaskedDlp({ semanticProfile = {}, compatibility = {} }) {

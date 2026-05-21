@@ -103,10 +103,15 @@ export function normalizeInviteEmailTemplateForSave(input, current) {
 
 function normalizeSmtpConfig(raw) {
   const cfg = raw && typeof raw === "object" ? raw : {};
+  const provider = String(cfg.provider || "custom").trim().toLowerCase() === "gmail" ? "gmail" : "custom";
+  const secure = !!cfg.secure;
+  const defaultPort = secure ? 465 : 587;
+  const host = String(cfg.host || (provider === "gmail" ? "smtp.gmail.com" : "")).trim();
   return {
-    host: String(cfg.host || "").trim(),
-    port: Number.parseInt(cfg.port, 10) || 587,
-    secure: !!cfg.secure,
+    provider,
+    host,
+    port: Number.parseInt(cfg.port, 10) || defaultPort,
+    secure,
     username: String(cfg.username || "").trim(),
     password: decryptSettingValue(String(cfg.password || "")).trim(),
     fromEmail: String(cfg.fromEmail || "").trim(),
@@ -126,7 +131,7 @@ async function loadSmtpConfig() {
 }
 
 function createTransport(cfg) {
-  return nodemailer.createTransport({
+  const transport = {
     host: cfg.host,
     port: cfg.port,
     secure: cfg.secure,
@@ -137,7 +142,12 @@ function createTransport(cfg) {
     connectionTimeout: MAIL_TIMEOUT_MS,
     greetingTimeout: MAIL_TIMEOUT_MS,
     socketTimeout: MAIL_TIMEOUT_MS,
-  });
+    requireTLS: !cfg.secure,
+  };
+  if (cfg.provider === "gmail") {
+    transport.service = "gmail";
+  }
+  return nodemailer.createTransport(transport);
 }
 
 export async function sendInvitationEmail({

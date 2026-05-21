@@ -39,7 +39,7 @@ import {
     resolveReviewPolicy,
     parseAutosyncConfig,
 } from "./sheet/reviewPolicy.js";
-import { evaluateAiChatCompatibilityForImport, canApproveWithMaskedDlp } from "./sheet/aiChatCompatibility.js";
+import { evaluateAiChatCompatibilityForImport, canApproveWithMaskedDlp, normalizeCompatibilityMissingReasons } from "./sheet/aiChatCompatibility.js";
 import {
     sanitizeDisplayName,
     sanitizeReportSourceName,
@@ -1558,7 +1558,13 @@ async function executeImportFromParsedWorkbook({
                 };
             }
             if ((dlp.mode === "mask" || dlp.maskDetectedColumns) && scan.findings.length > 0) {
-                sheets = applyDlpColumnMasking(sheets, scan.maskedColumns, "[REDACTED]", scan.maskedCells || {});
+                sheets = applyDlpColumnMasking(
+                    sheets,
+                    scan.maskedColumns,
+                    "[REDACTED]",
+                    scan.maskedCells || {},
+                    { forceColumnMasking: dlp.mode === "mask" || dlp.maskDetectedColumns === true }
+                );
             }
             if (scan.findings.length > 0 && dlp.mode === "block") {
                 const err = toImportError("dlp_blocked", 403, "Import blocked by DLP policy.");
@@ -3514,7 +3520,7 @@ export async function getReportSourceImports(req, res) {
                 rsi.original_filename, rsi.schema_status, rsi.schema_diff, rsi.status,
                 rsi.published_at, rsi.published_by, rsi.rejected_at, rsi.rejected_by,
                 rsi.review_notes, rsi.job_id, rsi.file_size_bytes, rsi.created_at,
-                s.display_name, s.filename, s.uploaded_at,
+                s.display_name, s.filename, s.uploaded_at, s.semantic_profile,
                 COALESCE(NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), u.email) AS imported_by_name
          FROM report_source_imports rsi
          JOIN sheets s ON s.id = rsi.sheet_id
@@ -3525,7 +3531,7 @@ export async function getReportSourceImports(req, res) {
     );
     const enriched = rows.map((row) => {
         const status = String(row?.status || "").trim().toLowerCase();
-        const selectable = status === "published" || status === "superseded" || status === "pending_approval";
+        const selectable = status === "published" || status === "superseded";
         let selectableReason = "unknown";
         if (selectable) selectableReason = "ok";
         else if (!row?.sheet_id) selectableReason = "missing_sheet";
@@ -3534,10 +3540,48 @@ export async function getReportSourceImports(req, res) {
         else if (status === "superseded") selectableReason = "superseded";
         else if (status === "blocked") selectableReason = "blocked_by_policy";
         else if (!status) selectableReason = "not_accessible";
+        const semanticProfile = row?.semantic_profile && typeof row.semantic_profile === "object"
+            ? row.semantic_profile
+            : {};
+        const learnedCompatibility = semanticProfile?.learned?.ai_chat_compatibility
+            && typeof semanticProfile.learned.ai_chat_compatibility === "object"
+            ? semanticProfile.learned.ai_chat_compatibility
+            : null;
+        const defaults = semanticProfile?.defaults && typeof semanticProfile.defaults === "object"
+            ? semanticProfile.defaults
+            : {};
+        const fallbackMissing = [];
+        if (!learnedCompatibility) {
+            const dateColumn = String(defaults?.dateColumn || "").trim();
+            const metricColumns = defaults?.metricColumns && typeof defaults.metricColumns === "object"
+                ? Object.values(defaults.metricColumns).map((v) => String(v || "").trim()).filter(Boolean)
+                : [];
+            if (!dateColumn) {
+                fallbackMissing.push("Expected reporting date column does not exist. Expected one of: Date, Month, Quarter, Year.");
+            }
+            if (!metricColumns.length) {
+                fallbackMissing.push("Expected metric columns do not exist. Expected at least one of: Revenue, Cost, Profit, Net Income, Total Expense.");
+            }
+            if (!fallbackMissing.length) {
+                fallbackMissing.push("mapping validation pending for this revision; refresh after import processing completes.");
+            }
+        }
+        const dlp = semanticProfile?.dlp && typeof semanticProfile.dlp === "object" ? semanticProfile.dlp : {};
+        const baseMissing = Array.isArray(learnedCompatibility?.missing)
+            ? learnedCompatibility.missing.map((m) => String(m || "").trim()).filter(Boolean)
+            : fallbackMissing;
+        const missing = normalizeCompatibilityMissingReasons(baseMissing);
+        const compatibilityReady = learnedCompatibility?.ready === true;
+        const approvalReady = compatibilityReady;
         return {
             ...row,
             selectable,
             selectable_reason: selectableReason,
+            ai_chat_compatibility: {
+                ready: compatibilityReady,
+                approval_ready: approvalReady,
+                missing,
+            },
         };
     });
     res.json(enriched);
@@ -3676,6 +3720,7 @@ export async function publishReportSourceImport(req, res) {
                     semanticProfile: sheet.semantic_profile || {},
                     sampleRows,
                 });
+                const normalizedReasons = normalizeCompatibilityMissingReasons(compatibility?.missing || []);
                 const approvalReady = compatibility.ready || canApproveWithMaskedDlp({ semanticProfile: sheet.semantic_profile || {}, compatibility });
                 if (!approvalReady) {
                     await client.query("ROLLBACK");
@@ -3683,7 +3728,7 @@ export async function publishReportSourceImport(req, res) {
                         error: "ai_chat_compatibility_blocked",
                         message: "Publish blocked: spreadsheet is not AI-chat compatible.",
                         details: {
-                            reasons: compatibility.missing,
+                            reasons: normalizedReasons,
                             required: [
                                 "mapped date/year column with valid date values",
                                 "at least one mapped metric column with numeric values",

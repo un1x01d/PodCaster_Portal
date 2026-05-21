@@ -1643,10 +1643,14 @@ export async function testSamlSsoSetting(req, res) {
 
 function decryptSmtpConfig(raw) {
     const cfg = raw && typeof raw === "object" ? raw : {};
+    const provider = String(cfg.provider || "custom").trim().toLowerCase() === "gmail" ? "gmail" : "custom";
+    const secure = !!cfg.secure;
+    const fallbackPort = secure ? 465 : 587;
     return {
-        host: String(cfg.host || ""),
-        port: Number.parseInt(cfg.port, 10) || 587,
-        secure: !!cfg.secure,
+        provider,
+        host: String(cfg.host || (provider === "gmail" ? "smtp.gmail.com" : "")),
+        port: Number.parseInt(cfg.port, 10) || fallbackPort,
+        secure,
         username: String(cfg.username || ""),
         password: decryptSettingValue(String(cfg.password || "")),
         fromEmail: String(cfg.fromEmail || ""),
@@ -1655,17 +1659,24 @@ function decryptSmtpConfig(raw) {
 }
 
 function normalizeSmtpConfigForSave(current, body) {
+    const provider = String(body?.provider || current.provider || "custom").trim().toLowerCase() === "gmail" ? "gmail" : "custom";
     const incomingPasswordRaw = typeof body?.password === "string" ? body.password.trim() : undefined;
     const nextPassword = (incomingPasswordRaw && incomingPasswordRaw !== "***")
         ? incomingPasswordRaw
         : String(current.password || "");
     const portCandidate = Number.parseInt(body?.port, 10);
-    const safePort = Number.isInteger(portCandidate) && portCandidate > 0 ? portCandidate : Number(current.port || 587) || 587;
+    const defaultSecure = provider === "gmail" ? true : !!current.secure;
+    const secure = body?.secure === undefined ? defaultSecure : !!body.secure;
+    const defaultPort = secure ? 465 : 587;
+    const safePort = Number.isInteger(portCandidate) && portCandidate > 0 ? portCandidate : Number(current.port || defaultPort) || defaultPort;
+    const hostCandidate = typeof body?.host === "string" ? body.host.trim() : String(current.host || "");
+    const host = provider === "gmail" ? "smtp.gmail.com" : hostCandidate;
 
     return {
-        host: typeof body?.host === "string" ? body.host.trim() : String(current.host || ""),
+        provider,
+        host,
         port: safePort,
-        secure: body?.secure === undefined ? !!current.secure : !!body.secure,
+        secure,
         username: typeof body?.username === "string" ? body.username.trim() : String(current.username || ""),
         password: encryptSettingValue(nextPassword),
         fromEmail: typeof body?.fromEmail === "string" ? body.fromEmail.trim() : String(current.fromEmail || ""),
@@ -1678,6 +1689,7 @@ export async function getSmtpSetting(req, res) {
     const rows = await query("SELECT value FROM app_settings WHERE key = 'smtp_config' LIMIT 1", []);
     const cfg = decryptSmtpConfig(rows[0]?.value || {});
     res.json({
+        provider: cfg.provider,
         hasPassword: !!String(cfg.password || "").trim(),
         passwordMasked: maskIfPresent(cfg.password),
         host: cfg.host,
@@ -1691,7 +1703,7 @@ export async function getSmtpSetting(req, res) {
 
 export async function setSmtpSetting(req, res) {
     if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
-    assertAllowedKeys(req.body || {}, ["host", "port", "secure", "username", "password", "fromEmail", "fromName"]);
+    assertAllowedKeys(req.body || {}, ["provider", "host", "port", "secure", "username", "password", "fromEmail", "fromName"]);
     const rows = await query("SELECT value FROM app_settings WHERE key = 'smtp_config' LIMIT 1", []);
     const current = decryptSmtpConfig(rows[0]?.value || {});
     const next = normalizeSmtpConfigForSave(current, req.body);
@@ -1704,6 +1716,7 @@ export async function setSmtpSetting(req, res) {
     );
     res.json({
         success: true,
+        provider: next.provider,
         hasPassword: !!decryptSettingValue(next.password),
         passwordMasked: maskIfPresent(decryptSettingValue(next.password)),
         host: next.host,

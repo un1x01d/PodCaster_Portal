@@ -20,6 +20,23 @@ const DEFAULT_DLP_SETTINGS = {
 
 const PHONE_SEP_PATTERN = /[()+\-\s.]/;
 const DIGITS_ONLY_PATTERN = /\d/g;
+const IDENTIFIER_COLUMN_HINTS = [
+    "order id",
+    "orderid",
+    "invoice id",
+    "invoiceid",
+    "transaction id",
+    "transactionid",
+    "reference id",
+    "referenceid",
+    "ref id",
+    "record id",
+    "row id",
+    "external id",
+    "customer id",
+    "account id",
+    "id",
+];
 
 function normalizePositiveInt(value, fallback, min, max) {
     const parsed = Number.parseInt(value, 10);
@@ -151,6 +168,15 @@ function shouldAcceptFinding({ type, confidence, columnProfile }) {
     return confidence >= confidenceThresholdForType(type);
 }
 
+function isLikelyIdentifierColumn(columnName) {
+    const normalized = String(columnName || "").trim().toLowerCase().replace(/[_-]+/g, " ");
+    if (!normalized) return false;
+    if (IDENTIFIER_COLUMN_HINTS.some((hint) => normalized === hint || normalized.endsWith(` ${hint}`) || normalized.startsWith(`${hint} `) || normalized.includes(hint))) {
+        return true;
+    }
+    return /\bid\b/.test(normalized) && !/\bemail\b|\biban\b|\bphone\b|\bssn\b|\bcard\b/.test(normalized);
+}
+
 function pushFinding(findings, finding, maxFindings) {
     if (findings.length >= maxFindings) return false;
     findings.push(finding);
@@ -228,6 +254,9 @@ export function scanRowsForDlp(sheets, settings) {
                     }
                 }
                 if (cfg.checkCreditCard) {
+                    if (isLikelyIdentifierColumn(columnName)) {
+                        continue;
+                    }
                     const candidates = value.match(cardLikePattern) || [];
                     for (const token of candidates) {
                         if (validCreditCard.number(token).isValid) {
@@ -333,7 +362,8 @@ export function scanRowsForDlp(sheets, settings) {
     };
 }
 
-export function applyDlpColumnMasking(sheets, maskedColumns, maskValue = "[REDACTED]", maskedCells = null) {
+export function applyDlpColumnMasking(sheets, maskedColumns, maskValue = "[REDACTED]", maskedCells = null, options = {}) {
+    const forceColumnMasking = options?.forceColumnMasking === true;
     const next = {};
     for (const [sheetName, rows] of Object.entries(sheets || {})) {
         if (!Array.isArray(rows)) {
@@ -341,7 +371,7 @@ export function applyDlpColumnMasking(sheets, maskedColumns, maskValue = "[REDAC
             continue;
         }
         const cellsForSheet = Array.isArray(maskedCells?.[sheetName]) ? maskedCells[sheetName] : [];
-        if (cellsForSheet.length) {
+        if (cellsForSheet.length && !forceColumnMasking) {
             const byRow = new Map();
             cellsForSheet.forEach((entry) => {
                 const rowNum = Number(entry?.row);

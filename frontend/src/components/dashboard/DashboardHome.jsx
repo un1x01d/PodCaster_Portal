@@ -2101,9 +2101,26 @@ export default function DashboardHome({
 
   const aiCompatibilityBySheetId = React.useMemo(() => {
     const out = new Map();
+    Object.values(reportSourceImports || {}).forEach((imports) => {
+      if (!Array.isArray(imports)) return;
+      imports.forEach((item) => {
+        const sid = String(item?.sheet_id || "").trim();
+        if (!sid) return;
+        const backendStatus = item?.ai_chat_compatibility && typeof item.ai_chat_compatibility === "object"
+          ? item.ai_chat_compatibility
+          : null;
+        out.set(sid, {
+          ready: !!backendStatus?.ready,
+          approvalReady: backendStatus?.approval_ready === true,
+          missing: Array.isArray(backendStatus?.missing) && backendStatus.missing.length
+            ? backendStatus.missing.map((m) => String(m))
+            : (backendStatus ? [] : ["compatibility not evaluated yet"]),
+        });
+      });
+    });
     (Array.isArray(myFiles) ? myFiles : []).forEach((file) => {
       const sid = String(file?.id || "").trim();
-      if (!sid) return;
+      if (!sid || out.has(sid)) return;
       const backendStatus = file?.ai_chat_compatibility && typeof file.ai_chat_compatibility === "object"
         ? file.ai_chat_compatibility
         : null;
@@ -2116,7 +2133,7 @@ export default function DashboardHome({
       });
     });
     return out;
-  }, [myFiles]);
+  }, [myFiles, reportSourceImports]);
 
   const allImportRows = React.useMemo(() => {
     const rows = [];
@@ -2247,6 +2264,9 @@ export default function DashboardHome({
   const summarizeCompatibilityMissing = React.useCallback((missingList = []) => {
     const text = (Array.isArray(missingList) ? missingList : []).map((m) => String(m || "").toLowerCase());
     if (!text.length) return "Required mappings are missing.";
+    if (text.some((m) => m.includes("dlp findings") || m.includes("sensitive"))) {
+      return "DLP findings must be resolved before publish.";
+    }
     if (text.some((m) => m.includes("date") || m.includes("year") || m.includes("period"))) {
       if (text.some((m) => m.includes("metric") || m.includes("numeric"))) {
         return "Date and metric mappings are missing.";
@@ -2317,16 +2337,6 @@ export default function DashboardHome({
           </div>
         </div>
 
-        <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-          <div className="grid grid-cols-1 gap-2 md:grid-cols-5">
-            {["1. Upload spreadsheet", "2. Preview", "3. Approve", "4. Ask question", "5. Share view"].map((step) => (
-              <div key={step} className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700">
-                {step}
-              </div>
-            ))}
-          </div>
-        </div>
-
         <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {sourceStats.map(([label, value, caption]) => (
             <div key={label} className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
@@ -2347,18 +2357,6 @@ export default function DashboardHome({
               <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-black text-emerald-700">
                 {publishedImports} published
               </span>
-            </div>
-            <div className="border-b border-slate-100 bg-white px-4 py-3">
-              <div className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Status Guide</div>
-              <div className="mt-1 text-xs font-semibold text-slate-600">
-                <span className="font-black text-slate-800">Waiting:</span> no file uploaded yet.
-              </div>
-              <div className="mt-1 text-xs font-semibold text-slate-600">
-                <span className="font-black text-slate-800">Review required:</span> uploaded, but not approved yet.
-              </div>
-              <div className="mt-1 text-xs font-semibold text-slate-600">
-                <span className="font-black text-slate-800">Published:</span> approved and ready for questions.
-              </div>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[680px] text-left">

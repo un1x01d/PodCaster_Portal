@@ -489,6 +489,7 @@ export default function UserManagement({ token, user, sheetId }) {
   const [integrationOpen, setIntegrationOpen] = useState({ google: false, dropbox: false, onedrive: false, quickbooks: false, saml: false, emailIngest: false });
   const [integrationTestStatus, setIntegrationTestStatus] = useState({ google: null, dropbox: null, onedrive: null, quickbooks: null, saml: null });
   const [smtpMeta, setSmtpMeta] = useState({
+    provider: "custom",
     hasPassword: false,
     passwordMasked: "",
     host: "",
@@ -499,6 +500,7 @@ export default function UserManagement({ token, user, sheetId }) {
     fromName: "",
   });
   const [smtpForm, setSmtpForm] = useState({
+    provider: "custom",
     host: "",
     port: 587,
     secure: false,
@@ -1553,6 +1555,7 @@ export default function UserManagement({ token, user, sheetId }) {
       });
       const data = res?.data || {};
       setSmtpMeta({
+        provider: data.provider === "gmail" ? "gmail" : "custom",
         hasPassword: !!data.hasPassword,
         passwordMasked: data.passwordMasked || "",
         host: data.host || "",
@@ -1564,6 +1567,7 @@ export default function UserManagement({ token, user, sheetId }) {
       });
       setSmtpForm((prev) => ({
         ...prev,
+        provider: data.provider === "gmail" ? "gmail" : "custom",
         host: data.host || "",
         port: Number(data.port || 587),
         secure: !!data.secure,
@@ -1583,6 +1587,7 @@ export default function UserManagement({ token, user, sheetId }) {
     setSmtpSaved(false);
     try {
       const payload = {
+        provider: smtpForm.provider === "gmail" ? "gmail" : "custom",
         host: smtpForm.host || "",
         port: Number.parseInt(smtpForm.port, 10) || 587,
         secure: !!smtpForm.secure,
@@ -1596,6 +1601,7 @@ export default function UserManagement({ token, user, sheetId }) {
       });
       const data = res?.data || {};
       setSmtpMeta({
+        provider: data.provider === "gmail" ? "gmail" : "custom",
         hasPassword: !!data.hasPassword,
         passwordMasked: data.passwordMasked || "",
         host: data.host || "",
@@ -4765,6 +4771,34 @@ export default function UserManagement({ token, user, sheetId }) {
               </div>
               {smtpSettingsOpen && (
                 <>
+                  <div className="grid grid-cols-2 gap-2">
+                    <select
+                      className="input-premium py-1.5 text-[11px] font-semibold"
+                      value={smtpForm.provider || "custom"}
+                      onChange={(e) => {
+                        const provider = e.target.value === "gmail" ? "gmail" : "custom";
+                        setSmtpForm((prev) => ({
+                          ...prev,
+                          provider,
+                          host: provider === "gmail" ? "smtp.gmail.com" : prev.host,
+                          secure: provider === "gmail" ? true : prev.secure,
+                          port: provider === "gmail" ? 465 : prev.port,
+                        }));
+                      }}
+                    >
+                      <option value="gmail">Gmail SMTP</option>
+                      <option value="custom">Custom SMTP</option>
+                    </select>
+                    {smtpForm.provider === "gmail" ? (
+                      <button
+                        type="button"
+                        className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
+                        onClick={() => setSmtpForm((prev) => ({ ...prev, host: "smtp.gmail.com", secure: true, port: 465 }))}
+                      >
+                        Apply Gmail Defaults
+                      </button>
+                    ) : <div />}
+                  </div>
                   <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="SMTP Host" value={smtpForm.host} onChange={(e) => setSmtpForm((prev) => ({ ...prev, host: e.target.value }))} />
                   <div className="grid grid-cols-2 gap-2">
                     <input className="input-premium py-1.5 text-[11px] font-semibold" type="number" min="1" placeholder="Port" value={smtpForm.port} onChange={(e) => setSmtpForm((prev) => ({ ...prev, port: e.target.value }))} />
@@ -4778,6 +4812,11 @@ export default function UserManagement({ token, user, sheetId }) {
                   <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="From Email" value={smtpForm.fromEmail} onChange={(e) => setSmtpForm((prev) => ({ ...prev, fromEmail: e.target.value }))} />
                   <input className="input-premium py-1.5 text-[11px] font-semibold" placeholder="From Name" value={smtpForm.fromName} onChange={(e) => setSmtpForm((prev) => ({ ...prev, fromName: e.target.value }))} />
                   <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600">
+                    {smtpForm.provider === "gmail" ? (
+                      <div className="mb-2">
+                        Use your full Gmail address as username and a Google App Password as SMTP password.
+                      </div>
+                    ) : null}
                     <a
                       className="text-blue-700 hover:underline"
                       href="https://support.google.com/a/answer/176600?hl=en"

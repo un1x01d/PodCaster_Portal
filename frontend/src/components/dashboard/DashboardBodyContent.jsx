@@ -1034,7 +1034,7 @@ export default function DashboardBody(props) {
             reportSourceImports,
             myFiles: props.myFiles || [],
             selectableContext: { publishedSheetIds, accessibleSheetIds: myFileSheetIds },
-            includeAll: true,
+            includeAll: false,
         })
     ), [reportSourceImports, props.myFiles, publishedSheetIds, myFileSheetIds]);
     const switchPrimarySheet = React.useCallback((nextSheetId, label = "") => {

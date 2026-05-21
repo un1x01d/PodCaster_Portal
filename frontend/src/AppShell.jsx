@@ -2018,19 +2018,28 @@ export default function App() {
 
     (async () => {
       try {
-        const [mySheetsRes] = await Promise.all([
+        const [mySheetsRes, sources] = await Promise.all([
           axios.get(`${API}/my-sheets`, { headers: { Authorization: `Bearer ${token}` } }),
           refreshReportSources(),
         ]);
         const files = Array.isArray(mySheetsRes?.data) ? mySheetsRes.data : [];
         setMyFiles(files);
+        const explicitSources = (Array.isArray(sources) ? sources : []).filter((s) => s && !s.is_inferred);
+        const allowedSheetIds = new Set(
+          explicitSources
+            .map((s) => String(s?.current_sheet_id || "").trim())
+            .filter(Boolean)
+        );
 
         const savedSheetId = localStorage.getItem("sheetId");
         const savedTab = localStorage.getItem("activeTab");
         const lastViewed = getParsedLastViewedContext();
 
         const availableSheetIds = new Set(files.map((f) => String(f?.id)));
-        let targetSheetId = savedSheetId && savedSheetId !== "null" && availableSheetIds.has(String(savedSheetId))
+        let targetSheetId = savedSheetId
+          && savedSheetId !== "null"
+          && availableSheetIds.has(String(savedSheetId))
+          && allowedSheetIds.has(String(savedSheetId))
           ? String(savedSheetId)
           : null;
         if (targetSheetId && !isPreferredSheet(files, targetSheetId)) {
@@ -2038,7 +2047,7 @@ export default function App() {
         }
 
         if (!targetSheetId && lastViewed?.sheetId) {
-          if (availableSheetIds.has(String(lastViewed.sheetId))) {
+          if (availableSheetIds.has(String(lastViewed.sheetId)) && allowedSheetIds.has(String(lastViewed.sheetId))) {
             targetSheetId = String(lastViewed.sheetId);
           }
           if (targetSheetId && !isPreferredSheet(files, targetSheetId)) {
@@ -2047,7 +2056,8 @@ export default function App() {
         }
 
         if (!targetSheetId) {
-          targetSheetId = pickLatestSheetIdFromList(files);
+          const allowedFiles = files.filter((f) => allowedSheetIds.has(String(f?.id || "")));
+          targetSheetId = pickLatestSheetIdFromList(allowedFiles);
           localStorage.removeItem("sheetId");
           localStorage.removeItem("activeTab");
           localStorage.removeItem("activeFilename");

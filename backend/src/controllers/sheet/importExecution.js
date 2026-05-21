@@ -147,7 +147,13 @@ export function createImportExecution(deps) {
                     };
                 }
                 if ((dlp.mode === "mask" || dlp.maskDetectedColumns) && scan.findings.length > 0) {
-                    sheets = applyDlpColumnMasking(sheets, scan.maskedColumns, "[REDACTED]", scan.maskedCells || {});
+                    sheets = applyDlpColumnMasking(
+                        sheets,
+                        scan.maskedColumns,
+                        "[REDACTED]",
+                        scan.maskedCells || {},
+                        { forceColumnMasking: dlp.mode === "mask" || dlp.maskDetectedColumns === true }
+                    );
                 }
                 if (scan.findings.length > 0 && dlp.mode === "block") {
                     const err = toImportError("dlp_blocked", 403, "Import blocked by DLP policy.");
