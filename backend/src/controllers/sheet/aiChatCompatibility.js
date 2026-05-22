@@ -137,6 +137,10 @@ export function normalizeCompatibilityMissingReasons(reasons = []) {
 }
 
 export function canApproveWithMaskedDlp({ semanticProfile = {}, compatibility = {} }) {
+  const allowMaskOverride = ["1", "true", "yes", "on"].includes(
+    String(process.env.AI_CHAT_COMPATIBILITY_ALLOW_MASK_OVERRIDE || "false").trim().toLowerCase()
+  );
+  if (!allowMaskOverride) return false;
   const mode = String(semanticProfile?.dlp?.mode || "").trim().toLowerCase();
   if (mode !== "mask") return false;
   if (compatibility?.ready === true) return true;

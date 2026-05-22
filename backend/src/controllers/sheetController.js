@@ -161,6 +161,12 @@ function normalizeSheetCellValue(value) {
         if (!text) return value;
         const isoDateOnly = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
         if (isoDateOnly) return text;
+        const looksDateLike = (
+            /\d{1,4}[\/-]\d{1,2}([\/-]\d{1,4})?/.test(text)
+            || /^[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{2,4}$/.test(text)
+            || /^\d{4}\s+[A-Za-z]{3,9}\s+\d{1,2}$/.test(text)
+        );
+        if (!looksDateLike) return value;
         const parsed = new Date(text);
         if (!Number.isNaN(parsed.getTime())) {
             const y = parsed.getFullYear();
@@ -3965,18 +3971,70 @@ export async function deleteRejectedReportSourceImport(req, res) {
             return res.status(403).json({ error: "Forbidden" });
         }
         const importStatus = String(record.status || "").trim().toLowerCase();
-        if (importStatus === "published") {
-            await client.query("ROLLBACK");
-            return res.status(409).json({ error: "published_import_cannot_be_deleted" });
-        }
-
-        await client.query(
-            `UPDATE report_sources
-                SET current_sheet_id = NULL
+        const sourceRes = await client.query(
+            `SELECT id, current_sheet_id
+               FROM report_sources
               WHERE id = $1
-                AND current_sheet_id = $2`,
-            [record.report_source_id, record.sheet_id]
+              FOR UPDATE`,
+            [record.report_source_id]
         );
+        const sourceRow = sourceRes.rows?.[0] || null;
+        const deletingCurrentSheet = String(sourceRow?.current_sheet_id || "") === String(record.sheet_id || "");
+
+        // If deleting the currently published sheet, promote the newest remaining revision.
+        if (deletingCurrentSheet) {
+            const replacementRes = await client.query(
+                `SELECT id, sheet_id
+                   FROM report_source_imports
+                  WHERE report_source_id = $1
+                    AND id <> $2
+                    AND sheet_id IS NOT NULL
+                  ORDER BY import_version DESC, created_at DESC
+                  LIMIT 1`,
+                [record.report_source_id, importId]
+            );
+            const replacement = replacementRes.rows?.[0] || null;
+            if (replacement?.sheet_id) {
+                await client.query(
+                    `UPDATE report_source_imports
+                        SET status = 'published',
+                            published_at = COALESCE(published_at, CURRENT_TIMESTAMP),
+                            published_by = COALESCE(published_by, $2::int)
+                      WHERE id = $1`,
+                    [replacement.id, req.user?.id || null]
+                );
+                await client.query(
+                    `UPDATE report_source_imports
+                        SET status = 'superseded'
+                      WHERE report_source_id = $1
+                        AND id <> $2
+                        AND id <> $3
+                        AND status = 'published'`,
+                    [record.report_source_id, replacement.id, importId]
+                );
+                await client.query(
+                    `UPDATE report_sources
+                        SET current_sheet_id = $2
+                      WHERE id = $1`,
+                    [record.report_source_id, replacement.sheet_id]
+                );
+            } else {
+                await client.query(
+                    `UPDATE report_sources
+                        SET current_sheet_id = NULL
+                      WHERE id = $1`,
+                    [record.report_source_id]
+                );
+            }
+        } else {
+            await client.query(
+                `UPDATE report_sources
+                    SET current_sheet_id = NULL
+                  WHERE id = $1
+                    AND current_sheet_id = $2`,
+                [record.report_source_id, record.sheet_id]
+            );
+        }
 
         if (record.job_id) {
             await client.query(

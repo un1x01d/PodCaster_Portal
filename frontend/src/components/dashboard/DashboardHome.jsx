@@ -2186,8 +2186,16 @@ export default function DashboardHome({
     return rows.sort((a, b) => new Date(b.uploadedAt || 0) - new Date(a.uploadedAt || 0));
   }, [explicitReportSources, reportSourceImports]);
 
-  const fileRows = React.useMemo(() => allImportRows.slice(0, 8), [allImportRows]);
-  const reviewRows = React.useMemo(() => allImportRows.filter((row) => row.status === "pending_approval"), [allImportRows]);
+  const fileRows = React.useMemo(
+    () => allImportRows
+      .filter((row) => row.status === "published" || row.status === "superseded")
+      .slice(0, 8),
+    [allImportRows]
+  );
+  const reviewRows = React.useMemo(
+    () => allImportRows.filter((row) => row.status === "pending_approval" || row.status === "rejected"),
+    [allImportRows]
+  );
 
   const totalImports = React.useMemo(() => (
     Object.values(reportSourceImports || {}).reduce((sum, imports) => sum + (Array.isArray(imports) ? imports.length : 0), 0)
@@ -2231,16 +2239,31 @@ export default function DashboardHome({
     }
   }, [reviewBusyId, refreshReportSources]);
 
-  const handleDeleteRejectedImport = React.useCallback(async (row) => {
+  const handleDeleteImport = React.useCallback(async (row) => {
     if (!row?.importId || reviewBusyId) return;
-    const confirmed = window.confirm(`Delete rejected file "${row.latestFile}" (${row.revision})?`);
+    const status = String(row?.status || "");
+    const isPending = status === "pending_approval";
+    const isSuperseded = status === "superseded";
+    const isPublished = status === "published";
+    const confirmed = window.confirm(
+      isPending
+        ? `Delete pending file "${row.latestFile}" (${row.revision})? It will be rejected and removed.`
+        : isSuperseded
+          ? `Delete old revision "${row.latestFile}" (${row.revision})?`
+          : isPublished
+            ? `Delete published file "${row.latestFile}" (${row.revision})? The previous revision (if any) will become published.`
+          : `Delete rejected file "${row.latestFile}" (${row.revision})?`
+    );
     if (!confirmed) return;
     setReviewBusyId(`delete:${row.importId}`);
     try {
+      if (isPending) {
+        await api.post(`/report-source-imports/${row.importId}/reject`);
+      }
       await api.delete(`/report-source-imports/${row.importId}`);
       await refreshReportSources?.();
     } catch (error) {
-      alert(error?.response?.data?.error || "Failed to delete rejected import");
+      alert(error?.response?.data?.error || "Failed to delete import");
     } finally {
       setReviewBusyId("");
     }
@@ -2380,13 +2403,29 @@ export default function DashboardHome({
                           <span className={`rounded-full px-2.5 py-1 text-[11px] font-black ${statusBadgeClass(row.status, row.revision)}`}>
                             {row.statusLabel}
                           </span>
-                          {canReviewImports && row.status === "rejected" && row.importId ? (
+                          {canReviewImports && row.importId ? (
                             <button
                               type="button"
-                              onClick={() => handleDeleteRejectedImport(row)}
+                              onClick={() => handleDeleteImport(row)}
                               disabled={!!reviewBusyId}
-                              title="Delete rejected file"
-                              aria-label="Delete rejected file"
+                              title={
+                                row.status === "pending_approval"
+                                  ? "Delete pending file"
+                                  : row.status === "superseded"
+                                    ? "Delete old revision"
+                                    : row.status === "published"
+                                      ? "Delete published file"
+                                    : "Delete rejected file"
+                              }
+                              aria-label={
+                                row.status === "pending_approval"
+                                  ? "Delete pending file"
+                                  : row.status === "superseded"
+                                    ? "Delete old revision"
+                                    : row.status === "published"
+                                      ? "Delete published file"
+                                    : "Delete rejected file"
+                              }
                               className={`inline-flex h-6 w-6 items-center justify-center rounded-md border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 ${reviewBusyId ? "opacity-60 cursor-not-allowed" : ""}`}
                             >
                               🗑
@@ -2414,8 +2453,10 @@ export default function DashboardHome({
             </div>
             <div className="mt-4 space-y-3">
               {reviewRows.length ? reviewRows.slice(0, 4).map((row) => {
+                const isRejected = row.status === "rejected";
                 const publishBusy = reviewBusyId === `publish:${row.importId}`;
                 const rejectBusy = reviewBusyId === `reject:${row.importId}`;
+                const deleteBusy = reviewBusyId === `delete:${row.importId}`;
                 const compatibility = aiCompatibilityBySheetId.get(String(row.sheetId || ""));
                 const publishBlockedByCompatibility = compatibility ? compatibility.approvalReady === false : false;
                 const compatibilityBlockReason = summarizeCompatibilityMissing(compatibility?.missing || []);
@@ -2431,27 +2472,42 @@ export default function DashboardHome({
                         <div className="truncate text-xs font-black text-slate-900">{row.source}</div>
                         <div className="mt-1 truncate text-xs font-semibold text-slate-600">{row.latestFile} · {row.revision}</div>
                       </div>
-                      <span className="shrink-0 rounded-full bg-white px-2 py-0.5 text-[10px] font-black text-amber-700">Review</span>
+                      <span className={`shrink-0 rounded-full bg-white px-2 py-0.5 text-[10px] font-black ${isRejected ? "text-rose-700" : "text-amber-700"}`}>
+                        {isRejected ? "Rejected" : "Review"}
+                      </span>
                     </div>
                     {canReviewImports && (
-                      <div className="mt-3 grid grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          disabled={!!reviewBusyId}
-                          onClick={() => handleReviewAction(row, "reject")}
-                          className={`rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[11px] font-black text-slate-600 hover:bg-slate-50 ${reviewBusyId ? "opacity-60 cursor-not-allowed" : ""}`}
-                        >
-                          {rejectBusy ? "Rejecting..." : "Reject"}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={publishDisabled}
-                          onClick={() => handleReviewAction(row, "publish")}
-                          className={`rounded-md bg-emerald-600 px-2 py-1.5 text-[11px] font-black text-white hover:bg-emerald-700 ${publishDisabled ? "opacity-60 cursor-not-allowed" : ""}`}
-                        >
-                          {publishBusy ? "Publishing..." : "Publish"}
-                        </button>
-                      </div>
+                      isRejected ? (
+                        <div className="mt-3">
+                          <button
+                            type="button"
+                            disabled={!!reviewBusyId}
+                            onClick={() => handleDeleteImport(row)}
+                            className={`w-full rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-[11px] font-black text-rose-700 hover:bg-rose-100 ${reviewBusyId ? "opacity-60 cursor-not-allowed" : ""}`}
+                          >
+                            {deleteBusy ? "Deleting..." : "Delete"}
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="mt-3 grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            disabled={!!reviewBusyId}
+                            onClick={() => handleReviewAction(row, "reject")}
+                            className={`rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[11px] font-black text-slate-600 hover:bg-slate-50 ${reviewBusyId ? "opacity-60 cursor-not-allowed" : ""}`}
+                          >
+                            {rejectBusy ? "Rejecting..." : "Reject"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={publishDisabled}
+                            onClick={() => handleReviewAction(row, "publish")}
+                            className={`rounded-md bg-emerald-600 px-2 py-1.5 text-[11px] font-black text-white hover:bg-emerald-700 ${publishDisabled ? "opacity-60 cursor-not-allowed" : ""}`}
+                          >
+                            {publishBusy ? "Publishing..." : "Publish"}
+                          </button>
+                        </div>
+                      )
                     )}
                     {publishBlockedByCompatibility ? (
                       <div className="mt-2 text-[10px] font-semibold text-amber-700">

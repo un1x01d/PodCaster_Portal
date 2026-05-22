@@ -448,7 +448,7 @@ export default function App() {
     return headers.find((h) => String(h || "").trim().toLowerCase() === normalized) || target;
   }, [headers]);
 
-  const applyContainsFilter = React.useCallback((col, val) => {
+  const applyContainsFilter = React.useCallback((col, val, operator = "contains") => {
     if (col === "RESET_ALL") {
       setColumnFilters({});
       return;
@@ -463,7 +463,27 @@ export default function App() {
       });
       return;
     }
-    setColumnFilters((prev) => ({ ...prev, [resolvedCol]: { type: "contains", value: val } }));
+    if (Array.isArray(val)) {
+      const normalized = Array.from(
+        new Set(
+          val
+            .map((v) => String(v || "").trim())
+            .filter(Boolean)
+        )
+      );
+      if (!normalized.length) {
+        setColumnFilters((prev) => {
+          const next = { ...prev };
+          delete next[resolvedCol];
+          return next;
+        });
+        return;
+      }
+      setColumnFilters((prev) => ({ ...prev, [resolvedCol]: new Set(normalized) }));
+      return;
+    }
+    const op = String(operator || "contains").trim().toLowerCase() === "equals" ? "equals" : "contains";
+    setColumnFilters((prev) => ({ ...prev, [resolvedCol]: { type: "contains", value: val, operator: op } }));
   }, [resolveHeaderName]);
 
   const applyChartConfig = React.useCallback((config) => {

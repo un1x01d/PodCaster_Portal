@@ -24,6 +24,71 @@ function serializeActiveFilters(activeFilters = {}) {
   return out;
 }
 
+function resolveHeaderByHint(headers = [], hint = "") {
+  const list = Array.isArray(headers) ? headers : [];
+  const raw = String(hint || "").trim();
+  if (!raw) return "";
+  const exact = list.find((h) => String(h || "").trim().toLowerCase() === raw.toLowerCase());
+  if (exact) return exact;
+  const compactHint = raw.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return list.find((h) => String(h || "").toLowerCase().replace(/[^a-z0-9]/g, "").includes(compactHint)) || "";
+}
+
+function resolveDefaultFilterColumn(headers = []) {
+  const list = Array.isArray(headers) ? headers : [];
+  const preferred = ["region", "country", "market", "geography", "location", "area"];
+  for (const p of preferred) {
+    const hit = list.find((h) => String(h || "").toLowerCase().includes(p));
+    if (hit) return hit;
+  }
+  return "";
+}
+
+function splitFilterValues(rawValue = "") {
+  const text = String(rawValue || "").trim();
+  if (!text) return [];
+  const parts = text
+    .split(/\s*(?:,|\band\b|\bor\b)\s*/i)
+    .map((v) => String(v || "").trim().replace(/^["']|["']$/g, ""))
+    .filter(Boolean);
+  return Array.from(new Set(parts.map((v) => v.toLowerCase()))).map((vLower) => {
+    const original = parts.find((p) => p.toLowerCase() === vLower);
+    return original || vLower;
+  });
+}
+
+function parseDirectFilterCommand(message = "", headers = []) {
+  const q = String(message || "").trim();
+  if (!q) return null;
+
+  let m = q.match(/^filter\s+to\s+(.+)$/i);
+  if (m) {
+    const value = String(m[1] || "").trim().replace(/^["']|["']$/g, "");
+    if (!value) return null;
+    const column = resolveDefaultFilterColumn(headers);
+    if (!column) return null;
+    const values = splitFilterValues(value);
+    return values.length > 1
+      ? { column, values, operator: "in" }
+      : { column, value, operator: "contains" };
+  }
+
+  m = q.match(/^filter\s+(.+?)\s+to\s+(.+)$/i);
+  if (m) {
+    const colHint = String(m[1] || "").trim();
+    const value = String(m[2] || "").trim().replace(/^["']|["']$/g, "");
+    if (!colHint || !value) return null;
+    const column = resolveHeaderByHint(headers, colHint) || resolveDefaultFilterColumn(headers);
+    if (!column) return null;
+    const values = splitFilterValues(value);
+    return values.length > 1
+      ? { column, values, operator: "in" }
+      : { column, value, operator: "contains" };
+  }
+
+  return null;
+}
+
 function sanitizeAiText(value) {
   return String(value || "")
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
@@ -226,10 +291,45 @@ export function useChatbotLogic({
   const sendMessage = useCallback(async (rawMessage, meta = null) => {
     const q = String(rawMessage || "").trim();
     if (!q || isSending) return;
+    const resetFilterCommand = /^(reset filters?|clear filters?)$/i.test(q);
     const clearCommand = /^(clear chat|reset chat|очистить чат|очисти чат|скинь чат|сбросить чат|clear)$/i.test(q);
+    if (resetFilterCommand) {
+      setMessages((prev) => [...prev, { type: "user", text: q, timestamp: new Date() }]);
+      if (onApplyFilter) onApplyFilter("RESET_ALL");
+      setMessages((prev) => [...prev, {
+        type: "bot",
+        text: "Filters were reset.",
+        timestamp: new Date(),
+        isFilter: true,
+      }]);
+      setInput("");
+      return;
+    }
     if (clearCommand) {
       clearMessages();
       if (onApplyFilter) onApplyFilter("RESET_ALL");
+      return;
+    }
+
+    const directFilter = parseDirectFilterCommand(q, headers);
+    if (directFilter && onApplyFilter) {
+      setMessages((prev) => [...prev, { type: "user", text: q, timestamp: new Date() }]);
+      const hasMultiValues = Array.isArray(directFilter.values) && directFilter.values.length > 1;
+      if (hasMultiValues) {
+        onApplyFilter(directFilter.column, directFilter.values, "in");
+      } else {
+        onApplyFilter(directFilter.column, directFilter.value, directFilter.operator);
+      }
+      setMessages((prev) => [...prev, {
+        type: "bot",
+        text: hasMultiValues
+          ? `Applied filter: ${directFilter.column} in [${directFilter.values.map((v) => `"${v}"`).join(", ")}].`
+          : `Applied filter: ${directFilter.column} contains "${directFilter.value}".`,
+        timestamp: new Date(),
+        isFilter: true,
+        filterCol: directFilter.column,
+      }]);
+      setInput("");
       return;
     }
 
