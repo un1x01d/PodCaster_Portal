@@ -20,6 +20,16 @@ export async function presentDeterministicSpreadsheetResult({
   locale = "en",
 }) {
   const isStrict = /(mdfc|strict|pure|direct)/i.test(message);
+  const lang = String(locale || "en").toLowerCase();
+  const confidenceValue = Number(plan?.verification_gate?.confidence);
+  const showConfidence = plan?.verification_gate?.warning === true;
+  const confidenceSuffix = showConfidence && Number.isFinite(confidenceValue)
+    ? (lang.startsWith("uk")
+      ? ` Достовірність: ${(confidenceValue * 100).toFixed(1)}%.`
+      : (lang.startsWith("ru")
+        ? ` Достоверность: ${(confidenceValue * 100).toFixed(1)}%.`
+        : ` Confidence: ${(confidenceValue * 100).toFixed(1)}%.`))
+    : "";
   const uncertaintyBadge = plan?.verification_gate?.warning === true
     ? " [Uncertainty: high-prob mapping]"
     : "";
@@ -58,13 +68,26 @@ export async function presentDeterministicSpreadsheetResult({
 
   if (Array.isArray(calcResult?.ranking) && calcResult.ranking.length) {
     if (calcResult.accountOnly === true) return String(calcResult.ranking[0]?.label || "");
+    const dimensionHeader = String(calcResult?.headersUsed?.dimension || "").trim();
+    const valueHeader = String(plan?.valueHeader || calcResult?.headersUsed?.value || plan?.metric || "").trim();
+    const periodLabel = String(calcResult?.period?.label || "").trim();
+    const top = calcResult.ranking[0];
+    const topValue = formatValue(Number(top?.value || 0), valueHeader);
+    const periodSuffix = periodLabel ? ` for ${periodLabel}` : "";
     if ((calcResult.ranking || []).length === 1) {
       const item = calcResult.ranking[0];
-      return `${item.label} (${formatValue(item.value, plan?.valueHeader || plan?.metric || "")})`;
+      if (dimensionHeader) {
+        return `The ${dimensionHeader} with the highest ${valueHeader}${periodSuffix} is ${item.label} at ${formatValue(item.value, valueHeader)}.`;
+      }
+      return `${item.label} (${formatValue(item.value, valueHeader)})`;
     }
-    return calcResult.ranking
-      .map((r, i) => `${i + 1}. ${r.label}: ${formatValue(r.value, plan?.valueHeader || plan?.metric || "")}`)
+    const lead = dimensionHeader
+      ? `The ${dimensionHeader} with the highest ${valueHeader}${periodSuffix} is ${top?.label || "N/A"} at ${topValue}.`
+      : `The top result for ${valueHeader}${periodSuffix} is ${top?.label || "N/A"} at ${topValue}.`;
+    const list = calcResult.ranking
+      .map((r, i) => `${i + 1}. ${r.label}: ${formatValue(r.value, valueHeader)}`)
       .join("\n");
+    return `${lead}\nTop ${calcResult.ranking.length} values:\n${list}`;
   }
   if (Array.isArray(calcResult?.series) && calcResult.series.length) {
     const lines = calcResult.series.map((r) => {
@@ -80,7 +103,7 @@ export async function presentDeterministicSpreadsheetResult({
   const shouldForceScalar =
     (isDirectScalar || (String(plan?.operation || "") === "single_period" && calcResult?.period && typeof calcResult?.value === "number"))
     && plan?.operation !== "metric_projection";
-    if (shouldForceScalar) return `${formatValue(calcResult.value, plan?.metric || "")}${uncertaintyBadge}`;
+    if (shouldForceScalar) return `${formatValue(calcResult.value, plan?.metric || "")}${uncertaintyBadge}${confidenceSuffix}`;
 
   if (calcResult.isProjection === true) {
     const val = formatValue(calcResult.value, plan?.metric || "");
@@ -95,10 +118,10 @@ export async function presentDeterministicSpreadsheetResult({
       calculationResult: calcResult,
       runtime: { ...(runtime || {}), locale },
     });
-    if (String(explainedProjection || "").trim()) return explainedProjection;
+    if (String(explainedProjection || "").trim()) return `${explainedProjection}${confidenceSuffix}`;
     const trend = slope >= 0 ? "growing" : "declining";
     const confidenceLabel = confidence > 0.9 ? "high" : confidence > 0.7 ? "moderate" : "low";
-    return `Projected ${calcResult.metric} for ${calcResult.period?.label} is ${val}; trend is ${trend} with ${confidenceLabel} confidence (R² = ${confidence.toFixed(2)}).`;
+    return `Projected ${calcResult.metric} for ${calcResult.period?.label} is ${val}; trend is ${trend} with ${confidenceLabel} confidence (R² = ${confidence.toFixed(2)}).${confidenceSuffix}`;
   }
 
   const explained = await explainAccountingResult({
@@ -108,5 +131,5 @@ export async function presentDeterministicSpreadsheetResult({
     calculationResult: calcResult,
     runtime: { ...(runtime || {}), locale },
   });
-  return `${explained}${uncertaintyBadge}`;
+  return `${explained}${uncertaintyBadge}${confidenceSuffix}`;
 }

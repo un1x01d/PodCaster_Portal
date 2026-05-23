@@ -2728,11 +2728,13 @@ export default function App() {
                       data={sortedData}
                       allData={data}
                       headers={headers}
+                      activeTab={activeTab}
                       activeFilters={columnFilters}
                       activeViewScope={activeChatViewScope}
                       onApplyFilter={applyContainsFilter}
                       onUpdateChart={applyChartConfig}
-                      locale="en"
+                      locale={dashboardI18n.locale}
+                      copy={dashboardI18n.copy}
                     />
                     )}
                   </>

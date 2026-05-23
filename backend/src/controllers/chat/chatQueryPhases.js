@@ -49,6 +49,8 @@ export async function runCompiledPlanPhase(ctx) {
   const isClarificationReply = Boolean(selectedClarificationOption);
   const selectedHeaderChoice = selectedClarificationOption ? String(selectedClarificationOption).trim() : "";
   const pendingFieldCanonical = String(pendingClarification?.field || "").trim();
+  const pendingFieldLooksLikeMetric = /^(total_revenue|net_revenue|gross_profit|gross_margin_pct|net_income|total_expense|variance_amount|variance_pct|accounts_receivable_total|accounts_payable_total)$/i
+    .test(pendingFieldCanonical);
   const compiledPlan = await compileDeterministicQueryPlan({
     message: planningMessage,
     accountingIntent,
@@ -58,7 +60,9 @@ export async function runCompiledPlanPhase(ctx) {
     hints: {
       metric: (isClarificationReply && pendingClarification?.kind === "metric")
         ? selectedClarificationOption
-        : undefined,
+        : ((isClarificationReply && pendingClarification?.kind === "header" && pendingFieldLooksLikeMetric)
+          ? pendingFieldCanonical
+          : undefined),
       dateHeader: (isClarificationReply && pendingClarification?.kind === "date") ? selectedClarificationOption : undefined,
       headerChoice: isClarificationReply ? (selectedHeaderChoice || undefined) : undefined,
       headerCanonical: isClarificationReply ? (pendingFieldCanonical || undefined) : undefined,
@@ -248,7 +252,11 @@ export async function runCompiledPlanPhase(ctx) {
           ts: Date.now(),
           kind,
           metric: compiledPlan.metric || (typeof accountingIntent?.metric_requested === "string" ? accountingIntent.metric_requested : null),
-          field: String(compiledPlan?.clarification_field || "").trim() || null,
+          field: String(
+            compiledPlan?.clarification_field
+            || (kind === "metric" ? String(compiledPlan?.metric || "") : "")
+            || ""
+          ).trim() || null,
           options,
           sourceMessage: effectiveUserMessage,
         });

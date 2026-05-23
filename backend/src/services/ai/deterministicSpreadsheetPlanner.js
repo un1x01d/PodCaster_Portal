@@ -316,7 +316,7 @@ function extractYears(message = "") {
 }
 
 function isYoyIntent(message = "") {
-  return /\b(yoy|year over year|year-over-year|annual growth|yearly growth|г\/г|р\/р|год к году|рік до року)\b/i.test(String(message || ""));
+  return /\b(yoy|year over year|year-over-year|year by year|year-by-year|annual growth|yearly growth|г\/г|р\/р|год к году|рік до року)\b/i.test(String(message || ""));
 }
 
 function parseDate(v) {
@@ -426,8 +426,21 @@ export async function buildDeterministicSpreadsheetPlan({
   };
   const hintedCanonical = String(hints?.headerCanonical || "").trim();
   const hintedHeaderChoice = String(hints?.headerChoice || "").trim();
-  if (hintedCanonical && hintedHeaderChoice && headers.includes(hintedHeaderChoice)) {
-    fieldMetadata[hintedCanonical] = hintedHeaderChoice;
+  const resolvedHintedHeaderChoice = hintedHeaderChoice
+    ? (headers.find((h) => String(h || "").trim() === hintedHeaderChoice)
+      || headers.find((h) => String(h || "").trim().toLowerCase() === hintedHeaderChoice.toLowerCase())
+      || "")
+    : "";
+  if (hintedCanonical && resolvedHintedHeaderChoice) {
+    fieldMetadata[hintedCanonical] = resolvedHintedHeaderChoice;
+  }
+  // Deterministic metric-column pin for explicit "other income" asks.
+  // This avoids re-clarifying under total_revenue when the dataset has a dedicated Other Income column.
+  if (/\bother\s+income\b/i.test(String(message || ""))) {
+    const otherIncomeHeader = headers.find((h) => /\bother\s+income\b/i.test(String(h || "")));
+    if (otherIncomeHeader) {
+      fieldMetadata.total_revenue = String(otherIncomeHeader);
+    }
   }
 
   const contextMetric = normalizeMetric(context?.lastMetric || "") || detectMetricFromMessage(String(context?.lastMetric || ""), headers);
@@ -639,8 +652,8 @@ export async function buildDeterministicSpreadsheetPlan({
 
   // If user selected a concrete header during clarification (e.g. "1. Revenue Total")
   // and we already resolved the metric key, pin that canonical field to the selected header.
-  if (metric && hintedHeaderChoice && headers.includes(hintedHeaderChoice)) {
-    fieldMetadata[metric] = hintedHeaderChoice;
+  if (metric && resolvedHintedHeaderChoice) {
+    fieldMetadata[metric] = resolvedHintedHeaderChoice;
   }
 
   if (projectionIntent || (targetYear && targetYear > currentYear)) {

@@ -189,8 +189,19 @@ export async function resolveField({ canonicalField, headers = [], fieldMetadata
   const hardcodedAliases = ACCOUNTING_HEADER_ALIASES[canonicalField] || [];
   const aliases = Array.from(new Set([...hardcodedAliases, ...dbAliases]));
 
-  const metaHit = fieldMetadata?.[canonicalField];
-  if (metaHit && headers.includes(metaHit)) return { status: "resolved", header: metaHit, confidence: 1, method: "metadata", candidates: [] };
+  const metaHitRaw = fieldMetadata?.[canonicalField];
+  if (metaHitRaw) {
+    const metaHit = headers.find((h) => String(h || "").trim() === String(metaHitRaw || "").trim())
+      || headers.find((h) => String(h || "").trim().toLowerCase() === String(metaHitRaw || "").trim().toLowerCase())
+      || null;
+    if (metaHit) return { status: "resolved", header: String(metaHit), confidence: 1, method: "metadata", candidates: [] };
+  }
+
+  // Canonical priority shortcuts reduce false ambiguity for common finance intents.
+  if (canonicalField === "net_income") {
+    const direct = headers.find((h) => /\bnet\s*(income|profit)\b/i.test(String(h || "")));
+    if (direct) return { status: "resolved", header: String(direct), confidence: 0.99, method: "canonical_priority", candidates: [] };
+  }
 
   aliases.forEach((alias) => {
     const nAlias = normalizeHeaderName(alias);
