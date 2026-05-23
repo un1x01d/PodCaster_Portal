@@ -1972,7 +1972,38 @@ export default function UserManagement({ token, user, sheetId }) {
         }),
       ]);
       setAiLearningCandidates(Array.isArray(pendingRes?.data?.items) ? pendingRes.data.items : []);
-      setAiLearningApprovedCandidates(Array.isArray(approvedRes?.data?.items) ? approvedRes.data.items : []);
+      const approvedItems = Array.isArray(approvedRes?.data?.items) ? approvedRes.data.items : [];
+      const dedupedApproved = (() => {
+        const isJunkPhrase = (phrase = "") => {
+          const p = String(phrase || "").trim().toLowerCase();
+          if (!p || p.length < 3) return true;
+          if (/^\d+$/.test(p)) return true;
+          return new Set(["ok", "good", "yes", "no", "n/a", "na"]).has(p);
+        };
+        const map = new Map();
+        for (const item of approvedItems) {
+          const phrase = String(item?.phrase || "").trim();
+          const intent = String(item?.suggested_intent || "").trim().toLowerCase();
+          if (isJunkPhrase(phrase)) continue;
+          if (!intent || intent === "unknown") continue;
+          const key = `${phrase.toLowerCase()}::${intent}`;
+          const prev = map.get(key);
+          if (!prev) {
+            map.set(key, { ...item, phrase, suggested_intent: intent });
+            continue;
+          }
+          map.set(key, {
+            ...prev,
+            evidence_count: Number(prev.evidence_count || 0) + Number(item?.evidence_count || 0),
+            confidence: Math.max(Number(prev.confidence || 0), Number(item?.confidence || 0)),
+            updated_at: String(item?.updated_at || prev.updated_at || ""),
+          });
+        }
+        return Array.from(map.values()).sort((a, b) => (
+          Number(b?.evidence_count || 0) - Number(a?.evidence_count || 0)
+        ));
+      })();
+      setAiLearningApprovedCandidates(dedupedApproved);
     } catch (e) {
       console.error("fetchAiLearningCandidates failed", e);
     } finally {

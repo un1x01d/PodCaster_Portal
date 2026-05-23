@@ -6,6 +6,8 @@ const OPS = {
   TOP_N_BY_YEAR: "top_n_by_year",
   DRIVER_YEAR_CHANGE: "driver_year_change",
   METRIC_PROJECTION: "metric_projection",
+  DRIVER_ANALYSIS: "driver_analysis",
+  CONTRIBUTION_ANALYSIS: "contribution_analysis",
 };
 
 const OPERATION_CATALOG = Object.freeze([
@@ -16,6 +18,8 @@ const OPERATION_CATALOG = Object.freeze([
   OPS.TOP_N_BY_YEAR,
   OPS.DRIVER_YEAR_CHANGE,
   OPS.METRIC_PROJECTION,
+  OPS.DRIVER_ANALYSIS,
+  OPS.CONTRIBUTION_ANALYSIS,
 ]);
 
 const CONFIDENCE_CERTAIN_MIN = 0.88;
@@ -131,6 +135,19 @@ export function validateDeterministicPlanContract(plan = {}) {
           "I can answer that, but I need one clarification first. Please confirm year, date field, metric, and grouping for driver analysis.",
           [],
           "driver_fields_missing"
+        ),
+      };
+    }
+  }
+
+  if (op === OPS.DRIVER_ANALYSIS || op === OPS.CONTRIBUTION_ANALYSIS) {
+    if (!hasText(plan.metric)) {
+      return {
+        ok: false,
+        plan: clarification(
+          "I can answer that, but I need one clarification first. Which metric should I analyze?",
+          [],
+          "driver_analysis_metric_missing"
         ),
       };
     }

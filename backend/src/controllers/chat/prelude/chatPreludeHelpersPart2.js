@@ -75,7 +75,8 @@ function buildSqlSafeDateExpr(valueExpr) {
 }
 
 function buildSqlSafeNumericExpr(valueExpr) {
-  const cleaned = `NULLIF(regexp_replace(${valueExpr}, '[^0-9.+-]', '', 'g'), '')`;
+  const extracted = `substring(${valueExpr} from '[-+]?[0-9,]*\\.?\\d+')`;
+  const cleaned = `NULLIF(regexp_replace(${extracted}, '[^0-9.+-]', '', 'g'), '')`;
   return `(
     CASE
       WHEN ${cleaned} ~ '^[-+]?\\d*\\.?\\d+$' THEN CAST(${cleaned} AS NUMERIC)

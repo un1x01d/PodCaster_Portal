@@ -11,6 +11,13 @@ function formatValue(v, col = "") {
   return isPercent ? `${sign}${num}%` : `${sign}$${num}`;
 }
 
+function forceDollarCurrency(text = "") {
+  let s = String(text || "");
+  s = s.replace(/(\d[\d,]*(\.\d+)?)\s*(грн|uah|руб|rub|eur|gbp|jpy|грн\.)/gi, "$$$1");
+  s = s.replace(/([€£¥₽])\s*(\d)/g, "$$$2");
+  return s;
+}
+
 export async function presentDeterministicSpreadsheetResult({
   message = "",
   plan,
@@ -66,6 +73,45 @@ export async function presentDeterministicSpreadsheetResult({
 
 
 
+  if (calcResult?.outputType === "driver_analysis") {
+    const d = calcResult.driver_analysis;
+    const bm = d.base_metric;
+    const dir = bm.absolute_change >= 0 ? "increased" : "decreased";
+    const abs = Math.abs(bm.absolute_change);
+    const absStr = formatValue(abs, bm.column);
+    const pctStr = bm.percent_change !== null ? ` (${Math.abs(bm.percent_change).toFixed(1)}%)` : "";
+    let msg = `${bm.column} ${dir} by ${absStr}${pctStr} from ${calcResult.period?.label || "the baseline"}.`;
+    
+    if (d.drivers && d.drivers.length > 0) {
+      msg += `\n\nThe biggest measurable drivers were:`;
+      for (const drv of d.drivers) {
+        const dDir = drv.delta >= 0 ? "increased" : "decreased";
+        const dAbs = formatValue(Math.abs(drv.delta), drv.column);
+        const impactStr = drv.impact_direction === "positive" ? "improving" : (drv.impact_direction === "negative" ? "reducing" : "affecting");
+        msg += `\n- ${drv.column} ${dDir} by ${dAbs}, ${impactStr} the base metric.`;
+      }
+    } else {
+      msg += `\n\nNo significant measurable drivers were found in the allowed columns.`;
+    }
+
+    if (d.dimension_contributors && Object.keys(d.dimension_contributors).length > 0) {
+      msg += `\n\nBy dimension:`;
+      for (const [dim, contributors] of Object.entries(d.dimension_contributors)) {
+        msg += `\n- ${dim}:`;
+        for (const c of contributors) {
+          const cDir = c.delta >= 0 ? "increased" : "decreased";
+          msg += ` ${c.value} ${cDir} by ${formatValue(Math.abs(c.delta), plan?.metric)},`;
+        }
+        msg = msg.replace(/,$/, ".");
+      }
+    }
+    
+    if (d.warnings && d.warnings.length) {
+      msg += `\n\nNote: ${d.warnings[0]}`;
+    }
+    return msg;
+  }
+
   if (Array.isArray(calcResult?.ranking) && calcResult.ranking.length) {
     if (calcResult.accountOnly === true) return String(calcResult.ranking[0]?.label || "");
     const dimensionHeader = String(calcResult?.headersUsed?.dimension || "").trim();
@@ -103,7 +149,7 @@ export async function presentDeterministicSpreadsheetResult({
   const shouldForceScalar =
     (isDirectScalar || (String(plan?.operation || "") === "single_period" && calcResult?.period && typeof calcResult?.value === "number"))
     && plan?.operation !== "metric_projection";
-    if (shouldForceScalar) return `${formatValue(calcResult.value, plan?.metric || "")}${uncertaintyBadge}${confidenceSuffix}`;
+    if (shouldForceScalar) return forceDollarCurrency(`${formatValue(calcResult.value, plan?.metric || "")}${uncertaintyBadge}${confidenceSuffix}`);
 
   if (calcResult.isProjection === true) {
     const val = formatValue(calcResult.value, plan?.metric || "");
@@ -121,7 +167,7 @@ export async function presentDeterministicSpreadsheetResult({
     if (String(explainedProjection || "").trim()) return `${explainedProjection}${confidenceSuffix}`;
     const trend = slope >= 0 ? "growing" : "declining";
     const confidenceLabel = confidence > 0.9 ? "high" : confidence > 0.7 ? "moderate" : "low";
-    return `Projected ${calcResult.metric} for ${calcResult.period?.label} is ${val}; trend is ${trend} with ${confidenceLabel} confidence (R² = ${confidence.toFixed(2)}).${confidenceSuffix}`;
+    return forceDollarCurrency(`Projected ${calcResult.metric} for ${calcResult.period?.label} is ${val}; trend is ${trend} with ${confidenceLabel} confidence (R² = ${confidence.toFixed(2)}).${confidenceSuffix}`);
   }
 
   const explained = await explainAccountingResult({
@@ -131,5 +177,5 @@ export async function presentDeterministicSpreadsheetResult({
     calculationResult: calcResult,
     runtime: { ...(runtime || {}), locale },
   });
-  return `${explained}${uncertaintyBadge}${confidenceSuffix}`;
+  return forceDollarCurrency(`${explained}${uncertaintyBadge}${confidenceSuffix}`);
 }

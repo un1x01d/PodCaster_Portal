@@ -5,8 +5,8 @@ function normalizeNumericText(value) {
   if (!s) return "";
   const negParen = /^\(.*\)$/.test(s);
   if (negParen) s = `-${s.slice(1, -1)}`;
-  s = s.replace(/[$,\s]/g, "").replace(/%/g, "");
-  return s;
+  const match = s.replace(/[$,\s]/g, "").replace(/%/g, "").match(/[-+]?\d*\.?\d+/);
+  return match ? match[0] : "";
 }
 
 function parseGeneric(value) {

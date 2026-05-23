@@ -1,6 +1,23 @@
 import { runDeterministicCalculation } from "../accounting/calculationService.js";
 import { parseMoney } from "../accounting/numeric.js";
 
+function extractYearFromValue(raw) {
+  if (raw === null || raw === undefined) return null;
+  const text = String(raw).trim();
+  if (!text) return null;
+  const d = new Date(text);
+  if (!Number.isNaN(d.getTime())) {
+    const y = Number(d.getFullYear());
+    if (Number.isFinite(y) && y >= 1900 && y <= 2200) return y;
+  }
+  const m = text.match(/\b(19\d{2}|20\d{2})\b/);
+  if (m) {
+    const y = Number(m[1]);
+    if (Number.isFinite(y) && y >= 1900 && y <= 2200) return y;
+  }
+  return null;
+}
+
 export function executeDeterministicSpreadsheetPlan({
   plan,
   rows = [],
@@ -12,22 +29,18 @@ export function executeDeterministicSpreadsheetPlan({
   if (plan.operation === "metric_projection") {
     const dateHeader = String(plan.dateHeader || "").trim();
     const metric = plan.metric;
-    const targetYear = Number(plan.targetYear);
-    if (!dateHeader || !metric || !Number.isFinite(targetYear)) {
+    const targetYears = Array.isArray(plan.targetYears) ? plan.targetYears.map(Number) : [Number(plan.targetYear)];
+    if (!dateHeader || !metric || targetYears.some(y => !Number.isFinite(y))) {
       return { ok: false, errorCode: "PLAN_NOT_READY", message: "Projection plan is incomplete." };
     }
 
     // 1. Gather historical annual data
     const yearsSet = new Set();
     for (const row of (Array.isArray(rows) ? rows : [])) {
-      const raw = row?.[dateHeader];
-      if (raw === null || raw === undefined || raw === "") continue;
-      const d = new Date(String(raw));
-      if (Number.isNaN(d.getTime())) continue;
-      const y = Number(d.getFullYear());
-      if (Number.isFinite(y) && y >= 1900 && y <= 2200) yearsSet.add(y);
+      const y = extractYearFromValue(row?.[dateHeader]);
+      if (y !== null && y < Math.min(...targetYears)) yearsSet.add(y);
     }
-    const historicalYears = Array.from(yearsSet).sort((a, b) => a - b).filter(y => y < targetYear);
+    const historicalYears = Array.from(yearsSet).sort((a, b) => a - b);
     if (historicalYears.length < 2) {
       return { ok: false, errorCode: "INSUFFICIENT_DATA", message: "At least two historical years are required for a trend projection." };
     }
@@ -62,25 +75,61 @@ export function executeDeterministicSpreadsheetPlan({
     const slope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
     const intercept = (sumY - slope * sumX) / n;
 
-    const projectedValue = intercept + slope * targetYear;
-    
     // Calculate R-squared for confidence
     const yMean = sumY / n;
     const ssTot = annualValues.reduce((acc, p) => acc + Math.pow(p.y - yMean, 2), 0);
     const ssRes = annualValues.reduce((acc, p) => acc + Math.pow(p.y - (intercept + slope * p.x), 2), 0);
     const rSquared = ssTot === 0 ? 1 : 1 - (ssRes / ssTot);
 
+    if (targetYears.length > 1) {
+      const sortedTargets = [...targetYears].sort((a, b) => a - b);
+      const series = [];
+      let prevVal = annualValues[annualValues.length - 1].y;
+      
+      for (const ty of sortedTargets) {
+        const val = intercept + slope * ty;
+        series.push({
+          year: ty,
+          value: val,
+          delta: val - prevVal,
+          deltaPct: prevVal === 0 ? 0 : ((val - prevVal) / Math.abs(prevVal)) * 100,
+          isProjection: true
+        });
+        prevVal = val;
+      }
+      return {
+        ok: true,
+        metric,
+        label: `Projected ${metric} Trend`,
+        outputType: "series",
+        series,
+        confidence: rSquared,
+        isProjection: true,
+        historicalPoints: annualValues.length,
+        period: { label: `${sortedTargets[0]}-${sortedTargets[sortedTargets.length - 1]}` },
+        rowCount: historicalYears.length,
+        headersUsed: plan.resolution?.resolvedMappings || {},
+        notes: [`Assumed values based on historical trend (R²=${rSquared.toFixed(2)})`],
+      };
+    }
+
+    const singleTarget = targetYears[0];
+    const projectedValue = intercept + slope * singleTarget;
+
     return {
       ok: true,
       metric,
-      label: `Projected ${metric} for ${targetYear}`,
-      outputType: "currency", // Most projected metrics are currency
+      label: `Projected ${metric} for ${singleTarget}`,
+      outputType: "currency",
       value: projectedValue,
       confidence: rSquared,
       historicalPoints: annualValues.length,
       slope,
-      period: { label: String(targetYear) },
+      period: { label: String(singleTarget) },
       isProjection: true,
+      rowCount: historicalYears.length,
+      headersUsed: plan.resolution?.resolvedMappings || {},
+      notes: [`Assumed value based on historical trend (R²=${rSquared.toFixed(2)})`],
     };
   }
 
@@ -141,10 +190,7 @@ export function executeDeterministicSpreadsheetPlan({
     let invalid = 0;
     let used = 0;
     for (const row of (Array.isArray(rows) ? rows : [])) {
-      const rawDate = row?.[dateHeader];
-      const d = rawDate ? new Date(String(rawDate)) : null;
-      if (!d || Number.isNaN(d.getTime())) continue;
-      const year = Number(d.getFullYear());
+      const year = extractYearFromValue(row?.[dateHeader]);
       if (!Number.isFinite(year) || year < 1900 || year > 2200) continue;
       const parsed = parseMoney(row?.[valueHeader]);
       if (!parsed?.ok || !Number.isFinite(Number(parsed.value))) { invalid += 1; continue; }
@@ -210,12 +256,8 @@ export function executeDeterministicSpreadsheetPlan({
     if (!dateHeader) return { ok: false, errorCode: "DATE_HEADER_MISSING", message: "Date header is required for YoY series." };
     const yearsSet = new Set();
     for (const row of (Array.isArray(rows) ? rows : [])) {
-      const raw = row?.[dateHeader];
-      if (raw === null || raw === undefined || raw === "") continue;
-      const d = new Date(String(raw));
-      if (Number.isNaN(d.getTime())) continue;
-      const y = Number(d.getFullYear());
-      if (Number.isFinite(y) && y >= 1900 && y <= 2200) yearsSet.add(y);
+      const y = extractYearFromValue(row?.[dateHeader]);
+      if (Number.isFinite(y)) yearsSet.add(y);
     }
     let years = Array.from(yearsSet).sort((a, b) => a - b);
     if (Array.isArray(plan.years) && plan.years.length >= 2) {
@@ -294,6 +336,163 @@ export function executeDeterministicSpreadsheetPlan({
       notes: [...(startResult.notes || []), ...(endResult.notes || [])],
       headersUsed: endResult.headersUsed || startResult.headersUsed || {},
       rowCount: Number(endResult.rowCount || 0),
+    };
+  }
+
+  if (plan.operation === "driver_analysis") {
+    const comparison = plan.comparison || {};
+    const baseMetric = plan.base_metric || {};
+    const baselineLabel = comparison.baseline_label || "Baseline";
+    const comparisonLabel = comparison.comparison_label || "Comparison";
+    const baselineStart = comparison.baseline_range?.start ? Number(comparison.baseline_range.start.slice(0, 4)) : null;
+    const comparisonStart = comparison.comparison_range?.start ? Number(comparison.comparison_range.start.slice(0, 4)) : null;
+    
+    const baselineResult = runDeterministicCalculation({
+      rows,
+      metric: plan.metric,
+      headerResolution: { ok: true, ...(plan.resolution || {}) },
+      period: baselineStart,
+      comparisonPeriod: null,
+      filters,
+      userContext,
+    });
+    const comparisonResult = runDeterministicCalculation({
+      rows,
+      metric: plan.metric,
+      headerResolution: { ok: true, ...(plan.resolution || {}) },
+      period: comparisonStart,
+      comparisonPeriod: null,
+      filters,
+      userContext,
+    });
+
+    if (!baselineResult.ok || !comparisonResult.ok) {
+      return { ok: false, errorCode: "CALCULATION_FAILED", message: "Failed to calculate base metric for driver analysis." };
+    }
+
+    const baselineValue = Number(baselineResult.value || 0);
+    const comparisonValue = Number(comparisonResult.value || 0);
+    const absoluteChange = comparisonValue - baselineValue;
+    const percentChange = baselineValue === 0 ? null : (absoluteChange / Math.abs(baselineValue)) * 100;
+
+    const drivers = [];
+    const possibleDrivers = plan.driver_columns || [];
+    for (const dCol of possibleDrivers) {
+      if (!userContext.allowedColumns?.includes(dCol)) continue;
+      
+      const dBaseline = runDeterministicCalculation({
+        rows,
+        metric: "total_revenue", 
+        headerResolution: { ok: true, resolvedMappings: { total_revenue: dCol }, optionalMappings: plan.resolution?.optionalMappings || {} },
+        period: baselineStart,
+        comparisonPeriod: null,
+        filters,
+        userContext,
+      });
+      const dComparison = runDeterministicCalculation({
+        rows,
+        metric: "total_revenue",
+        headerResolution: { ok: true, resolvedMappings: { total_revenue: dCol }, optionalMappings: plan.resolution?.optionalMappings || {} },
+        period: comparisonStart,
+        comparisonPeriod: null,
+        filters,
+        userContext,
+      });
+
+      if (dBaseline.ok && dComparison.ok) {
+        const dbVal = Number(dBaseline.value || 0);
+        const dcVal = Number(dComparison.value || 0);
+        const delta = dcVal - dbVal;
+        
+        let impact = "neutral";
+        const colLower = dCol.toLowerCase();
+        if (/revenue|income|profit|margin|sales/i.test(colLower)) {
+          impact = delta > 0 ? "positive" : "negative";
+        } else if (/expense|cost|cogs|tax|interest|depreciation|amortization/i.test(colLower)) {
+          impact = delta > 0 ? "negative" : "positive";
+        }
+
+        if (Math.abs(delta) > 0.01) {
+          drivers.push({
+            column: dCol,
+            baseline_value: dbVal,
+            comparison_value: dcVal,
+            delta,
+            impact_direction: impact,
+          });
+        }
+      }
+    }
+
+    drivers.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+
+    const dimension_contributors = {};
+    for (const dim of (plan.dimensions || [])) {
+      if (!userContext.allowedColumns?.includes(dim)) continue;
+      
+      // We calculate the base metric split by this dimension for baseline and comparison
+      const baselineVals = {};
+      for (const row of rows) {
+        const dYear = extractYearFromValue(row[plan.resolution?.optionalMappings?.date]);
+        if (dYear !== baselineStart) continue;
+        const dVal = String(row[dim] || "").trim();
+        if (!dVal) continue;
+        const pVal = Number(parseMoney(row[plan.resolution?.resolvedMappings?.[plan.metric]])?.value || 0);
+        baselineVals[dVal] = (baselineVals[dVal] || 0) + pVal;
+      }
+      
+      const comparisonVals = {};
+      for (const row of rows) {
+        const dYear = extractYearFromValue(row[plan.resolution?.optionalMappings?.date]);
+        if (dYear !== comparisonStart) continue;
+        const dVal = String(row[dim] || "").trim();
+        if (!dVal) continue;
+        const pVal = Number(parseMoney(row[plan.resolution?.resolvedMappings?.[plan.metric]])?.value || 0);
+        comparisonVals[dVal] = (comparisonVals[dVal] || 0) + pVal;
+      }
+
+      const allKeys = new Set([...Object.keys(baselineVals), ...Object.keys(comparisonVals)]);
+      const dimDrivers = [];
+      for (const k of allKeys) {
+        const bVal = baselineVals[k] || 0;
+        const cVal = comparisonVals[k] || 0;
+        if (Math.abs(cVal - bVal) > 0.01) {
+          dimDrivers.push({
+            value: k,
+            baseline_value: bVal,
+            comparison_value: cVal,
+            delta: cVal - bVal
+          });
+        }
+      }
+      if (dimDrivers.length > 0) {
+        dimDrivers.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+        dimension_contributors[dim] = dimDrivers.slice(0, 5);
+      }
+    }
+
+    return {
+      ok: true,
+      metric: plan.metric,
+      label: "Driver Analysis",
+      outputType: "driver_analysis",
+      period: { label: `${baselineLabel} vs ${comparisonLabel}` },
+      value: null,
+      driver_analysis: {
+        base_metric: {
+          column: plan.metric,
+          baseline_value: baselineValue,
+          comparison_value: comparisonValue,
+          absolute_change: absoluteChange,
+          percent_change: percentChange,
+        },
+        drivers: drivers.slice(0, 10),
+        dimension_contributors,
+        warnings: ["Driver analysis shows measurable changes, not proven causation."],
+      },
+      rowCount: (baselineResult.rowCount || 0) + (comparisonResult.rowCount || 0),
+      headersUsed: { ...baselineResult.headersUsed, ...comparisonResult.headersUsed },
+      notes: [],
     };
   }
 

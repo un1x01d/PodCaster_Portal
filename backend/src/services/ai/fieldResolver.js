@@ -97,12 +97,11 @@ function distributionSignalForField(canonicalField, profile = {}) {
   const dateRatio = Number(profile?.dateRatio || 0);
   const absAvg = Number(profile?.absAvg || 0);
   if (canonicalField === "date") {
-    if (dateRatio >= 0.9) return 1;
-    if (dateRatio >= 0.7) return 0.9;
-    if (dateRatio >= 0.4) return 0.75;
-    return 0.2;
+    if (dateRatio >= 0.6) return 1;
+    if (dateRatio >= 0.3) return 0.8;
+    return 0.4;
   }
-  if (numeric < 0.4) return 0.1;
+  if (numeric < 0.1) return 0.1;
   if (canonicalField === "total_revenue" || canonicalField === "total_expense" || canonicalField === "net_income" || canonicalField === "gross_profit") {
     if (absAvg > 1000000) return 0.95;
     if (absAvg > 1000) return 0.85;

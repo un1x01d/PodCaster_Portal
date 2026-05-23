@@ -1,4 +1,6 @@
 import { resolveMetricHeaders } from "./headerResolver.js";
+import { generateStructuredCalculationPlan } from "./aiCalculationPlanner.js";
+import { validateCalculationPlan } from "./calculationPlanValidator.js";
 
 function normalizeMetric(metricRequested = "") {
   const key = String(metricRequested || "").trim().toLowerCase();
@@ -273,6 +275,159 @@ function makeClarification(reason, question, options = []) {
   };
 }
 
+function inferColumnTypeFromSamples(vals = []) {
+  if (!vals.length) return "unknown";
+  let numeric = 0;
+  let dateLike = 0;
+  for (const v of vals) {
+    const s = String(v ?? "").trim();
+    if (!s) continue;
+    if (/^[-+]?\d*\.?\d+$/.test(s.replace(/[$,%\s,]/g, ""))) numeric += 1;
+    if (parseDate(s)) dateLike += 1;
+  }
+  const denom = Math.max(1, vals.length);
+  if (dateLike / denom >= 0.6) return "date";
+  if (numeric / denom >= 0.6) return "number";
+  return "string";
+}
+
+function buildSafeDatasetContext({ headers = [], sampleRows = [], fieldMetadata = {} }) {
+  const list = Array.isArray(headers) ? headers.map((h) => String(h || "")).filter(Boolean) : [];
+  const dateHeader = String(fieldMetadata?.date || "").trim();
+  let dateRange = null;
+  if (dateHeader && Array.isArray(sampleRows) && sampleRows.length > 0) {
+    const dates = sampleRows.map(r => parseDate(r[dateHeader])).filter(Boolean).sort((a, b) => a - b);
+    if (dates.length >= 2) {
+      dateRange = { start: dates[0].toISOString().slice(0, 10), end: dates[dates.length - 1].toISOString().slice(0, 10) };
+    }
+  }
+
+  const columns = list.map((name) => {
+    const values = (Array.isArray(sampleRows) ? sampleRows : [])
+      .slice(0, 20)
+      .map((r) => r?.[name])
+      .filter((v) => v !== null && v !== undefined && String(v).trim() !== "");
+    const type = inferColumnTypeFromSamples(values);
+    const hints = [];
+    const low = name.toLowerCase();
+    if (/date|period|month|year|quarter/.test(low)) hints.push("date");
+    if (/revenue|sales|income/.test(low)) hints.push("revenue");
+    if (/net/.test(low)) hints.push("net");
+    if (/expense|cost|cogs/.test(low)) hints.push("expense");
+    if (/profit|margin|ebitda/.test(low)) hints.push("profit");
+    return { name, type, semantic_hints: Array.from(new Set(hints)), sample_values: values.slice(0, 6) };
+  });
+  const known_mappings = {
+    date: String(fieldMetadata?.date || "").trim() || undefined,
+    revenue: String(fieldMetadata?.total_revenue || fieldMetadata?.net_revenue || "").trim() || undefined,
+    cost: String(fieldMetadata?.cogs || "").trim() || undefined,
+    expense: String(fieldMetadata?.total_expense || "").trim() || undefined,
+  };
+  return { table_name: "sheet", columns, known_mappings, date_range: dateRange };
+}
+
+function mapAiConceptToMetricKey(concept = "") {
+  const c = String(concept || "").toLowerCase();
+  const map = {
+    revenue: "total_revenue",
+    net_revenue: "net_revenue",
+    gross_revenue: "total_revenue",
+    expense: "total_expense",
+    cogs: "cogs",
+    gross_profit: "gross_profit",
+    net_profit: "net_income",
+    margin: "gross_margin_pct",
+    average: "total_revenue",
+    count: "total_revenue",
+  };
+  return map[c] || null;
+}
+
+function toLegacyPlanFromAi({ aiPlan = {}, question = "", headers = [] }) {
+  if (aiPlan?.status === "needs_clarification") {
+    const options = Array.isArray(aiPlan?.clarification?.options) ? aiPlan.clarification.options.map((o) => String(o?.value || o?.label || "").trim()).filter(Boolean) : [];
+    const out = makeClarification(
+      "ai_needs_clarification",
+      String(aiPlan?.clarification?.question || "I can answer that, but I need one clarification first."),
+      options
+    );
+    out.clarification_field = String(aiPlan?.clarification?.field || "").trim() || null;
+    return out;
+  }
+  if (aiPlan?.status === "not_answerable") {
+    return {
+      ok: false,
+      clarification_needed: false,
+      reason: "ai_not_answerable",
+      message: String(aiPlan?.not_answerable?.reason || "This dataset cannot answer that question safely."),
+    };
+  }
+
+  const calc = aiPlan?.calculation_plan || {};
+  const metric = calc?.metric || {};
+  const sourceColumns = Array.isArray(metric?.source_columns) ? metric.source_columns.map((c) => String(c || "").trim()).filter(Boolean) : [];
+  const sourceColumn = sourceColumns[0] || "";
+  const metricKey = mapAiConceptToMetricKey(metric?.concept) || "total_revenue";
+  const tr = calc?.time_range || {};
+  const dateColumn = String(tr?.date_column || "").trim();
+  const effectiveDateColumn = dateColumn || findBestDateHeader(headers, [], []);
+  const groupBy = Array.isArray(calc?.group_by) ? calc.group_by.map((g) => String(g || "").trim()).filter(Boolean) : [];
+  const limit = Number.isFinite(Number(calc?.limit)) ? Math.max(1, Math.min(50, Number(calc.limit))) : 5;
+  const hasYoy = String(calc?.analysis_type || "") === "trend" || /year_over_year|yoy/i.test(String(calc?.comparison?.type || ""));
+  const hasRanking = groupBy.length > 0 && String(calc?.analysis_type || "") === "grouped_summary" && Number.isFinite(Number(calc?.limit || 0));
+  const startYear = Number(String(tr?.start || "").slice(0, 4));
+  const endYear = Number(String(tr?.end || "").slice(0, 4));
+  const inferredFilters = Array.isArray(calc?.filters) ? [...calc.filters] : [];
+  if (!inferredFilters.length && effectiveDateColumn && tr?.start && tr?.end) {
+    inferredFilters.push({ column: effectiveDateColumn, operator: "between", value: [String(tr.start), String(tr.end)] });
+  }
+
+  const resolution = {
+    resolvedMappings: {
+      ...(sourceColumn ? { [metricKey]: sourceColumn } : {}),
+    },
+    optionalMappings: {
+      ...(effectiveDateColumn ? { date: effectiveDateColumn } : {}),
+    },
+  };
+
+  if (hasRanking) {
+    return {
+      ok: true,
+      operation: "top_n_by_dimension",
+      metric: metricKey,
+      dimensionHeader: groupBy[0],
+      valueHeader: sourceColumn || headers.find((h) => /revenue|income|profit|expense|cost|amount/i.test(String(h))) || "",
+      limit,
+      direction: String(calc?.sort?.direction || "desc").toLowerCase() === "asc" ? "asc" : "desc",
+      accountOnly: false,
+      resolution,
+      verification: {
+        method: "ai_structured_planner",
+        confidence: aiPlan?.confidence === "high" ? 0.92 : (aiPlan?.confidence === "medium" ? 0.8 : 0.72),
+        fallback_used: false,
+        evidence: { sourceColumns, dateColumn: effectiveDateColumn, groupBy, analysisType: calc?.analysis_type || "" },
+      },
+    };
+  }
+
+  return {
+    ok: true,
+    operation: hasYoy ? "yoy_series" : "single_period",
+    metric: metricKey,
+    years: Number.isFinite(startYear) && Number.isFinite(endYear) && startYear !== endYear ? [startYear, endYear] : [],
+    period: Number.isFinite(startYear) && startYear === endYear ? startYear : null,
+    resolution,
+    filters: inferredFilters,
+    verification: {
+      method: "ai_structured_planner",
+      confidence: aiPlan?.confidence === "high" ? 0.92 : (aiPlan?.confidence === "medium" ? 0.8 : 0.72),
+      fallback_used: false,
+      evidence: { sourceColumns, dateColumn: effectiveDateColumn, analysisType: calc?.analysis_type || "", question: String(question || "") },
+    },
+  };
+}
+
 function mapSemanticMeaningToCanonical(meaning = "") {
   const m = String(meaning || "").trim();
   const map = {
@@ -433,6 +588,78 @@ export async function buildDeterministicSpreadsheetPlan({
     : "";
   if (hintedCanonical && resolvedHintedHeaderChoice) {
     fieldMetadata[hintedCanonical] = resolvedHintedHeaderChoice;
+  }
+
+  // AI-first planner: semantic interpretation via structured JSON plan.
+  // Backend stays deterministic by validating plan then converting to executable legacy plan.
+  const useAiPlanner = hints?.useAiPlanner !== false;
+  const allowLegacyInterpreterFallback = String(
+    hints?.allowLegacyInterpreterFallback ?? process.env.AI_PLANNER_LEGACY_FALLBACK ?? "false"
+  ).trim().toLowerCase() === "true";
+  if (useAiPlanner) {
+    try {
+      const datasetContext = buildSafeDatasetContext({ headers, sampleRows, fieldMetadata });
+      const allowedOperations = [
+        "sum", "count", "avg", "min", "max",
+        "group_by", "filter_between_dates", "compare_periods", "divide", "subtract",
+      ];
+      const shouldRetryWithFeedback = (reason = "") => {
+        const r = String(reason || "");
+        return [
+          "invalid_date_range",
+          "invalid_between_filter",
+          "invalid_quarter_range",
+          "unknown_group_column",
+          "unknown_sort_column",
+          "invalid_filter_operator",
+        ].some((k) => r === k || r.startsWith(`${k}:`));
+      };
+
+      let aiPlan = hints?.aiPlannerResponse || await generateStructuredCalculationPlan({
+        question: message,
+        datasetContext,
+        allowedOperations,
+        runtime: hints?.runtime || null,
+        conversationHistory: hints?.conversationHistory || [],
+      });
+      let validation = validateCalculationPlan(aiPlan, datasetContext, { allowed_columns: headers });
+      if (!validation.ok && !hints?.aiPlannerResponse && shouldRetryWithFeedback(validation.reason)) {
+        aiPlan = await generateStructuredCalculationPlan({
+          question: `${String(message || "").trim()}\n\nValidation feedback: ${String(validation.reason || "invalid_plan")}. Replan strictly. Use exact dataset column names only for group_by, filters, and sort. Do not use expressions like Year(Date). For temporal grouping use a valid date_column with valid ISO start/end, while keeping group_by columns as exact names from dataset.columns.`,
+          datasetContext,
+          allowedOperations,
+          runtime: hints?.runtime || null,
+          conversationHistory: hints?.conversationHistory || [],
+        });
+        validation = validateCalculationPlan(aiPlan, datasetContext, { allowed_columns: headers });
+      }
+      if (!validation.ok) {
+        return {
+          ok: false,
+          clarification_needed: false,
+          reason: "ai_plan_validation_failed",
+          message: `AI plan rejected by validator: ${String(validation.reason || "invalid_plan")}.`,
+        };
+      }
+      const converted = toLegacyPlanFromAi({ aiPlan, question: message, headers });
+      if (converted) return converted;
+      return {
+        ok: false,
+        clarification_needed: false,
+        reason: "ai_plan_conversion_failed",
+        message: "AI planner returned a plan that could not be converted to a deterministic execution plan.",
+      };
+    } catch (err) {
+      if (!allowLegacyInterpreterFallback) {
+        return {
+          ok: false,
+          clarification_needed: false,
+          reason: "ai_planner_unavailable",
+          message: `AI planner unavailable: ${String(err?.message || "unknown_error")}`,
+        };
+      }
+      // Optional emergency fallback only when explicitly enabled.
+    }
   }
   // Deterministic metric-column pin for explicit "other income" asks.
   // This avoids re-clarifying under total_revenue when the dataset has a dedicated Other Income column.

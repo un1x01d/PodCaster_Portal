@@ -95,9 +95,9 @@ export async function loadSemanticProfileRules() {
 function toNum(value) {
   if (value === null || value === undefined || value === "") return null;
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
-  const cleaned = String(value).replace(/[^0-9,.-]/g, "").replace(/,/g, "");
-  if (!cleaned || cleaned === "-" || cleaned === "." || cleaned === "-.") return null;
-  const n = Number(cleaned);
+  const match = String(value).replace(/,/g, "").match(/[-+]?\d*\.?\d+/);
+  if (!match) return null;
+  const n = Number(match[0]);
   return Number.isFinite(n) ? n : null;
 }
 

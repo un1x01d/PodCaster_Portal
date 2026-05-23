@@ -2212,6 +2212,31 @@ export async function listAiLearningCandidates(req, res) {
     const status = String(req.query?.status || "pending").trim().toLowerCase();
     const allowed = new Set(["pending", "approved", "rejected", "all"]);
     const resolved = allowed.has(status) ? status : "pending";
+    const approvedGroupedQuery = `
+        SELECT
+            MIN(id)::int AS id,
+            locale,
+            LOWER(TRIM(phrase)) AS phrase,
+            suggested_intent,
+            MAX(suggested_payload) AS suggested_payload,
+            SUM(COALESCE(evidence_count, 0))::int AS evidence_count,
+            MAX(confidence) AS confidence,
+            'approved'::text AS status,
+            MAX(approved_rule_id) AS approved_rule_id,
+            MAX(reviewed_by) AS reviewed_by,
+            MAX(reviewed_at) AS reviewed_at,
+            MIN(created_at) AS created_at,
+            MAX(updated_at) AS updated_at
+        FROM ai_learning_candidates
+        WHERE status = 'approved'
+          AND LENGTH(TRIM(COALESCE(phrase, ''))) >= 3
+          AND TRIM(COALESCE(phrase, '')) !~ '^[0-9]+$'
+          AND LOWER(TRIM(COALESCE(phrase, ''))) NOT IN ('ok', 'good', 'yes', 'no', 'n/a', 'na')
+          AND LOWER(TRIM(COALESCE(suggested_intent, 'unknown'))) <> 'unknown'
+        GROUP BY locale, LOWER(TRIM(phrase)), suggested_intent
+        ORDER BY SUM(COALESCE(evidence_count, 0)) DESC, MAX(updated_at) DESC
+        LIMIT 1000
+    `;
     const rows = resolved === "all"
         ? await query(
             `SELECT id, locale, phrase, suggested_intent, suggested_payload, evidence_count, confidence, status, approved_rule_id, reviewed_by, reviewed_at, created_at, updated_at
@@ -2219,6 +2244,8 @@ export async function listAiLearningCandidates(req, res) {
              ORDER BY evidence_count DESC, updated_at DESC
              LIMIT 1000`
         )
+        : resolved === "approved"
+        ? await query(approvedGroupedQuery)
         : await query(
             `SELECT id, locale, phrase, suggested_intent, suggested_payload, evidence_count, confidence, status, approved_rule_id, reviewed_by, reviewed_at, created_at, updated_at
              FROM ai_learning_candidates

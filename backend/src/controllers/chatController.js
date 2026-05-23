@@ -17,7 +17,7 @@ import {
 import { writeAuditLog } from "../utils/auditLog.js";
 import { analyzeAccountingIntent } from "../services/ai/accountingIntentAnalyzer.js";
 import { getSemanticKnowledge, invalidateLearningRulesCache } from "../services/ai/semanticKnowledgeService.js";
-import { buildDeterministicSpreadsheetPlan } from "../services/ai/deterministicSpreadsheetPlanner.js";
+import { buildDeterministicSpreadsheetPlan } from "../services/ai/deterministicSpreadsheetPlannerV2.js";
 import { executeDeterministicSpreadsheetPlan } from "../services/ai/deterministicSpreadsheetExecutor.js";
 import { presentDeterministicSpreadsheetResult } from "../services/ai/deterministicSpreadsheetPresenter.js";
 import { validateDeterministicPlanContract } from "../services/ai/deterministicOperationContract.js";
@@ -199,6 +199,41 @@ function detectIntentLabel(message = "") {
   return "unknown";
 }
 
+function normalizeMetricKeyFromText(value = "") {
+  const key = String(value || "").trim().toLowerCase();
+  const map = {
+    date: "date",
+    date_column: "date",
+    "date column": "date",
+    total_revenue: "total_revenue",
+    revenue: "total_revenue",
+    sales: "total_revenue",
+    net_revenue: "net_revenue",
+    "net revenue": "net_revenue",
+    total_expense: "total_expense",
+    expense: "total_expense",
+    expenses: "total_expense",
+    cost: "total_expense",
+    net_income: "net_income",
+    "net income": "net_income",
+    profit: "net_income",
+    "net profit": "net_income",
+    gross_profit: "gross_profit",
+    "gross profit": "gross_profit",
+    gross_margin_pct: "gross_margin_pct",
+    "gross margin": "gross_margin_pct",
+    margin: "gross_margin_pct",
+    variance_amount: "variance_amount",
+    variance_pct: "variance_pct",
+    accounts_receivable_total: "accounts_receivable_total",
+    accounts_payable_total: "accounts_payable_total",
+    ar_balance: "accounts_receivable_total",
+    ap_balance: "accounts_payable_total",
+    cash: "cash",
+  };
+  return map[key] || null;
+}
+
 function toRuleFlag(value, fallback = true) {
   if (value === undefined || value === null) return Boolean(fallback);
   if (typeof value === "boolean") return value;
@@ -220,14 +255,14 @@ function recordRuleHit(rule, matched, meta = {}) {
   } catch {}
 }
 
-async function compileDeterministicQueryPlan({ message = "", accountingIntent = {}, headers = [], semanticProfile = {}, sampleRows = [], hints = {} }) {
+async function compileDeterministicQueryPlan({ message = "", accountingIntent = {}, headers = [], semanticProfile = {}, sampleRows = [], hints = {}, runtime = null, conversationHistory = [] }) {
   const rawPlan = await buildDeterministicSpreadsheetPlan({
     message,
     accountingIntent,
     headers,
     semanticProfile,
     sampleRows,
-    hints,
+    hints: { ...(hints || {}), runtime, conversationHistory },
     context: hints?.context || {},
   });
   const validated = validateDeterministicPlanContract(rawPlan);
@@ -486,7 +521,8 @@ function buildSqlSafeDateExpr(valueExpr) {
 }
 
 function buildSqlSafeNumericExpr(valueExpr) {
-  const cleaned = `NULLIF(regexp_replace(${valueExpr}, '[^0-9.+-]', '', 'g'), '')`;
+  const extracted = `substring(${valueExpr} from '[-+]?[0-9,]*\\.?\\d+')`;
+  const cleaned = `NULLIF(regexp_replace(${extracted}, '[^0-9.+-]', '', 'g'), '')`;
   return `(
     CASE
       WHEN ${cleaned} ~ '^[-+]?\\d*\\.?\\d+$' THEN CAST(${cleaned} AS NUMERIC)
@@ -2262,6 +2298,16 @@ function applyTimeWindowDirectives(answer = "", message = "") {
   const prefix = lines.find((l) => /year over year|анализ год к году|аналіз рік до року|год к году/i.test(l)) || "";
   const rebuilt = [prefix, ...sliced].filter(Boolean).join("\n");
   return rebuilt || text;
+}
+
+function forceDollarCurrency(text = "") {
+  let s = String(text || "");
+  // Replace various currency symbols and suffixes with $
+  // 1. Suffixes like "грн", "uah", "руб" after numbers
+  s = s.replace(/(\d[\d,]*(\.\d+)?)\s*(грн|uah|руб|rub|eur|gbp|jpy|грн\.)/gi, "$$$1");
+  // 2. Prefixes like "€", "£", "¥" before numbers
+  s = s.replace(/([€£¥₽])\s*(\d)/g, "$$$2");
+  return s;
 }
 
 function applyConversationalAnswerStyle(answer = "", message = "", locale = "en") {
@@ -4247,43 +4293,94 @@ export async function chatQuery(req, res) {
   });
   const clarificationKey = pendingResolved.key || `${Number(req.user?.id || 0)}:${String(sheetId || "nosheet")}`;
   const pendingClarification = pendingResolved.pending || null;
+  if (!pendingClarification) {
+    const bareOptionOnly = String(normalizedMessage || "").trim().toLowerCase();
+    if (/^(?:#?\d+|option\s*\d+|number\s*\d+|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)$/.test(bareOptionOnly)) {
+      return res.json({
+        answer: "What would you like me to calculate?",
+        actions: { reset_filters: false, filters: [], chart: null },
+        preview_rows: [],
+        meta: { phase: "clarification_without_pending" },
+      });
+    }
+  }
+  const normalizeClarificationOptionValue = (opt) => {
+    const raw = (opt && typeof opt === "object")
+      ? String(opt?.value || opt?.label || "")
+      : String(opt || "");
+    return raw.replace(/^\s*\d+\s*[\).\:-]\s*/, "").trim();
+  };
+  const pendingOptions = Array.isArray(pendingClarification?.options)
+    ? pendingClarification.options.map((opt) => normalizeClarificationOptionValue(opt)).filter(Boolean)
+    : [];
   const clarificationSelectionMatch = String(normalizedMessage || "").trim().match(/^(\d+)(?:[\).\s].*)?$/);
   const selectedClarificationOption = (() => {
     if (!pendingClarification) return null;
-    const options = Array.isArray(pendingClarification.options) ? pendingClarification.options : [];
+    const options = pendingOptions;
     
     // 1. Numeric Match (e.g., "1")
-    const n = Number.parseInt(String(clarificationSelectionMatch?.[1] || ""), 10);
+    let n = Number.parseInt(String(clarificationSelectionMatch?.[1] || ""), 10);
+    if (!Number.isFinite(n)) {
+      const numericMention = String(normalizedMessage || "").trim().toLowerCase().match(/(?:option|number|#)\s*(\d+)/);
+      n = Number.parseInt(String(numericMention?.[1] || ""), 10);
+    }
     if (Number.isFinite(n) && n >= 1 && n <= options.length) {
       return String(options[n - 1]);
     }
 
+    const ordinalMap = {
+      first: 1, second: 2, third: 3, fourth: 4, fifth: 5,
+      sixth: 6, seventh: 7, eighth: 8, ninth: 9, tenth: 10,
+    };
+    const lower = String(normalizedMessage || "").trim().toLowerCase();
+    for (const [word, idx] of Object.entries(ordinalMap)) {
+      if (lower.includes(word) && idx >= 1 && idx <= options.length) {
+        return String(options[idx - 1]);
+      }
+    }
+
     // 2. Text-based Exact Match (case-insensitive)
-    const text = String(normalizedMessage || "").trim().toLowerCase();
+    const text = String(normalizedMessage || "")
+      .trim()
+      .toLowerCase()
+      .replace(/^use\s+/, "")
+      .replace(/^the\s+/, "")
+      .replace(/\s+option$/, "")
+      .replace(/\s+column$/, "");
     const match = options.find(opt => String(opt).toLowerCase() === text);
     if (match) return String(match);
 
     // 3. Text-based Fuzzy/Includes Match (if short and unique)
     const candidates = options.filter(opt => String(opt).toLowerCase().includes(text));
     if (candidates.length === 1) return String(candidates[0]);
-
-    // 4. Free-text clarification fallback:
-    // allow short direct replies like "net revenue" to resolve pending clarifications
-    // even when options are not explicitly enumerated.
-    const raw = String(normalizedMessage || "").trim();
-    if (!raw) return null;
-    if (/^\d+$/.test(raw)) return null;
-    if (/[?]/.test(raw)) return null;
-    if (raw.length > 80) return null;
-    return raw;
+    return null;
   })();
   const isClarificationReply = Boolean(selectedClarificationOption);
+  // Strict clarification mode: only explicit option matches resolve clarification.
+  // Any other input starts a fresh question context.
+  if (pendingClarification && !isClarificationReply) {
+    PENDING_CLARIFICATIONS.delete(clarificationKey);
+  }
 
   const effectiveUserMessage = (() => {
     if (!selectedClarificationOption) return normalizedMessage;
     const source = String(pendingClarification?.sourceMessage || "").trim();
     return source || normalizedMessage;
   })();
+  const clarificationContinuation = selectedClarificationOption
+    ? {
+      resolvedValue: String(selectedClarificationOption || "").trim(),
+      field: String(
+        pendingClarification?.field
+        || normalizeMetricKeyFromText(pendingClarification?.metric || "")
+        || pendingClarification?.kind
+        || "selection"
+      ).trim(),
+      plannerState: (pendingClarification?.planner_state && typeof pendingClarification.planner_state === "object")
+        ? pendingClarification.planner_state
+        : null,
+    }
+    : null;
   const planningMessage = effectiveUserMessage;
   const styleSourceMessage = planningMessage || message;
   const resolvedDeterministicContext = resolveDeterministicContextForUser({
@@ -4495,6 +4592,7 @@ export async function chatQuery(req, res) {
         answer = applyAnswerFormatDirectives(answer, styleSourceMessage);
         answer = applyTimeWindowDirectives(answer, styleSourceMessage);
         answer = applyConversationalAnswerStyle(answer, styleSourceMessage, locale);
+        answer = forceDollarCurrency(answer);
         return res.json({
           answer,
           actions: { reset_filters: false, filters: [], chart: null },
@@ -4585,7 +4683,11 @@ export async function chatQuery(req, res) {
 
   const accountingIntent = await analyzeAccountingIntent({ message: planningMessage, runtime });
   const selectedHeaderChoice = selectedClarificationOption ? String(selectedClarificationOption).trim() : "";
-  const pendingFieldCanonical = String(pendingClarification?.field || "").trim();
+  const pendingFieldCanonical = String(
+    pendingClarification?.field
+    || normalizeMetricKeyFromText(pendingClarification?.metric || "")
+    || ""
+  ).trim();
   const pendingFieldLooksLikeMetric = /^(total_revenue|net_revenue|gross_profit|gross_margin_pct|net_income|total_expense|variance_amount|variance_pct|accounts_receivable_total|accounts_payable_total)$/i
     .test(pendingFieldCanonical);
   const compiledPlan = await compileDeterministicQueryPlan({
@@ -4594,9 +4696,15 @@ export async function chatQuery(req, res) {
     headers: baseHeaders,
     semanticProfile,
     sampleRows: loadedSample?.rows || [],
+    runtime,
+    conversationHistory: compactConversationHistory,
     hints: {
+      // Keep AI planner enabled for clarification replies; resolved choice is embedded
+      // in planningMessage to prevent repeated clarification loops.
+      useAiPlanner: true,
+      allowLegacyInterpreterFallback: false,
       metric: (isClarificationReply && pendingClarification?.kind === "metric")
-        ? selectedClarificationOption
+        ? (pendingFieldLooksLikeMetric ? pendingFieldCanonical : undefined)
         : ((isClarificationReply && pendingClarification?.kind === "header" && pendingFieldLooksLikeMetric)
           ? pendingFieldCanonical
           : undefined),
@@ -4606,12 +4714,12 @@ export async function chatQuery(req, res) {
       // so planner resolution can consume it even when kind classification is imperfect.
       headerChoice: isClarificationReply ? (selectedHeaderChoice || undefined) : undefined,
       headerCanonical: isClarificationReply ? (pendingFieldCanonical || undefined) : undefined,
+      clarificationContinuation: isClarificationReply ? clarificationContinuation : undefined,
       groupId: req.user?.customer_group_id || req.user?.resolved_group_id || null,
       context: resolvedDeterministicContext.context || {},
     },
   });
-  const forceYoyPerYearDriver = asksYoyWithPerYearDriver(planningMessage);
-  if (compiledPlan.ok && !forceYoyPerYearDriver) {
+  if (compiledPlan.ok) {
     PENDING_CLARIFICATIONS.delete(clarificationKey);
 
     // Persistence: If this was a header resolution, save it to the sheet's semantic profile
@@ -4680,6 +4788,7 @@ export async function chatQuery(req, res) {
         answer = applyAnswerFormatDirectives(answer, styleSourceMessage);
         answer = applyTimeWindowDirectives(answer, styleSourceMessage);
         answer = applyConversationalAnswerStyle(answer, styleSourceMessage, locale);
+        answer = forceDollarCurrency(answer);
         return res.json({
           answer,
           actions: { reset_filters: false, filters: [], chart: null },
@@ -4701,7 +4810,9 @@ export async function chatQuery(req, res) {
     const calcResult = executeDeterministicSpreadsheetPlan({
       plan: compiledPlan,
       rows: fullLoad?.rows || [],
-      filters: accountingIntent?.filters || [],
+      filters: Array.isArray(compiledPlan?.filters) && compiledPlan.filters.length
+        ? compiledPlan.filters
+        : (accountingIntent?.filters || []),
       userContext: { allowedColumns: fullLoad?.allowedColumns || baseHeaders || aiHeaders, userId: req.user?.id || null, tenantId: req.user?.customer_id || null },
     });
     try {
@@ -4754,6 +4865,8 @@ export async function chatQuery(req, res) {
         lastOperation: String(compiledPlan?.operation || ""),
         lastMetric: String(compiledPlan?.metric || ""),
         lastYears,
+        lastPlan: compiledPlan,
+        lastResult: calcResult,
       });
     }
     answer = formatAnswerWithBullets(answer);
@@ -4766,6 +4879,7 @@ export async function chatQuery(req, res) {
     answer = applyTimeWindowDirectives(answer, styleSourceMessage);
     answer = applyConversationalAnswerStyle(answer, styleSourceMessage, locale);
     answer = enforcePerYearTopListSpacing(answer);
+    answer = forceDollarCurrency(answer);
     return res.json({
       answer,
       actions: { reset_filters: false, filters: [], chart: null },
@@ -4780,25 +4894,40 @@ export async function chatQuery(req, res) {
     });
   }
   const allowCompositeDeltaCauseBypass = intentPlan.twoYearDeltaCause;
-  if (!forceYoyPerYearDriver && (compiledPlan.message || compiledPlan.clarification_needed === true)) {
+  if (compiledPlan.message || compiledPlan.clarification_needed === true) {
     if (compiledPlan.clarification_needed === true) {
       if (allowCompositeDeltaCauseBypass) {
         PENDING_CLARIFICATIONS.delete(clarificationKey);
       } else {
-      const options = Array.isArray(compiledPlan.clarification_options) ? compiledPlan.clarification_options : [];
+      const options = (Array.isArray(compiledPlan.clarification_options) ? compiledPlan.clarification_options : [])
+        .map((opt) => normalizeClarificationOptionValue(opt))
+        .filter(Boolean);
       const reasonText = String(compiledPlan.reason || "");
-      const kind = reasonText.includes("ambiguous_headers") || reasonText.includes("missing_required_headers")
-        ? "header"
-        : (reasonText.includes("date") ? "date" : "metric");
+      const rawClarificationField = String(compiledPlan?.clarification_field || "").trim();
+      const normalizedMetricFromPlan = normalizeMetricKeyFromText(compiledPlan?.metric || "")
+        || normalizeMetricKeyFromText(accountingIntent?.metric_requested || "");
+      const clarificationField = rawClarificationField === "metric.source_columns"
+        ? String(normalizedMetricFromPlan || "total_revenue")
+        : (normalizeMetricKeyFromText(rawClarificationField) || rawClarificationField);
+      const kind = /^(total_revenue|net_revenue|gross_profit|gross_margin_pct|net_income|total_expense|variance_amount|variance_pct|accounts_receivable_total|accounts_payable_total|cash)$/i.test(clarificationField)
+        ? "metric"
+        : ((reasonText.includes("ambiguous_headers") || reasonText.includes("missing_required_headers"))
+          ? "header"
+          : (reasonText.includes("date") ? "date" : "metric"));
       PENDING_CLARIFICATIONS.set(clarificationKey, {
         ts: Date.now(),
         kind,
-        metric: compiledPlan.metric || (typeof accountingIntent?.metric_requested === 'string' ? accountingIntent.metric_requested : null),
+        metric: normalizeMetricKeyFromText(compiledPlan.metric || "")
+          || normalizeMetricKeyFromText(accountingIntent?.metric_requested || "")
+          || null,
         field: String(
-          compiledPlan?.clarification_field
+          clarificationField
           || (kind === "metric" ? String(compiledPlan?.metric || "") : "")
           || ""
         ).trim() || null,
+        planner_state: compiledPlan?.planner_state && typeof compiledPlan.planner_state === "object"
+          ? compiledPlan.planner_state
+          : null,
         options,
         sourceMessage: effectiveUserMessage,
       });
@@ -4842,1903 +4971,15 @@ export async function chatQuery(req, res) {
       },
     });
   }
+  // Legacy hardcoded chat fallback removed.
+  // Active path is: AI planner -> validator -> deterministic executor.
+  return res.json({
+    answer: "I could not produce a safe deterministic plan for this question. Please restate the metric, period, and grouping in one sentence.",
+    actions: { reset_filters: false, filters: [], chart: null },
+    preview_rows: [],
+    meta: { phase: "deterministic_plan_unavailable", legacy_fallback_removed: true },
+  });
 
-  const complexTypes = new Set([
-    "driver_analysis_profit",
-    "driver_analysis_gross_margin",
-    "driver_analysis_expenses",
-    "period_comparison_revenue",
-    "pnl_summary",
-    "budget_vs_actual",
-    "cash_flow_issue",
-  ]);
-  const shouldPlanComplex =
-    accountingIntent?.safe_next_action === "build_analysis_plan"
-    || complexTypes.has(String(accountingIntent?.question_type || ""));
-  if (shouldPlanComplex) {
-    const plan = await buildAccountingAnalysisPlan({
-      message: normalizedMessage,
-      analyzerResult: accountingIntent,
-      availableHeaders: aiHeaders,
-      cachedFieldMetadata: semanticProfile?.headerMappings || {},
-      supportedMetricKeys: Object.keys(METRIC_REGISTRY),
-      metricHeaderRequirements: {},
-      complexQuestionRequirements: COMPLEX_QUESTION_REQUIREMENTS,
-      runtime,
-    });
-    const canonicalHeaders = ["date", "revenue", "expenses", "cogs", "gross_profit", "gross_margin_pct", "net_income", "actual", "budget", "category", "account", "department", "store", "region", "customer", "vendor", "cash", "cash_in", "cash_out", "accounts_receivable", "accounts_payable"];
-    const validated = validateAnalysisPlan({ plan, supportedMetrics: Object.keys(METRIC_REGISTRY), supportedCanonicalHeaders: canonicalHeaders });
-    if (!validated.ok) {
-      return res.json({
-        answer: "I need clarification before running this analysis safely. Please confirm the metric and periods to compare.",
-        actions: { reset_filters: false, filters: [], chart: null },
-        preview_rows: [],
-        meta: { phase: "complex_plan_validation", error: validated.errorCode, rejectedSteps: validated.rejectedSteps || [] },
-      });
-    }
-    const headerResolution = resolveAnalysisHeaders({
-      approvedPlan: validated.approvedPlan,
-      headers: aiHeaders,
-      fieldMetadata: semanticProfile?.headerMappings || {},
-      message: normalizedMessage,
-    });
-    if (!headerResolution.ok) {
-      return res.json({
-        answer: headerResolution.message,
-        actions: { reset_filters: false, filters: [], chart: null },
-        preview_rows: [],
-        meta: { phase: "complex_header_resolution", ...headerResolution },
-      });
-    }
-    const analysisResult = executeAnalysisPlan({
-      approvedPlan: validated.approvedPlan,
-      headerResolution,
-      rows: loadedSample?.rows || [],
-      userContext: { allowedColumns: aiHeaders, userId: req.user?.id || null, tenantId: req.user?.customer_id || null },
-    });
-    try {
-      await writeAuditLog({
-        req,
-        actorUserId: req.user?.id || null,
-        action: "accounting.complex_analysis",
-        resourceType: "sheet",
-        resourceId: sheetId || null,
-        metadata: {
-          tenantId: req.user?.customer_id || null,
-          questionType: validated.approvedPlan?.question_type || null,
-          primaryMetric: validated.approvedPlan?.primary_metric || null,
-          period: validated.approvedPlan?.period || null,
-          comparisonPeriod: validated.approvedPlan?.comparison_period || null,
-          headersUsed: analysisResult?.headersUsed || {},
-          optionalHeadersMissing: analysisResult?.missingOptionalFields || [],
-          answerCompleteness: analysisResult?.answerCompleteness || null,
-          rowCounts: analysisResult?.rowCounts || {},
-          stepsExecuted: analysisResult?.stepsExecuted || [],
-          success: !!analysisResult?.ok,
-          errorCode: analysisResult?.errorCode || null,
-          at: new Date().toISOString(),
-        },
-      });
-    } catch {}
-    const answer = await explainAccountingAnalysis({
-      originalQuestion: normalizedMessage,
-      analyzerOutput: accountingIntent,
-      validatedPlan: validated.approvedPlan,
-      headerResolution,
-      analysisResult,
-      runtime,
-    });
-    return res.json({
-      answer,
-      actions: { reset_filters: false, filters: [], chart: null },
-      preview_rows: [],
-      meta: { phase: "complex_accounting_analysis", questionType: validated.approvedPlan?.question_type, analysisResult },
-    });
-  }
-
-  if (!CHAT_ENABLE_LEGACY_FALLBACK && !intentPlan.twoYearDeltaCause && !intentPlan.yoyDriverComposite && !asksYoyWithPerYearDriver(message)) {
-    return res.json({
-      answer: "I can answer that, but I need one clarification first. Please specify the metric, grouping, and period so I can run a deterministic calculation.",
-      actions: { reset_filters: false, filters: [], chart: null },
-      preview_rows: [],
-      meta: { phase: "deterministic_orchestrator_only", legacy_fallback_enabled: false },
-    });
-  }
-
-  if (isDateRelatedQuestion(message) && !sheetHasTemporalColumn(aiHeaders, sampleRows, semanticProfile)) {
-    const answer = noDateColumnAnswer(locale);
-    return res.json({
-      answer,
-      actions: { reset_filters: false, filters: [], chart: null },
-      preview_rows: [],
-      meta: {
-        operation: "none",
-        locale,
-        dateRelatedBlocked: true,
-        reason: "missing_temporal_column",
-      },
-    });
-  }
-  
-  // PERF-01: Build Workspace Schema for Cross-Sheet Intelligence
-  const workspaceRes = await query(
-      `SELECT DISTINCT s.id, s.display_name, s.filename, s.headers, s.uploaded_at,
-              rsi.file_label, rsi.import_version
-       FROM sheets s
-       LEFT JOIN report_sources rs ON rs.id = s.report_source_id
-       LEFT JOIN report_source_imports rsi ON rsi.sheet_id = s.id
-       WHERE (
-         $2 = 'admin'
-         OR rs.created_by = $1
-         OR EXISTS (
-           SELECT 1
-           FROM views v
-           LEFT JOIN report_source_imports vrsi ON vrsi.sheet_id = s.id
-           WHERE (
-             v.sheet_id = s.id
-             OR (
-               v.sheet_id IS NULL
-               AND v.report_source_id = vrsi.report_source_id
-               AND (v.file_label IS NULL OR v.file_label = vrsi.file_label)
-             )
-           )
-           AND (
-             EXISTS (SELECT 1 FROM view_user_permissions vup WHERE vup.view_id = v.id AND vup.user_id = $1)
-           )
-         )
-       )`,
-      [req.user.id, req.user.role]
-  );
-  const parsedSplitContext = (splitContext && typeof splitContext === "object")
-    ? {
-        primary_sheet_id: splitContext.primarySheetId ? String(splitContext.primarySheetId) : null,
-        secondary_sheet_id: splitContext.secondarySheetId ? String(splitContext.secondarySheetId) : null,
-        secondary_tab: splitContext.secondaryTab ? String(splitContext.secondaryTab) : null,
-        primary_uploaded_at: splitContext.primaryUploadedAt ? String(splitContext.primaryUploadedAt) : null,
-        secondary_uploaded_at: splitContext.secondaryUploadedAt ? String(splitContext.secondaryUploadedAt) : null,
-      }
-      : null;
-  const allAvailableFiles = workspaceRes.map(f => ({
-      id: f.id,
-      name: f.display_name || f.filename,
-      headers: typeof f.headers === 'string' ? JSON.parse(f.headers) : (f.headers || []),
-      file_label: f.file_label || null,
-      import_version: Number.isFinite(Number(f.import_version)) ? Number(f.import_version) : null,
-      uploaded_at: f.uploaded_at || null,
-  }));
-  const scopedSheetIds = new Set(
-    [sheetId, activeViewScope?.splitContext?.secondarySheetId, parsedSplitContext?.secondary_sheet_id]
-      .filter(Boolean)
-      .map((v) => String(v))
-  );
-  const availableFiles = allAvailableFiles.filter((f) => scopedSheetIds.has(String(f.id)));
-
-  const dateFormatHints = buildDateFormatHints(aiHeaders, sampleRows);
-
-  let ai;
-  try {
-    const aiResult = await callOpenAI({
-      message: `${message}\n\nAvailable tabs: ${tabNames.join(", ") || "N/A"}\nIf the question maps to a specific tab, set target_tab in the JSON response.`,
-      headers: aiHeaders,
-      sampleRows,
-      conversationHistory: compactConversationHistory,
-      locale,
-      dateFormatHints,
-      schemaProfile: { 
-          available_tabs: tabNames,
-          available_files: availableFiles,
-          active_filters: activeDashboardFilters,
-          split_context: parsedSplitContext,
-          semantic_profile: compactSemanticProfileForPrompt(semanticProfile),
-      },
-      maxOutputTokens: Number(runtime.llmMaxOutputTokens || 800),
-      runtime,
-    });
-    ai = repairAiPlanForExecution(normalizeAiPlan(aiResult.plan), aiHeaders);
-    const requiredIntent = deriveMetricIntentFromQuestion(message);
-    const requiresDriverPlan = runtimeRegex(chatRuntimeRules, "driverIntentRegex", CHAT_RUNTIME_RULES_DEFAULTS.driverIntentRegex).test(String(message || "").toLowerCase());
-    const targetColumnFromPlan = String(ai?.target_column || "").toLowerCase();
-    const targetIntent =
-      /\b(revenue|sales|income|turnover)\b|выручк|доход|дохід|продаж/i.test(targetColumnFromPlan) ? "revenue" :
-      (/\b(expense|cost|spend|cogs|opex)\b|расход|витрат/i.test(targetColumnFromPlan) ? "expense" :
-      (/\b(profit|margin|ebit|ebitda)\b|прибут|прибыл/i.test(targetColumnFromPlan) ? "profit" : "auto"));
-    const mismatch = requiredIntent !== "auto" && targetIntent !== "auto" && requiredIntent !== targetIntent;
-    if (mismatch) {
-      const retryPrompt = `${message}\n\nValidation feedback: selected target_column "${ai.target_column}" does not match required metric intent "${requiredIntent}". Replan with matching metric intent using only available_columns.`;
-      const retry = await callOpenAI({
-        message: `${retryPrompt}\n\nAvailable tabs: ${tabNames.join(", ") || "N/A"}\nIf the question maps to a specific tab, set target_tab in the JSON response.`,
-        headers: aiHeaders,
-        sampleRows,
-        conversationHistory: compactConversationHistory,
-        locale,
-        dateFormatHints,
-        schemaProfile: {
-          available_tabs: tabNames,
-          available_files: availableFiles,
-          active_filters: activeDashboardFilters,
-          split_context: parsedSplitContext,
-          semantic_profile: compactSemanticProfileForPrompt(semanticProfile),
-        },
-        runtime,
-      });
-      ai = repairAiPlanForExecution(normalizeAiPlan(retry.plan), aiHeaders);
-    }
-    if (requiresDriverPlan) {
-      const validDriverPlan = String(ai?.operation || "") === "top_n" && String(ai?.group_by || "").trim().length > 0;
-      if (!validDriverPlan) {
-        const retryPrompt = `${message}\n\nValidation feedback: this is a driver-ranking request. Replan with operation='top_n' and a non-empty group_by dimension column from available_columns.`;
-        const retry = await callOpenAI({
-          message: `${retryPrompt}\n\nAvailable tabs: ${tabNames.join(", ") || "N/A"}\nIf the question maps to a specific tab, set target_tab in the JSON response.`,
-          headers: aiHeaders,
-          sampleRows,
-          conversationHistory: compactConversationHistory,
-          locale,
-          dateFormatHints,
-          schemaProfile: {
-            available_tabs: tabNames,
-            available_files: availableFiles,
-            active_filters: activeDashboardFilters,
-            split_context: parsedSplitContext,
-            semantic_profile: compactSemanticProfileForPrompt(semanticProfile),
-          },
-          runtime,
-        });
-        ai = repairAiPlanForExecution(normalizeAiPlan(retry.plan), aiHeaders);
-      }
-    }
-    ai = await enforceHeaderBoundAiPlan(ai, aiHeaders, sampleRows);
-    await recordAiUsage({
-      reservation: aiReservation,
-      provider: aiResult.usage?.provider,
-      model: aiResult.usage?.model,
-      promptTokens: aiResult.usage?.promptTokens,
-      completionTokens: aiResult.usage?.completionTokens,
-      estimatedCostUsd: aiResult.usage?.estimatedCostUsd,
-    }).catch((err) => console.error("[ai_quota] usage record failed:", err?.message || err));
-  } catch (e) {
-    const reason = resolveOpenAIRequestFailureReason(e);
-    const detail = String(e?.message || "").slice(0, 280);
-    console.error("OpenAI call failed:", e);
-    const statusCode = Number(e?.statusCode || 0);
-    if (statusCode === 413 || String(e?.code || "") === "chat_prompt_budget_exceeded" || String(e?.message || "") === "chat_prompt_budget_exceeded") {
-      return res.status(413).json({ error: "chat_prompt_budget_exceeded", reason, detail });
-    }
-    return res.status(502).json({ error: "ai_unavailable", reason, detail });
-  }
-
-  try {
-    const selectedTab = resolveTabName(tabNames, ai?.target_tab) || activeTab || null;
-    
-    // Resolve AI components
-    const aiFilters = await Promise.all((ai?.filters || []).map(async f => ({
-      column: await resolveColumn(aiHeaders, f.column, sampleRows),
-      operator: f.operator || "contains",
-      value: f.value
-    })));
-    const filteredAiFilters = aiFilters.filter(f => f.column);
-    const executionFilters = [...activeDashboardFilters, ...filteredAiFilters];
-
-    let resolvedOperation = (ai?.operation || "none").toLowerCase();
-    let resolvedTarget = await resolveColumn(aiHeaders, ai?.target_column, sampleRows);
-    let resolvedGroupBy = await resolveColumn(aiHeaders, ai?.group_by, sampleRows);
-    const msgLower = String(message || "").toLowerCase();
-    const profileMetric = resolveProfileMetric(semanticProfile, message, [ai?.target_column, ai?.chart?.value_column]);
-    const profileDimension = resolveProfileDimension(semanticProfile, message, [profileMetric, resolvedTarget]);
-    const profileDateColumn = resolveProfileDateColumn(semanticProfile, [ai?.chart?.date_column, ai?.group_by]);
-    if (!resolvedTarget && profileMetric && aiHeaders.includes(profileMetric)) {
-      resolvedTarget = profileMetric;
-    }
-    if (!resolvedGroupBy && resolvedOperation === "year_over_year" && profileDateColumn && aiHeaders.includes(profileDateColumn)) {
-      resolvedGroupBy = profileDateColumn;
-    }
-    if (!resolvedGroupBy && resolvedOperation !== "year_over_year" && profileDimension && aiHeaders.includes(profileDimension)) {
-      resolvedGroupBy = profileDimension;
-    }
-    if (isRatioIntent(message, chatRuntimeRules)) {
-      resolvedOperation = "ratio";
-      resolvedGroupBy = null;
-      resolvedTarget = null;
-    }
-
-    const aiClarifiedInsteadOfAnswering = isClarificationOrApologyAnswer(ai?.answer);
-    const metricIntent = detectQueryMetricIntent(message, chatRuntimeRules);
-    const asksProductRanking = /\b(top|highest|best|selling|sold|product|products)\b/.test(msgLower)
-      || /топ|продаж|продукт|товар/i.test(msgLower);
-    if (asksProductRanking) {
-      const productCol = findProductLikeColumn(aiHeaders);
-      if (productCol) {
-        resolvedGroupBy = productCol;
-        if (resolvedOperation === "none" || resolvedOperation === "filter") {
-          resolvedOperation = "top_n";
-        }
-      }
-    }
-    const asksDriverRanking = isDriverRankingQuery(normalizedMessage, chatRuntimeRules);
-    const lastHistoryText = (compactConversationHistory.slice(-4).map((h) => String(h?.content || "")).join(" ")) || "";
-    const lastAssistantText = String((compactConversationHistory.slice().reverse().find((h) => String(h?.role || "") === "assistant")?.content || ""));
-    const lastUserText = String((compactConversationHistory.slice().reverse().find((h) => String(h?.role || "") === "user")?.content || "")).toLowerCase();
-    const historyMetricHint = extractMetricHintFromText(lastHistoryText);
-    const questionMetricHint = extractMetricHintFromText(normalizedMessage);
-    const explicitMetricInQuestion = !!questionMetricHint;
-    const yearFollowupKind = String(intentPlan?.yearFollowup?.kind || "");
-    const onlyYearFollowup = yearFollowupKind === "only";
-    const yearOnlyFollowup = yearFollowupKind === "plain";
-    const whatAboutYearFollowup = yearFollowupKind === "what_about";
-    const andYearFollowup = yearFollowupKind === "and";
-    const shortYearContextFollowup = intentPlan.shortYearFollowup;
-    const compareFollowupWithoutYears = intentPlan.compareFollowupWithoutYears;
-    const allTimeIntent = asksAllTime(normalizedMessage);
-    const lockYoyCompositeIntent = Boolean(intentPlan.yoyDriverComposite);
-    recordRuleHit("comparisonIntentRegex", asksExplicitComparisonIntent(normalizedMessage, chatRuntimeRules), {
-      userId: req.user?.id || null,
-      sheetId: sheetId || null,
-      phase: "intent_detect",
-    });
-    recordRuleHit("aggregateComparisonRegex", runtimeRegex(chatRuntimeRules, "aggregateComparisonRegex", CHAT_RUNTIME_RULES_DEFAULTS.aggregateComparisonRegex).test(String(normalizedMessage || "").toLowerCase()), {
-      userId: req.user?.id || null,
-      sheetId: sheetId || null,
-      phase: "intent_detect",
-    });
-    recordRuleHit("comparisonIntentCanonical", intentPlan.explicitComparison, {
-      userId: req.user?.id || null,
-      sheetId: sheetId || null,
-      phase: "intent_detect",
-    });
-    recordRuleHit("isOnlyYearFollowup", onlyYearFollowup, { userId: req.user?.id || null, sheetId: sheetId || null, phase: "followup_detect" });
-    recordRuleHit("isYearOnlyFollowup", yearOnlyFollowup, { userId: req.user?.id || null, sheetId: sheetId || null, phase: "followup_detect" });
-    recordRuleHit("isWhatAboutYearFollowup", whatAboutYearFollowup, { userId: req.user?.id || null, sheetId: sheetId || null, phase: "followup_detect" });
-    recordRuleHit("isAndYearFollowup", andYearFollowup, { userId: req.user?.id || null, sheetId: sheetId || null, phase: "followup_detect" });
-    recordRuleHit("driverRankingIntentRegex", isDriverRankingQuery(normalizedMessage, chatRuntimeRules), {
-      userId: req.user?.id || null,
-      sheetId: sheetId || null,
-      phase: "intent_detect",
-    });
-    recordRuleHit("driverValueIntentRegex", runtimeRegex(chatRuntimeRules, "driverValueIntentRegex", CHAT_RUNTIME_RULES_DEFAULTS.driverValueIntentRegex).test(String(normalizedMessage || "").toLowerCase()), {
-      userId: req.user?.id || null,
-      sheetId: sheetId || null,
-      phase: "intent_detect",
-    });
-    if (!explicitMetricInQuestion && !resolvedTarget && historyMetricHint) {
-      const histResolved = await resolveColumn(aiHeaders, historyMetricHint, sampleRows);
-      if (histResolved) resolvedTarget = histResolved;
-    }
-    if (lockYoyCompositeIntent) {
-      if (!resolvedTarget) {
-        resolvedTarget = findRevenueMetric(aiHeaders)
-          || inferLikelyMetricColumn(aiHeaders, sampleRows, message, ["net revenue", "revenue total", "revenue", "income", "sales"]);
-      }
-      resolvedOperation = "year_over_year";
-      if (!resolvedGroupBy) {
-        const dateCol = profileDateColumn || aiHeaders.find((h) => /date|period|month|year|дата|період|рік|год/i.test(String(h)));
-        if (dateCol) resolvedGroupBy = dateCol;
-      }
-    }
-    if (asksDriverRanking) {
-      if (lockYoyCompositeIntent) {
-        // Keep YoY composite flow; do not downgrade to generic top-N ranking.
-      } else {
-      if (resolvedOperation === "none" || resolvedOperation === "sum" || resolvedOperation === "filter") {
-        resolvedOperation = "top_n";
-      }
-      if (!resolvedTarget) {
-        resolvedTarget = profileMetric
-          || inferLikelyMetricColumn(aiHeaders, sampleRows, message, [ai?.target_column, ai?.chart?.value_column]);
-      }
-      if (!resolvedGroupBy || String(resolvedGroupBy).toLowerCase() === String(resolvedTarget || "").toLowerCase()) {
-        resolvedGroupBy = resolveProfileDimension(semanticProfile, message, [resolvedTarget, ai?.target_column, ai?.chart?.value_column])
-          || inferLikelyDimensionColumn(aiHeaders, sampleRows, [resolvedTarget, ai?.target_column, ai?.chart?.value_column]);
-      }
-      if (!Number.isFinite(Number(ai?.limit))) {
-        ai.limit = 5;
-      }
-      if (!explicitMetricInQuestion && !resolvedTarget && historyMetricHint) {
-        const histResolved = await resolveColumn(aiHeaders, historyMetricHint, sampleRows);
-        if (histResolved) resolvedTarget = histResolved;
-      }
-      }
-    }
-    if (isShortYearFollowup(normalizedMessage, chatRuntimeRules)) {
-      const explicitComparisonNow = isComparisonIntent(normalizedMessage, chatRuntimeRules);
-      let singleYearHistoryRegex = /\bfor\s+(19|20)\d{2}\b/i;
-      let singleYearMetricKeywordRegex = /\b(revenue|sales|income|profit|expense|cost)\b|выруч|доход|дохід|прибут|расход|витрат/i;
-      try { singleYearHistoryRegex = new RegExp(String(chatRuntimeRules?.singleYearMetricHistoryRegex || CHAT_RUNTIME_RULES_DEFAULTS.singleYearMetricHistoryRegex), "i"); } catch {}
-      try { singleYearMetricKeywordRegex = new RegExp(String(chatRuntimeRules?.singleYearMetricKeywordRegex || CHAT_RUNTIME_RULES_DEFAULTS.singleYearMetricKeywordRegex), "i"); } catch {}
-      const priorWasSingleYearMetric =
-        singleYearHistoryRegex.test(lastUserText) &&
-        !isComparisonIntent(lastUserText, chatRuntimeRules) &&
-        singleYearMetricKeywordRegex.test(lastUserText);
-      if (priorWasSingleYearMetric && !explicitComparisonNow) {
-        resolvedOperation = "sum";
-      }
-      if (onlyYearFollowup && !explicitMetricInQuestion) {
-        resolvedOperation = "sum";
-      }
-      let topNRegex = /\btop\s*\d+\b/i;
-      let moneyRegex = /\bby\s+[a-zа-яіїєґ_ ]+:\s*\$/i;
-      try { topNRegex = new RegExp(String(chatRuntimeRules?.topNHistoryRegex || CHAT_RUNTIME_RULES_DEFAULTS.topNHistoryRegex), "i"); } catch {}
-      try { moneyRegex = new RegExp(String(chatRuntimeRules?.moneyHistoryRegex || CHAT_RUNTIME_RULES_DEFAULTS.moneyHistoryRegex), "i"); } catch {}
-      const enableTopNHistoryRegex = toRuleFlag(chatRuntimeRules?.enableTopNHistoryRegex, true);
-      const enableMoneyHistoryRegex = toRuleFlag(chatRuntimeRules?.enableMoneyHistoryRegex, true);
-      const topNHistoryHit = enableTopNHistoryRegex ? topNRegex.test(lastHistoryText) : false;
-      const moneyHistoryHit = enableMoneyHistoryRegex ? moneyRegex.test(lastHistoryText) : false;
-      recordRuleHit("topNHistoryRegex", topNHistoryHit, {
-        userId: req.user?.id || null,
-        sheetId: sheetId || null,
-        phase: "short_year_followup",
-        enabled: enableTopNHistoryRegex,
-      });
-      recordRuleHit("moneyHistoryRegex", moneyHistoryHit, {
-        userId: req.user?.id || null,
-        sheetId: sheetId || null,
-        phase: "short_year_followup",
-        enabled: enableMoneyHistoryRegex,
-      });
-      const histIsTopN = topNHistoryHit || moneyHistoryHit;
-      if (!priorWasSingleYearMetric && histIsTopN && (resolvedOperation === "none" || resolvedOperation === "filter" || resolvedOperation === "sum")) {
-        resolvedOperation = "top_n";
-        if (!resolvedTarget && historyMetricHint) {
-          const histResolved = await resolveColumn(aiHeaders, historyMetricHint, sampleRows);
-          if (histResolved) resolvedTarget = histResolved;
-        }
-        if (!resolvedGroupBy || String(resolvedGroupBy).toLowerCase() === String(resolvedTarget || "").toLowerCase()) {
-          resolvedGroupBy = resolveProfileDimension(semanticProfile, message, [resolvedTarget])
-            || inferLikelyDimensionColumn(aiHeaders, sampleRows, [resolvedTarget]);
-        }
-        if (!Number.isFinite(Number(ai?.limit))) ai.limit = 10;
-      }
-    }
-    if (shortYearContextFollowup && !explicitMetricInQuestion) {
-      const assistantMetric = extractMetricFromAssistantAnswer(lastAssistantText);
-      if (!resolvedTarget && assistantMetric) {
-        const fromAssistant = await resolveColumn(aiHeaders, assistantMetric, sampleRows);
-        if (fromAssistant) resolvedTarget = fromAssistant;
-      }
-      if (!resolvedTarget && historyMetricHint) {
-        const histResolved = await resolveColumn(aiHeaders, historyMetricHint, sampleRows);
-        if (histResolved) resolvedTarget = histResolved;
-      }
-      resolvedOperation = "sum";
-      if (resolvedGroupBy && String(resolvedGroupBy).toLowerCase() === String(resolvedTarget || "").toLowerCase()) {
-        resolvedGroupBy = null;
-      }
-      const histYearMetric = extractMetricHintFromText(lastUserText);
-      if (!resolvedTarget && histYearMetric) {
-        const histResolved = await resolveColumn(aiHeaders, histYearMetric, sampleRows);
-        if (histResolved) resolvedTarget = histResolved;
-      }
-    }
-    if (compareFollowupWithoutYears) {
-      if (resolvedOperation === "none" || resolvedOperation === "filter" || resolvedOperation === "sum") {
-        resolvedOperation = "year_over_year";
-      }
-      if (!resolvedTarget) {
-        const fromAssistant = extractMetricFromAssistantAnswer(lastAssistantText);
-        if (fromAssistant) {
-          const resolvedFromAssistant = await resolveColumn(aiHeaders, fromAssistant, sampleRows);
-          if (resolvedFromAssistant) resolvedTarget = resolvedFromAssistant;
-        }
-      }
-      if (!resolvedTarget && historyMetricHint) {
-        const histResolved = await resolveColumn(aiHeaders, historyMetricHint, sampleRows);
-        if (histResolved) resolvedTarget = histResolved;
-      }
-      if (!resolvedGroupBy) {
-        const dateCol = profileDateColumn || aiHeaders.find((h) => /date|period|month|year|дата|період|рік|год/i.test(String(h)));
-        if (dateCol) resolvedGroupBy = dateCol;
-      }
-      const ctxMetricRaw = String(resolvedDeterministicContext?.context?.lastMetric || "").trim();
-      const ctxYears = Array.isArray(resolvedDeterministicContext?.context?.lastYears)
-        ? resolvedDeterministicContext.context.lastYears.map((y) => Number(y)).filter(Number.isFinite)
-        : [];
-      if (!resolvedTarget && ctxMetricRaw) {
-        const ctxMetricResolved = await resolveColumn(aiHeaders, ctxMetricRaw, sampleRows);
-        if (ctxMetricResolved) resolvedTarget = ctxMetricResolved;
-      }
-      if (resolvedTarget && ctxYears.length >= 2) {
-        const dedupYears = Array.from(new Set(ctxYears));
-        const y1 = Number(dedupYears[dedupYears.length - 2]);
-        const y2 = Number(dedupYears[dedupYears.length - 1]);
-        const dateCol = profileDateColumn || aiHeaders.find((h) => /date|period|month|year|дата|період|рік|год/i.test(String(h)));
-        const yearCol = aiHeaders.find((h) => /\byear\b|рік|год/i.test(String(h)));
-        const sumForYear = async (yearNum) => {
-          if (dateCol) {
-            return computeSqlAggregation({
-              sheetId,
-              user: req.user,
-              operation: "sum",
-              targetColumn: resolvedTarget,
-              groupBy: null,
-              filters: [...executionFilters.filter((f) => String(f?.operator || "").toLowerCase() !== "year_equals"), { column: dateCol, operator: "year_equals", value: yearNum }],
-              rowFiltersList: loadedSample?.rowFiltersList || [],
-              allowedColumns: aiHeaders || [],
-              limit: 1,
-              locale,
-              tabName: selectedTab,
-              actualHeaders: baseHeaders,
-            });
-          }
-          if (yearCol) {
-            return computeSqlAggregation({
-              sheetId,
-              user: req.user,
-              operation: "sum",
-              targetColumn: resolvedTarget,
-              groupBy: null,
-              filters: [...executionFilters.filter((f) => String(f?.operator || "").toLowerCase() !== "year_equals"), { column: yearCol, operator: "equals", value: yearNum }],
-              rowFiltersList: loadedSample?.rowFiltersList || [],
-              allowedColumns: aiHeaders || [],
-              limit: 1,
-              locale,
-              tabName: selectedTab,
-              actualHeaders: baseHeaders,
-            });
-          }
-          return null;
-        };
-        const parseValue = (answerText = "") => {
-          const m = String(answerText || "").match(/[-+]?\$?\s*([\d,]+(?:\.\d+)?)/);
-          if (!m) return null;
-          const n = Number(String(m[1]).replace(/,/g, ""));
-          return Number.isFinite(n) ? n : null;
-        };
-        const [sum1, sum2] = await Promise.all([sumForYear(y1), sumForYear(y2)]);
-        const v1 = parseValue(sum1?.answer || "");
-        const v2 = parseValue(sum2?.answer || "");
-        if (v1 !== null && v2 !== null) {
-          let directAnswer = `Delta ${resolvedTarget} (${y2} - ${y1}): ${formatNumberForLocale(v2 - v1, locale)}`;
-          directAnswer = formatAnswerWithBullets(directAnswer);
-          directAnswer = cleanAITechnicalNoise(directAnswer);
-          directAnswer = stripApproximationWords(directAnswer);
-          directAnswer = normalizeDatesAndRemoveTime(directAnswer);
-          directAnswer = enforceCommaThousands(directAnswer);
-          directAnswer = enforceTwoDecimals(directAnswer);
-          directAnswer = applyAnswerFormatDirectives(directAnswer, styleSourceMessage);
-          directAnswer = applyTimeWindowDirectives(directAnswer, styleSourceMessage);
-          directAnswer = applyConversationalAnswerStyle(directAnswer, styleSourceMessage, locale);
-          return res.json({
-            answer: directAnswer,
-            actions: { reset_filters: false, filters: filteredAiFilters, chart: null },
-            preview_rows: [],
-            meta: {
-              phase: "contextual_delta_followup",
-              metric_requested: resolvedTarget,
-              years: [y1, y2],
-            },
-          });
-        }
-      }
-    }
-    if (isShortReasonFollowup(message, chatRuntimeRules) && (resolvedOperation === "none" || resolvedOperation === "filter")) {
-      resolvedOperation = "top_n";
-      if (!resolvedTarget && historyMetricHint) {
-        const histResolved = await resolveColumn(aiHeaders, historyMetricHint, sampleRows);
-        if (histResolved) resolvedTarget = histResolved;
-      }
-      if (!resolvedGroupBy || String(resolvedGroupBy).toLowerCase() === String(resolvedTarget || "").toLowerCase()) {
-        resolvedGroupBy = resolveProfileDimension(semanticProfile, message, [resolvedTarget, ai?.target_column, ai?.chart?.value_column])
-          || inferLikelyDimensionColumn(aiHeaders, sampleRows, [resolvedTarget]);
-      }
-      if (!Number.isFinite(Number(ai?.limit))) ai.limit = 5;
-    }
-    if (allTimeIntent) {
-      const filtered = executionFilters.filter((f) => {
-        const op = String(f?.operator || "").toLowerCase();
-        const col = String(f?.column || "").toLowerCase();
-        if (op === "year_equals") return false;
-        if ((op === "equals" || op === "contains") && /\byear\b|рік|год/.test(col)) return false;
-        return true;
-      });
-      executionFilters.splice(0, executionFilters.length, ...filtered);
-      if (resolvedOperation === "none" || resolvedOperation === "filter" || resolvedOperation === "year_over_year") {
-        resolvedOperation = "sum";
-      }
-      resolvedGroupBy = null;
-    }
-
-    const aiProvidedConcretePlan = !!(ai?.operation && ai.operation !== "none");
-    if ((resolvedOperation === "none" || aiClarifiedInsteadOfAnswering) && !aiProvidedConcretePlan) {
-      const inferredTarget = profileMetric || inferLikelyMetricColumn(aiHeaders, sampleRows, message, [ai?.target_column]);
-      const inferredGroupBy = inferredTarget
-        ? (resolveProfileDimension(semanticProfile, message, [inferredTarget]) || inferLikelyDimensionColumn(aiHeaders, sampleRows, [inferredTarget]))
-        : null;
-      const inferredOperation = inferAggregateOperationFromMessage(message, ai, chatRuntimeRules) || (inferredTarget && inferredGroupBy ? "top_n" : (inferredTarget ? "sum" : "count"));
-      resolvedOperation = inferredOperation;
-      if (!resolvedTarget && inferredTarget) resolvedTarget = inferredTarget;
-      if (!resolvedGroupBy && inferredGroupBy && ["top_n", "sum", "avg", "max", "min"].includes(resolvedOperation)) {
-        resolvedGroupBy = inferredGroupBy;
-      }
-      if (!Number.isFinite(Number(ai?.limit)) && resolvedOperation === "top_n") {
-        ai.limit = 5;
-      }
-      if (aiClarifiedInsteadOfAnswering) {
-        ai.answer = "";
-      }
-    }
-    if (resolvedOperation === "top_n" && (!resolvedTarget || !resolvedGroupBy)) {
-      const inferredTarget = resolvedTarget || profileMetric || inferLikelyMetricColumn(aiHeaders, sampleRows, message, [ai?.target_column, ai?.chart?.value_column]);
-      const inferredGroupBy = resolvedGroupBy || (inferredTarget
-        ? (resolveProfileDimension(semanticProfile, message, [inferredTarget, ai?.target_column, ai?.chart?.value_column]) || inferLikelyDimensionColumn(aiHeaders, sampleRows, [inferredTarget, ai?.target_column, ai?.chart?.value_column]))
-        : null);
-      if (!resolvedTarget && inferredTarget) resolvedTarget = inferredTarget;
-      if (!resolvedGroupBy && inferredGroupBy) resolvedGroupBy = inferredGroupBy;
-      if (!Number.isFinite(Number(ai?.limit))) ai.limit = 5;
-    }
-
-    const explicitYear = extractYearToken(message);
-    const explicitYearsInPrompt = Array.from(
-      String(message || "").matchAll(/\b(19|20)\d{2}\b/g),
-      (m) => Number(m?.[0])
-    ).filter(Number.isFinite);
-    const hasMultiYearPrompt = new Set(explicitYearsInPrompt).size >= 2;
-    const explicitComparisonGuard = hasMultiYearPrompt || intentPlan.explicitComparison;
-    const explicitSingleYearMetricIntent =
-      !!explicitYear &&
-      !explicitComparisonGuard &&
-      /\b(revenue|sales|income|profit|expense|cost|amount|total)\b|выруч|доход|дохід|прибут|расход|витрат/i.test(String(message || "").toLowerCase());
-    if (explicitComparisonGuard) {
-      if (resolvedOperation === "none" || resolvedOperation === "filter" || resolvedOperation === "sum") {
-        resolvedOperation = "year_over_year";
-      }
-      if (!resolvedGroupBy) {
-        const dateCol = profileDateColumn || aiHeaders.find((h) => /date|period|month|year|дата|період|рік|год/i.test(String(h)));
-        if (dateCol) resolvedGroupBy = dateCol;
-      }
-      if (hasMultiYearPrompt) {
-        const filtered = executionFilters.filter((f) => String(f?.operator || "").toLowerCase() !== "year_equals");
-        executionFilters.splice(0, executionFilters.length, ...filtered);
-      }
-    }
-    if (explicitSingleYearMetricIntent) {
-      const hasYearFilter = executionFilters.some((f) => String(f?.operator || "").toLowerCase() === "year_equals");
-      if (!hasYearFilter) {
-        const dateCol = profileDateColumn || aiHeaders.find((h) => /date|period|month|year|дата|період|рік|год/i.test(String(h)));
-        const yearCol = aiHeaders.find((h) => /\byear\b|рік|год/i.test(String(h)));
-        if (dateCol) executionFilters.push({ column: dateCol, operator: "year_equals", value: explicitYear });
-        else if (yearCol) executionFilters.push({ column: yearCol, operator: "equals", value: explicitYear });
-      }
-      if (resolvedOperation === "none" || resolvedOperation === "filter" || resolvedOperation === "year_over_year") {
-        resolvedOperation = "sum";
-      }
-      if (resolvedGroupBy && String(resolvedGroupBy).toLowerCase() === String(resolvedTarget || "").toLowerCase()) {
-        resolvedGroupBy = null;
-      }
-    }
-    if (explicitYear && !explicitComparisonGuard) {
-      const dateCol = profileDateColumn || aiHeaders.find((h) => /date|period|month|year|дата|період|рік|год/i.test(String(h)));
-      const hasYearFilter = executionFilters.some((f) => String(f?.operator || "").toLowerCase() === "year_equals");
-      if (dateCol && !hasYearFilter) {
-        executionFilters.push({ column: dateCol, operator: "year_equals", value: explicitYear });
-      }
-    }
-    if (isDriverRankingQuery(message, chatRuntimeRules) && wantsRevenueIntent(message) && (!resolvedTarget || resolvedOperation === "none")) {
-      const metric = findRevenueMetric(aiHeaders) || inferLikelyMetricColumn(aiHeaders, sampleRows, message, ["revenue", "net revenue", "revenue total", "income", "sales"]);
-      const dimension = inferLikelyDimensionColumn(aiHeaders, sampleRows, [metric, profileDateColumn, "Date", "Start Date", "End Date"]);
-      if (metric && dimension) {
-        resolvedOperation = "top_n";
-        resolvedTarget = metric;
-        resolvedGroupBy = dimension;
-        ai.limit = Number.isFinite(Number(ai?.limit)) ? Number(ai.limit) : 1;
-        if (explicitYear) {
-          const dateCol = profileDateColumn || aiHeaders.find((h) => /date|period|month|year|дата|період|рік|год/i.test(String(h)));
-          if (dateCol) {
-            executionFilters.push({ column: dateCol, operator: "year_equals", value: explicitYear });
-          } else {
-            const yearCol = aiHeaders.find((h) => /\byear\b|рік|год/i.test(String(h)));
-            if (yearCol) executionFilters.push({ column: yearCol, operator: "equals", value: explicitYear });
-          }
-        }
-      }
-    }
-    if (asksYoyWithPerYearDriver(message) && wantsRevenueIntent(message)) {
-      const metric = findRevenueMetric(aiHeaders) || inferLikelyMetricColumn(aiHeaders, sampleRows, message, ["revenue", "net revenue", "revenue total", "income", "sales"]);
-      if (metric) resolvedTarget = metric;
-    }
-    if (wantsMostProfitableCustomer(message)) {
-      const profitMetric = inferLikelyMetricColumn(aiHeaders, sampleRows, message, ["net profit", "profit total", "gross profit", "profit", "margin", "ebitda"]);
-      const customerDimension = aiHeaders.find((h) => /\b(customer|client|account)\b/i.test(String(h || "")))
-        || inferLikelyDimensionColumn(aiHeaders, sampleRows, [profitMetric, profileDateColumn]);
-      if (profitMetric && customerDimension) {
-        resolvedOperation = "top_n";
-        resolvedTarget = profitMetric;
-        resolvedGroupBy = customerDimension;
-        if (!Number.isFinite(Number(ai?.limit))) ai.limit = 5;
-      }
-    }
-    if (!lockYoyCompositeIntent && runtimeRegex(chatRuntimeRules, "driverIntentRegex", CHAT_RUNTIME_RULES_DEFAULTS.driverIntentRegex).test(String(message || "").toLowerCase()) && (resolvedOperation !== "top_n" || !resolvedGroupBy)) {
-      resolvedOperation = "top_n";
-      if (!resolvedTarget) {
-        resolvedTarget = profileMetric || inferLikelyMetricColumn(aiHeaders, sampleRows, message, [ai?.target_column, ai?.chart?.value_column]);
-      }
-      if (!resolvedGroupBy || String(resolvedGroupBy).toLowerCase() === String(resolvedTarget || "").toLowerCase()) {
-        resolvedGroupBy = resolveProfileDimension(semanticProfile, message, [resolvedTarget, ai?.target_column, ai?.chart?.value_column])
-          || inferLikelyDimensionColumn(aiHeaders, sampleRows, [resolvedTarget, profileDateColumn]);
-      }
-      if (!Number.isFinite(Number(ai?.limit))) ai.limit = 5;
-    }
-
-    if (["sum", "avg"].includes(resolvedOperation) && resolvedGroupBy && !asksExplicitBreakdown(message, chatRuntimeRules)) {
-      resolvedGroupBy = null;
-    }
-
-    const targetCategory = classifyColumnMetricCategory(resolvedTarget || "");
-    const categoryMismatch = metricIntent && targetCategory && metricIntent !== targetCategory;
-    if (categoryMismatch) {
-      const fallbackTarget = inferLikelyMetricColumn(aiHeaders, sampleRows, message, [metricIntent]);
-      const fallbackCategory = classifyColumnMetricCategory(fallbackTarget || "");
-      if (fallbackTarget && (!fallbackCategory || fallbackCategory === metricIntent)) {
-        resolvedTarget = fallbackTarget;
-      } else {
-        return res.status(422).json({
-          error: "metric_intent_mismatch",
-          message: `Requested ${metricIntent} but selected metric column is ${targetCategory || "unknown"}.`,
-        });
-      }
-    }
-
-    const opNeedsTarget = new Set(["sum", "avg", "max", "min", "top_n"]);
-    if (opNeedsTarget.has(resolvedOperation) && !resolvedTarget) {
-      const notFoundText = isEnglishLocale(locale)
-        ? "I can't find a close matching column for this metric in the current data."
-        : (
-          (await translateDashboardItems({
-            locale,
-            items: [{ key: "not_found", text: "I can't find a close matching column for this metric in the current data." }],
-            context: "chat-answer",
-          }))?.find((item) => item.key === "not_found")?.text
-          || "I can't find a close matching column for this metric in the current data."
-        );
-      return res.json({
-        answer: formatAnswerWithBullets(String(notFoundText || "").trim()),
-        actions: { reset_filters: false, filters: [], chart: null },
-        preview_rows: [],
-        meta: { operation: "none", locale, selectedTab, resolvedTarget: null, resolvedGroupBy },
-      });
-    }
-    
-    // --- CROSS-TALK SYNTHESIS ---
-    if (ai?.cross_talk && Array.isArray(ai.cross_targets) && ai.cross_targets.length >= 2) {
-        const allowedSheetIds = new Set(availableFiles.map((f) => String(f.id)));
-        const scopedTargets = ai.cross_targets
-          .filter((t) => allowedSheetIds.has(String(t?.sheet_id || "")))
-          .slice(0, 2);
-
-        if (scopedTargets.length < 2) {
-          return res.status(400).json({ error: "invalid_cross_targets" });
-        }
-
-        const results = await Promise.all(scopedTargets.map(async (t) => {
-            const targetAccess = await loadAccessibleRows(t.sheet_id, req.user, null, 1);
-            if (targetAccess?.forbidden) {
-                throw new Error("cross_target_forbidden");
-            }
-            const targetOperation = String(t.operation || "sum").toLowerCase();
-            const resolvedCrossColumn = targetOperation === "count"
-              ? null
-              : await resolveColumn(targetAccess.headers || [], t.column, targetAccess.rows || []);
-            if (targetOperation !== "count" && !resolvedCrossColumn) {
-                throw new Error("cross_target_column_forbidden");
-            }
-            const res = await computeSqlAggregation({
-                sheetId: t.sheet_id,
-                user: req.user,
-                operation: targetOperation,
-                targetColumn: resolvedCrossColumn,
-                rowFiltersList: targetAccess?.rowFiltersList || [],
-                allowedColumns: targetAccess?.headers || [],
-                locale,
-                actualHeaders: targetAccess?.headers || []
-            });
-            // Extract numeric value from "Total X: $Y" or similar
-            const val = res?.answer ? parseFloat(res.answer.replace(/[^\d.-]/g, "")) : 0;
-            const fileName = availableFiles.find(f => String(f.id) === String(t.sheet_id))?.name || "Sheet";
-            return { value: val, column: resolvedCrossColumn, fileName };
-        }));
-
-        const a = results[0];
-        const b = results[1];
-        const diff = a.value - b.value;
-        const pct = b.value !== 0 ? (diff / Math.abs(b.value)) * 100 : 0;
-        
-        const summary = `${a.fileName} (${a.column}) has ${formatValue(a.value, locale, a.column)}, while ${b.fileName} (${b.column}) has ${formatValue(b.value, locale, b.column)}. \n` +
-                        `The difference is ${diff >= 0 ? "+" : ""}${formatValue(diff, locale, a.column)} (${diff >= 0 ? "+" : ""}${pct.toFixed(2)}%).`;
-        
-        return res.json({
-            answer: summary,
-            actions: { reset_filters: false, filters: [], chart: null },
-            preview_rows: [],
-            meta: { operation: "cross_talk", locale, cross_results: results }
-        });
-    }
-
-    const numericOps = new Set(["count", "sum", "avg", "max", "min", "top_n", "year_over_year"]);
-    let exec = null;
-    let chart = (["chart", "plot", "trend"].includes(ai?.operation) && ai?.chart) ? {
-      dateColumn: await resolveColumn(aiHeaders, ai.chart.date_column, sampleRows),
-      valueColumn: await resolveColumn(aiHeaders, ai.chart.value_column, sampleRows),
-      segmentBy: await resolveColumn(aiHeaders, ai.chart.segment_by, sampleRows),
-      aggregation: ai.chart.aggregation || "sum"
-    } : null;
-
-    if (intentPlan.twoYearDeltaCause) {
-      try {
-        const ctxMetricRaw = String(resolvedDeterministicContext?.context?.lastMetric || "").trim();
-        const ctxYearsRaw = Array.isArray(resolvedDeterministicContext?.context?.lastYears)
-          ? resolvedDeterministicContext.context.lastYears.map((y) => Number(y)).filter(Number.isFinite)
-          : [];
-        if (!resolvedTarget) {
-          resolvedTarget =
-            (ctxMetricRaw ? (await resolveColumn(aiHeaders, ctxMetricRaw, sampleRows)) : null) ||
-            resolveProfileMetric(semanticProfile, message, ["net revenue", "revenue total", "revenue", "income", "sales"]) ||
-            findRevenueMetric(aiHeaders) ||
-            inferLikelyMetricColumn(aiHeaders, sampleRows, message, ["net revenue", "revenue total", "revenue", "income", "sales"]);
-        }
-        if (!resolvedTarget) {
-          throw new Error("two_year_delta_cause_metric_unresolved");
-        }
-        const explicitYears = extractDistinctYearsInOrder(message).map((y) => Number(y)).filter(Number.isFinite);
-        const contextYears = Array.from(new Set(ctxYearsRaw));
-        const chosenYears = explicitYears.length >= 2
-          ? explicitYears.slice(0, 2)
-          : (contextYears.length >= 2 ? contextYears.slice(-2) : []);
-        if (chosenYears.length < 2) {
-          throw new Error("two_year_delta_cause_years_unresolved");
-        }
-        const y1 = Number(chosenYears[0]);
-        const y2 = Number(chosenYears[1]);
-        const dateCol = profileDateColumn || aiHeaders.find((h) => /date|period|month|year|дата|період|рік|год/i.test(String(h)));
-        const yearCol = aiHeaders.find((h) => /\byear\b|рік|год/i.test(String(h)));
-        const deterministicBaseFilters = [...(Array.isArray(activeDashboardFilters) ? activeDashboardFilters : [])]
-          .filter((f) => String(f?.operator || "").toLowerCase() !== "year_equals");
-        const dateCandidates = Array.from(new Set([
-          dateCol,
-          aiHeaders.includes("Start Date") ? "Start Date" : null,
-          aiHeaders.includes("Invoice Date") ? "Invoice Date" : null,
-          aiHeaders.includes("End Date") ? "End Date" : null,
-        ].filter(Boolean)));
-        const tabCandidates = Array.from(new Set([selectedTab || null, null]));
-        const sumForYear = async (yearNum) => {
-          const extractNumeric = (answerText = "") => {
-            const m = String(answerText || "").match(/[-+]?\$?\s*([\d,]+(?:\.\d+)?)/);
-            const n = m ? Number(String(m[1]).replace(/,/g, "")) : null;
-            return Number.isFinite(n) ? n : null;
-          };
-          for (const tc of tabCandidates) {
-            for (const dc of dateCandidates) {
-              const baseFilters = [...deterministicBaseFilters, { column: dc, operator: "year_equals", value: yearNum }];
-              const r = await computeSqlAggregation({
-                sheetId,
-                user: req.user,
-                operation: "sum",
-                targetColumn: resolvedTarget,
-                groupBy: null,
-                filters: baseFilters,
-                rowFiltersList: loadedSample?.rowFiltersList || [],
-                allowedColumns: aiHeaders || [],
-                limit: 1,
-                locale,
-                tabName: tc,
-                actualHeaders: baseHeaders,
-              });
-              const n = extractNumeric(r?.answer || "");
-              if (n !== null) return n;
-            }
-            if (yearCol) {
-              const baseFilters = [...deterministicBaseFilters, { column: yearCol, operator: "equals", value: yearNum }];
-              const r = await computeSqlAggregation({
-                sheetId,
-                user: req.user,
-                operation: "sum",
-                targetColumn: resolvedTarget,
-                groupBy: null,
-                filters: baseFilters,
-                rowFiltersList: loadedSample?.rowFiltersList || [],
-                allowedColumns: aiHeaders || [],
-                limit: 1,
-                locale,
-                tabName: tc,
-                actualHeaders: baseHeaders,
-              });
-              const n = extractNumeric(r?.answer || "");
-              if (n !== null) return n;
-            }
-          }
-          return null;
-        };
-        let [v1, v2] = await Promise.all([sumForYear(y1), sumForYear(y2)]);
-        if (v1 === null || v2 === null) {
-          const fullLoadForFallback = await loadAccessibleRows(sheetId, req.user, selectedTab);
-          const projected = fullLoadForFallback?.forbidden ? [] : projectRowsToHeaders(fullLoadForFallback.rows || [], aiHeaders);
-          if (projected.length) {
-            const inferYear = (row, dc, yc) => {
-              if (dc) {
-                const d = parseDateValue(row?.[dc]);
-                if (d) return d.getFullYear();
-                const m = String(row?.[dc] || "").match(/\b(19\d{2}|20\d{2})\b/);
-                if (m) return Number(m[1]);
-              }
-              if (yc) {
-                const n = Number(String(row?.[yc] || "").replace(/[^\d]/g, ""));
-                if (Number.isFinite(n)) return n;
-              }
-              return null;
-            };
-            let best = null;
-            for (const dc of dateCandidates.length ? dateCandidates : [null]) {
-              let s1 = 0;
-              let s2 = 0;
-              let hits = 0;
-              for (const row of projected) {
-                const yr = inferYear(row, dc, yearCol);
-                if (yr !== y1 && yr !== y2) continue;
-                const n = toNum(row?.[resolvedTarget]);
-                if (n === null) continue;
-                if (yr === y1) s1 += n;
-                if (yr === y2) s2 += n;
-                hits += 1;
-              }
-              if (!best || hits > best.hits) best = { s1, s2, hits };
-            }
-            if (best && best.hits > 0) {
-              if (v1 === null) v1 = best.s1;
-              if (v2 === null) v2 = best.s2;
-            }
-          }
-        }
-        if (v1 !== null && v2 !== null) {
-          const fullLoad = await loadAccessibleRows(sheetId, req.user, selectedTab);
-          const projectedRows = fullLoad?.forbidden ? [] : projectRowsToHeaders(fullLoad.rows || [], aiHeaders);
-          const topDim = resolveDriverDimensionForDeltaCause({
-            headers: aiHeaders,
-            sampleRows,
-            targetColumn: resolvedTarget,
-            dateColumn: dateCol,
-            yearColumn: yearCol,
-            preferredGroupBy: resolvedGroupBy,
-          });
-          let driverText = "";
-          if (topDim && projectedRows.length) {
-            const byKey = new Map();
-            for (const r of projectedRows) {
-              let rowYear = null;
-              if (dateCol) {
-                const d = parseDateValue(r?.[dateCol]);
-                if (d) rowYear = d.getFullYear();
-                else {
-                  const ym = String(r?.[dateCol] || "").match(/\b(19\d{2}|20\d{2})\b/);
-                  if (ym) rowYear = Number(ym[1]);
-                }
-              } else if (yearCol) {
-                const yn = Number(String(r?.[yearCol] || "").replace(/[^\d]/g, ""));
-                if (Number.isFinite(yn)) rowYear = yn;
-              }
-              if (rowYear !== y1 && rowYear !== y2) continue;
-              const key = String(r?.[topDim] || "").trim();
-              if (!key) continue;
-              const n = toNum(r?.[resolvedTarget]);
-              if (n === null) continue;
-              const cur = byKey.get(key) || { y1: 0, y2: 0 };
-              if (rowYear === y1) cur.y1 += n;
-              if (rowYear === y2) cur.y2 += n;
-              byKey.set(key, cur);
-            }
-            let best = null;
-            const totalDelta = v2 - v1;
-            for (const [name, vals] of byKey.entries()) {
-              const d = Number(vals.y2) - Number(vals.y1);
-              if (!Number.isFinite(d) || Math.abs(d) < 1e-9) continue;
-              const aligned = totalDelta === 0 ? true : (Math.sign(d) === Math.sign(totalDelta));
-              if (!aligned) continue;
-              if (!best || Math.abs(d) > Math.abs(best.delta)) best = { name, delta: d };
-            }
-            if (!best) {
-              for (const [name, vals] of byKey.entries()) {
-                const d = Number(vals.y2) - Number(vals.y1);
-                if (!Number.isFinite(d) || Math.abs(d) < 1e-9) continue;
-                if (!best || Math.abs(d) > Math.abs(best.delta)) best = { name, delta: d };
-              }
-            }
-            if (best) {
-              driverText = `The largest driver was ${best.name} (${formatNumberForLocale(best.delta, locale)}).`;
-            }
-          }
-          const metric = resolveMetricDisplayLabel({ message, targetColumn: resolvedTarget });
-          const deltaValue = v2 - v1;
-          const higherYear = v2 >= v1 ? y2 : y1;
-          const lowerYear = v2 >= v1 ? y1 : y2;
-          const absDeltaText = formatNumberForLocale(Math.abs(deltaValue), locale);
-          const answerParts = [
-            `The ${metric} for ${y1} was ${formatNumberForLocale(v1, locale)}.`,
-            `The ${metric} for ${y2} was ${formatNumberForLocale(v2, locale)}.`,
-            `${higherYear} had higher ${metric} than ${lowerYear} by ${absDeltaText}.`,
-          ];
-          if (driverText) {
-            answerParts.push(
-              driverText.replace(/^The largest driver was\s+/i, "The top category driving the gap was ")
-            );
-          } else {
-            answerParts.push("I can compute the delta, but I could not identify a valid revenue category driver from the available columns.");
-          }
-          let compositeAnswer = answerParts.join("\n");
-          compositeAnswer = cleanAITechnicalNoise(compositeAnswer);
-          compositeAnswer = stripApproximationWords(compositeAnswer);
-          compositeAnswer = normalizeDatesAndRemoveTime(compositeAnswer);
-          compositeAnswer = enforceCommaThousands(compositeAnswer);
-          compositeAnswer = enforceTwoDecimals(compositeAnswer);
-          compositeAnswer = applyAnswerFormatDirectives(compositeAnswer, styleSourceMessage);
-          compositeAnswer = applyTimeWindowDirectives(compositeAnswer, styleSourceMessage);
-          compositeAnswer = applyConversationalAnswerStyle(compositeAnswer, styleSourceMessage, locale);
-          return res.json({
-            answer: compositeAnswer,
-            actions: { reset_filters: false, filters: filteredAiFilters, chart: null },
-            preview_rows: [],
-            meta: { operation: "two_year_delta_with_cause", years: [y1, y2], targetColumn: resolvedTarget, groupBy: topDim || null },
-          });
-        }
-      } catch {
-        // fall through to existing path
-      }
-    }
-
-    if (asksYoyWithPerYearDriver(message) || (resolvedTarget && intentPlan.yoyDriverComposite)) {
-      try {
-        if (!resolvedTarget) {
-          resolvedTarget =
-            findRevenueMetric(aiHeaders) ||
-            resolveProfileMetric(semanticProfile, message, ["net revenue", "revenue total", "revenue", "income", "sales"]) ||
-            inferLikelyMetricColumn(aiHeaders, sampleRows, message, ["net revenue", "revenue total", "revenue", "income", "sales"]);
-        }
-        if (!resolvedTarget) {
-          throw new Error("yoy_driver_metric_unresolved");
-        }
-        const fullLoad = await loadAccessibleRows(sheetId, req.user, selectedTab);
-        const projectedRows = fullLoad?.forbidden ? [] : projectRowsToHeaders(fullLoad.rows || [], aiHeaders);
-        const dateCol = profileDateColumn || aiHeaders.find((h) => /date|period|month|year|дата|період|рік|год/i.test(String(h)));
-        const allYears = [];
-        if (dateCol) {
-          for (const r of projectedRows) {
-            const d = parseDateValue(r?.[dateCol]);
-            if (d) allYears.push(d.getFullYear());
-            else {
-              const m = String(r?.[dateCol] || "").match(/\b(19\d{2}|20\d{2})\b/);
-              if (m) allYears.push(Number(m[1]));
-            }
-          }
-        }
-        const uniqueYears = Array.from(new Set(allYears.filter((y) => Number.isFinite(y)))).sort((a,b)=>a-b);
-        const trailing = parseTrailingYearsWindow(message);
-        const scopedYears = trailing && uniqueYears.length ? uniqueYears.slice(-trailing) : uniqueYears;
-        const topDim = resolveDriverDimensionForDeltaCause({
-          headers: aiHeaders,
-          sampleRows,
-          targetColumn: resolvedTarget,
-          dateColumn: dateCol || profileDateColumn || "",
-          yearColumn: aiHeaders.find((h) => /\byear\b|рік|год/i.test(String(h))) || "",
-          preferredGroupBy: resolvedGroupBy,
-        });
-        const perYearBlocks = [];
-        if (topDim && scopedYears.length) {
-          const yearCol = aiHeaders.find((h) => /\byear\b|рік|год/i.test(String(h)));
-          const resolveRowYear = (row) => {
-            if (dateCol) {
-              const d = parseDateValue(row?.[dateCol]);
-              if (d) return d.getFullYear();
-              const m = String(row?.[dateCol] || "").match(/\b(19\d{2}|20\d{2})\b/);
-              if (m) return Number(m[1]);
-            }
-            if (yearCol) {
-              const yn = Number(String(row?.[yearCol] || "").replace(/[^\d]/g, ""));
-              if (Number.isFinite(yn) && yn >= 1900 && yn <= 2200) return yn;
-            }
-            return null;
-          };
-          for (const y of scopedYears) {
-            const byDim = new Map();
-            for (const r of projectedRows) {
-              const yr = resolveRowYear(r);
-              if (yr !== y) continue;
-              const key = String(r?.[topDim] || "").trim();
-              if (!key) continue;
-              const n = toNum(r?.[resolvedTarget]);
-              if (n === null) continue;
-              byDim.set(key, (byDim.get(key) || 0) + n);
-            }
-            const ranked = Array.from(byDim.entries())
-              .map(([label, value]) => ({ label, value }))
-              .sort((a, b) => b.value - a.value)
-              .slice(0, 5);
-            if (ranked.length) {
-              const yearTotal = ranked.reduce((acc, r) => acc + Number(r.value || 0), 0);
-              const top = ranked[0];
-              const metricLabel = resolveMetricDisplayLabel({ message, targetColumn: resolvedTarget });
-              const isUk = String(locale || "").toLowerCase().startsWith("uk");
-              const isRu = String(locale || "").toLowerCase().startsWith("ru");
-              const yearTitle = isUk
-                ? `Рік ${y}`
-                : (isRu ? `Год ${y}` : `Year ${y}`);
-              const totalLine = isUk
-                ? `• Загальний ${metricLabel}: ${formatValue(yearTotal, locale, resolvedTarget)}`
-                : (isRu
-                  ? `• Общий ${metricLabel}: ${formatValue(yearTotal, locale, resolvedTarget)}`
-                  : `• Total ${metricLabel}: ${formatValue(yearTotal, locale, resolvedTarget)}`);
-              const topLabel = isUk
-                ? `• Топ драйвер (${metricLabel}): ${top.label} — ${formatValue(top.value, locale, resolvedTarget)}`
-                : (isRu
-                  ? `• Топ драйвер (${metricLabel}): ${top.label} — ${formatValue(top.value, locale, resolvedTarget)}`
-                  : `• Top driver (${metricLabel}): ${top.label} — ${formatValue(top.value, locale, resolvedTarget)}`);
-              const nextLines = ranked.slice(1).map((r) => (
-                isUk
-                  ? `• Далі: ${r.label} — ${formatValue(r.value, locale, resolvedTarget)}`
-                  : (isRu
-                    ? `• Далее: ${r.label} — ${formatValue(r.value, locale, resolvedTarget)}`
-                    : `• Next: ${r.label} — ${formatValue(r.value, locale, resolvedTarget)}`)
-              ));
-              const yearHeader = isUk ? `Рік ${y}:` : (isRu ? `Год ${y}:` : `Year ${y}:`);
-              perYearBlocks.push(`• ${yearTitle}:\n${totalLine}\n${topLabel}${nextLines.length ? `\n${nextLines.join("\n")}` : ""}`);
-            }
-          }
-        }
-        let yoyPart = "";
-        if (asksQuarterTrendSummary(message)) {
-          const yoyRes = await computeSqlAggregation({
-            sheetId,
-            user: req.user,
-            operation: "year_over_year",
-            targetColumn: resolvedTarget,
-            groupBy: profileDateColumn || resolvedGroupBy,
-            filters: executionFilters,
-            rowFiltersList: loadedSample?.rowFiltersList || [],
-            allowedColumns: aiHeaders || [],
-            limit: 5,
-            locale,
-            tabName: selectedTab,
-            actualHeaders: baseHeaders,
-          });
-          const candidate = String(yoyRes?.answer || "").trim();
-          if (candidate && !/no matching data|no data matched|данные не найдены|відповідних даних не знайдено/i.test(candidate)) {
-            yoyPart = candidate;
-          }
-        }
-        const parts = [];
-        if (perYearBlocks.length) parts.push(perYearBlocks.join("\n\n"));
-        if (asksOverallRegionImpact(message) && scopedYears.length) {
-          const regionCol = aiHeaders.find((h) => /\bregion\b|регіон|регион/i.test(String(h || "")));
-          if (regionCol) {
-            const yearCol = aiHeaders.find((h) => /\byear\b|рік|год/i.test(String(h)));
-            const resolveRowYear = (row) => {
-              if (dateCol) {
-                const d = parseDateValue(row?.[dateCol]);
-                if (d) return d.getFullYear();
-                const m = String(row?.[dateCol] || "").match(/\b(19\d{2}|20\d{2})\b/);
-                if (m) return Number(m[1]);
-              }
-              if (yearCol) {
-                const yn = Number(String(row?.[yearCol] || "").replace(/[^\d]/g, ""));
-                if (Number.isFinite(yn) && yn >= 1900 && yn <= 2200) return yn;
-              }
-              return null;
-            };
-            const allowedYears = new Set(scopedYears.map(Number));
-            const byRegion = new Map();
-            for (const r of projectedRows) {
-              const yr = resolveRowYear(r);
-              if (!allowedYears.has(Number(yr))) continue;
-              const region = String(r?.[regionCol] || "").trim();
-              if (!region) continue;
-              const n = toNum(r?.[resolvedTarget]);
-              if (n === null) continue;
-              byRegion.set(region, (byRegion.get(region) || 0) + n);
-            }
-            const rankedRegions = Array.from(byRegion.entries())
-              .map(([label, value]) => ({ label, value }))
-              .sort((a, b) => b.value - a.value);
-            if (rankedRegions.length) {
-              const top = rankedRegions[0];
-              const impactLine = isEnglishLocale(locale)
-                ? `Overall region impact (${scopedYears[0]}-${scopedYears[scopedYears.length - 1]}): ${top.label} with ${formatValue(top.value, locale, resolvedTarget)}.`
-                : `Overall region impact (${scopedYears[0]}-${scopedYears[scopedYears.length - 1]}): ${top.label} with ${formatValue(top.value, locale, resolvedTarget)}.`;
-              parts.push(impactLine);
-            }
-          }
-        }
-        if (yoyPart) parts.push(yoyPart);
-        let compositeAnswer = parts.length ? parts.join("\n\n") : `No driver rows found for years: ${scopedYears.join(", ")}.`;
-        if (!isEnglishLocale(locale) && compositeAnswer) {
-          const translated = await translateDashboardItems({
-            locale,
-            items: [{ key: "chat_answer", text: String(compositeAnswer) }],
-            context: "chat-answer",
-          });
-          const translatedText = translated?.find((item) => item.key === "chat_answer")?.text;
-          if (typeof translatedText === "string" && translatedText.trim()) compositeAnswer = translatedText.trim();
-        }
-        compositeAnswer = cleanAITechnicalNoise(compositeAnswer);
-        compositeAnswer = stripApproximationWords(compositeAnswer);
-        compositeAnswer = normalizeDatesAndRemoveTime(compositeAnswer);
-        compositeAnswer = enforceCommaThousands(compositeAnswer);
-        compositeAnswer = enforceTwoDecimals(compositeAnswer);
-        compositeAnswer = applyAnswerFormatDirectives(compositeAnswer, styleSourceMessage);
-        compositeAnswer = applyTimeWindowDirectives(compositeAnswer, styleSourceMessage);
-        compositeAnswer = enforcePerYearTopListSpacing(compositeAnswer);
-        return res.json({
-          answer: compositeAnswer,
-          actions: { reset_filters: false, filters: filteredAiFilters, chart: null },
-          preview_rows: [],
-          meta: {
-            operation: "composite",
-            locale,
-            selectedTab,
-            resolvedTarget,
-            resolvedGroupBy: topDim || null,
-            trace: {
-              message: normalizedMessage,
-              composite: true,
-              years: scopedYears,
-              targetColumn: resolvedTarget || null,
-              groupBy: topDim || null,
-            },
-          },
-        });
-      } catch {
-        // continue normal path
-      }
-    }
-
-    if (resolvedOperation === "ratio") {
-      const fullLoad = await loadAccessibleRows(sheetId, req.user, selectedTab);
-      if (fullLoad?.forbidden) {
-        return res.status(403).json(aiError("forbidden"));
-      }
-      const projected = projectRowsToHeaders(fullLoad.rows, aiHeaders);
-      const matchedRows = applyFilters(projected, executionFilters);
-      const registry = await loadFormulaRegistry().catch(() => null);
-      if (registry?.formulas?.length) {
-        const intentCode = detectFormulaIntent(message, registry.intents);
-        if (intentCode === "METRIC_RUNWAY") {
-          const deterministic = computeDeterministicLiquidityRunway(matchedRows);
-          if (deterministic) {
-            exec = { answer: `Calculated RUNWAY_MONTHS: ${deterministic.RUNWAY_MONTHS}\nLogic Used: CASH_TOTAL / (EXP_OPEX - REV_MONTH)`, previewRows: [] };
-          }
-        } else if (intentCode === "METRIC_NET_BURN") {
-          const deterministic = computeDeterministicLiquidityRunway(matchedRows);
-          if (deterministic) {
-            const burn = Number(deterministic.NET_BURN || 0);
-            const state = burn > 0 ? "Net Loss/Burn" : (burn < 0 ? "Net Profit/Surplus" : "Break-even");
-            exec = { answer: `Calculated NET_BURN: ${burn.toFixed(2)} (${state})\nLogic Used: EXP_OPEX - REV_MONTH`, previewRows: [] };
-          }
-        } else if (intentCode === "FIXED_OPERATING_COSTS" || intentCode === "VARIABLE_EXPENSES") {
-          const headers = aiHeaders || [];
-          const sumBy = (patterns) => {
-            const col = pickHeaderByPatterns(headers, patterns);
-            if (!col) return 0;
-            return matchedRows.reduce((acc, r) => acc + (toNum(r?.[col]) || 0), 0);
-          };
-          if (intentCode === "FIXED_OPERATING_COSTS") {
-            const v = sumBy([/\bopex\b/i, /operating\s*expenses?/i, /gastos?\s*operativos/i, /операционн(ые|і)\s*расход/i])
-              + sumBy([/payroll/i, /nómina/i, /фонд\s*оплаты\s*труда/i, /фонд\s*оплати\s*праці/i])
-              + sumBy([/rent/i, /alquiler/i, /аренд/i, /оренд/i]);
-            exec = { answer: `Calculated Fixed Operating Costs: ${v.toFixed(2)}\nLogic Used: EXP_OPEX + EXP_PAYROLL + Rent-Expense`, previewRows: [] };
-          } else {
-            const v = sumBy([/commissions?\s*paid/i, /comisi[oó]n/i, /комисси/i, /комісі/i])
-              + sumBy([/cloud\s*infrastructure/i, /infraestructura\s*cloud/i, /облачн.*инфраструктур/i])
-              + sumBy([/rev\s*share/i, /participaci[oó]n\s*en\s*ingresos/i, /доля\s*выручки/i, /частка\s*виручки/i]);
-            exec = { answer: `Calculated Volume-Based Variable Costs: ${v.toFixed(2)}\nLogic Used: Commissions-Paid + Cloud-Infrastructure-Costs + RevShare`, previewRows: [] };
-          }
-        } else if (intentCode === "AD_PERFORMANCE") {
-          const headers = aiHeaders || [];
-          const sumBy = (patterns) => {
-            const col = pickHeaderByPatterns(headers, patterns);
-            if (!col) return 0;
-            return matchedRows.reduce((acc, r) => acc + (toNum(r?.[col]) || 0), 0);
-          };
-          const rev = sumBy([/revenue/i, /ingresos/i, /выручк/i, /виручк/i]);
-          const imps = sumBy([/impressions?/i, /impresiones/i, /показ/i]);
-          const delivered = sumBy([/ads?\s*delivered/i, /entregad/i, /доставлен/i]);
-          const requested = sumBy([/ads?\s*requested/i, /solicitad/i, /запрошен/i]);
-          const ecpm = imps === 0 ? "DIV_ZERO_ERR" : ((rev / imps) * 1000).toFixed(2);
-          const fill = requested === 0 ? "DIV_ZERO_ERR" : (delivered / requested).toFixed(2);
-          exec = { answer: `Calculated METRIC_ECPM: ${ecpm}; Calculated METRIC_FILL_RATE: ${fill}\nLogic Used: (REV_TOTAL / IMPRESSIONS_TOTAL) * 1000; ADS_DELIVERED / ADS_REQUESTED`, previewRows: [] };
-        }
-        const aliasText = String(message || "").toLowerCase();
-        const aliases = Array.isArray(registry.aliases) ? registry.aliases : [];
-        const matchedCodes = new Set(
-          aliases
-            .filter((a) => aliasText.includes(String(a.alias || "").toLowerCase()))
-            .map((a) => String(a.formula_code || ""))
-            .filter(Boolean)
-        );
-        const selectedFormulas = registry.formulas.filter((f) => matchedCodes.has(String(f.code)));
-        if (selectedFormulas.length) {
-          const keyRows = Array.isArray(registry.keys) ? registry.keys : [];
-          const values = {};
-          for (const f of selectedFormulas) {
-            const fkeys = keyRows.filter((k) => String(k.formula_code) === String(f.code));
-            for (const k of fkeys) {
-              if (values[k.key_code] != null) continue;
-              if (String(k.key_code) === "NET_BURN" && values.NET_BURN != null) continue;
-              const header = pickHeaderByPatterns(aiHeaders, k.header_patterns || []);
-              if (!header) continue;
-              values[k.key_code] = matchedRows.reduce((acc, r) => acc + (toNum(r?.[header]) || 0), 0);
-            }
-            if (f.code === "NET_BURN" && values.NET_BURN == null) {
-              const nb = execFormulaExpression(String(f.expression || ""), values);
-              if (nb != null) values.NET_BURN = nb;
-            }
-          }
-          const outputs = [];
-          for (const f of selectedFormulas) {
-            const denomKey = String(f.denominator_guard_key || "");
-            if (denomKey && Number(values[denomKey] || 0) === 0) {
-              outputs.push(`${f.code}: DIV_ZERO_ERR`);
-              continue;
-            }
-            const out = execFormulaExpression(String(f.expression || ""), values);
-            if (out == null) continue;
-            const p = Number.isFinite(Number(f.precision_digits)) ? Number(f.precision_digits) : 2;
-            outputs.push(`${f.code}: ${Number(out).toFixed(p)}`);
-            values[f.code] = out;
-          }
-          if (outputs.length) {
-            exec = { answer: outputs.join("; "), previewRows: [] };
-          }
-        }
-      }
-      if (!exec) {
-        const fallbackHint = "To calculate that, should I use [Category A] or [Category B] from the spreadsheet?";
-        exec = await computeDeterministicAnswer("ratio", matchedRows, null, null, ai?.limit, locale, message);
-        if (!exec?.answer) exec = { answer: fallbackHint, previewRows: [] };
-      }
-    } else if (numericOps.has(resolvedOperation)) {
-        exec = await computeSqlAggregation({
-            sheetId,
-            user: req.user,
-            operation: resolvedOperation,
-            targetColumn: resolvedTarget,
-            groupBy: resolvedGroupBy,
-            filters: executionFilters,
-            rowFiltersList: loadedSample?.rowFiltersList || [],
-            allowedColumns: aiHeaders || [],
-            limit: ai?.limit,
-            locale,
-            tabName: selectedTab,
-            actualHeaders: baseHeaders
-        });
-    }
-
-    // Fallback to Memory-Based logic for complex operations like YoY or ratios
-    if (!exec) {
-        // Only NOW load full rows if we really need to (YoY, custom ratios)
-        const fullLoad = await loadAccessibleRows(sheetId, req.user, selectedTab);
-        if (fullLoad?.tooLarge) {
-          const fallback = await computeLargeDatasetAggregateFallback({
-            sheetId,
-            user: req.user,
-            operation: resolvedOperation,
-            targetColumn: resolvedTarget,
-            groupBy: resolvedGroupBy,
-        message: normalizedMessage,
-            ai,
-            headers: aiHeaders,
-            sampleRows,
-            activeFilters: activeDashboardFilters,
-            rowFiltersList: loadedSample?.rowFiltersList || [],
-            tabName: selectedTab,
-            locale,
-            semanticProfile,
-          });
-          if (fallback) {
-            exec = {
-              answer: fallback.answer,
-              previewRows: fallback.previewRows || [],
-            };
-            if (fallback.chart) chart = fallback.chart;
-          } else {
-            return res.status(413).json({
-              error: "chat_dataset_too_large",
-              maxRows: CHAT_MAX_ROWS,
-              message: "Dataset is too large for this chat analysis path. Narrow filters or use a direct aggregate query.",
-            });
-          }
-        }
-        if (!exec) {
-          // Note: For memory-based fallback, we might still need augmentation if requested
-          const augmented = (resolvedGroupBy === "Year" || resolvedGroupBy === "Month" || resolvedGroupBy === "Quarter")
-              ? augmentRowsWithQuarter(
-                projectRowsToHeaders(fullLoad.rows, aiHeaders),
-                aiHeaders
-              )
-              : { rows: projectRowsToHeaders(fullLoad.rows, aiHeaders), headers: aiHeaders };
-
-          const matchedRows = applyFilters(augmented.rows, executionFilters);
-          exec = await computeDeterministicAnswer(resolvedOperation, matchedRows, resolvedTarget, resolvedGroupBy, ai?.limit, locale, message);
-        }
-    }
-
-
-    const isChartOp = ["chart", "plot", "trend"].includes(ai?.operation);
-    if (!chart && isChartOp && ai?.chart) {
-      chart = {
-        dateColumn: await resolveColumn(aiHeaders, ai.chart.date_column, sampleRows),
-        valueColumn: await resolveColumn(aiHeaders, ai.chart.value_column, sampleRows),
-        segmentBy: await resolveColumn(aiHeaders, ai.chart.segment_by, sampleRows),
-        aggregation: ai.chart.aggregation || "sum"
-      };
-    }
-
-    let answer = ai?.answer || exec.answer || "Done.";
-    if (resolvedOperation === "year_over_year" && exec?.answer) {
-      answer = exec.answer;
-    }
-    
-    if ((numericOps.has(resolvedOperation) || (resolvedOperation === "filter" && !!resolvedTarget)) && exec.answer) {
-        const isGenericNoData = exec.answer.includes("No data matched") || exec.answer.includes("no specific metric column");
-        if (isGenericNoData && ai?.answer && ai.answer.length > 5) {
-            answer = ai.answer;
-        } else if (resolvedOperation === "sum" && explicitSingleYearMetricIntent) {
-            const yr = extractYearToken(message);
-            const valueMatch = String(exec.answer || "").match(/([-+]?[$]?\d[\d,]*(?:\.\d+)?%?)/);
-            const valueText = valueMatch ? valueMatch[1] : String(exec.answer || "");
-            answer = await rewriteGroundedScalarAnswer({
-              metric: resolvedTarget || ai?.target_column || "value",
-              year: yr || "",
-              valueText,
-              userQuestion: message,
-              locale,
-              runtime,
-            });
-        } else {
-            answer = exec.answer;
-        }
-    }
-
-    const noDataAnswer = /no matching data|no data matched|данные не найдены|відповідних даних не знайдено/i.test(String(answer || ""));
-    if (noDataAnswer && resolvedTarget && asksDifferenceBetweenYears(message)) {
-      try {
-        const years = Array.from(
-          String(message || "").matchAll(/\b(19\d{2}|20\d{2})\b/g),
-          (m) => Number(m?.[0])
-        ).filter(Number.isFinite);
-        const uniqYears = Array.from(new Set(years));
-        if (uniqYears.length >= 2) {
-          const y1 = uniqYears[0];
-          const y2 = uniqYears[1];
-          const dateCol = profileDateColumn || aiHeaders.find((h) => /date|period|month|year|дата|період|рік|год/i.test(String(h)));
-          const yearCol = aiHeaders.find((h) => /\byear\b|рік|год/i.test(String(h)));
-
-          const sumForYear = async (yearNum) => {
-            if (dateCol) {
-              const r = await computeSqlAggregation({
-                sheetId,
-                user: req.user,
-                operation: "sum",
-                targetColumn: resolvedTarget,
-                groupBy: null,
-                filters: [...executionFilters.filter((f) => String(f?.operator || "").toLowerCase() !== "year_equals"), { column: dateCol, operator: "year_equals", value: yearNum }],
-                rowFiltersList: loadedSample?.rowFiltersList || [],
-                allowedColumns: aiHeaders || [],
-                limit: 1,
-                locale,
-                tabName: selectedTab,
-                actualHeaders: baseHeaders,
-              });
-              return String(r?.answer || "");
-            }
-            if (yearCol) {
-              const r = await computeSqlAggregation({
-                sheetId,
-                user: req.user,
-                operation: "sum",
-                targetColumn: resolvedTarget,
-                groupBy: null,
-                filters: [...executionFilters.filter((f) => String(f?.operator || "").toLowerCase() !== "year_equals"), { column: yearCol, operator: "equals", value: yearNum }],
-                rowFiltersList: loadedSample?.rowFiltersList || [],
-                allowedColumns: aiHeaders || [],
-                limit: 1,
-                locale,
-                tabName: selectedTab,
-                actualHeaders: baseHeaders,
-              });
-              return String(r?.answer || "");
-            }
-            return "";
-          };
-
-          const parseNumeric = (s) => {
-            const m = String(s || "").match(/[-+]?\$?\s*([\d,]+(?:\.\d+)?)/);
-            if (!m) return null;
-            const n = Number(String(m[1]).replace(/,/g, ""));
-            return Number.isFinite(n) ? n : null;
-          };
-
-          const a1 = await sumForYear(y1);
-          const a2 = await sumForYear(y2);
-          const v1 = parseNumeric(a1);
-          const v2 = parseNumeric(a2);
-          if (v1 !== null && v2 !== null) {
-            const delta = v2 - v1;
-            const metricLabel = resolvedTarget || "value";
-            answer = `Delta ${metricLabel} (${y2} - ${y1}): ${formatNumberForLocale(delta, locale)}`;
-          }
-        }
-      } catch {
-        // keep original no-data answer
-      }
-    }
-    if (resolvedTarget && isCompositeQuery(message) && asksPerYearNotOverall(message)) {
-      try {
-        const fullLoad = await loadAccessibleRows(sheetId, req.user, selectedTab);
-        const projectedRows = fullLoad?.forbidden ? [] : projectRowsToHeaders(fullLoad.rows || [], aiHeaders);
-        const dateCol = profileDateColumn || aiHeaders.find((h) => /date|period|month|year|дата|період|рік|год/i.test(String(h)));
-        const allYears = [];
-        if (dateCol) {
-          for (const r of projectedRows) {
-            const d = parseDateValue(r?.[dateCol]);
-            if (d) allYears.push(d.getFullYear());
-            else {
-              const m = String(r?.[dateCol] || "").match(/\b(19\d{2}|20\d{2})\b/);
-              if (m) allYears.push(Number(m[1]));
-            }
-          }
-        }
-        const uniqueYears = Array.from(new Set(allYears.filter((y) => Number.isFinite(y)))).sort((a,b)=>a-b);
-        const trailing = parseTrailingYearsWindow(message);
-        const scopedYears = trailing && uniqueYears.length ? uniqueYears.slice(-trailing) : uniqueYears;
-
-        const yoyRes = await computeSqlAggregation({
-          sheetId,
-          user: req.user,
-          operation: "year_over_year",
-          targetColumn: resolvedTarget,
-          groupBy: profileDateColumn || resolvedGroupBy,
-          filters: executionFilters,
-          rowFiltersList: loadedSample?.rowFiltersList || [],
-          allowedColumns: aiHeaders || [],
-          limit: 5,
-          locale,
-          tabName: selectedTab,
-          actualHeaders: baseHeaders,
-        });
-        const yoyPart = String(yoyRes?.answer || "").trim();
-        const topDim = resolveDriverDimensionForDeltaCause({
-          headers: aiHeaders,
-          sampleRows,
-          targetColumn: resolvedTarget,
-          dateColumn: dateCol || profileDateColumn || "",
-          yearColumn: aiHeaders.find((h) => /\byear\b|рік|год/i.test(String(h))) || "",
-          preferredGroupBy: resolvedGroupBy,
-        });
-        const perYearBlocks = [];
-        if (topDim && scopedYears.length) {
-          const yearCol = aiHeaders.find((h) => /\byear\b|рік|год/i.test(String(h)));
-          const resolveRowYear = (row) => {
-            if (dateCol) {
-              const d = parseDateValue(row?.[dateCol]);
-              if (d) return d.getFullYear();
-              const m = String(row?.[dateCol] || "").match(/\b(19\d{2}|20\d{2})\b/);
-              if (m) return Number(m[1]);
-            }
-            if (yearCol) {
-              const yn = Number(String(row?.[yearCol] || "").replace(/[^\d]/g, ""));
-              if (Number.isFinite(yn) && yn >= 1900 && yn <= 2200) return yn;
-            }
-            return null;
-          };
-          for (const y of scopedYears) {
-            const byDim = new Map();
-            for (const r of projectedRows) {
-              const yr = resolveRowYear(r);
-              if (yr !== y) continue;
-              const key = String(r?.[topDim] || "").trim();
-              if (!key) continue;
-              const n = toNum(r?.[resolvedTarget]);
-              if (n === null) continue;
-              byDim.set(key, (byDim.get(key) || 0) + n);
-            }
-            const ranked = Array.from(byDim.entries())
-              .map(([label, value]) => ({ label, value }))
-              .sort((a, b) => b.value - a.value)
-              .slice(0, 5);
-            if (ranked.length) {
-              const yearTotal = ranked.reduce((acc, r) => acc + Number(r.value || 0), 0);
-              const top = ranked[0];
-              const metricLabel = resolveMetricDisplayLabel({ message, targetColumn: resolvedTarget });
-              const isUk = String(locale || "").toLowerCase().startsWith("uk");
-              const isRu = String(locale || "").toLowerCase().startsWith("ru");
-              const yearTitle = isUk
-                ? `Рік ${y}`
-                : (isRu ? `Год ${y}` : `Year ${y}`);
-              const totalLine = isUk
-                ? `• Загальний ${metricLabel}: ${formatValue(yearTotal, locale, resolvedTarget)}`
-                : (isRu
-                  ? `• Общий ${metricLabel}: ${formatValue(yearTotal, locale, resolvedTarget)}`
-                  : `• Total ${metricLabel}: ${formatValue(yearTotal, locale, resolvedTarget)}`);
-              const topLabel = isUk
-                ? `• Топ драйвер (${metricLabel}): ${top.label} — ${formatValue(top.value, locale, resolvedTarget)}`
-                : (isRu
-                  ? `• Топ драйвер (${metricLabel}): ${top.label} — ${formatValue(top.value, locale, resolvedTarget)}`
-                  : `• Top driver (${metricLabel}): ${top.label} — ${formatValue(top.value, locale, resolvedTarget)}`);
-              const nextLines = ranked.slice(1).map((r) => (
-                isUk
-                  ? `• Далі: ${r.label} — ${formatValue(r.value, locale, resolvedTarget)}`
-                  : (isRu
-                    ? `• Далее: ${r.label} — ${formatValue(r.value, locale, resolvedTarget)}`
-                    : `• Next: ${r.label} — ${formatValue(r.value, locale, resolvedTarget)}`)
-              ));
-              const yearHeader = isUk ? `Рік ${y}:` : (isRu ? `Год ${y}:` : `Year ${y}:`);
-              perYearBlocks.push(`• ${yearTitle}:\n${totalLine}\n${topLabel}${nextLines.length ? `\n${nextLines.join("\n")}` : ""}`);
-            }
-          }
-        }
-        const parts = [];
-        if (yoyPart) parts.push(yoyPart);
-        if (perYearBlocks.length) parts.push(perYearBlocks.join("\n\n"));
-        if (asksOverallRegionImpact(message) && scopedYears.length) {
-          const regionCol = aiHeaders.find((h) => /\bregion\b|регіон|регион/i.test(String(h || "")));
-          if (regionCol) {
-            const yearCol = aiHeaders.find((h) => /\byear\b|рік|год/i.test(String(h)));
-            const resolveRowYear = (row) => {
-              if (dateCol) {
-                const d = parseDateValue(row?.[dateCol]);
-                if (d) return d.getFullYear();
-                const m = String(row?.[dateCol] || "").match(/\b(19\d{2}|20\d{2})\b/);
-                if (m) return Number(m[1]);
-              }
-              if (yearCol) {
-                const yn = Number(String(row?.[yearCol] || "").replace(/[^\d]/g, ""));
-                if (Number.isFinite(yn) && yn >= 1900 && yn <= 2200) return yn;
-              }
-              return null;
-            };
-            const allowedYears = new Set(scopedYears.map(Number));
-            const byRegion = new Map();
-            for (const r of projectedRows) {
-              const yr = resolveRowYear(r);
-              if (!allowedYears.has(Number(yr))) continue;
-              const region = String(r?.[regionCol] || "").trim();
-              if (!region) continue;
-              const n = toNum(r?.[resolvedTarget]);
-              if (n === null) continue;
-              byRegion.set(region, (byRegion.get(region) || 0) + n);
-            }
-            const rankedRegions = Array.from(byRegion.entries())
-              .map(([label, value]) => ({ label, value }))
-              .sort((a, b) => b.value - a.value);
-            if (rankedRegions.length) {
-              const top = rankedRegions[0];
-              const impactLine = isEnglishLocale(locale)
-                ? `Overall region impact (${scopedYears[0]}-${scopedYears[scopedYears.length - 1]}): ${top.label} with ${formatValue(top.value, locale, resolvedTarget)}.`
-                : `Overall region impact (${scopedYears[0]}-${scopedYears[scopedYears.length - 1]}): ${top.label} with ${formatValue(top.value, locale, resolvedTarget)}.`;
-              parts.push(impactLine);
-            }
-          }
-        }
-        if (parts.length) answer = parts.join("\n\n");
-        else if (scopedYears.length) answer = `No driver rows found for years: ${scopedYears.join(", ")}.`;
-      } catch {
-        // no-op: keep original answer
-      }
-    }
-
-    if (noDataAnswer && resolvedTarget) {
-      const explicitYear = extractYearToken(message);
-      const explicitYearsInPrompt = Array.from(
-        String(message || "").matchAll(/\b(19|20)\d{2}\b/g),
-        (m) => Number(m?.[0])
-      ).filter(Number.isFinite);
-      const hasMultiYearPrompt = new Set(explicitYearsInPrompt).size >= 2;
-      const asksSingleYearMetric =
-        !!explicitYear &&
-        !hasMultiYearPrompt &&
-        !isComparisonIntent(message, chatRuntimeRules) &&
-        /\b(revenue|sales|income|profit|expense|cost|amount|total)\b|выруч|доход|дохід|прибут|расход|витрат/i.test(String(message || "").toLowerCase());
-      if (asksSingleYearMetric) {
-        try {
-          const dateCol = profileDateColumn || aiHeaders.find((h) => /date|period|month|year|дата|період|рік|год/i.test(String(h)));
-          const yearCol = aiHeaders.find((h) => /\byear\b|рік|год/i.test(String(h)));
-          const dateCandidates = [
-            dateCol,
-            ...["Start Date", "End Date", "Date", "Posting Date", "Effective Date", "Transaction Date", "Closing Date", "Opening Date"]
-              .filter((name) => aiHeaders.includes(name)),
-            ...aiHeaders.filter((h) => /date|period|month|time|дата|період/i.test(String(h))),
-          ].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i);
-
-          let retryAnswer = "";
-          for (const dc of dateCandidates) {
-            const retryFilters = [...executionFilters.filter((f) => String(f?.operator || "").toLowerCase() !== "year_equals")];
-            retryFilters.push({ column: dc, operator: "year_equals", value: explicitYear });
-            const retry = await computeSqlAggregation({
-              sheetId,
-              user: req.user,
-              operation: "sum",
-              targetColumn: resolvedTarget,
-              groupBy: null,
-              filters: retryFilters,
-              rowFiltersList: loadedSample?.rowFiltersList || [],
-              allowedColumns: aiHeaders || [],
-              limit: 1,
-              locale,
-              tabName: selectedTab,
-              actualHeaders: baseHeaders,
-            });
-            retryAnswer = String(retry?.answer || "");
-            if (!/no matching data|no data matched|данные не найдены|відповідних даних не знайдено|\$0\.00/i.test(retryAnswer)) {
-              break;
-            }
-          }
-          if ((!retryAnswer || /no matching data|no data matched|данные не найдены|відповідних даних не знайдено|\$0\.00/i.test(retryAnswer)) && yearCol) {
-            const retryFilters = [...executionFilters.filter((f) => String(f?.operator || "").toLowerCase() !== "year_equals")];
-            retryFilters.push({ column: yearCol, operator: "equals", value: explicitYear });
-            const retry = await computeSqlAggregation({
-              sheetId,
-              user: req.user,
-              operation: "sum",
-              targetColumn: resolvedTarget,
-              groupBy: null,
-              filters: retryFilters,
-              rowFiltersList: loadedSample?.rowFiltersList || [],
-              allowedColumns: aiHeaders || [],
-              limit: 1,
-              locale,
-              tabName: selectedTab,
-              actualHeaders: baseHeaders,
-            });
-            retryAnswer = String(retry?.answer || retryAnswer);
-          }
-          const stillNoData = /no matching data|no data matched|данные не найдены|відповідних даних не знайдено/i.test(retryAnswer);
-          if (stillNoData) {
-            const fullLoad = await loadAccessibleRows(sheetId, req.user, selectedTab);
-            if (fullLoad && !fullLoad.forbidden) {
-              const projected = projectRowsToHeaders(fullLoad.rows || [], aiHeaders);
-              const matched = projected.filter((row) => {
-                const yearDirect = String(row?.[yearCol] ?? "").match(/\b(19\d{2}|20\d{2})\b/);
-                if (yearDirect && String(yearDirect[1]) === String(explicitYear)) return true;
-                return dateCandidates.some((dc) => {
-                  const v = row?.[dc];
-                  const d = parseDateValue(v);
-                  if (d) return String(d.getFullYear()) === String(explicitYear);
-                  const y = String(v ?? "").match(/\b(19\d{2}|20\d{2})\b/);
-                  return y ? String(y[1]) === String(explicitYear) : false;
-                });
-              });
-              const det = await computeDeterministicAnswer("sum", matched, resolvedTarget, null, 1, locale, message);
-              retryAnswer = String(det?.answer || retryAnswer);
-            }
-          }
-          if (retryAnswer && !/no matching data|no data matched|данные не найдены|відповідних даних не знайдено/i.test(retryAnswer)) {
-            answer = retryAnswer;
-          }
-        } catch {
-          // no-op: keep original answer
-        }
-      }
-    }
-
-
-    if (!isEnglishLocale(locale) && answer) {
-      const translated = await translateDashboardItems({
-        locale,
-        items: [{ key: "chat_answer", text: String(answer) }],
-        context: "chat-answer",
-      });
-      const translatedText = translated?.find((item) => item.key === "chat_answer")?.text;
-      if (typeof translatedText === "string" && translatedText.trim()) {
-        answer = translatedText.trim();
-      }
-    }
-
-    answer = formatAnswerWithBullets(answer);
-    answer = cleanAITechnicalNoise(answer);
-    answer = stripApproximationWords(answer);
-    answer = normalizeDatesAndRemoveTime(answer);
-    answer = enforceCommaThousands(answer);
-    answer = enforceTwoDecimals(answer);
-    answer = applyAnswerFormatDirectives(answer, styleSourceMessage);
-    answer = applyTimeWindowDirectives(answer, styleSourceMessage);
-    answer = applyConversationalAnswerStyle(answer, styleSourceMessage, locale);
-    answer = enforcePerYearTopListSpacing(answer);
-
-    const yearsDetected = Array.from(
-      String(normalizedMessage || "").matchAll(/\b(19\d{2}|20\d{2})\b/g),
-      (m) => Number(m?.[0])
-    ).filter(Number.isFinite);
-    const statusLabel = /no matching data|no data matched|данные не найдены|відповідних даних не знайдено/i.test(String(answer || ""))
-      ? "no_data"
-      : "ok";
-    const detectedIntent = detectIntentLabel(normalizedMessage);
-    await recordLearningEvent({
-      req,
-      sheetId,
-      locale,
-      message: normalizedMessage,
-      answer,
-      detectedIntent,
-      resolvedMetric: resolvedTarget || null,
-      yearsDetected,
-      executedOperation: resolvedOperation || ai?.operation || "none",
-      fallbackUsed: statusLabel !== "ok",
-      status: statusLabel,
-      latencyMs: null,
-    });
-    if (statusLabel !== "ok") {
-      await upsertLearningCandidate({
-        locale,
-        phrase: normalizedMessage,
-        suggestedIntent: detectedIntent,
-        suggestedPayload: {
-          target: resolvedTarget || null,
-          operation: resolvedOperation || ai?.operation || "none",
-          yearsDetected,
-        },
-        confidence: 0.7,
-      });
-    }
-
-    {
-      const ctxKey = `${Number(req.user?.id || 0)}:${String(sheetId || "nosheet")}`;
-      const priorCtx = LAST_DETERMINISTIC_CONTEXT.get(ctxKey) || null;
-      const priorYears = Array.isArray(priorCtx?.lastYears) ? priorCtx.lastYears : [];
-      const yearsFromMessage = Array.from(
-        String(normalizedMessage || "").matchAll(/\b(19\d{2}|20\d{2})\b/g),
-        (m) => Number(m?.[0])
-      ).filter(Number.isFinite);
-      const mergedYears = mergeRecentYears(priorYears, yearsFromMessage);
-      LAST_DETERMINISTIC_CONTEXT.set(ctxKey, {
-        ts: Date.now(),
-        lastOperation: String(resolvedOperation || ai?.operation || ""),
-        lastMetric: String(resolvedTarget || ai?.target_column || ""),
-        lastYears: mergedYears,
-      });
-    }
-
-    res.json({
-      answer,
-      actions: { reset_filters: ai?.operation === "reset", filters: filteredAiFilters, chart },
-      preview_rows: exec.previewRows || [],
-      meta: { 
-          operation: ai?.operation || "none", 
-          locale, 
-          selectedTab, 
-          resolvedTarget,
-          resolvedGroupBy,
-          trace: {
-            message: normalizedMessage,
-            explicitYear: extractYearToken(normalizedMessage),
-            plannedOperation: ai?.operation || "none",
-            executedOperation: resolvedOperation || "none",
-            targetColumn: resolvedTarget || null,
-            groupBy: resolvedGroupBy || null,
-            filterCount: Array.isArray(executionFilters) ? executionFilters.length : 0,
-          }
-      }
-    });
-  } catch (err) {
-    console.error("Chat processing failed:", err);
-    try {
-      const normalizedMessage = normalizeRelativeYearInMessage(String(req?.body?.message || ""));
-      const locale = normalizeLocale(req?.body?.locale || "en");
-      await recordLearningEvent({
-        req,
-        sheetId: req?.body?.sheetId || null,
-        locale,
-        message: normalizedMessage,
-        answer: "",
-        detectedIntent: detectIntentLabel(normalizedMessage),
-        resolvedMetric: null,
-        yearsDetected: Array.from(String(normalizedMessage || "").matchAll(/\b(19\d{2}|20\d{2})\b/g), (m) => Number(m?.[0])).filter(Number.isFinite),
-        executedOperation: "none",
-        fallbackUsed: true,
-        status: "error",
-        latencyMs: null,
-      });
-      await upsertLearningCandidate({
-        locale,
-        phrase: normalizedMessage,
-        suggestedIntent: detectIntentLabel(normalizedMessage),
-        suggestedPayload: { status: "error" },
-        confidence: 0.6,
-      });
-    } catch {}
-    res.status(500).json({ error: "internal_server_error" });
-  }
 }
 
 async function loadAccessibleRows(sheetId, user, activeTab = null, rowLimit = null) {
