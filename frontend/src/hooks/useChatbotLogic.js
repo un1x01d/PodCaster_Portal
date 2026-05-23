@@ -36,7 +36,7 @@ function resolveHeaderByHint(headers = [], hint = "") {
 
 function resolveDefaultFilterColumn(headers = []) {
   const list = Array.isArray(headers) ? headers : [];
-  const preferred = ["region", "country", "market", "geography", "location", "area"];
+  const preferred = ["region", "country", "market", "geography", "location", "area", "segment", "type", "category", "customer"];
   for (const p of preferred) {
     const hit = list.find((h) => String(h || "").toLowerCase().includes(p));
     if (hit) return hit;
@@ -44,8 +44,17 @@ function resolveDefaultFilterColumn(headers = []) {
   return "";
 }
 
+function cleanFilterValue(rawValue = "") {
+  return String(rawValue || "")
+    .trim()
+    .replace(/^["']|["']$/g, "")
+    .replace(/\b(?:only|just)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function splitFilterValues(rawValue = "") {
-  const text = String(rawValue || "").trim();
+  const text = cleanFilterValue(rawValue);
   if (!text) return [];
   const parts = text
     .split(/\s*(?:,|\band\b|\bor\b)\s*/i)
@@ -57,17 +66,44 @@ function splitFilterValues(rawValue = "") {
   });
 }
 
-function parseDirectFilterCommand(message = "", headers = []) {
+function inferFilterColumnByValue(headers = [], rows = [], values = []) {
+  const list = Array.isArray(headers) ? headers : [];
+  const dataRows = Array.isArray(rows) ? rows : [];
+  const targets = (Array.isArray(values) ? values : [])
+    .map((v) => String(v || "").trim().toLowerCase())
+    .filter(Boolean);
+  if (!list.length || !targets.length || !dataRows.length) return "";
+
+  let bestCol = "";
+  let bestScore = 0;
+  for (const col of list) {
+    const colName = String(col || "");
+    if (!colName) continue;
+    let score = 0;
+    for (const row of dataRows) {
+      const cell = String(row?.[colName] ?? "").trim().toLowerCase();
+      if (!cell) continue;
+      if (targets.some((t) => cell.includes(t))) score += 1;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestCol = colName;
+    }
+  }
+  return bestScore > 0 ? bestCol : "";
+}
+
+function parseDirectFilterCommand(message = "", headers = [], rows = []) {
   const q = String(message || "").trim();
   if (!q) return null;
 
   let m = q.match(/^filter\s+to\s+(.+)$/i);
   if (m) {
-    const value = String(m[1] || "").trim().replace(/^["']|["']$/g, "");
+    const value = cleanFilterValue(m[1] || "");
     if (!value) return null;
-    const column = resolveDefaultFilterColumn(headers);
-    if (!column) return null;
     const values = splitFilterValues(value);
+    const column = inferFilterColumnByValue(headers, rows, values) || resolveDefaultFilterColumn(headers);
+    if (!column) return null;
     return values.length > 1
       ? { column, values, operator: "in" }
       : { column, value, operator: "contains" };
@@ -76,11 +112,37 @@ function parseDirectFilterCommand(message = "", headers = []) {
   m = q.match(/^filter\s+(.+?)\s+to\s+(.+)$/i);
   if (m) {
     const colHint = String(m[1] || "").trim();
-    const value = String(m[2] || "").trim().replace(/^["']|["']$/g, "");
+    const value = cleanFilterValue(m[2] || "");
     if (!colHint || !value) return null;
-    const column = resolveHeaderByHint(headers, colHint) || resolveDefaultFilterColumn(headers);
-    if (!column) return null;
     const values = splitFilterValues(value);
+    const column = resolveHeaderByHint(headers, colHint)
+      || inferFilterColumnByValue(headers, rows, values)
+      || resolveDefaultFilterColumn(headers);
+    if (!column) return null;
+    return values.length > 1
+      ? { column, values, operator: "in" }
+      : { column, value, operator: "contains" };
+  }
+
+  m = q.match(/^filter\s+by\s+(.+)$/i);
+  if (m) {
+    const value = cleanFilterValue(m[1] || "");
+    if (!value) return null;
+    const values = splitFilterValues(value);
+    const column = inferFilterColumnByValue(headers, rows, values) || resolveDefaultFilterColumn(headers);
+    if (!column) return null;
+    return values.length > 1
+      ? { column, values, operator: "in" }
+      : { column, value, operator: "contains" };
+  }
+
+  m = q.match(/^filter\s+(.+)$/i);
+  if (m) {
+    const value = cleanFilterValue(m[1] || "");
+    if (!value) return null;
+    const values = splitFilterValues(value);
+    const column = inferFilterColumnByValue(headers, rows, values) || resolveDefaultFilterColumn(headers);
+    if (!column) return null;
     return values.length > 1
       ? { column, values, operator: "in" }
       : { column, value, operator: "contains" };
@@ -311,7 +373,7 @@ export function useChatbotLogic({
       return;
     }
 
-    const directFilter = parseDirectFilterCommand(q, headers);
+    const directFilter = parseDirectFilterCommand(q, headers, data);
     if (directFilter && onApplyFilter) {
       setMessages((prev) => [...prev, { type: "user", text: q, timestamp: new Date() }]);
       const hasMultiValues = Array.isArray(directFilter.values) && directFilter.values.length > 1;

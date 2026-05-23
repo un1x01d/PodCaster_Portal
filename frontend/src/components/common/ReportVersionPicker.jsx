@@ -66,7 +66,7 @@ export default function ReportVersionPicker({
   const isItemSelectable = (item) => {
     if (typeof item?.selectable === "boolean") return item.selectable === true;
     const status = String(item?.status || "").trim().toLowerCase();
-    return status === "published";
+    return status === "published" || status === "superseded";
   };
   const reasonLabel = (item) => {
     const reason = String(item?.selectable_reason || "").trim().toLowerCase();
@@ -165,6 +165,8 @@ export default function ReportVersionPicker({
                     <div className="bg-white border-t border-slate-100 py-1">
                       {sortedGroups.length ? sortedGroups.map((group) => {
                         const latest = group[0];
+                        const selectedInGroup = group.find((i) => String(i?.sheet_id || "") === String(selectedSheetId || "")) || null;
+                        const displayedRevision = selectedInGroup || latest;
                         const label = resolveFileLabel(latest);
                         const fileKey = `${key}:${label}`;
                         const revisionMenuChars = Math.min(100, Math.max(38, String(label || "").length + 20));
@@ -199,7 +201,7 @@ export default function ReportVersionPicker({
                                 }}
                                 className={`px-1.5 py-0.5 rounded-[4px] bg-slate-100 text-[9px] font-black text-slate-500 hover:bg-slate-200 transition-colors flex items-center gap-1 ${fileVersionMenuKey === fileKey ? "ring-2 ring-indigo-100 bg-slate-200" : ""}`}
                               >
-                                v{latest.import_version || "-"}<span className={`text-[8px] opacity-40 transition-transform ${fileVersionMenuKey === fileKey ? "rotate-180" : ""}`}>▼</span>
+                                v{displayedRevision?.import_version || "-"}<span className={`text-[8px] opacity-40 transition-transform ${fileVersionMenuKey === fileKey ? "rotate-180" : ""}`}>▼</span>
                               </button>
                               {fileVersionMenuKey === fileKey && !embedRevisionMenu && (
                                 <div className={`absolute left-0 ${revisionMenuAlign === "panel_top" ? "-top-2" : revisionMenuAlign === "top" ? "top-0" : "top-full mt-0"} bg-white border border-slate-200 rounded-lg shadow-xl z-[100] py-1`} style={{ width: `${revisionMenuChars}ch`, maxWidth: "min(90vw, 980px)" }}>

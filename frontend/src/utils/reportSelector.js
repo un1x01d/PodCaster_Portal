@@ -34,7 +34,7 @@ export function isSelectableImport(item, { publishedSheetIds = new Set(), access
   if (!sid) return false;
   if (typeof item?.selectable === "boolean") return item.selectable === true;
   const status = String(item?.status || "").trim().toLowerCase();
-  if (status) return status === "published";
+  if (status) return status === "published" || status === "superseded";
   if (publishedSheetIds.size > 0) return publishedSheetIds.has(sid);
   return accessibleSheetIds.has(sid);
 }

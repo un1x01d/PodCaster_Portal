@@ -3,12 +3,12 @@ import { buildSimpleDeterministicAnswer } from "../accounting/simpleAnswerTempla
 
 function formatValue(v, col = "") {
   if (typeof v !== "number" || !Number.isFinite(v)) return String(v ?? "");
-  const isCurrency = /price|cost|revenue|income|profit|earnings|salary|wage|amount|balance|total|summ|ebitda|val|fee|tax|debt|loan|payment|capital|asset|liability|equity|budget|spend|cash|funding|sales|purchase/i.test(String(col));
   const isPercent = /percent|margin|rate|ratio|%|markup|yield|growth|change|variance|contribution|roi|roe|roa|discount|utilization/i.test(String(col));
   const abs = Math.abs(v);
   const sign = v < 0 ? "-" : "";
   const num = abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return `${sign}${isCurrency ? "$" : ""}${num}${isPercent && !isCurrency ? "%" : ""}`;
+  // Default deterministic chat outputs to USD unless metric explicitly represents a percentage.
+  return isPercent ? `${sign}${num}%` : `${sign}$${num}`;
 }
 
 export async function presentDeterministicSpreadsheetResult({
@@ -17,6 +17,7 @@ export async function presentDeterministicSpreadsheetResult({
   calcResult,
   accountingIntent,
   runtime,
+  locale = "en",
 }) {
   const isStrict = /(mdfc|strict|pure|direct)/i.test(message);
   const uncertaintyBadge = plan?.verification_gate?.warning === true
@@ -84,13 +85,20 @@ export async function presentDeterministicSpreadsheetResult({
   if (calcResult.isProjection === true) {
     const val = formatValue(calcResult.value, plan?.metric || "");
     const slope = Number(calcResult.slope || 0);
-    const trend = slope >= 0 ? "growing" : "declining";
     const confidence = Number(calcResult.confidence || 0);
-    const confidenceLabel = confidence > 0.9 ? "high" : confidence > 0.7 ? "moderate" : "low";
     
     if (shouldForceScalar) return val;
-
-    return `Based on the historical trend from ${calcResult.historicalPoints} data points, the projected ${calcResult.metric} for ${calcResult.period?.label} is ${val}. The recent trend is ${trend}, and this projection has ${confidenceLabel} statistical confidence (R² = ${confidence.toFixed(2)}).`;
+    const explainedProjection = await explainAccountingResult({
+      originalQuestion: message,
+      analysis: accountingIntent,
+      headerResolution: plan?.resolution || {},
+      calculationResult: calcResult,
+      runtime: { ...(runtime || {}), locale },
+    });
+    if (String(explainedProjection || "").trim()) return explainedProjection;
+    const trend = slope >= 0 ? "growing" : "declining";
+    const confidenceLabel = confidence > 0.9 ? "high" : confidence > 0.7 ? "moderate" : "low";
+    return `Projected ${calcResult.metric} for ${calcResult.period?.label} is ${val}; trend is ${trend} with ${confidenceLabel} confidence (R² = ${confidence.toFixed(2)}).`;
   }
 
   const explained = await explainAccountingResult({
@@ -98,7 +106,7 @@ export async function presentDeterministicSpreadsheetResult({
     analysis: accountingIntent,
     headerResolution: plan?.resolution || {},
     calculationResult: calcResult,
-    runtime,
+    runtime: { ...(runtime || {}), locale },
   });
   return `${explained}${uncertaintyBadge}`;
 }

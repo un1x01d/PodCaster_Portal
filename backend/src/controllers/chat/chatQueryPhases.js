@@ -46,6 +46,9 @@ export async function runCompiledPlanPhase(ctx) {
   } = ctx;
 
   const accountingIntent = await analyzeAccountingIntent({ message: planningMessage, runtime: ctx.runtime });
+  const isClarificationReply = Boolean(selectedClarificationOption);
+  const selectedHeaderChoice = selectedClarificationOption ? String(selectedClarificationOption).trim() : "";
+  const pendingFieldCanonical = String(pendingClarification?.field || "").trim();
   const compiledPlan = await compileDeterministicQueryPlan({
     message: planningMessage,
     accountingIntent,
@@ -53,12 +56,12 @@ export async function runCompiledPlanPhase(ctx) {
     semanticProfile,
     sampleRows: loadedSample?.rows || [],
     hints: {
-      metric: pendingClarification?.kind === "metric"
+      metric: (isClarificationReply && pendingClarification?.kind === "metric")
         ? selectedClarificationOption
-        : (pendingClarification?.metric || undefined),
-      dateHeader: pendingClarification?.kind === "date" ? selectedClarificationOption : undefined,
-      headerChoice: pendingClarification?.kind === "header" ? selectedClarificationOption : undefined,
-      headerCanonical: pendingClarification?.kind === "header" ? String(pendingClarification?.field || "") : undefined,
+        : undefined,
+      dateHeader: (isClarificationReply && pendingClarification?.kind === "date") ? selectedClarificationOption : undefined,
+      headerChoice: isClarificationReply ? (selectedHeaderChoice || undefined) : undefined,
+      headerCanonical: isClarificationReply ? (pendingFieldCanonical || undefined) : undefined,
       groupId: req.user?.customer_group_id || req.user?.resolved_group_id || null,
       context: resolvedDeterministicContext.context || {},
     },
@@ -66,10 +69,15 @@ export async function runCompiledPlanPhase(ctx) {
   if (compiledPlan.ok) {
     PENDING_CLARIFICATIONS.delete(clarificationKey);
 
-    if (pendingClarification?.kind === "header" && pendingClarification?.field && selectedClarificationOption) {
+    if (selectedClarificationOption && (pendingClarification?.field || pendingClarification?.kind === "metric")) {
       try {
         const currentProfile = semanticProfile || {};
-        const mappings = { ...(currentProfile.headerMappings || {}), [pendingClarification.field]: selectedClarificationOption };
+        const canonicalField = String(
+          pendingClarification.field
+          || (pendingClarification?.kind === "metric" ? String(compiledPlan?.metric || "") : "")
+        ).trim();
+        if (!canonicalField) throw new Error("missing_canonical_field_for_learning");
+        const mappings = { ...(currentProfile.headerMappings || {}), [canonicalField]: selectedClarificationOption };
         const newProfile = { ...currentProfile, headerMappings: mappings };
         await query(
           "UPDATE sheets SET semantic_profile = $1 WHERE id = $2",
@@ -78,7 +86,7 @@ export async function runCompiledPlanPhase(ctx) {
 
         const { recordSuccessfulMapping } = await import("../services/ai/semanticKnowledgeService.js");
         await recordSuccessfulMapping({
-          canonicalField: pendingClarification.field,
+          canonicalField,
           synonym: selectedClarificationOption,
           locale: locale || "en",
           groupId: req.user?.customer_group_id || req.user?.resolved_group_id || null,
@@ -176,6 +184,7 @@ export async function runCompiledPlanPhase(ctx) {
       calcResult,
       accountingIntent,
       runtime: ctx.runtime,
+      locale,
     });
 
     if (typeof answer === "string" && (answer.trim().startsWith("{") || answer.trim().startsWith("["))) {

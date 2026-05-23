@@ -64,23 +64,38 @@ export function useAppFiltering(args) {
                 }
   
             const stringified = String(rowValue ?? "");
-  
+            const normalizedValue = stringified.trim().toLowerCase();
+
             if (allowed instanceof Set) {
-              // Checkbox-style exact-match filter
-              if (allowed.size > 0 && !allowed.has(stringified)) return false;
+              // Case-insensitive exact-match filter
+              if (allowed.size > 0) {
+                let matched = false;
+                for (const candidate of allowed) {
+                  if (String(candidate ?? "").trim().toLowerCase() === normalizedValue) {
+                    matched = true;
+                    break;
+                  }
+                }
+                if (!matched) return false;
+              }
             } else if (allowed && typeof allowed === 'object' && (allowed.type === 'contains' || allowed.type === 'filter')) {
               // Chatbot substring filter (e.g. "2021" matches "2021-03-01")
               const filterValue = String(allowed.value || "").toLowerCase();
               const op = allowed.operator || "contains";
-  
+
               if (op === "equals") {
-                 if (stringified.toLowerCase() !== filterValue) return false;
+                 if (normalizedValue !== filterValue) return false;
               } else {
                  // default to contains
-                 if (!stringified.toLowerCase().includes(filterValue)) return false;
+                 if (!normalizedValue.includes(filterValue)) return false;
               }
             } else if (Array.isArray(allowed)) {
-              if (allowed.length > 0 && !allowed.includes(stringified)) return false;
+              if (allowed.length > 0) {
+                const allowedNormalized = new Set(
+                  allowed.map((v) => String(v ?? "").trim().toLowerCase()).filter(Boolean)
+                );
+                if (!allowedNormalized.has(normalizedValue)) return false;
+              }
             }
           }
           return true;

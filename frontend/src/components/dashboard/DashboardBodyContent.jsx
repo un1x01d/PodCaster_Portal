@@ -1471,7 +1471,7 @@ export default function DashboardBody(props) {
     const primaryPickerLabel = React.useMemo(() => {
         const { selectedSource, selectedImport } = getSelectedSourceMeta(sheetId);
         return selectedImport
-            ? `${selectedSource?.name || "Report source"} / ${resolveFileLabel(selectedImport)}`
+            ? `${selectedSource?.name || "Report source"} / v${selectedImport?.import_version || "-"} · ${resolveFileLabel(selectedImport)}`
             : (selectedSource?.name || props.activeFilename || "Select sheet");
     }, [getSelectedSourceMeta, sheetId, resolveFileLabel, props.activeFilename]);
     const primaryTrustMeta = React.useMemo(() => {
@@ -1529,7 +1529,7 @@ export default function DashboardBody(props) {
 
     const secondaryPickerLabel = React.useMemo(() => {
         const { selectedSource, selectedImport } = getSelectedSourceMeta(secondarySheetId);
-        if (selectedImport) return `${selectedSource?.name || "Report source"} / ${resolveFileLabel(selectedImport)}`;
+        if (selectedImport) return `${selectedSource?.name || "Report source"} / v${selectedImport?.import_version || "-"} · ${resolveFileLabel(selectedImport)}`;
         const sheet = (props.myFiles || []).find((f) => String(f.id) === String(secondarySheetId));
         return sheet?.display_name || sheet?.filename || "Select sheet";
     }, [getSelectedSourceMeta, secondarySheetId, resolveFileLabel, props.myFiles]);
@@ -3076,6 +3076,8 @@ export default function DashboardBody(props) {
                                                         deleteSourceBusyId={deleteSourceBusyId}
                                                         onDeleteImportRevision={deleteImportRevisionFromPicker}
                                                         onDeleteSource={deleteReportSourceFromPicker}
+                                                        revisionMenuAlign="top"
+                                                        embedRevisionMenu={true}
                                                         buttonClassName="w-full h-8 px-2.5 rounded-lg border border-slate-300 bg-white text-slate-900 text-[11px] font-bold shadow-sm hover:border-slate-400 transition-all flex items-center justify-between gap-2 overflow-hidden"
                                                         panelClassName="absolute left-0 mt-1 w-[min(620px,calc(100vw-2rem))] rounded-xl border border-slate-200 bg-white shadow-2xl z-[80] p-2"
                                                     />

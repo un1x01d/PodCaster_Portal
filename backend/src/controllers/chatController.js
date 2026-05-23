@@ -2270,10 +2270,32 @@ function applyConversationalAnswerStyle(answer = "", message = "", locale = "en"
   const isUk = String(locale || "").toLowerCase().startsWith("uk");
   const isRu = String(locale || "").toLowerCase().startsWith("ru");
   const question = String(message || "").trim();
+  const localizeMetricLabel = (metricRaw = "") => {
+    const metric = String(metricRaw || "").trim();
+    const key = metric.toLowerCase();
+    if (!metric) return metric;
+    if (isUk) {
+      if (key.includes("net revenue")) return "чистий виторг";
+      if (key.includes("total revenue") || key === "revenue" || key.includes("gross revenue")) return "виторг";
+      if (key.includes("gross profit")) return "валовий прибуток";
+      if (key.includes("net profit") || key.includes("net income")) return "чистий прибуток";
+      if (key.includes("expense") || key.includes("cost") || key.includes("cogs") || key.includes("opex")) return "витрати";
+      if (key.includes("sales")) return "продажі";
+    }
+    if (isRu) {
+      if (key.includes("net revenue")) return "чистая выручка";
+      if (key.includes("total revenue") || key === "revenue" || key.includes("gross revenue")) return "выручка";
+      if (key.includes("gross profit")) return "валовая прибыль";
+      if (key.includes("net profit") || key.includes("net income")) return "чистая прибыль";
+      if (key.includes("expense") || key.includes("cost") || key.includes("cogs") || key.includes("opex")) return "расходы";
+      if (key.includes("sales")) return "продажи";
+    }
+    return metric;
+  };
 
   const scalar = text.match(/^(Total|Average|Max|Min|Sum|Сумма|Сума|Среднее|Середнє|Максимум|Минимум)\s+([^:\n]+):\s+(.+)$/i);
   if (scalar) {
-    const metric = String(scalar[2] || "").trim();
+    const metric = localizeMetricLabel(String(scalar[2] || "").trim());
     const value = String(scalar[3] || "").trim();
     const year = extractYearToken(question);
     if (isUk) return year ? `Значення ${metric} за ${year} рік становить ${value}.` : `Значення ${metric} становить ${value}.`;
@@ -2283,7 +2305,7 @@ function applyConversationalAnswerStyle(answer = "", message = "", locale = "en"
 
   const delta = text.match(/^Delta\s+(.+?)\s+\((\d{4})\s*-\s*(\d{4})\):\s+(.+)$/i);
   if (delta) {
-    const metric = String(delta[1] || "").trim();
+    const metric = localizeMetricLabel(String(delta[1] || "").trim());
     const y2 = String(delta[2] || "").trim();
     const y1 = String(delta[3] || "").trim();
     const value = String(delta[4] || "").trim();
@@ -2294,7 +2316,7 @@ function applyConversationalAnswerStyle(answer = "", message = "", locale = "en"
 
   const bareNumeric = text.match(/^[-+]?[$€£¥]?\s*\d[\d,]*(?:\.\d+)?%?$/);
   if (bareNumeric) {
-    const metricHint = extractMetricHintFromText(question);
+    const metricHint = localizeMetricLabel(extractMetricHintFromText(question) || "");
     const year = extractYearToken(question);
     if (metricHint && year && !asksDifferenceBetweenYears(question)) {
       if (isUk) return `${metricHint} за ${year} рік становить ${text}.`;
@@ -2332,7 +2354,7 @@ function applyConversationalAnswerStyle(answer = "", message = "", locale = "en"
     })
     .filter(Boolean);
   if (yearlyRows.length >= 2 && yoyIntent) {
-    const metricHint = extractMetricHintFromText(question) || "value";
+    const metricHint = localizeMetricLabel(extractMetricHintFromText(question) || "") || "value";
     if (isUk) {
       return yearlyRows.map((r) => `${metricHint} за ${r.year} рік становив ${r.value}.`).join("\n");
     }
@@ -4201,8 +4223,16 @@ export async function chatQuery(req, res) {
     const candidates = options.filter(opt => String(opt).toLowerCase().includes(text));
     if (candidates.length === 1) return String(candidates[0]);
 
-    return null;
+    // 4. Free-text clarification fallback:
+    // allow short direct replies like "net revenue" to resolve pending clarifications
+    // even when options are not explicitly enumerated.
+    const raw = String(normalizedMessage || "").trim();
+    if (!raw) return null;
+    if (/[?]/.test(raw)) return null;
+    if (raw.length > 80) return null;
+    return raw;
   })();
+  const isClarificationReply = Boolean(selectedClarificationOption);
 
   const effectiveUserMessage = (() => {
     if (!selectedClarificationOption) return normalizedMessage;
@@ -4508,6 +4538,8 @@ export async function chatQuery(req, res) {
   }
 
   const accountingIntent = await analyzeAccountingIntent({ message: planningMessage, runtime });
+  const selectedHeaderChoice = selectedClarificationOption ? String(selectedClarificationOption).trim() : "";
+  const pendingFieldCanonical = String(pendingClarification?.field || "").trim();
   const compiledPlan = await compileDeterministicQueryPlan({
     message: planningMessage,
     accountingIntent,
@@ -4515,12 +4547,15 @@ export async function chatQuery(req, res) {
     semanticProfile,
     sampleRows: loadedSample?.rows || [],
     hints: {
-      metric: pendingClarification?.kind === "metric"
+      metric: (isClarificationReply && pendingClarification?.kind === "metric")
         ? selectedClarificationOption
-        : (pendingClarification?.metric || undefined),
-      dateHeader: pendingClarification?.kind === "date" ? selectedClarificationOption : undefined,
-      headerChoice: pendingClarification?.kind === "header" ? selectedClarificationOption : undefined,
-      headerCanonical: pendingClarification?.kind === "header" ? String(pendingClarification?.field || "") : undefined,
+        : undefined,
+      dateHeader: (isClarificationReply && pendingClarification?.kind === "date") ? selectedClarificationOption : undefined,
+      // Robust clarification handoff:
+      // if the user selected an option and we have a canonical field, always pass it
+      // so planner resolution can consume it even when kind classification is imperfect.
+      headerChoice: isClarificationReply ? (selectedHeaderChoice || undefined) : undefined,
+      headerCanonical: isClarificationReply ? (pendingFieldCanonical || undefined) : undefined,
       groupId: req.user?.customer_group_id || req.user?.resolved_group_id || null,
       context: resolvedDeterministicContext.context || {},
     },
@@ -4529,10 +4564,15 @@ export async function chatQuery(req, res) {
     PENDING_CLARIFICATIONS.delete(clarificationKey);
 
     // Persistence: If this was a header resolution, save it to the sheet's semantic profile
-    if (pendingClarification?.kind === "header" && pendingClarification?.field && selectedClarificationOption) {
+    if (selectedClarificationOption && (pendingClarification?.field || pendingClarification?.kind === "metric")) {
       try {
         const currentProfile = semanticProfile || {};
-        const mappings = { ...(currentProfile.headerMappings || {}), [pendingClarification.field]: selectedClarificationOption };
+        const canonicalField = String(
+          pendingClarification.field
+          || (pendingClarification?.kind === "metric" ? String(compiledPlan?.metric || "") : "")
+        ).trim();
+        if (!canonicalField) throw new Error("missing_canonical_field_for_learning");
+        const mappings = { ...(currentProfile.headerMappings || {}), [canonicalField]: selectedClarificationOption };
         const newProfile = { ...currentProfile, headerMappings: mappings };
         await query(
           "UPDATE sheets SET semantic_profile = $1 WHERE id = $2",
@@ -4542,7 +4582,7 @@ export async function chatQuery(req, res) {
         // Self-Learning: Record this successful mapping for future generalization
         const { recordSuccessfulMapping } = await import("../services/ai/semanticKnowledgeService.js");
         await recordSuccessfulMapping({
-          canonicalField: pendingClarification.field,
+          canonicalField,
           synonym: selectedClarificationOption,
           locale: locale || "en",
           groupId: req.user?.customer_group_id || req.user?.resolved_group_id || null,
@@ -4640,6 +4680,7 @@ export async function chatQuery(req, res) {
       calcResult,
       accountingIntent,
       runtime,
+      locale,
     });
     
     // Safety: If answer is raw JSON string, use simple fallback

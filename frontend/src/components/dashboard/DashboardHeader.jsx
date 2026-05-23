@@ -46,9 +46,6 @@ export default function DashboardHeader({
             }
             if (!sourcePickerRef.current?.contains(event.target)) {
                 setSourcePickerOpen(false);
-            }
-            // If the click is outside any version dropdown in the picker
-            if (!event.target.closest('.file-version-dropdown-container')) {
                 setFileVersionMenuKey(null);
             }
         };
@@ -129,7 +126,7 @@ export default function DashboardHeader({
         };
     }, [selectedImport]);
     const selectedPickerLabel = selectedImport
-        ? `${selectedSource?.name || "Report source"} / ${fileLabel(selectedImport)}`
+        ? `${selectedSource?.name || "Report source"} / v${selectedImport?.import_version || "-"} · ${fileLabel(selectedImport)}`
         : (selectedSource?.name || activeFilename || ui.selectSheet);
     const canManageImports = React.useMemo(() => {
         if (!user) return false;

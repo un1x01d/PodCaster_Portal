@@ -153,7 +153,9 @@ function resolveExplicitHeaderHint(message = "", headers = []) {
   const normalizedHeaders = list.map((h) => ({ raw: h, norm: normalizeHeaderToken(h) })).filter((h) => h.norm);
 
   const quoted = extractQuotedPhrases(message);
-  const hintCandidates = quoted.length ? quoted : [String(message || "")];
+  // Only treat explicit quoted/header-like fragments as direct header hints.
+  // Never use the entire user question as a header hint candidate.
+  const hintCandidates = quoted.length ? quoted : [];
   for (const hintedTextRaw of hintCandidates) {
     const hintedText = String(hintedTextRaw || "").trim();
     const hintedNorm = normalizeHeaderToken(hintedText);
@@ -634,6 +636,12 @@ export async function buildDeterministicSpreadsheetPlan({
   const years = extractYears(message);
   const currentYear = new Date().getFullYear();
   const targetYear = years.find((y) => y > currentYear) || (projectionIntent ? years.find(y => y === currentYear) : null);
+
+  // If user selected a concrete header during clarification (e.g. "1. Revenue Total")
+  // and we already resolved the metric key, pin that canonical field to the selected header.
+  if (metric && hintedHeaderChoice && headers.includes(hintedHeaderChoice)) {
+    fieldMetadata[metric] = hintedHeaderChoice;
+  }
 
   if (projectionIntent || (targetYear && targetYear > currentYear)) {
     const finalTargetYear = targetYear || years[0] || (currentYear + 1);
