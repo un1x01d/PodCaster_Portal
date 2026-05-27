@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "nodemon server.js",
     "start": "node --max-old-space-size=8192 server.js",
-    "test": "node --test",
+    "test": "node --test --test-force-exit",
     "sync:app-settings": "node scripts/syncAppSettings.js",
     "migrate:tenants": "node scripts/migrateTenantDatabases.js",
     "backfill:import-sizes": "node scripts/backfillImportSizeMetadata.js",

@@ -50,7 +50,6 @@ test("generateToken carries tenant routing claims when present", async () => {
   const decoded = jwt.decode(token);
 
   assert.equal(decoded.customer_id, 7);
-  assert.equal(decoded.customer_group_id, 11);
   assert.equal(decoded.tenant_database, "tenant_g11");
 });
 

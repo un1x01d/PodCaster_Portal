@@ -2,6 +2,8 @@ import React from "react";
 import StorageOptionCard from "../common/StorageOptionCard.jsx";
 
 const AI_MODEL_OPTIONS = [
+  { provider: "openai", value: "gpt-5", label: "GPT-5", openaiInputCostPer1M: 1.25, openaiOutputCostPer1M: 10.00 },
+  { provider: "openai", value: "gpt-5-mini", label: "GPT-5 mini", openaiInputCostPer1M: 0.25, openaiOutputCostPer1M: 2.00 },
   { provider: "openai", value: "gpt-5-nano", label: "GPT-5 nano", openaiInputCostPer1M: 0.05, openaiOutputCostPer1M: 0.40 },
   { provider: "openai", value: "gpt-4.1-nano", label: "GPT-4.1 nano", openaiInputCostPer1M: 0.10, openaiOutputCostPer1M: 0.40 },
   { provider: "openai", value: "gpt-4.1-mini", label: "GPT-4.1 mini", openaiInputCostPer1M: 0.40, openaiOutputCostPer1M: 1.60 },
@@ -14,7 +16,7 @@ const AI_MODEL_OPTIONS = [
   { provider: "ollama", value: "mistral", label: "Mistral", openaiInputCostPer1M: 0, openaiOutputCostPer1M: 0 },
 ];
 const AI_PROVIDER_OPTIONS = [
-  { value: "openai", label: "GPT", model: "gpt-5-nano", baseUrl: "https://api.openai.com/v1" },
+  { value: "openai", label: "GPT", model: "gpt-5", baseUrl: "https://api.openai.com/v1" },
   { value: "gemini", label: "Gemini", model: "gemini-2.5-flash", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai" },
   { value: "ollama", label: "Ollama", model: "llama3.2", baseUrl: "http://localhost:11434/v1" },
 ];

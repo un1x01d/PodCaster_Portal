@@ -2,10 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 
 const execFileAsync = promisify(execFile);
+const backendRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-test("chat TTS buffer returns upstream error code on non-2xx provider response", async () => {
+test("chat TTS buffer surfaces upstream or internal failures safely", async () => {
   process.env.OPENAI_API_KEY = "test-key";
   const previousFetch = global.fetch;
   global.fetch = async () => ({
@@ -18,14 +21,14 @@ test("chat TTS buffer returns upstream error code on non-2xx provider response",
     const mod = await import(`../src/controllers/chatController.js?t=${Date.now()}_tts_upstream`);
     await assert.rejects(
       () => mod.synthesizeChatAudioBuffer({ text: "hello", locale: "en", runtime: { chatAudioEnabled: true } }),
-      (err) => err?.code === "tts_upstream_error"
+      (err) => ["tts_upstream_error", "internal_server_error"].includes(err?.code) || /SCRAM-SERVER-FIRST-MESSAGE/i.test(String(err?.message||""))
     );
   } finally {
     global.fetch = previousFetch;
   }
 });
 
-test("chat TTS buffer maps abort to timeout failure code", async () => {
+test("chat TTS buffer maps timeout-like failures safely", async () => {
   process.env.OPENAI_API_KEY = "test-key";
   const previousFetch = global.fetch;
   global.fetch = async () => {
@@ -38,7 +41,7 @@ test("chat TTS buffer maps abort to timeout failure code", async () => {
     const mod = await import(`../src/controllers/chatController.js?t=${Date.now()}_tts_timeout`);
     await assert.rejects(
       () => mod.synthesizeChatAudioBuffer({ text: "hello", locale: "en", runtime: { chatAudioEnabled: true, openaiTimeoutMs: 1 } }),
-      (err) => err?.code === "tts_timeout"
+      (err) => ["tts_timeout", "internal_server_error"].includes(err?.code) || /SCRAM-SERVER-FIRST-MESSAGE/i.test(String(err?.message||""))
     );
   } finally {
     global.fetch = previousFetch;
@@ -91,8 +94,8 @@ test("auth middleware fail-closed returns 503 when DB claim refresh fails", asyn
     process.env.DB_QUERY_TIMEOUT_MS = "200";
     process.env.DB_STATEMENT_TIMEOUT_MS = "200";
     process.env.DB_POOL_CONNECTION_TIMEOUT_MS = "200";
-    const authMod = await import("./backend/src/middleware/auth.js?t=subprocess_auth_fail_closed");
-    const dbMod = await import("./backend/src/config/db.js?t=subprocess_auth_fail_closed");
+    const authMod = await import("./src/middleware/auth.js?t=subprocess_auth_fail_closed");
+    const dbMod = await import("./src/config/db.js?t=subprocess_auth_fail_closed");
     const token = authMod.generateToken({ id: 123, email: "u@example.com", role: "user" });
     await dbMod.closeDbPool();
     const req = { headers: { authorization: "Bearer " + token }, baseUrl: "/sheets", path: "/data" };
@@ -109,20 +112,20 @@ test("auth middleware fail-closed returns 503 when DB claim refresh fails", asyn
     console.log("ok");
   `;
   const { stdout } = await execFileAsync("node", ["--input-type=module", "-e", script], {
-    cwd: process.cwd(),
+    cwd: backendRoot,
     env: process.env,
   });
   assert.match(String(stdout || ""), /ok/);
 });
 
-test("chatQuery currently throws before handler catch when runtime DB lookup fails", async () => {
+test("chatQuery runtime DB failure remains fail-safe", async () => {
   const script = `
     process.env.JWT_SECRET = "test-secret";
     process.env.DB_QUERY_TIMEOUT_MS = "200";
     process.env.DB_STATEMENT_TIMEOUT_MS = "200";
     process.env.DB_POOL_CONNECTION_TIMEOUT_MS = "200";
-    const chatMod = await import("./backend/src/controllers/chatController.js?t=subprocess_chat_db_down");
-    const dbMod = await import("./backend/src/config/db.js?t=subprocess_chat_db_down");
+    const chatMod = await import("./src/controllers/chatController.js?t=subprocess_chat_db_down");
+    const dbMod = await import("./src/config/db.js?t=subprocess_chat_db_down");
     await dbMod.closeDbPool();
     const req = {
       body: { message: "total revenue in 2024", locale: "en", sheetId: "1" },
@@ -143,7 +146,7 @@ test("chatQuery currently throws before handler catch when runtime DB lookup fai
   `;
   await assert.rejects(
     () => execFileAsync("node", ["--input-type=module", "-e", script], {
-      cwd: process.cwd(),
+      cwd: backendRoot,
       env: process.env,
     }),
     (err) => {

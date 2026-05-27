@@ -111,7 +111,7 @@ export function defaultModelForProvider(provider = "openai") {
   const normalized = normalizeAiProvider(provider);
   if (normalized === "gemini") return String(process.env.GEMINI_MODEL || "gemini-2.5-flash").trim();
   if (normalized === "ollama") return String(process.env.OLLAMA_MODEL || "llama3.2").trim();
-  return String(process.env.OPENAI_MODEL || "gpt-5-nano").trim();
+  return String(process.env.OPENAI_MODEL || "gpt-5").trim();
 }
 
 export function defaultBaseUrlForProvider(provider = "openai") {

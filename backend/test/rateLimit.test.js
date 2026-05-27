@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 test("loginRateLimit blocks after threshold", async () => {
   process.env.LOGIN_RATE_LIMIT_MAX = "2";
   process.env.LOGIN_RATE_LIMIT_WINDOW_MS = "60000";
+  process.env.RATE_LIMIT_DISTRIBUTED = "0";
   const mod = await import(`../src/middleware/rateLimit.js?t=${Date.now()}`);
   const { loginRateLimit, __clearLoginRateLimitStateForTests } = mod;
   __clearLoginRateLimitStateForTests();
@@ -34,6 +35,7 @@ test("loginRateLimit blocks after threshold", async () => {
 test("invitationAcceptRateLimit blocks after threshold", async () => {
   process.env.INVITE_ACCEPT_RATE_LIMIT_MAX = "2";
   process.env.INVITE_ACCEPT_RATE_LIMIT_WINDOW_MS = "60000";
+  process.env.RATE_LIMIT_DISTRIBUTED = "0";
   const mod = await import(`../src/middleware/rateLimit.js?t=${Date.now()}_invite_accept`);
   const { invitationAcceptRateLimit, __clearLoginRateLimitStateForTests } = mod;
   __clearLoginRateLimitStateForTests();
@@ -64,6 +66,7 @@ test("invitationAcceptRateLimit blocks after threshold", async () => {
 test("invitationIssueRateLimit blocks after threshold", async () => {
   process.env.INVITE_ISSUE_RATE_LIMIT_MAX = "1";
   process.env.INVITE_ISSUE_RATE_LIMIT_WINDOW_MS = "60000";
+  process.env.RATE_LIMIT_DISTRIBUTED = "0";
   const mod = await import(`../src/middleware/rateLimit.js?t=${Date.now()}_invite_issue`);
   const { invitationIssueRateLimit, __clearLoginRateLimitStateForTests } = mod;
   __clearLoginRateLimitStateForTests();
@@ -93,6 +96,7 @@ test("invitationIssueRateLimit blocks after threshold", async () => {
 test("oauthPublicRateLimit blocks after threshold", async () => {
   process.env.OAUTH_PUBLIC_RATE_LIMIT_MAX = "1";
   process.env.OAUTH_PUBLIC_RATE_LIMIT_WINDOW_MS = "60000";
+  process.env.RATE_LIMIT_DISTRIBUTED = "0";
   const mod = await import(`../src/middleware/rateLimit.js?t=${Date.now()}_oauth_public`);
   const { oauthPublicRateLimit, __clearLoginRateLimitStateForTests } = mod;
   __clearLoginRateLimitStateForTests();
@@ -122,6 +126,7 @@ test("oauthPublicRateLimit blocks after threshold", async () => {
 test("oauthExchangeRateLimit blocks after threshold", async () => {
   process.env.OAUTH_EXCHANGE_RATE_LIMIT_MAX = "1";
   process.env.OAUTH_EXCHANGE_RATE_LIMIT_WINDOW_MS = "60000";
+  process.env.RATE_LIMIT_DISTRIBUTED = "0";
   const mod = await import(`../src/middleware/rateLimit.js?t=${Date.now()}_oauth_exchange`);
   const { oauthExchangeRateLimit, __clearLoginRateLimitStateForTests } = mod;
   __clearLoginRateLimitStateForTests();

@@ -1,341 +1,238 @@
-import { generateStructuredCalculationPlan } from "./aiCalculationPlanner.js";
-import { validateCalculationPlan } from "./calculationPlanValidator.js";
+import { buildWorkbookProfile } from "./workbookProfiler.js";
+import { buildSemanticCandidateHints } from "./semanticCandidateProvider.js";
+import { buildAiPlanningContext } from "./aiPlanningContextBuilder.js";
+import { callAiAnalystPlanner } from "./aiAnalystPlannerClient.js";
+import { validateAiAnalysisPlan } from "./aiAnalysisPlanValidator.js";
+import { repairPlanOnce } from "./planRepairService.js";
+import { parseAiAnalysisPlan } from "./aiAnalysisPlanSchema.js";
 
-function inferColumnTypeFromSamples(sampleValues = []) {
-  const vals = Array.isArray(sampleValues) ? sampleValues : [];
-  if (!vals.length) return "unknown";
-  let numeric = 0;
-  let dateLike = 0;
-  for (const v of vals) {
-    const s = String(v ?? "").trim();
-    if (!s) continue;
-    const n = Number(s.replace(/[$,%\s,]/g, ""));
-    if (Number.isFinite(n)) numeric += 1;
-    const d = new Date(s);
-    if (!Number.isNaN(d.getTime())) dateLike += 1;
-  }
-  const denom = Math.max(1, vals.length);
-  if (dateLike / denom >= 0.6) return "date";
-  if (numeric / denom >= 0.6) return "number";
-  return "string";
-}
-
-function buildSafeDatasetContext({ headers = [], sampleRows = [], fieldMetadata = {} }) {
-  const list = Array.isArray(headers) ? headers.map((h) => String(h || "")).filter(Boolean) : [];
-  const dateHeader = String(fieldMetadata?.date || "").trim();
-  let dateRange = null;
-  if (dateHeader && Array.isArray(sampleRows) && sampleRows.length > 0) {
-    const dates = sampleRows
-      .map(r => {
-        const val = r[dateHeader];
-        if (!val) return null;
-        const d = new Date(val);
-        return isNaN(d.getTime()) ? null : d;
-      })
-      .filter(Boolean)
-      .sort((a, b) => a - b);
-    if (dates.length >= 2) {
-      dateRange = { 
-        start: dates[0].toISOString().slice(0, 10), 
-        end: dates[dates.length - 1].toISOString().slice(0, 10) 
-      };
-    }
-  }
-
-  const columns = list.map((name) => {
-    const values = (Array.isArray(sampleRows) ? sampleRows : [])
-      .slice(0, 20)
-      .map((r) => r?.[name])
-      .filter((v) => v !== null && v !== undefined && String(v).trim() !== "");
-    return {
-      name,
-      type: inferColumnTypeFromSamples(values),
-      sample_values: values.slice(0, 6),
-    };
-  });
-  return {
-    table_name: "sheet",
-    columns,
-    known_mappings: {
-      date: String(fieldMetadata?.date || "").trim() || undefined,
-      revenue: String(fieldMetadata?.total_revenue || fieldMetadata?.net_revenue || "").trim() || undefined,
-      net_revenue: String(fieldMetadata?.net_revenue || "").trim() || undefined,
-      expense: String(fieldMetadata?.total_expense || "").trim() || undefined,
-      cost: String(fieldMetadata?.cogs || "").trim() || undefined,
-    },
-    date_range: dateRange,
-  };
-}
-
-function mapAiConceptToMetricKey(concept = "") {
-  const c = String(concept || "").toLowerCase().replace(/\s+/g, "_");
-  const map = {
-    revenue: "total_revenue",
-    sales: "total_revenue",
-    income: "total_revenue",
-    net_revenue: "net_revenue",
-    "net_revenue": "net_revenue",
-    "net revenue": "net_revenue",
-    gross_revenue: "total_revenue",
-    expense: "total_expense",
-    cost: "total_expense",
-    cogs: "cogs",
-    gross_profit: "gross_profit",
-    net_profit: "net_income",
-    net_income: "net_income",
-    profit: "net_income",
-    margin: "gross_margin_pct",
-    gross_margin: "gross_margin_pct",
-    count: "total_revenue",
-    average: "total_revenue",
-    other_income: "total_revenue",
-  };
-  return map[c] || null;
-}
-
-function makeClarification(reason, question, options = []) {
+function makeClarification(question, options = [], field = "") {
   return {
     ok: false,
     clarification_needed: true,
-    reason: String(reason || "clarification_needed"),
-    clarification_question: String(question || "").trim(),
-    clarification_options: Array.isArray(options) ? options.map((o) => String(o)).filter(Boolean).slice(0, 8) : [],
+    reason: "ai_needs_clarification",
+    clarification_question: String(question || "I can answer that, but I need one clarification first."),
+    clarification_options: Array.isArray(options) ? options.map((o) => String(o?.value || o?.label || o)).filter(Boolean) : [],
+    clarification_field: String(field || "").trim() || null,
   };
 }
 
-function buildInvalidDateClarification(datasetContext = {}) {
-  const columns = Array.isArray(datasetContext?.columns) ? datasetContext.columns : [];
-  const dateCandidates = columns
-    .filter((c) => String(c?.type || "").toLowerCase() === "date")
+function buildDimensionClarificationFromDataset(dataset = {}) {
+  const cols = Array.isArray(dataset?.columns) ? dataset.columns : [];
+  const options = cols
+    .filter((c) => String(c?.type_guess || "").toLowerCase() === "category")
     .map((c) => String(c?.name || "").trim())
-    .filter(Boolean);
-  const dateOptions = dateCandidates.length > 1 ? dateCandidates : [];
-  const question = dateOptions.length
-    ? "I need one clarification before running this comparison: which date column should I use, and which years should I compare?"
-    : "I need one clarification before running this comparison: which years should I compare?";
-  return makeClarification("invalid_date_range", question, dateOptions);
+    .filter(Boolean)
+    .slice(0, 8);
+  if (!options.length) return null;
+  return makeClarification(
+    "Which business dimension should be used for driver analysis?",
+    options,
+    "dimension"
+  );
 }
 
-function normalizeClarification(aiPlan) {
-  if (
-    aiPlan
-    && aiPlan.status === "needs_clarification"
-    && aiPlan.clarification
-    && Array.isArray(aiPlan.clarification.options)
-    && aiPlan.clarification.options.length === 1
-  ) {
-    const opt = aiPlan.clarification.options[0];
-    return {
-      autoResolved: true,
-      field: String(aiPlan.clarification.field || "").trim(),
-      value: String(opt?.value || opt?.label || "").trim(),
-    };
+function pickDefaultDriverDimension(dataset = {}) {
+  const cols = Array.isArray(dataset?.columns) ? dataset.columns : [];
+  const preferred = ["account group", "account", "region", "product line", "business unit", "customer segment"];
+  for (const key of preferred) {
+    const hit = cols.find((c) => String(c?.name || "").toLowerCase() === key || String(c?.name || "").toLowerCase().includes(key));
+    if (hit && String(hit?.type_guess || "").toLowerCase() === "category") return String(hit.name);
   }
-  return { autoResolved: false };
+  const firstCategory = cols.find((c) => String(c?.type_guess || "").toLowerCase() === "category");
+  return firstCategory ? String(firstCategory.name) : null;
 }
 
-function toLegacyPlanFromAi({ aiPlan = {}, plannerState = null, headers = [], sampleRows = [], fieldMetadata = {} }) {
-  if (aiPlan?.status === "needs_clarification") {
-    const options = Array.isArray(aiPlan?.clarification?.options)
-      ? aiPlan.clarification.options.map((o) => String(o?.value || o?.label || "").trim()).filter(Boolean)
-      : [];
-    const out = makeClarification(
-      "ai_needs_clarification",
-      String(aiPlan?.clarification?.question || "I can answer that, but I need one clarification first."),
-      options
-    );
-    out.clarification_field = String(aiPlan?.clarification?.field || "").trim() || null;
-    out.planner_state = plannerState || null;
-    return out;
-  }
-  if (aiPlan?.status === "not_answerable") {
-    return {
-      ok: false,
-      clarification_needed: false,
-      reason: "ai_not_answerable",
-      message: String(aiPlan?.not_answerable?.reason || "This dataset cannot answer that question safely."),
-    };
-  }
+function ensureYoYDriverStep(plan = null, dataset = {}) {
+  if (!plan || plan?.status !== "ready" || !plan?.analysis_plan) return plan;
+  const steps = Array.isArray(plan.analysis_plan.steps) ? plan.analysis_plan.steps : [];
+  if (!steps.length) return plan;
 
-  const calc = aiPlan?.calculation_plan || {};
+  const hasYoY = steps.some((s) => String(s?.operation || "") === "year_over_year");
+  if (!hasYoY) return plan;
 
-  if (String(calc?.analysis_type || "").toLowerCase() === "driver_analysis") {
-    return {
-      ok: true,
-      operation: "driver_analysis",
-      metric: mapAiConceptToMetricKey(calc?.base_metric?.business_concept) || "total_revenue",
-      base_metric: calc?.base_metric || {},
-      comparison: calc?.comparison || {},
-      driver_columns: calc?.driver_columns || [],
-      dimensions: calc?.dimensions || [],
-      verification: {
-        method: "ai_structured_planner_v2",
-        confidence: aiPlan?.confidence === "high" ? 0.92 : (aiPlan?.confidence === "medium" ? 0.8 : 0.72),
-        fallback_used: false,
-        evidence: { analysisType: "driver_analysis" },
-      },
-    };
-  }
+  const hasDriver = steps.some((s) => ["period_delta_by_dimension", "period_driver_delta", "ranking"].includes(String(s?.operation || "")));
+  if (hasDriver) return plan;
 
-  const metric = calc?.metric || {};
-  const sourceColumns = Array.isArray(metric?.source_columns) ? metric.source_columns.map((c) => String(c || "").trim()).filter(Boolean) : [];
-  const sourceColumn = sourceColumns[0] || "";
-  const metricKey = mapAiConceptToMetricKey(metric?.concept);
-  if (!metricKey) {
-    return {
-      ok: false,
-      clarification_needed: false,
-      reason: "ai_metric_not_executable",
-      message: "AI plan metric concept is not executable. Please restate the metric clearly.",
-    };
-  }
-  const tr = calc?.time_range || {};
-  const dateColumn = String(tr?.date_column || "").trim();
-  const groupBy = Array.isArray(calc?.group_by) ? calc.group_by.map((g) => String(g || "").trim()).filter(Boolean) : [];
-  const limit = Number.isFinite(Number(calc?.limit)) ? Math.max(1, Math.min(50, Number(calc.limit))) : 5;
-  const startYear = Number(String(tr?.start || "").slice(0, 4));
-  const endYear = Number(String(tr?.end || "").slice(0, 4));
-  const filters = Array.isArray(calc?.filters) ? [...calc.filters] : [];
-  if (!filters.length && dateColumn && tr?.start && tr?.end) {
-    filters.push({ column: dateColumn, operator: "between", value: [String(tr.start), String(tr.end)] });
-  }
+  const yoyStep = steps.find((s) => String(s?.operation || "") === "year_over_year");
+  const dimension = pickDefaultDriverDimension(dataset);
+  if (!dimension || !yoyStep?.metric?.column || !yoyStep?.date_column) return plan;
 
-  const resolution = {
-    resolvedMappings: sourceColumn ? { [metricKey]: sourceColumn } : {},
-    optionalMappings: dateColumn ? { date: dateColumn } : {},
-  };
+  const next = JSON.parse(JSON.stringify(plan));
+  next.analysis_plan.steps.push({
+    step_id: `step_driver_auto_${next.analysis_plan.steps.length + 1}`,
+    operation: "period_delta_by_dimension",
+    metric: { column: String(yoyStep.metric.column), aggregation: String(yoyStep.metric.aggregation || "sum") },
+    metrics: [],
+    driver_columns: [],
+    dimension: String(dimension),
+    date_column: String(yoyStep.date_column),
+    filters: Array.isArray(yoyStep.filters) ? yoyStep.filters : [],
+    baseline_range: null,
+    comparison_range: null,
+    time_range: Array.isArray(yoyStep.time_range) ? yoyStep.time_range : null,
+    grain: "year",
+    group_by: [String(dimension)],
+    sort: { by: "metric", direction: "desc" },
+    limit: 1,
+  });
+  return next;
+}
 
-  const comparisonType = String(calc?.comparison?.type || "").toLowerCase();
-  const isTrend = String(calc?.analysis_type || "").toLowerCase() === "trend";
-  const isYoy = (isTrend || comparisonType === "year_over_year")
-    && ((Number.isFinite(startYear) && Number.isFinite(endYear) && startYear !== endYear) || isTrend || groupBy.includes(dateColumn));
+function buildSafeYoYFallbackPlan({ originalPlan, dataset, question = "" }) {
+  const q = String(question || "").toLowerCase();
+  if (!(q.includes("year over year") || q.includes("yoy") || q.includes("рік-до-року") || q.includes("год-к-году"))) return null;
 
-  const maxDataYear = buildSafeDatasetContext({ headers, sampleRows, fieldMetadata }).date_range?.end ? Number(buildSafeDatasetContext({ headers, sampleRows, fieldMetadata }).date_range.end.slice(0, 4)) : 2026;
-  const targetYears = [];
-  if (startYear > maxDataYear) targetYears.push(startYear);
-  if (endYear > maxDataYear && endYear !== startYear) targetYears.push(endYear);
-  
-  // If the user asks for "next 3 years", the LLM might only set one year in start/end.
-  // We can look at the intent summary or just assume if one future year is requested, check if it implies a series.
-  const isProjection = targetYears.length > 0 || (isTrend && (startYear > maxDataYear || endYear > maxDataYear));
+  const cols = Array.isArray(dataset?.columns) ? dataset.columns : [];
+  const dateCol = cols.find((c) => String(c?.type_guess || "").toLowerCase() === "date")?.name
+    || cols.find((c) => Number(c?.profile?.date_like_ratio || 0) >= 0.4)?.name
+    || null;
+  const metricCol = cols.find((c) => String(c?.name || "").toLowerCase().includes("net revenue"))?.name
+    || cols.find((c) => String(c?.name || "").toLowerCase().includes("revenue"))?.name
+    || cols.find((c) => String(c?.type_guess || "").toLowerCase() === "number")?.name
+    || null;
 
-  if (isProjection) {
-    const finalTargetYears = [...targetYears];
-    if (isTrend && endYear > startYear) {
-      for (let y = startYear; y <= endYear; y++) {
-        if (y > maxDataYear && !finalTargetYears.includes(y)) finalTargetYears.push(y);
-      }
-    }
-    if (finalTargetYears.length === 0 && (startYear > maxDataYear || endYear > maxDataYear)) {
-       finalTargetYears.push(startYear > maxDataYear ? startYear : endYear);
-    }
+  if (!dateCol || !metricCol) return null;
 
-    return {
-      ok: true,
-      operation: "metric_projection",
-      metric: metricKey,
-      targetYears: finalTargetYears.sort((a, b) => a - b),
-      targetYear: finalTargetYears[0], // backward compatibility
-      dateHeader: dateColumn,
-      resolution,
-      filters,
-      verification: {
-        method: "ai_structured_planner_v2",
-        confidence: aiPlan?.confidence === "high" ? 0.92 : (aiPlan?.confidence === "medium" ? 0.8 : 0.72),
-        fallback_used: false,
-        evidence: { dateColumn, sourceColumns, analysisType: "projection", targetYears: finalTargetYears },
-      },
-    };
-  }
-
-  if (isTrend || isYoy) {
-    return {
-      ok: true,
-      operation: "yoy_series",
-      metric: metricKey,
-      years: (isYoy || isTrend) ? [Math.min(startYear || 1900, endYear || 2200), Math.max(startYear || 1900, endYear || 2200)] : [],
-      period: (!isYoy && !isTrend && Number.isFinite(startYear) && startYear === endYear) ? startYear : null,
-      resolution,
-      filters,
-      verification: {
-        method: "ai_structured_planner_v2",
-        confidence: aiPlan?.confidence === "high" ? 0.92 : (aiPlan?.confidence === "medium" ? 0.8 : 0.72),
-        fallback_used: false,
-        evidence: { dateColumn, sourceColumns, analysisType: calc?.analysis_type || "" },
-      },
-    };
-  }
-
-  if (groupBy.length > 0) {
-    return {
-      ok: true,
-      operation: "top_n_by_dimension",
-      metric: metricKey,
-      dimensionHeader: groupBy[0],
-      valueHeader: sourceColumn || "",
-      limit,
-      direction: String(calc?.sort?.direction || "desc").toLowerCase() === "asc" ? "asc" : "desc",
-      accountOnly: false,
-      resolution,
-      filters,
-      verification: {
-        method: "ai_structured_planner_v2",
-        confidence: aiPlan?.confidence === "high" ? 0.92 : (aiPlan?.confidence === "medium" ? 0.8 : 0.72),
-        fallback_used: false,
-        evidence: { dateColumn, sourceColumns, groupBy, analysisType: calc?.analysis_type || "" },
-      },
-    };
-  }
+  const years = cols.find((c) => String(c?.name || "") === dateCol)?.profile || null;
+  const timeRange = years?.min_sample && years?.max_sample ? [String(years.min_sample), String(years.max_sample)] : null;
 
   return {
-    ok: true,
-    operation: "single_period",
-    metric: metricKey,
-    years: [],
-    period: Number.isFinite(startYear) && startYear === endYear ? startYear : null,
-    resolution,
-    filters,
-    verification: {
-      method: "ai_structured_planner_v2",
-      confidence: aiPlan?.confidence === "high" ? 0.92 : (aiPlan?.confidence === "medium" ? 0.8 : 0.72),
-      fallback_used: false,
-      evidence: { dateColumn, sourceColumns, analysisType: calc?.analysis_type || "" },
+    status: "ready",
+    intent_summary: String(originalPlan?.intent_summary || "YoY analysis"),
+    confidence: String(originalPlan?.confidence || "medium"),
+    analysis_plan: {
+      analysis_type: "trend",
+      steps: (() => {
+        const baseSteps = [{
+          step_id: "step_yoy_fallback_1",
+          operation: "year_over_year",
+          metric: { column: String(metricCol), aggregation: "sum" },
+          metrics: [],
+          driver_columns: [],
+          dimension: null,
+          date_column: String(dateCol),
+          filters: [],
+          baseline_range: null,
+          comparison_range: null,
+          time_range: Array.isArray(timeRange) ? timeRange : null,
+          grain: "year",
+          group_by: [],
+          sort: null,
+          limit: null,
+        }];
+        const dimension = pickDefaultDriverDimension(dataset);
+        if (dimension) {
+          baseSteps.push({
+            step_id: "step_yoy_fallback_driver_2",
+            operation: "period_delta_by_dimension",
+            metric: { column: String(metricCol), aggregation: "sum" },
+            metrics: [],
+            driver_columns: [],
+            dimension: String(dimension),
+            date_column: String(dateCol),
+            filters: [],
+            baseline_range: null,
+            comparison_range: null,
+            time_range: Array.isArray(timeRange) ? timeRange : null,
+            grain: "year",
+            group_by: [String(dimension)],
+            sort: { by: "metric", direction: "desc" },
+            limit: 1,
+          });
+        }
+        return baseSteps;
+      })(),
+      final_response_instruction: { style: "business_explanation", include_tables: true, include_causation_warning: true },
     },
+    clarification: null,
+    not_answerable: null,
+    warnings: ["yoy_safe_fallback_used"],
   };
 }
 
-async function continuePlanWithClarification({
-  originalQuestion = "",
-  previousPlan = null,
-  clarificationField = "",
-  clarificationValue = "",
-  datasetContext = {},
-  allowedOperations = [],
-  runtime = null,
-  conversationHistory = [],
-  memory = null,
-  aiPlannerFollowupResponse = null,
-}) {
-  const continuationPrompt = [
-    "You are continuing a spreadsheet planning conversation.",
-    `Original question: ${String(originalQuestion || "").trim()}`,
-    `Previous partial plan: ${JSON.stringify(previousPlan || {})}`,
-    `Resolved clarification: ${String(clarificationField || "").trim()} = ${String(clarificationValue || "").trim()}`,
-    "Return a complete updated plan.",
-    "If complete, return status='ready'.",
-    "If another clarification is required, return status='needs_clarification'.",
-    "Do not ask clarification with one option.",
-    "Return strict JSON only.",
-  ].join("\n");
-  return aiPlannerFollowupResponse || generateStructuredCalculationPlan({
-    question: continuationPrompt,
-    datasetContext,
-    allowedOperations,
-    runtime,
-    conversationHistory,
-    memory,
-  });
+function normalizePlanForValidation({ plan, validation }) {
+  if (!plan || plan?.status !== "ready") return plan;
+  const details = Array.isArray(validation?.details) ? validation.details : [];
+  if (!details.length) return plan;
+
+  const cloned = JSON.parse(JSON.stringify(plan));
+  const byStep = new Map((cloned?.analysis_plan?.steps || []).map((s) => [String(s?.step_id || ""), s]));
+
+  for (const d of details) {
+    const msg = String(d || "");
+
+    const nonNumericDriver = msg.match(/^non_numeric_driver_column:([^:]+):/);
+    if (nonNumericDriver) {
+      const stepId = nonNumericDriver[1];
+      const step = byStep.get(stepId);
+      if (step && String(step.operation || "") === "period_driver_delta") {
+        const drivers = Array.isArray(step.driver_columns) ? step.driver_columns.filter(Boolean) : [];
+        const dimension = String(step.dimension || drivers[0] || "").trim();
+        if (dimension) {
+          step.operation = "period_delta_by_dimension";
+          step.dimension = dimension;
+          step.group_by = Array.isArray(step.group_by) && step.group_by.length ? step.group_by : [dimension];
+          step.driver_columns = [];
+        }
+      }
+      continue;
+    }
+
+    const missingDrivers = msg.match(/^missing_driver_columns:([^:]+)$/);
+    if (missingDrivers) {
+      const stepId = missingDrivers[1];
+      const step = byStep.get(stepId);
+      if (step && String(step.operation || "") === "period_driver_delta") {
+        const dimension = String(step.dimension || (Array.isArray(step.group_by) ? step.group_by[0] : "") || "").trim();
+        if (dimension) {
+          step.operation = "period_delta_by_dimension";
+          step.group_by = Array.isArray(step.group_by) && step.group_by.length ? step.group_by : [dimension];
+          step.dimension = dimension;
+          step.driver_columns = [];
+        } else {
+          step.operation = "year_over_year";
+          step.driver_columns = [];
+          step.group_by = [];
+          step.dimension = null;
+        }
+      }
+      continue;
+    }
+
+    const missingRanges = msg.match(/^period_driver_delta_missing_ranges:([^:]+)$/);
+    if (missingRanges) {
+      const stepId = missingRanges[1];
+      const step = byStep.get(stepId);
+      if (step && String(step.operation || "") === "period_driver_delta") {
+        const tr = Array.isArray(step.time_range) ? step.time_range : null;
+        if (tr && tr.length === 2) {
+          step.operation = "year_over_year";
+          step.driver_columns = [];
+          step.group_by = [];
+          step.dimension = null;
+          step.baseline_range = null;
+          step.comparison_range = null;
+        }
+      }
+      continue;
+    }
+
+    const nonDate = msg.match(/^non_date_column_for_date_operation:([^:]+):(.+)$/);
+    if (nonDate) {
+      const stepId = nonDate[1];
+      const step = byStep.get(stepId);
+      if (!step) continue;
+      const fallbackDate = (cloned?.analysis_plan?.steps || [])
+        .map((s) => String(s?.date_column || "").trim())
+        .find(Boolean);
+      if (fallbackDate) step.date_column = fallbackDate;
+    }
+  }
+
+  return cloned;
 }
+
 
 export async function buildDeterministicSpreadsheetPlan({
   message = "",
@@ -344,110 +241,205 @@ export async function buildDeterministicSpreadsheetPlan({
   sampleRows = [],
   hints = {},
 }) {
-  const useAiPlanner = hints?.useAiPlanner !== false;
-  if (!useAiPlanner) {
+  const question = String(message || "").trim();
+  if (!question) {
     return {
       ok: false,
       clarification_needed: false,
-      reason: "ai_planner_required",
-      message: "AI planner is required for semantic interpretation.",
+      reason: "empty_question",
+      message: "Please ask a question about this spreadsheet.",
     };
   }
 
-  const fieldMetadata = { ...(semanticProfile?.headerMappings || {}) };
-  const datasetContext = buildSafeDatasetContext({ headers, sampleRows, fieldMetadata });
-  const allowedOperations = [
-    "sum", "count", "avg", "min", "max",
-    "filter", "date_between", "group_by", "sort", "limit",
-    "subtract", "divide", "ratio",
-  ];
+  const dataset = buildWorkbookProfile({
+    workbookId: hints?.sheetId || "sheet",
+    sheetId: hints?.sheetId || "sheet",
+    sheetName: hints?.activeTab || "Sheet",
+    headers,
+    rows: sampleRows,
+    allowedColumns: headers,
+  });
 
-  const questionBase = String(message || "").trim();
-  const continuation = hints?.clarificationContinuation && typeof hints.clarificationContinuation === "object"
-    ? hints.clarificationContinuation
-    : null;
-  let aiPlan;
-  if (
-    continuation?.plannerState
-    && continuation?.resolvedValue
-  ) {
-    aiPlan = await continuePlanWithClarification({
-      originalQuestion: continuation?.plannerState?.originalQuestion || questionBase,
-      previousPlan: continuation?.plannerState?.partialPlan || null,
-      clarificationField: continuation?.plannerState?.clarificationField || continuation?.field || "",
-      clarificationValue: continuation?.resolvedValue || "",
-      datasetContext,
-      allowedOperations,
-      runtime: hints?.runtime || null,
-      conversationHistory: hints?.conversationHistory || [],
-      memory: hints?.context || null,
-      aiPlannerFollowupResponse: hints?.aiPlannerFollowupResponse || null,
+  const semanticCandidates = await buildSemanticCandidateHints({
+    headers,
+    question,
+    profile: semanticProfile,
+    groupId: hints?.groupId || null,
+  });
+
+  const planningContext = buildAiPlanningContext({
+    question,
+    dataset,
+    semanticCandidates,
+    knownMappings: semanticProfile?.headerMappings || {},
+    memory: hints?.context || { last_successful_analysis: null },
+  });
+
+  let aiPlan = await callAiAnalystPlanner({
+    planningContext,
+    runtime: hints?.runtime || null,
+    conversationHistory: hints?.conversationHistory || [],
+    aiPlannerResponse: hints?.aiPlannerResponse || null,
+  });
+
+  const rawPlannerPlan = aiPlan;
+  const parsed = parseAiAnalysisPlan(aiPlan);
+  aiPlan = parsed.plan;
+
+  if (!parsed.ok && !hints?.aiPlannerResponse) {
+    const repairedFromSchema = await repairPlanOnce({
+      planner: async ({ question: repairQuestion }) => callAiAnalystPlanner({
+        planningContext: { ...planningContext, question: repairQuestion },
+        runtime: hints?.runtime || null,
+        conversationHistory: hints?.conversationHistory || [],
+        aiPlannerResponse: hints?.aiPlannerFollowupResponse || null,
+      }),
+      planningContext,
+      invalidPlan: rawPlannerPlan,
+      validation: { details: parsed.errors || ["schema_validation_failed"] },
     });
-  } else {
-    aiPlan = hints?.aiPlannerResponse || await generateStructuredCalculationPlan({
-      question: message,
-      datasetContext,
-      allowedOperations,
-      runtime: hints?.runtime || null,
-      conversationHistory: hints?.conversationHistory || [],
-    });
+    if (repairedFromSchema?.checked?.ok) {
+      aiPlan = repairedFromSchema.repaired;
+    }
   }
 
-  const auto = normalizeClarification(aiPlan);
-  if (auto.autoResolved) {
-    aiPlan = await continuePlanWithClarification({
-      originalQuestion: questionBase,
-      previousPlan: aiPlan,
-      clarificationField: auto.field,
-      clarificationValue: auto.value,
-      datasetContext,
-      allowedOperations,
-      runtime: hints?.runtime || null,
-      conversationHistory: hints?.conversationHistory || [],
-      memory: hints?.context || null,
-      aiPlannerFollowupResponse: hints?.aiPlannerFollowupResponse || null,
-    });
+  let validation = validateAiAnalysisPlan({
+    plan: aiPlan,
+    datasetProfile: dataset,
+    allowedOperations: planningContext.allowed_operations,
+  });
+
+  if (!validation.ok && aiPlan?.status === "ready") {
+    const normalizedPlan = normalizePlanForValidation({ plan: aiPlan, validation });
+    if (normalizedPlan !== aiPlan) {
+      const normalizedValidation = validateAiAnalysisPlan({
+        plan: normalizedPlan,
+        datasetProfile: dataset,
+        allowedOperations: planningContext.allowed_operations,
+      });
+      if (normalizedValidation.ok) {
+        aiPlan = normalizedPlan;
+        validation = normalizedValidation;
+      }
+    }
   }
 
-  let validation = validateCalculationPlan(aiPlan, datasetContext, { allowed_columns: headers });
   if (!validation.ok && !hints?.aiPlannerResponse) {
-    const detailText = Array.isArray(validation.details) && validation.details.length
-      ? `Validation details: ${validation.details.join(", ")}`
-      : "";
-    aiPlan = await generateStructuredCalculationPlan({
-      question: [
-        "The previous AI plan was rejected by backend validator.",
-        `Validation code: ${String(validation.code || validation.reason || "invalid_plan")}`,
-        detailText,
-        `Original question: ${questionBase}`,
-        `Invalid plan: ${JSON.stringify(aiPlan)}`,
-        "Return corrected strict JSON plan.",
-      ].filter(Boolean).join("\n"),
-      datasetContext,
-      allowedOperations,
-      runtime: hints?.runtime || null,
-      conversationHistory: hints?.conversationHistory || [],
+    const repaired = await repairPlanOnce({
+      planner: async ({ question: repairQuestion }) => callAiAnalystPlanner({
+        planningContext: { ...planningContext, question: repairQuestion },
+        runtime: hints?.runtime || null,
+        conversationHistory: hints?.conversationHistory || [],
+        aiPlannerResponse: hints?.aiPlannerFollowupResponse || null,
+      }),
+      planningContext,
+      invalidPlan: aiPlan,
+      validation,
     });
-    validation = validateCalculationPlan(aiPlan, datasetContext, { allowed_columns: headers });
-  }
-  if (!validation.ok) {
-    if (String(validation.code || "") === "invalid_date_range") {
-      return buildInvalidDateClarification(datasetContext);
+    aiPlan = repaired.repaired;
+    validation = repaired.checked;
+
+    if (!validation.ok && aiPlan?.status === "ready") {
+      const normalizedPlan = normalizePlanForValidation({ plan: aiPlan, validation });
+      const normalizedValidation = validateAiAnalysisPlan({
+        plan: normalizedPlan,
+        datasetProfile: dataset,
+        allowedOperations: planningContext.allowed_operations,
+      });
+      if (normalizedValidation.ok) {
+        aiPlan = normalizedPlan;
+        validation = normalizedValidation;
+      }
     }
+  }
+
+  if (!validation.ok) {
+    const details = Array.isArray(validation?.details) ? validation.details : [];
+    if (details.some((d) => String(d).startsWith("date_like_dimension_not_allowed:"))) {
+      const clarification = buildDimensionClarificationFromDataset(dataset);
+      if (clarification) return clarification;
+    }
+
+    const yoyFallback = buildSafeYoYFallbackPlan({ originalPlan: aiPlan, dataset, question });
+    if (yoyFallback) {
+      const yoyValidation = validateAiAnalysisPlan({
+        plan: yoyFallback,
+        datasetProfile: dataset,
+        allowedOperations: planningContext.allowed_operations,
+      });
+      if (yoyValidation.ok) {
+        aiPlan = yoyFallback;
+        validation = yoyValidation;
+      }
+    }
+
+    if (!validation.ok) {
+      return {
+        ok: false,
+        clarification_needed: false,
+        reason: "ai_plan_validation_failed",
+        message: `AI plan rejected by validator: ${String(validation.code || "invalid_plan")}.`,
+        validation_details: validation.details || [],
+      };
+    }
+  }
+
+  if (validation.ok && aiPlan?.status === "ready") {
+    const withDriver = ensureYoYDriverStep(aiPlan, dataset);
+    if (withDriver !== aiPlan) {
+      const v2 = validateAiAnalysisPlan({
+        plan: withDriver,
+        datasetProfile: dataset,
+        allowedOperations: planningContext.allowed_operations,
+      });
+      if (v2.ok) {
+        aiPlan = withDriver;
+        validation = v2;
+      }
+    }
+  }
+
+  if (aiPlan.status === "needs_clarification") {
+    const options = Array.isArray(aiPlan?.clarification?.options) ? aiPlan.clarification.options : [];
+    if (options.length === 1) {
+      return {
+        ok: false,
+        clarification_needed: true,
+        reason: "auto_resolve_single_option",
+        clarification_question: String(aiPlan?.clarification?.question || ""),
+        clarification_options: [String(options[0]?.value || options[0]?.label || "")],
+        clarification_field: String(aiPlan?.clarification?.field || ""),
+        planner_state: {
+          originalQuestion: question,
+          partialPlan: aiPlan,
+          clarificationField: String(aiPlan?.clarification?.field || "").trim() || null,
+        },
+      };
+    }
+    return makeClarification(aiPlan?.clarification?.question, options, aiPlan?.clarification?.field);
+  }
+
+  if (aiPlan.status === "not_answerable") {
     return {
       ok: false,
       clarification_needed: false,
-      reason: "ai_plan_validation_failed",
-      message: `AI plan rejected by validator: ${String(validation.code || validation.reason || "invalid_plan")}.`,
-      validation_details: Array.isArray(validation.details) ? validation.details : [],
+      reason: "ai_not_answerable",
+      message: String(aiPlan?.not_answerable?.reason || "This dataset cannot answer that safely."),
     };
   }
-  const plannerState = aiPlan?.status === "needs_clarification"
-    ? {
-      originalQuestion: questionBase,
-      partialPlan: aiPlan,
-      clarificationField: String(aiPlan?.clarification?.field || "").trim() || null,
-    }
-    : null;
-  return toLegacyPlanFromAi({ aiPlan, plannerState, headers, sampleRows, fieldMetadata });
+
+  return {
+    ok: true,
+    operation: "multi_step_analysis",
+    metric: String(aiPlan?.analysis_plan?.steps?.[0]?.metric?.column || "value"),
+    analysisPlan: aiPlan.analysis_plan,
+    aiPlan,
+    datasetProfile: dataset,
+    verification: {
+      method: "ai_analyst_planner_v3",
+      confidence: aiPlan?.confidence === "high" ? 0.95 : (aiPlan?.confidence === "medium" ? 0.82 : 0.7),
+      fallback_used: false,
+      evidence: { steps: aiPlan?.analysis_plan?.steps?.length || 0, analysis_type: aiPlan?.analysis_plan?.analysis_type || null },
+    },
+  };
 }

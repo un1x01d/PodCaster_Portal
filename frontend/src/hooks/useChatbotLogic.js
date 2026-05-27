@@ -4,6 +4,27 @@ import api from "../api";
 const CHAT_TRANSLATE_CACHE = new Map();
 const CHAT_TRANSLATE_IN_FLIGHT = new Map();
 
+function chunkTextForLiveStream(text = "", maxLen = 48) {
+  const input = String(text || "");
+  if (!input) return [];
+  const out = [];
+  let i = 0;
+  while (i < input.length) {
+    const remain = input.slice(i);
+    if (remain.length <= maxLen) {
+      out.push(remain);
+      break;
+    }
+    const candidate = remain.slice(0, maxLen);
+    const punct = Math.max(candidate.lastIndexOf("."), candidate.lastIndexOf("!"), candidate.lastIndexOf("?"), candidate.lastIndexOf("\n"));
+    const space = candidate.lastIndexOf(" ");
+    const cut = punct >= 16 ? punct + 1 : (space >= 20 ? space + 1 : maxLen);
+    out.push(remain.slice(0, cut));
+    i += cut;
+  }
+  return out.filter(Boolean);
+}
+
 function serializeActiveFilters(activeFilters = {}) {
   if (!activeFilters || typeof activeFilters !== "object") return {};
   const out = {};
@@ -417,14 +438,40 @@ export function useChatbotLogic({
         : sanitizeAiText(copy.chatNoResponse || "I could not produce a response.");
       const actions = body.actions || {};
       const { filters } = applyChatActions(actions, meta);
-      setMessages((prev) => [...prev, {
-        type: "bot",
-        text: answer,
-        timestamp: new Date(),
-        isFilter: filters.length > 0,
-        filterCol: filters[0]?.column,
-        meta: body?.meta && typeof body.meta === "object" ? body.meta : null,
-      }]);
+
+      const botTimestamp = new Date();
+      let botMessageIndex = -1;
+      setMessages((prev) => {
+        botMessageIndex = prev.length;
+        return [...prev, {
+          type: "bot",
+          text: answer,
+          timestamp: botTimestamp,
+          isFilter: filters.length > 0,
+          filterCol: filters[0]?.column,
+          meta: body?.meta && typeof body.meta === "object" ? body.meta : null,
+        }];
+      });
+
+      // Best-effort stream events for manual speaker UX. Never fail chat response on UI stream issues.
+      try {
+        const chunks = chunkTextForLiveStream(answer, 56);
+        for (const chunk of chunks) {
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent("dashboard:chat-stream-chunk", {
+              detail: { sheetId, text: chunk }
+            }));
+          }
+          await new Promise((r) => setTimeout(r, 14));
+        }
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("dashboard:chat-stream-done", {
+            detail: { sheetId }
+          }));
+        }
+      } catch (_) {
+        // ignore stream event failures
+      }
     } catch (e) {
       const code = String(e?.response?.data?.error || "").trim();
       const msg = code === "chat_prompt_budget_exceeded"

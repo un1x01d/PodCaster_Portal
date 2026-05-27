@@ -65,7 +65,7 @@ test("provider config keeps explicit openai model even when provider config mode
       },
     },
   });
-  assert.equal(resolved.model, "gpt-5-nano");
+  assert.equal(resolved.model, "gpt-4.1-mini");
 });
 
 test("provider config falls back to OpenAI values when Ollama settings are disabled", () => {
@@ -76,6 +76,6 @@ test("provider config falls back to OpenAI values when Ollama settings are disab
     openaiBaseUrl: "http://localhost:11434/v1",
   });
   assert.equal(openaiFromStaleOllama.provider, "openai");
-  assert.equal(openaiFromStaleOllama.model, "llama3.1");
+  assert.equal(openaiFromStaleOllama.model, "gpt-5");
   assert.equal(openaiFromStaleOllama.baseUrl, defaultBaseUrlForProvider("openai"));
 });

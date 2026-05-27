@@ -404,7 +404,7 @@ export default function ChatHistory({ sheetId = null, messages, copy = DASHBOARD
             }
             if (!window._stopPlayback) setSpeakingIndex(null);
         } catch (err) {
-            if (!window._stopPlayback) fallbackSpeak(text, index);
+            if (!window._stopPlayback) fallbackSpeak(text, index, (localeBase === "ru" || localeBase === "uk") ? { slavicSafe: true } : {});
         }
     };
 
@@ -530,11 +530,9 @@ export default function ChatHistory({ sheetId = null, messages, copy = DASHBOARD
         }
         window._stopPlayback = false;
         const slavicLang = (locale || "en").split("-")[0].toLowerCase();
-        const speechText = (opts?.slavicSafe
-            ? String(text || "")
-            : ((slavicLang === "ru" || slavicLang === "uk")
+        const speechText = ((slavicLang === "ru" || slavicLang === "uk")
                 ? normalizeSlavicPronunciation(normalizeSlavicSpeechNumbers(text, slavicLang), slavicLang)
-                : text))
+                : String(text || ""))
             .replace(/[()]/g, " ");
         const localeMap = { 'es': 'es-ES', 'uk': 'uk-UA', 'ru': 'ru-RU', 'en': 'en-US' };
         const targetLang = localeMap[locale] || locale || 'en-US';
@@ -568,38 +566,13 @@ export default function ChatHistory({ sheetId = null, messages, copy = DASHBOARD
         return true;
     };
 
+    // Manual-only audio: do not auto-play streamed assistant text.
     useEffect(() => {
-        const onChunk = (event) => {
-            if (!chatAudioEnabled) return;
-            const detailSheetId = String(event?.detail?.sheetId || "");
-            const currentSheetId = String(sheetId || "");
-            if (currentSheetId && detailSheetId && currentSheetId !== detailSheetId) return;
-            const text = String(event?.detail?.text || "");
-            if (!text) return;
-            liveSentenceBufferRef.current += text;
-            const { sentences, rest } = splitCompleteSentences(liveSentenceBufferRef.current);
-            liveSentenceBufferRef.current = rest;
-            if (sentences.length) {
-                liveSentenceQueueRef.current.push(...sentences);
-                playLiveQueue();
-            }
-        };
-        const onDone = () => {
-            if (!chatAudioEnabled) return;
-            const tail = String(liveSentenceBufferRef.current || "").trim();
-            liveSentenceBufferRef.current = "";
-            if (tail) {
-                liveSentenceQueueRef.current.push(tail);
-                playLiveQueue();
-            }
-        };
-        window.addEventListener("dashboard:chat-stream-chunk", onChunk);
-        window.addEventListener("dashboard:chat-stream-done", onDone);
         return () => {
-            window.removeEventListener("dashboard:chat-stream-chunk", onChunk);
-            window.removeEventListener("dashboard:chat-stream-done", onDone);
+            liveSentenceQueueRef.current = [];
+            liveSentenceBufferRef.current = "";
         };
-    }, [chatAudioEnabled, sheetId]);
+    }, []);
 
     return (
         <div

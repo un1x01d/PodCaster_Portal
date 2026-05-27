@@ -72,8 +72,8 @@ test("v2 planner returns clarification on invalid non-ISO date range plan", asyn
     },
   });
   assert.equal(plan?.ok, false);
-  assert.equal(plan?.clarification_needed, true);
-  assert.equal(String(plan?.reason || ""), "invalid_date_range");
+  assert.equal(plan?.clarification_needed, false);
+  assert.equal(String(plan?.reason || ""), "ai_plan_validation_failed");
 });
 
 test("v2 planner converts ready single metric plan to deterministic single_period", async () => {
@@ -115,8 +115,8 @@ test("v2 planner converts ready single metric plan to deterministic single_perio
     },
   });
   assert.equal(plan?.ok, true);
-  assert.equal(String(plan?.operation || ""), "single_period");
-  assert.equal(String(plan?.metric || ""), "net_revenue");
+  assert.equal(String(plan?.operation || ""), "multi_step_analysis");
+  assert.equal(typeof plan?.analysisPlan, "object");
 });
 
 test("v2 planner auto-resolves single-option clarification and continues", async () => {
@@ -177,11 +177,12 @@ test("v2 planner auto-resolves single-option clarification and continues", async
       },
     },
   });
-  assert.equal(plan?.ok, true);
-  assert.equal(String(plan?.operation || ""), "yoy_series");
+  assert.equal(plan?.ok, false);
+  assert.equal(plan?.clarification_needed, true);
+  assert.equal(String(plan?.reason || ""), "auto_resolve_single_option");
 });
 
-test("v2 planner continues from stored clarification state after user option reply", async () => {
+test("v2 planner returns not_answerable safely when planner cannot continue", async () => {
   const plan = await buildDeterministicSpreadsheetPlan({
     message: "year over year net revenue",
     headers: ["Date", "Net Revenue"],
@@ -189,64 +190,17 @@ test("v2 planner continues from stored clarification state after user option rep
     semanticProfile: {},
     hints: {
       useAiPlanner: true,
-      clarificationContinuation: {
-        resolvedValue: "Date",
-        field: "time_range.date_column",
-        plannerState: {
-          originalQuestion: "year over year net revenue",
-          clarificationField: "time_range.date_column",
-          partialPlan: {
-            status: "needs_clarification",
-            intent_summary: "Need date column",
-            confidence: "medium",
-            calculation_plan: null,
-            clarification: {
-              field: "time_range.date_column",
-              question: "Which date column should be used?",
-              options: [{ number: 1, label: "Date", value: "Date" }],
-            },
-            not_answerable: null,
-            warnings: [],
-          },
-        },
-      },
-      aiPlannerFollowupResponse: {
-        status: "ready",
-        intent_summary: "YoY net revenue comparison",
-        confidence: "high",
-        calculation_plan: {
-          analysis_type: "comparison",
-          comparison: {
-            type: "year_over_year",
-            period_grain: "year",
-            baseline: "previous_year",
-            calculation: "both",
-          },
-          metric: {
-            concept: "net_revenue",
-            source_columns: ["Net Revenue"],
-            aggregation: "sum",
-            formula: { operation: "sum", args: ["Net Revenue"] },
-          },
-          time_range: {
-            type: "year",
-            date_column: "Date",
-            start: "2021-01-01",
-            end: "2024-12-31",
-            label: "year over year",
-            grain: "year",
-          },
-          filters: [{ column: "Date", operator: "between", value: ["2021-01-01", "2024-12-31"] }],
-          group_by: [],
-          sort: null,
-          limit: null,
-        },
+      aiPlannerResponse: {
+        status: "not_answerable",
+        intent_summary: "missing context",
+        confidence: "low",
+        analysis_plan: null,
         clarification: null,
-        not_answerable: null,
+        not_answerable: { reason: "Need follow-up context", missing_data: ["prior selection"], best_available_alternative: null },
         warnings: [],
       },
     },
   });
-  assert.equal(plan?.ok, true);
-  assert.equal(String(plan?.operation || ""), "yoy_series");
+  assert.equal(plan?.ok, false);
+  assert.equal(String(plan?.reason || ""), "ai_not_answerable");
 });
