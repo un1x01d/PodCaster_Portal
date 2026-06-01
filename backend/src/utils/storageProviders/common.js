@@ -1,4 +1,6 @@
 import { createHash, createHmac, createSign } from "crypto";
+import { lookup } from "dns/promises";
+import { isIP } from "net";
 import { query } from "../../config/db.js";
 import { decryptSettingValue } from "../settingsCrypto.js";
 
@@ -11,6 +13,136 @@ export const STORAGE_PROVIDER_DEFS = {
 
 export const PROVIDER_TIMEOUT_MS = Number.parseInt(process.env.PROVIDER_FETCH_TIMEOUT_MS || "15000", 10);
 export const PROVIDER_IMPORT_MAX_BYTES = Number.parseInt(process.env.PROVIDER_IMPORT_MAX_BYTES || `${100 * 1024 * 1024}`, 10);
+
+function envFlag(name, fallback = false) {
+  const raw = String(process.env[name] ?? "").trim().toLowerCase();
+  if (!raw) return !!fallback;
+  return ["1", "true", "yes", "on"].includes(raw);
+}
+
+const ALLOW_PRIVATE_PROVIDER_NETWORKS = envFlag("STORAGE_PROVIDER_ALLOW_PRIVATE_NETWORKS", false);
+const ALLOW_INSECURE_PROVIDER_HTTP = envFlag("STORAGE_PROVIDER_ALLOW_INSECURE_HTTP", false);
+const ALLOW_INTERNAL_PROVIDER_HOSTNAMES = envFlag("STORAGE_PROVIDER_ALLOW_INTERNAL_HOSTNAMES", false);
+const ALLOW_LOCALHOST_PROVIDER_ENDPOINTS = envFlag("STORAGE_PROVIDER_ALLOW_LOCALHOST", true);
+
+function ipv4ToInt(address) {
+  const parts = String(address || "").split(".").map((p) => Number.parseInt(p, 10));
+  if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) return null;
+  return parts.reduce((acc, part) => ((acc << 8) + part) >>> 0, 0);
+}
+
+function ipv4InCidr(address, base, bits) {
+  const value = ipv4ToInt(address);
+  const baseValue = ipv4ToInt(base);
+  if (value === null || baseValue === null) return false;
+  const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+  return (value & mask) === (baseValue & mask);
+}
+
+function isLoopbackAddress(address) {
+  const raw = String(address || "").trim().toLowerCase();
+  if (isIP(raw) === 4) return ipv4InCidr(raw, "127.0.0.0", 8);
+  if (isIP(raw) === 6) return raw === "::1" || raw.startsWith("::ffff:127.");
+  return false;
+}
+
+function isLocalhost(hostname) {
+  const host = String(hostname || "").trim().toLowerCase().replace(/\.$/, "");
+  return host === "localhost" || host.endsWith(".localhost") || isLoopbackAddress(host);
+}
+
+export function isPrivateOrReservedAddress(address) {
+  const raw = String(address || "").trim().toLowerCase();
+  if (!raw) return true;
+  const version = isIP(raw);
+  if (version === 4) {
+    return [
+      ["0.0.0.0", 8],
+      ["10.0.0.0", 8],
+      ["100.64.0.0", 10],
+      ["127.0.0.0", 8],
+      ["169.254.0.0", 16],
+      ["172.16.0.0", 12],
+      ["192.0.0.0", 24],
+      ["192.0.2.0", 24],
+      ["192.168.0.0", 16],
+      ["198.18.0.0", 15],
+      ["198.51.100.0", 24],
+      ["203.0.113.0", 24],
+      ["224.0.0.0", 4],
+      ["240.0.0.0", 4],
+    ].some(([base, bits]) => ipv4InCidr(raw, base, bits));
+  }
+  if (version === 6) {
+    return raw === "::" || raw === "::1"
+      || raw.startsWith("fc") || raw.startsWith("fd")
+      || raw.startsWith("fe8") || raw.startsWith("fe9") || raw.startsWith("fea") || raw.startsWith("feb")
+      || raw.startsWith("ff")
+      || raw.startsWith("::ffff:127.")
+      || raw.startsWith("::ffff:10.")
+      || raw.startsWith("::ffff:192.168.")
+      || /^::ffff:172\.(1[6-9]|2\d|3[01])\./.test(raw)
+      || raw.startsWith("::ffff:169.254.");
+  }
+  return true;
+}
+
+function isInternalHostname(hostname) {
+  const host = String(hostname || "").trim().toLowerCase().replace(/\.$/, "");
+  if (!host) return true;
+  if (isLocalhost(host)) return !ALLOW_LOCALHOST_PROVIDER_ENDPOINTS;
+  if (host === "metadata.google.internal") return true;
+  if (!host.includes(".")) return true;
+  return false;
+}
+
+export async function assertSafeStorageProviderUrl(rawUrl) {
+  const url = rawUrl instanceof URL ? rawUrl : new URL(String(rawUrl || ""));
+  if (url.username || url.password) {
+    const err = new Error("storage_provider_url_credentials_not_allowed");
+    err.code = "storage_provider_url_credentials_not_allowed";
+    throw err;
+  }
+  const hostname = String(url.hostname || "").trim();
+  const isLocalhostEndpoint = isLocalhost(hostname);
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && (ALLOW_INSECURE_PROVIDER_HTTP || (ALLOW_LOCALHOST_PROVIDER_ENDPOINTS && isLocalhostEndpoint)))) {
+    const err = new Error("storage_provider_url_protocol_not_allowed");
+    err.code = "storage_provider_url_protocol_not_allowed";
+    throw err;
+  }
+
+  if (!ALLOW_INTERNAL_PROVIDER_HOSTNAMES && isInternalHostname(hostname)) {
+    const err = new Error("storage_provider_internal_hostname_not_allowed");
+    err.code = "storage_provider_internal_hostname_not_allowed";
+    throw err;
+  }
+
+  const literalIpVersion = isIP(hostname);
+  const addresses = [];
+  if (literalIpVersion) {
+    addresses.push(hostname);
+  } else {
+    try {
+      const resolved = await lookup(hostname, { all: true, verbatim: true });
+      addresses.push(...resolved.map((r) => r.address).filter(Boolean));
+    } catch {
+      const err = new Error("storage_provider_host_unresolved");
+      err.code = "storage_provider_host_unresolved";
+      throw err;
+    }
+  }
+
+  const hasBlockedAddress = addresses.some((address) => (
+    isPrivateOrReservedAddress(address)
+    && !(ALLOW_LOCALHOST_PROVIDER_ENDPOINTS && isLoopbackAddress(address))
+  ));
+  if (!ALLOW_PRIVATE_PROVIDER_NETWORKS && hasBlockedAddress) {
+    const err = new Error("storage_provider_private_network_not_allowed");
+    err.code = "storage_provider_private_network_not_allowed";
+    throw err;
+  }
+  return true;
+}
 
 export function parsePositiveInt(value) {
   const parsed = Number.parseInt(value, 10);
@@ -116,10 +248,11 @@ export function assertProviderContentLengthWithinLimit(response) {
 }
 
 export async function fetchWithTimeout(url, options = {}, timeoutMs = PROVIDER_TIMEOUT_MS) {
+  await assertSafeStorageProviderUrl(url);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    return await fetch(url, { ...options, redirect: options.redirect || "manual", signal: controller.signal });
   } finally {
     clearTimeout(timeout);
   }

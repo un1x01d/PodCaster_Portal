@@ -11,6 +11,9 @@ export function useAuth() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loginError, setLoginError] = useState("");
+  const [twoFactorChallenge, setTwoFactorChallenge] = useState(null);
+  const [twoFactorCode, setTwoFactorCode] = useState("");
+  const [twoFactorVerifying, setTwoFactorVerifying] = useState(false);
 
   const [googleEnabled, setGoogleEnabled] = useState(true);
   const [dropboxEnabled, setDropboxEnabled] = useState(true);
@@ -75,7 +78,22 @@ export function useAuth() {
     setLoginError("");
     try {
       const res = await axios.post(`${API}/auth/login`, { email, password });
+      if (res?.data?.requiresTwoFactor) {
+        clearStoredAuthTokens();
+        setToken("");
+        setUser(null);
+        setTwoFactorCode("");
+        setTwoFactorChallenge({
+          challengeId: String(res.data.challengeId || ""),
+          method: String(res.data.method || ""),
+          maskedPhone: String(res.data.maskedPhone || ""),
+          expiresAt: String(res.data.expiresAt || ""),
+        });
+        return { requiresTwoFactor: true };
+      }
       clearStoredAuthTokens();
+      setTwoFactorChallenge(null);
+      setTwoFactorCode("");
       setToken(createSessionMarker());
       setUser(res.data.user);
       return res.data.user;
@@ -90,6 +108,55 @@ export function useAuth() {
     }
   };
 
+  const handleVerifyTwoFactor = async (e) => {
+    if (e) e.preventDefault();
+    if (!twoFactorChallenge?.challengeId) return null;
+    setLoginError("");
+    setTwoFactorVerifying(true);
+    try {
+      const res = await axios.post(`${API}/auth/2fa/verify`, {
+        challengeId: twoFactorChallenge.challengeId,
+        code: twoFactorCode,
+      });
+      clearStoredAuthTokens();
+      setTwoFactorChallenge(null);
+      setTwoFactorCode("");
+      setToken(createSessionMarker());
+      setUser(res.data.user);
+      return res.data.user;
+    } catch (err) {
+      const message = String(
+        err?.response?.data?.error
+        || err?.response?.data?.message
+        || "Verification failed. Check your code and try again."
+      );
+      setLoginError(message);
+      throw err;
+    } finally {
+      setTwoFactorVerifying(false);
+    }
+  };
+
+  const handleResendTwoFactorSms = async () => {
+    if (!twoFactorChallenge?.challengeId || twoFactorChallenge?.method !== "sms") return null;
+    setLoginError("");
+    const res = await axios.post(`${API}/auth/2fa/sms/resend`, { challengeId: twoFactorChallenge.challengeId });
+    setTwoFactorChallenge((prev) => ({
+      ...(prev || {}),
+      challengeId: String(res?.data?.challengeId || prev?.challengeId || ""),
+      maskedPhone: String(res?.data?.maskedPhone || prev?.maskedPhone || ""),
+      expiresAt: String(res?.data?.expiresAt || prev?.expiresAt || ""),
+    }));
+    setTwoFactorCode("");
+    return res.data;
+  };
+
+  const clearTwoFactorChallenge = () => {
+    setTwoFactorChallenge(null);
+    setTwoFactorCode("");
+    setLoginError("");
+  };
+
   const handleLogout = () => {
     axios.post(`${API}/auth/logout`).catch(() => {});
     clearStoredAuthTokens();
@@ -100,6 +167,8 @@ export function useAuth() {
     setToken("");
     setUser(null);
     setLoginError("");
+    setTwoFactorChallenge(null);
+    setTwoFactorCode("");
   };
 
   return {
@@ -114,7 +183,14 @@ export function useAuth() {
     setPassword,
     loginError,
     setLoginError,
+    twoFactorChallenge,
+    twoFactorCode,
+    setTwoFactorCode,
+    twoFactorVerifying,
     handleLogin,
+    handleVerifyTwoFactor,
+    handleResendTwoFactorSms,
+    clearTwoFactorChallenge,
     handleLogout,
     integrations: {
       googleEnabled,

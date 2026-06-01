@@ -4256,8 +4256,6 @@ export async function getSheetData(req, res) {
         return res.status(403).json({ error: "sheet_not_published" });
     }
     const isPlatformAdmin = isPlatformAdminUser(req.user);
-    const isGroupAdmin = await isGroupAdminUser(userId);
-    const canBypassViewAssignmentCheck = isPlatformAdmin || isGroupAdmin;
     delete req.headers["if-none-match"];
     delete req.headers["if-modified-since"];
     const pagination = parsePagination(req.query, { maxLimit: await resolveSheetDataMaxLimit(req.query) });
@@ -4279,6 +4277,14 @@ export async function getSheetData(req, res) {
     let forceColumnProjection = false;
     let dlpMaskedColumnsByTab = {};
 
+    // Resolve base access before any explicit view lookup. Group-admin status alone is
+    // not enough to bypass assignment checks across unrelated groups/sheets.
+    if (!isPlatformAdmin) {
+        hasFullAccess = await hasReportSourceOwnerAccess(id, userId);
+    } else {
+        hasFullAccess = true;
+    }
+
     // 1. Resolve Locked View if provided
     if (viewId) {
         let [view] = await query(
@@ -4298,24 +4304,22 @@ export async function getSheetData(req, res) {
                )
                    AND (
                      $3 = TRUE
-                     OR EXISTS (SELECT 1 FROM view_user_permissions WHERE view_id = v.id AND user_id = $4)
+                     OR $4 = TRUE
+                     OR v.created_by = $5
+                     OR EXISTS (SELECT 1 FROM view_user_permissions WHERE view_id = v.id AND user_id = $5)
                    )`,
-                [viewId, id, canBypassViewAssignmentCheck, userId]
+                [viewId, id, isPlatformAdmin, hasFullAccess, userId]
             );
-        if (!view) {
+        if (!view && (isPlatformAdmin || hasFullAccess)) {
             // Fallback: allow loading a locked view by id when sheet/source linkage changed across revisions.
-            // We still enforce that requester is platform/group admin or explicitly assigned to the view.
+            // Only full-access users may use a view outside its current source linkage.
             [view] = await query(
                 `SELECT v.config, s.headers
                    FROM views v
                    LEFT JOIN sheets s ON s.id = $2
                   WHERE v.id = $1
-                    AND (
-                      $3 = TRUE
-                      OR EXISTS (SELECT 1 FROM view_user_permissions WHERE view_id = v.id AND user_id = $4)
-                    )
                   LIMIT 1`,
-                [viewId, id, canBypassViewAssignmentCheck, userId]
+                [viewId, id]
             );
         }
         if (!view) {
@@ -4326,18 +4330,13 @@ export async function getSheetData(req, res) {
     }
 
     // 2. Resolve Base Permissions
-    if (!isPlatformAdmin) {
-        hasFullAccess = await hasReportSourceOwnerAccess(id, userId);
-        if (!hasFullAccess && !viewId) {
-            const assigned = await resolveAssignedViewForSheet(id, userId);
-            if (!assigned) {
-                return res.status(403).json({ error: "Forbidden", message: "You do not have an assigned view for this sheet." });
-            }
-            viewConfig = assigned.config;
-            sheetHeaders = assigned.headers;
+    if (!isPlatformAdmin && !hasFullAccess && !viewId) {
+        const assigned = await resolveAssignedViewForSheet(id, userId);
+        if (!assigned) {
+            return res.status(403).json({ error: "Forbidden", message: "You do not have an assigned view for this sheet." });
         }
-    } else {
-        hasFullAccess = true;
+        viewConfig = assigned.config;
+        sheetHeaders = assigned.headers;
     }
 
     // 3. Merge View Restrictions with Base Permissions
@@ -4372,6 +4371,24 @@ export async function getSheetData(req, res) {
             }
         }
 
+        let columnSelection = "row_data";
+        const sqlParams = [id];
+
+        // RBAC: Data Stripping at Database Level
+        if (!hasFullAccess) {
+            if (validCols.length > 0) {
+                // Keep only keys in validCols in the database result, not only in application code.
+                columnSelection = `COALESCE((
+                    SELECT jsonb_object_agg(key, value)
+                    FROM jsonb_each(row_data)
+                    WHERE key = ANY($${sqlParams.length + 1}::text[])
+                ), '{}'::jsonb)`;
+                sqlParams.push(validCols);
+            } else if (forceColumnProjection || viewId) {
+                columnSelection = `'{}'::jsonb`;
+            }
+        }
+
         try {
             const [semanticRow] = await query(
                 `SELECT s.headers, s.tab_name, s.semantic_profile, s.group_id
@@ -4396,23 +4413,60 @@ export async function getSheetData(req, res) {
                 const missingAiCache = !Array.isArray(currentProfile?.learned?.header_understanding)
                     || currentProfile.learned.header_understanding.length === 0;
                 if (missingAiCache) {
-                    const sampleRowsRes = await query(
-                        `SELECT row_data
+                    const storedHeaders = normalizeStoredHeaders(semanticRow.headers);
+                    const requestedTab = String(tab || semanticRow.tab_name || "").trim();
+                    const maskedForTab = new Set([
+                        ...(
+                            Array.isArray(maskedByTab?.[requestedTab])
+                                ? maskedByTab[requestedTab]
+                                : []
+                        ),
+                        ...(
+                            Array.isArray(maskedByTab?.["*"])
+                                ? maskedByTab["*"]
+                                : []
+                        ),
+                    ].map((h) => String(h)));
+                    const safeAiHeaders = (hasFullAccess
+                        ? storedHeaders
+                        : storedHeaders.filter((header) => validCols.includes(header))
+                    ).filter((header) => !maskedForTab.has(header));
+
+                    if (safeAiHeaders.length) {
+                        const sampleParams = [...sqlParams];
+                        let sampleSql = `SELECT ${columnSelection} AS row_data
                            FROM sheet_rows
-                          WHERE sheet_id = $1
-                            AND ($2::text IS NULL OR tab_name = $2)
-                          ORDER BY row_index ASC
-                          LIMIT $3`,
-                        [id, semanticRow.tab_name || null, HEADER_AI_SAMPLE_ROWS]
-                    );
-                    const sampleRows = sampleRowsRes.map((r) => r.row_data || {});
-                    await maybeEnrichSheetSemanticProfileWithAi({
-                        sheetId: id,
-                        headers: normalizeStoredHeaders(semanticRow.headers),
-                        sampleRows,
-                        semanticProfile: currentProfile,
-                        groupId: Number.isInteger(Number(semanticRow.group_id)) ? Number(semanticRow.group_id) : null,
-                    });
+                          WHERE sheet_id = $1`;
+                        if (requestedTab) {
+                            sampleSql += ` AND tab_name = $${sampleParams.length + 1}`;
+                            sampleParams.push(requestedTab);
+                        }
+                        if (!hasFullAccess && rowFiltersList.length > 0) {
+                            const filterClause = buildRowFilterWhereClause(rowFiltersList, sampleParams.length + 1, sheetHeaders);
+                            sampleSql += filterClause.sql;
+                            sampleParams.push(...filterClause.params);
+                        }
+                        sampleSql += ` ORDER BY row_index ASC LIMIT $${sampleParams.length + 1}`;
+                        sampleParams.push(HEADER_AI_SAMPLE_ROWS);
+                        const sampleRowsRes = await query(sampleSql, sampleParams);
+                        const sampleRows = sampleRowsRes.map((r) => {
+                            const src = r.row_data || {};
+                            const out = {};
+                            for (const header of safeAiHeaders) {
+                                if (Object.prototype.hasOwnProperty.call(src, header)) {
+                                    out[header] = src[header];
+                                }
+                            }
+                            return out;
+                        });
+                        await maybeEnrichSheetSemanticProfileWithAi({
+                            sheetId: id,
+                            headers: safeAiHeaders,
+                            sampleRows,
+                            semanticProfile: currentProfile,
+                            groupId: Number.isInteger(Number(semanticRow.group_id)) ? Number(semanticRow.group_id) : null,
+                        });
+                    }
                 }
             }
         } catch {}
@@ -4425,25 +4479,7 @@ export async function getSheetData(req, res) {
             return sheetHeaders.find((h) => String(h).toLowerCase().trim() === lowerRequested) || requested;
         };
 
-        let columnSelection = "row_data";
-        const sqlParams = [id];
-
-        // RBAC: Data Stripping at Database Level
-        if (!hasFullAccess) {
-            if (validCols.length > 0) {
-                // Keep only keys in validCols in the database result, not only in application code.
-                columnSelection = `COALESCE((
-                    SELECT jsonb_object_agg(key, value)
-                    FROM jsonb_each(row_data)
-                    WHERE key = ANY($${sqlParams.length + 1}::text[])
-                ), '{}'::jsonb)`;
-                sqlParams.push(validCols);
-            } else if (forceColumnProjection || viewId) {
-                columnSelection = `'{}'::jsonb`;
-            }
-        }
-
-        let sql = `SELECT ${columnSelection} AS row_data FROM sheet_rows WHERE sheet_id = $1`;
+        let sql = `SELECT row_index, ${columnSelection} AS row_data FROM sheet_rows WHERE sheet_id = $1`;
         const params = sqlParams;
 
         if (tab) {
@@ -4506,7 +4542,17 @@ export async function getSheetData(req, res) {
             }
         }
 
-        // Apply sorting
+        const cursorRaw = String(req.query?.cursor || "").trim();
+        let decodedCursor = null;
+        if (cursorRaw && !sort_by) {
+            try { decodedCursor = JSON.parse(Buffer.from(cursorRaw, "base64url").toString("utf8")); } catch { decodedCursor = null; }
+            if (decodedCursor && Number.isInteger(Number(decodedCursor.rowIndex))) {
+                sql += ` AND row_index > $${params.length + 1}`;
+                params.push(Number(decodedCursor.rowIndex));
+            }
+        }
+
+        // Apply sorting after all predicates have been added.
         if (sort_by) {
             const direction = String(sort_order).toLowerCase() === 'desc' ? 'DESC' : 'ASC';
             // Security: Only allow sorting on validCols if not admin
@@ -4525,15 +4571,6 @@ export async function getSheetData(req, res) {
             sql += ` ORDER BY row_index ASC`;
         }
 
-        const cursorRaw = String(req.query?.cursor || "").trim();
-        let decodedCursor = null;
-        if (cursorRaw && !sort_by) {
-            try { decodedCursor = JSON.parse(Buffer.from(cursorRaw, "base64url").toString("utf8")); } catch { decodedCursor = null; }
-            if (decodedCursor && Number.isInteger(Number(decodedCursor.rowIndex))) {
-                sql += ` AND row_index > $${params.length + 1}`;
-                params.push(Number(decodedCursor.rowIndex));
-            }
-        }
         const effectiveLimit = pagination.hasPagination ? pagination.limit : (SHEET_DATA_HARD_CAP > 0 ? SHEET_DATA_HARD_CAP : 1000);
         sql += ` LIMIT $${params.length + 1}`;
         params.push(effectiveLimit + 1);
@@ -4542,11 +4579,24 @@ export async function getSheetData(req, res) {
             params.push(pagination.offset);
         }
 
-        let rows = await query(sql, params);
+        const dbRows = await query(sql, params);
+
+        if (!pagination.hasPagination && SHEET_DATA_HARD_CAP > 0 && dbRows.length > SHEET_DATA_HARD_CAP) {
+            return res.status(413).json({
+                error: "result_too_large",
+                message: "Result set too large. Please request with ?limit=<n>&offset=<n>.",
+                maxRows: SHEET_DATA_HARD_CAP
+            });
+        }
+
+        const hasMore = dbRows.length > effectiveLimit;
+        const pageRows = hasMore ? dbRows.slice(0, effectiveLimit) : dbRows;
+        const lastRowIndex = pageRows.length ? Number(pageRows[pageRows.length - 1]?.row_index) : null;
+        let rows;
 
         // Strip unauthorized columns for non-admins (or view-restricted)
         if (!hasFullAccess) {
-            rows = rows.map(r => {
+            rows = pageRows.map(r => {
                 const rowData = (typeof r.row_data === 'string' ? JSON.parse(r.row_data) : r.row_data) || {};
                 Object.keys(rowData).forEach(k => {
                     if (!validCols.includes(k)) {
@@ -4556,21 +4606,12 @@ export async function getSheetData(req, res) {
                 return rowData;
             });
         } else {
-            rows = rows.map(r => typeof r.row_data === 'string' ? JSON.parse(r.row_data) : r.row_data);
+            rows = pageRows.map(r => typeof r.row_data === 'string' ? JSON.parse(r.row_data) : r.row_data);
         }
 
-        if (!pagination.hasPagination && SHEET_DATA_HARD_CAP > 0 && rows.length > SHEET_DATA_HARD_CAP) {
-            return res.status(413).json({
-                error: "result_too_large",
-                message: "Result set too large. Please request with ?limit=<n>&offset=<n>.",
-                maxRows: SHEET_DATA_HARD_CAP
-            });
-        }
-
-        const hasMore = rows.length > effectiveLimit;
-        const items = hasMore ? rows.slice(0, effectiveLimit) : rows;
-        const nextCursor = (!sort_by && hasMore && items.length)
-            ? Buffer.from(JSON.stringify({ rowIndex: Number(items.length ? (decodedCursor?.rowIndex || 0) + items.length : 0) }), "utf8").toString("base64url")
+        const items = rows;
+        const nextCursor = (!sort_by && hasMore && Number.isInteger(lastRowIndex))
+            ? Buffer.from(JSON.stringify({ rowIndex: lastRowIndex }), "utf8").toString("base64url")
             : null;
         const effectiveTab = String(tab || "").trim();
         const dlpMaskedColumns = (() => {

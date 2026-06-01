@@ -8,6 +8,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "crypto";
 import { decryptSettingValue } from "../utils/settingsCrypto.js";
 import { groupHasFeature } from "../utils/entitlements.js";
 import { fetchProviderAutosyncMetadata } from "../utils/providerAutosync.js";
+import { isPlatformAdminUser } from "../utils/authorization.js";
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
@@ -386,7 +387,7 @@ async function findOrCreateGoogleUser(googleUser, { requiredGroupId = null } = {
   const existing = await query("SELECT id, email, role FROM users WHERE email = $1 LIMIT 1", [email]);
   if (existing.length) {
     // Admin accounts must continue using manual credentials.
-    if (existing[0].role === "admin") {
+    if (isPlatformAdminUser(existing[0])) {
       throw new Error("admin_manual_login_required");
     }
     return existing[0];

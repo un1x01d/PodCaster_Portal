@@ -1,26 +1,54 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { validateCalculationPlan } from "../src/services/ai/calculationPlanValidator.js";
+import { validateAiAnalysisPlan } from "../src/services/ai/aiAnalysisPlanValidator.js";
 import { executeDeterministicSpreadsheetPlan } from "../src/services/ai/deterministicSpreadsheetExecutor.js";
 
-test("driver analysis plan validation", () => {
+const driverStep = {
+  step_id: "s1",
+  operation: "period_driver_delta",
+  metric: { column: "net_income", aggregation: "sum" },
+  metrics: [],
+  driver_columns: ["Revenue", "COGS"],
+  dimension: null,
+  date_column: "Date",
+  filters: [],
+  baseline_range: ["2022-01-01", "2022-12-31"],
+  comparison_range: ["2023-01-01", "2023-12-31"],
+  time_range: null,
+  grain: "year",
+  group_by: [],
+  sort: null,
+  limit: null,
+};
+
+test("driver analysis plan validation uses analysis_plan contract", () => {
   const plan = {
     status: "ready",
-    calculation_plan: {
+    intent_summary: "driver analysis",
+    confidence: "high",
+    analysis_plan: {
       analysis_type: "driver_analysis",
-      base_metric: { business_concept: "net_income", source_columns: ["net_income"], aggregation: "sum" },
-      comparison: {
-        type: "period_vs_period",
-        baseline_range: { start: "2022-01-01", end: "2022-12-31" },
-        comparison_range: { start: "2023-01-01", end: "2023-12-31" },
-        date_column: "Date"
-      },
-      driver_columns: ["Revenue", "COGS"],
-      dimensions: ["Region"]
-    }
+      steps: [driverStep],
+      final_response_instruction: { style: "business_explanation", include_tables: true, include_causation_warning: true },
+    },
+    clarification: null,
+    not_answerable: null,
+    warnings: [],
   };
-  const context = { columns: [{ name: "Date" }, { name: "net_income" }, { name: "Revenue" }, { name: "COGS" }, { name: "Region" }] };
-  const res = validateCalculationPlan(plan, context, { allowed_columns: ["Date", "net_income", "Revenue", "COGS", "Region"] });
+  const context = {
+    columns: [
+      { name: "Date", type_guess: "date", profile: { date_like_ratio: 1, number_like_ratio: 0 } },
+      { name: "net_income", type_guess: "number", profile: { date_like_ratio: 0, number_like_ratio: 1 } },
+      { name: "Revenue", type_guess: "number", profile: { date_like_ratio: 0, number_like_ratio: 1 } },
+      { name: "COGS", type_guess: "number", profile: { date_like_ratio: 0, number_like_ratio: 1 } },
+      { name: "Region", type_guess: "category", profile: { date_like_ratio: 0, number_like_ratio: 0 } },
+    ],
+  };
+  const res = validateAiAnalysisPlan({
+    plan,
+    datasetProfile: context,
+    allowedOperations: ["period_driver_delta"],
+  });
   assert.equal(res.ok, true);
 });
 
@@ -29,17 +57,7 @@ test("driver analysis execution", () => {
     ok: true,
     analysisPlan: {
       analysis_type: "driver_analysis",
-      steps: [
-        {
-          step_id: "s1",
-          operation: "period_driver_delta",
-          date_column: "Date",
-          driver_columns: ["Revenue", "COGS"],
-          baseline_range: ["2022-01-01", "2022-12-31"],
-          comparison_range: ["2023-01-01", "2023-12-31"],
-          filters: [],
-        },
-      ],
+      steps: [driverStep],
     },
   };
 

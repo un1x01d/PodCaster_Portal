@@ -43,8 +43,7 @@ export async function listAzureEntries(cfg, currentPath) {
   const { authorization, xmsDate, xmsVersion } = buildAzureSharedKeyAuth({ method: "GET", url, accountName, accountKey: trimString(decryptSettingValue(String(cfg?.accountKey || ""))) });
   const res = await fetchWithTimeout(url.toString(), { method: "GET", headers: { Authorization: authorization, "x-ms-date": xmsDate, "x-ms-version": xmsVersion } });
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`azure_list_failed: ${text.slice(0, 400)}`);
+    throw new Error("azure_list_failed");
   }
   const xml = await res.text();
   const { folders, files } = parseAzureListXml(xml);
@@ -65,8 +64,7 @@ export async function fetchAzureMetadata(cfg, sourceRef) {
   const { authorization, xmsDate, xmsVersion } = buildAzureSharedKeyAuth({ method: "HEAD", url, accountName, accountKey: trimString(decryptSettingValue(String(cfg?.accountKey || ""))) });
   const res = await fetchWithTimeout(url.toString(), { method: "HEAD", headers: { Authorization: authorization, "x-ms-date": xmsDate, "x-ms-version": xmsVersion } });
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`azure_metadata_failed: ${text.slice(0, 400)}`);
+    throw new Error("azure_metadata_failed");
   }
   const lastModified = res.headers.get("last-modified") || null;
   const size = res.headers.get("content-length") || null;
@@ -84,8 +82,7 @@ export async function downloadAzureFile(cfg, sourceRef) {
   const { authorization, xmsDate, xmsVersion } = buildAzureSharedKeyAuth({ method: "GET", url, accountName, accountKey: trimString(decryptSettingValue(String(cfg?.accountKey || ""))) });
   const res = await fetchWithTimeout(url.toString(), { method: "GET", headers: { Authorization: authorization, "x-ms-date": xmsDate, "x-ms-version": xmsVersion } });
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`azure_download_failed: ${text.slice(0, 400)}`);
+    throw new Error("azure_download_failed");
   }
   assertProviderContentLengthWithinLimit(res);
   const buf = Buffer.from(await res.arrayBuffer());

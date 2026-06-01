@@ -172,6 +172,14 @@ export default function App() {
     password,
     setPassword,
     loginError,
+    twoFactorChallenge,
+    twoFactorCode,
+    setTwoFactorCode,
+    twoFactorVerifying,
+    handleVerifyTwoFactor,
+    handleResendTwoFactorSms,
+    clearTwoFactorChallenge,
+    handleLogin: authHandleLogin,
     handleLogout: authHandleLogout,
   } = auth;
   const {
@@ -759,14 +767,10 @@ export default function App() {
   }, [headers]);
 
   const handleLogin = async (e) => {
-    e.preventDefault();
     try {
-      const res = await axios.post(`${API}/auth/login`, { email, password });
-      clearStoredAuthTokens();
-      setToken(createSessionMarker());
-      setUser(res.data.user);
+      await authHandleLogin(e);
     } catch (err) {
-      alert("Login failed");
+      // useAuth surfaces the actual API error in loginError for the screen.
     }
   };
 
@@ -2379,6 +2383,13 @@ export default function App() {
                     onSamlLogin={handleSamlLogin}
                     googleEnabled={googleEnabled}
                     error={loginError}
+                    twoFactorChallenge={twoFactorChallenge}
+                    twoFactorCode={twoFactorCode}
+                    setTwoFactorCode={setTwoFactorCode}
+                    twoFactorVerifying={twoFactorVerifying}
+                    onVerifyTwoFactor={handleVerifyTwoFactor}
+                    onResendTwoFactorSms={handleResendTwoFactorSms}
+                    onCancelTwoFactor={clearTwoFactorChallenge}
                   />
                 ) : <Navigate to="/workspace" replace />}
               </ErrorBoundary>
@@ -2548,6 +2559,13 @@ export default function App() {
                       onSamlLogin={handleSamlLogin}
                       googleEnabled={googleEnabled}
                       error={loginError}
+                      twoFactorChallenge={twoFactorChallenge}
+                      twoFactorCode={twoFactorCode}
+                      setTwoFactorCode={setTwoFactorCode}
+                      twoFactorVerifying={twoFactorVerifying}
+                      onVerifyTwoFactor={handleVerifyTwoFactor}
+                      onResendTwoFactorSms={handleResendTwoFactorSms}
+                      onCancelTwoFactor={clearTwoFactorChallenge}
                     />
                   )
                 ) : (

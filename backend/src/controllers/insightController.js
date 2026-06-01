@@ -1,7 +1,7 @@
 import { createHash } from "crypto";
 import { query } from "../config/db.js";
 import { isEnglishLocale, normalizeLocale, translateDashboardCards } from "../utils/dashboardLocalization.js";
-import { checkSheetAccess, hasReportSourceOwnerAccess, loadSheetPermissionSets } from "../utils/authorization.js";
+import { checkSheetAccess, hasReportSourceOwnerAccess, isPlatformAdminUser, loadSheetPermissionSets } from "../utils/authorization.js";
 import { synthesizeChatAudioBuffer } from "./chatController.js";
 import { resolveAiGroupIdForSheet } from "../utils/aiQuota.js";
 import { isAiGloballyDisabled, loadAiRuntimeSettings, loadEffectiveAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
@@ -602,7 +602,7 @@ async function loadAccessibleRows(sheetId, user) {
   const params = [sheetId];
   let where = "WHERE sheet_id = $1";
 
-  const hasFullAccess = user.role === "admin" || await hasReportSourceOwnerAccess(sheetId, user.id);
+  const hasFullAccess = isPlatformAdminUser(user) || await hasReportSourceOwnerAccess(sheetId, user.id);
   if (!hasFullAccess) {
     const { allPerms, validCols: validColsArray, rowFiltersList } = await loadSheetPermissionSets(sheetId, user.id);
     if (!allPerms.length) {
@@ -1644,7 +1644,7 @@ export async function getInsightCardAudio(req, res) {
 export async function updateInsightSettings(req, res) {
   const { sheetId } = req.params;
   if (!sheetId) return res.status(400).json({ error: "sheet_id_required" });
-  if (req.user?.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+  if (!isPlatformAdminUser(req.user)) return res.status(403).json({ error: "Forbidden" });
 
   const incoming = req.body || {};
   const sensitivity = Number.isFinite(Number(incoming.sensitivity)) ? Number(incoming.sensitivity) : 1;

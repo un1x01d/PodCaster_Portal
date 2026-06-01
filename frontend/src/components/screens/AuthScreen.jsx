@@ -12,7 +12,7 @@ import {
   themeHoverTextClass
 } from "../../utils/theme";
 
-export default function AuthScreen({ email, setEmail, password, setPassword, onSubmit, onGoogleLogin, onSamlLogin, googleEnabled, error = "" }) {
+export default function AuthScreen({ email, setEmail, password, setPassword, onSubmit, onGoogleLogin, onSamlLogin, googleEnabled, error = "", twoFactorChallenge = null, twoFactorCode = "", setTwoFactorCode = () => {}, onVerifyTwoFactor = () => {}, onResendTwoFactorSms = null, onCancelTwoFactor = () => {}, twoFactorVerifying = false }) {
   return (
     <div className={publicPageClass}>
       <div className="mx-auto grid min-h-[calc(100vh-4rem)] max-w-6xl gap-8 lg:grid-cols-[1fr_480px] lg:items-center">
@@ -53,6 +53,48 @@ export default function AuthScreen({ email, setEmail, password, setPassword, onS
             <p className="mt-2 text-sm font-semibold text-slate-500">Open your TFORN workspace.</p>
           </div>
 
+        {twoFactorChallenge ? (
+          <form onSubmit={onVerifyTwoFactor} className="space-y-3">
+            {error ? (
+              <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
+                {error}
+              </div>
+            ) : null}
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-700">
+              <div className="text-xs font-black uppercase tracking-[0.16em] text-slate-500">Two-factor verification</div>
+              <p className="mt-2 leading-6">
+                {twoFactorChallenge.method === "sms"
+                  ? `Enter the code sent to ${twoFactorChallenge.maskedPhone || "your phone"}.`
+                  : "Enter the code from your authenticator app."}
+              </p>
+            </div>
+            <div className="group space-y-1">
+              <label className={formLabelClass}>Verification code</label>
+              <input
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                value={twoFactorCode}
+                onChange={(e) => setTwoFactorCode(e.target.value)}
+                placeholder="123456"
+                className={formFieldClass}
+                required
+                autoFocus
+              />
+            </div>
+            <button type="submit" disabled={twoFactorVerifying} className={`${primaryActionClass} h-12 w-full ${twoFactorVerifying ? "opacity-60 cursor-not-allowed" : ""}`}>
+              {twoFactorVerifying ? "Verifying..." : "Verify and continue"}
+            </button>
+            {twoFactorChallenge.method === "sms" && onResendTwoFactorSms ? (
+              <button type="button" onClick={onResendTwoFactorSms} className={`${secondaryActionClass} h-11 w-full`}>
+                Resend SMS code
+              </button>
+            ) : null}
+            <button type="button" onClick={onCancelTwoFactor} className="w-full text-xs font-black uppercase tracking-[0.16em] text-slate-500 hover:text-slate-950">
+              Back to sign in
+            </button>
+          </form>
+        ) : (
         <form onSubmit={onSubmit} className="space-y-2">
           {error ? (
             <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
@@ -135,6 +177,7 @@ export default function AuthScreen({ email, setEmail, password, setPassword, onS
             Continue with SAML SSO
           </button>
         </form>
+        )}
 
         <div className="mt-8 border-t border-slate-300 py-4">
            <div className="flex items-center gap-2">

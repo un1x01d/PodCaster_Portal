@@ -601,6 +601,7 @@ export async function synthesizeChatAudioBuffer({ text, locale, runtime = null }
 export async function getChatAudio(req, res) {
   const { text, locale, sheetId = null } = req.body || {};
   if (!text) return res.status(400).json(aiError("missing_params"));
+  if (!sheetId) return res.status(400).json(aiError("sheet_id_required"));
 
   let runtime = null;
   let globalRuntime = null;

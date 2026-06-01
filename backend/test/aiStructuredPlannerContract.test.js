@@ -1,82 +1,135 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { validateCalculationPlan, isValidIsoDate } from "../src/services/ai/calculationPlanValidator.js";
+import { validateAiAnalysisPlan } from "../src/services/ai/aiAnalysisPlanValidator.js";
 import { buildDeterministicSpreadsheetPlan } from "../src/services/ai/deterministicSpreadsheetPlannerV2.js";
 
-const datasetContext = {
+const datasetProfile = {
   columns: [
-    { name: "Transaction Date", type: "date" },
-    { name: "Net Revenue", type: "number" },
-    { name: "Region", type: "string" },
+    { name: "Transaction Date", type_guess: "date", profile: { date_like_ratio: 1, number_like_ratio: 0 } },
+    { name: "Net Revenue", type_guess: "number", profile: { date_like_ratio: 0, number_like_ratio: 1 } },
+    { name: "Region", type_guess: "category", profile: { date_like_ratio: 0, number_like_ratio: 0 } },
   ],
 };
+const allowedOperations = ["aggregate", "period_delta", "year_over_year", "period_driver_delta", "period_delta_by_dimension", "ranking", "trend", "ratio", "margin", "variance"];
 
-test("validator accepts ready quarter plan with valid dates", () => {
-  const plan = {
+function readyPlan(step) {
+  return {
     status: "ready",
-    calculation_plan: {
+    intent_summary: "test plan",
+    confidence: "high",
+    analysis_plan: {
       analysis_type: "single_metric",
-      metric: {
-        concept: "net_revenue",
-        source_columns: ["Net Revenue"],
-        aggregation: "sum",
-        formula: { operation: "sum", args: ["Net Revenue"] },
-      },
-      time_range: {
-        type: "quarter",
-        date_column: "Transaction Date",
-        start: "2022-01-01",
-        end: "2022-03-31",
-        label: "Q1 2022",
-      },
+      steps: [step],
+      final_response_instruction: { style: "business_explanation", include_tables: true, include_causation_warning: true },
+    },
+    clarification: null,
+    not_answerable: null,
+    warnings: [],
+  };
+}
+
+test("analysis-plan validator accepts ready quarter plan with AI-provided dates", () => {
+  const out = validateAiAnalysisPlan({
+    plan: readyPlan({
+      step_id: "s1",
+      operation: "aggregate",
+      metric: { column: "Net Revenue", aggregation: "sum" },
+      metrics: [],
+      driver_columns: [],
+      dimension: null,
+      date_column: null,
       filters: [{ column: "Transaction Date", operator: "between", value: ["2022-01-01", "2022-03-31"] }],
+      baseline_range: null,
+      comparison_range: null,
+      time_range: null,
+      grain: "none",
       group_by: [],
       sort: null,
       limit: null,
-    },
-  };
-  const out = validateCalculationPlan(plan, datasetContext, { allowed_columns: ["Transaction Date", "Net Revenue", "Region"] });
+    }),
+    datasetProfile,
+    allowedOperations,
+  });
   assert.equal(out.ok, true);
 });
 
-test("validator rejects unauthorized column", () => {
-  const plan = {
-    status: "ready",
-    calculation_plan: {
-      analysis_type: "single_metric",
-      metric: { concept: "net_revenue", source_columns: ["Secret Revenue"], aggregation: "sum", formula: { operation: "sum", args: ["Secret Revenue"] } },
-      time_range: { type: "all_time", date_column: null, start: null, end: null, label: null },
+test("analysis-plan validator rejects unknown or unauthorized columns", () => {
+  const out = validateAiAnalysisPlan({
+    plan: readyPlan({
+      step_id: "s1",
+      operation: "aggregate",
+      metric: { column: "Secret Revenue", aggregation: "sum" },
+      metrics: [],
+      driver_columns: [],
+      dimension: null,
+      date_column: null,
       filters: [],
+      baseline_range: null,
+      comparison_range: null,
+      time_range: null,
+      grain: "none",
       group_by: [],
       sort: null,
       limit: null,
-    },
-  };
-  const out = validateCalculationPlan(plan, datasetContext, { allowed_columns: ["Transaction Date", "Net Revenue", "Region"] });
-  assert.equal(typeof out.ok, "boolean");
+    }),
+    datasetProfile,
+    allowedOperations,
+  });
+  assert.equal(out.ok, false);
+  assert.match(out.details.join("|"), /unknown_column:Secret Revenue/);
 });
 
-test("validator rejects invalid quarter range", () => {
-  const plan = {
-    status: "ready",
-    calculation_plan: {
-      analysis_type: "single_metric",
-      metric: { concept: "net_revenue", source_columns: ["Net Revenue"], aggregation: "sum", formula: { operation: "sum", args: ["Net Revenue"] } },
-      time_range: { type: "quarter", date_column: "Transaction Date", start: "2022-01-01", end: "2022-04-30", label: "Q1 2022" },
-      filters: [{ column: "Transaction Date", operator: "between", value: ["2022-01-01", "2022-04-30"] }],
+test("analysis-plan validator rejects non-ISO date strings from planner", () => {
+  const out = validateAiAnalysisPlan({
+    plan: readyPlan({
+      step_id: "s1",
+      operation: "period_delta",
+      metric: { column: "Net Revenue", aggregation: "sum" },
+      metrics: [],
+      driver_columns: [],
+      dimension: null,
+      date_column: "Transaction Date",
+      filters: [],
+      baseline_range: ["Q2 2022", "Q3 2023"],
+      comparison_range: ["2023-01-01", "2023-12-31"],
+      time_range: null,
+      grain: "quarter",
       group_by: [],
       sort: null,
       limit: null,
-    },
-  };
-  const out = validateCalculationPlan(plan, datasetContext, { allowed_columns: ["Transaction Date", "Net Revenue", "Region"] });
-  assert.equal(out.ok, true);
+    }),
+    datasetProfile,
+    allowedOperations,
+  });
+  assert.equal(out.ok, false);
+  assert.match(out.details.join("|"), /invalid_date_range/);
 });
 
-test("date helper rejects invalid leap date", () => {
-  assert.equal(isValidIsoDate("2023-02-29"), false);
-  assert.equal(isValidIsoDate("2024-02-29"), true);
+test("analysis-plan validator rejects invalid leap date", () => {
+  const out = validateAiAnalysisPlan({
+    plan: readyPlan({
+      step_id: "s1",
+      operation: "period_delta",
+      metric: { column: "Net Revenue", aggregation: "sum" },
+      metrics: [],
+      driver_columns: [],
+      dimension: null,
+      date_column: "Transaction Date",
+      filters: [],
+      baseline_range: ["2023-02-29", "2023-12-31"],
+      comparison_range: ["2024-01-01", "2024-12-31"],
+      time_range: null,
+      grain: "year",
+      group_by: [],
+      sort: null,
+      limit: null,
+    }),
+    datasetProfile,
+    allowedOperations,
+  });
+  assert.equal(out.ok, false);
+  assert.match(out.details.join("|"), /invalid_date_range/);
 });
 
 test("planner returns deterministic clarification state from AI status", async () => {
@@ -86,14 +139,13 @@ test("planner returns deterministic clarification state from AI status", async (
     sampleRows: [{ "Transaction Date": "2022-01-11", "Revenue Total": "100", "Net Revenue": "90" }],
     semanticProfile: {},
     hints: {
-      useAiPlanner: true,
       aiPlannerResponse: {
         status: "needs_clarification",
         intent_summary: "Need metric clarification",
         confidence: "medium",
-        calculation_plan: null,
+        analysis_plan: null,
         clarification: {
-          field: "metric.source_columns",
+          field: "metric.column",
           question: "Which revenue column should I use?",
           options: [
             { number: 1, label: "Revenue Total", value: "Revenue Total" },
@@ -104,55 +156,31 @@ test("planner returns deterministic clarification state from AI status", async (
         warnings: [],
       },
     },
-    context: {},
   });
   assert.equal(plan?.clarification_needed, true);
-  assert.equal(String(plan?.clarification_field || ""), "metric.source_columns");
+  assert.equal(String(plan?.clarification_field || ""), "metric.column");
 });
 
-test("planner does not silently fall back to legacy interpreter by default when AI planner fails", async () => {
+test("planner does not silently fall back to local interpretation when AI planner fails", async () => {
   const plan = await buildDeterministicSpreadsheetPlan({
     message: "year over year revenue",
     headers: ["Date", "Revenue Total", "Net Revenue"],
     sampleRows: [{ Date: "2022-01-10", "Revenue Total": "100", "Net Revenue": "90" }],
     semanticProfile: {},
-    hints: {
-      useAiPlanner: true,
-      aiPlannerResponse: "not-an-object",
-    },
-    context: {},
+    hints: { aiPlannerResponse: "not-an-object" },
   });
   assert.equal(plan?.ok, false);
   assert.equal(String(plan?.reason || ""), "ai_not_answerable");
 });
 
-test("validator rejects non-ISO date strings from planner", () => {
-  const plan = {
-    status: "ready",
-    calculation_plan: {
-      analysis_type: "comparison",
-      metric: { concept: "net_revenue", source_columns: ["Net Revenue"], aggregation: "sum", formula: { operation: "sum", args: ["Net Revenue"] } },
-      time_range: { type: "quarter", date_column: "Transaction Date", start: "Q2 2022", end: "Q3 2023", label: "Q2 2022 vs Q3 2023" },
-      filters: [{ column: "Transaction Date", operator: "between", value: ["Q2 2022", "Q3 2023"] }],
-      group_by: ["Region"],
-      sort: { column: "Region", direction: "desc" },
-      limit: 2,
-    },
-  };
-  const out = validateCalculationPlan(plan, datasetContext, { allowed_columns: ["Transaction Date", "Net Revenue", "Region"] });
-  assert.equal(out.ok, false);
-  assert.equal(String(out.reason || ""), "invalid_date_range");
-});
-
-test("planner returns safe failure when no planner response is provided", async () => {
+test("planner returns provider failure when no planner response or API key is provided", async () => {
   await assert.rejects(
     () => buildDeterministicSpreadsheetPlan({
       message: "year over year revenue",
       headers: ["Date", "Revenue Total", "Net Revenue"],
       sampleRows: [{ Date: "2022-01-10", "Revenue Total": "100", "Net Revenue": "90" }],
       semanticProfile: {},
-      hints: { useAiPlanner: true },
-      context: {},
+      hints: {},
     }),
     /no_api_key/
   );

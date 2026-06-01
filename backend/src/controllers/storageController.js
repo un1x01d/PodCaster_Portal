@@ -16,6 +16,7 @@ import {
   appSettingKeyForGroup,
   resolveScopedGroupForIntegrationSettings,
 } from "./userController.js";
+import { assertSafeStorageProviderUrl } from "../utils/storageProviders/common.js";
 
 const STORAGE_TEST_TIMEOUT_MS = Number.parseInt(process.env.STORAGE_TEST_TIMEOUT_MS || "20000", 10);
 const SFTP_TMP_PREFIX = "storage-sftp-";
@@ -213,10 +214,11 @@ function canonicalQueryString(params) {
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = STORAGE_TEST_TIMEOUT_MS) {
+  await assertSafeStorageProviderUrl(url);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    return await fetch(url, { ...options, redirect: options.redirect || "manual", signal: controller.signal });
   } finally {
     clearTimeout(timer);
   }
@@ -290,7 +292,7 @@ async function runSshProbe(cfg) {
       proc.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
       proc.on("error", (err) => {
         clearTimeout(timeout);
-        resolve({ ok: false, error: "ssh_command_unavailable", details: String(err?.message || err) });
+        resolve({ ok: false, error: "ssh_command_unavailable" });
       });
       proc.on("close", (code) => {
         clearTimeout(timeout);
@@ -300,10 +302,10 @@ async function runSshProbe(cfg) {
         }
         const lower = `${stdout}\n${stderr}`.toLowerCase();
         if (lower.includes("permission denied") || lower.includes("authentication failed")) {
-          resolve({ ok: false, error: "invalid_credentials", details: (stderr || stdout).slice(0, 400) });
+          resolve({ ok: false, error: "invalid_credentials" });
           return;
         }
-        resolve({ ok: false, error: "storage_probe_failed", details: (stderr || stdout).slice(0, 400) });
+        resolve({ ok: false, error: "storage_probe_failed" });
       });
     });
     return result;
@@ -476,12 +478,7 @@ async function testGcsConnection(cfg) {
     }),
   });
   if (!tokenRes.ok) {
-    const text = await tokenRes.text();
-    const lower = text.toLowerCase();
-    if (lower.includes("invalid_grant") || lower.includes("unauthorized") || lower.includes("invalid_client")) {
-      return { ok: false, error: "invalid_credentials", details: text.slice(0, 400) };
-    }
-    return { ok: false, error: "gcs_token_exchange_failed", details: text.slice(0, 400) };
+    return { ok: false, error: tokenRes.status === 401 || tokenRes.status === 403 ? "invalid_credentials" : "gcs_token_exchange_failed" };
   }
   const tokenJson = await tokenRes.json();
   const accessToken = trimString(tokenJson?.access_token);
@@ -492,8 +489,7 @@ async function testGcsConnection(cfg) {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!res.ok) {
-    const text = await res.text();
-    return { ok: false, error: "gcs_bucket_probe_failed", details: text.slice(0, 400) };
+    return { ok: false, error: "gcs_bucket_probe_failed" };
   }
   return { ok: true, message: "storage_probe_success" };
 }
@@ -537,12 +533,7 @@ async function testS3Connection(cfg) {
     },
   });
   if (!res.ok) {
-    const text = await res.text();
-    const lower = text.toLowerCase();
-    if (lower.includes("invalidaccesskeyid") || lower.includes("signaturedoesnotmatch") || lower.includes("accessdenied")) {
-      return { ok: false, error: "invalid_credentials", details: text.slice(0, 400) };
-    }
-    return { ok: false, error: "s3_probe_failed", details: text.slice(0, 400) };
+    return { ok: false, error: res.status === 401 || res.status === 403 ? "invalid_credentials" : "s3_probe_failed" };
   }
   return { ok: true, message: "storage_probe_success" };
 }
@@ -574,12 +565,7 @@ async function testAzureBlobConnection(cfg) {
     },
   });
   if (!res.ok) {
-    const text = await res.text();
-    const lower = text.toLowerCase();
-    if (lower.includes("authenticationfailed") || lower.includes("authorizationfailure")) {
-      return { ok: false, error: "invalid_credentials", details: text.slice(0, 400) };
-    }
-    return { ok: false, error: "azure_probe_failed", details: text.slice(0, 400) };
+    return { ok: false, error: res.status === 401 || res.status === 403 ? "invalid_credentials" : "azure_probe_failed" };
   }
   return { ok: true, message: "storage_probe_success" };
 }
@@ -751,7 +737,7 @@ export async function listStorageProviderFiles(req, res) {
     if (msg.includes("storage_provider_disabled")) {
       return res.status(403).json({ error: "storage_provider_disabled" });
     }
-    return res.status(code).json({ error: err.message || "Forbidden" });
+    return res.status(code).json({ error: msg.startsWith("storage_provider_") ? msg : "storage_provider_list_failed" });
   }
 }
 
@@ -820,7 +806,7 @@ export async function importStorageProviderFile(req, res) {
     if (err?.statusCode === 413 || msg.includes("provider_file_too_large")) {
       return res.status(413).json({ error: "file_too_large", maxMB: Math.floor((err.maxBytes || 0) / (1024 * 1024)) || Math.floor(100 * 1024 * 1024 / (1024 * 1024)) });
     }
-    return res.status(500).json({ error: "storage_import_failed", details: { message: String(err?.message || "storage_import_failed") } });
+    return res.status(500).json({ error: "storage_import_failed" });
   } finally {
     if (tmpPath) {
       try { await fs.promises.rm(tmpPath, { force: true }); } catch {}

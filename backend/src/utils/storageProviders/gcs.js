@@ -20,8 +20,7 @@ async function getGcsAccessToken(cfg) {
     }),
   });
   if (!tokenRes.ok) {
-    const text = await tokenRes.text();
-    throw new Error(`gcs_token_exchange_failed: ${text.slice(0, 300)}`);
+    throw new Error("gcs_token_exchange_failed");
   }
   const tokenJson = await tokenRes.json();
   const accessToken = trimString(tokenJson?.access_token);
@@ -55,8 +54,7 @@ export async function listGcsEntries(cfg, currentPath) {
   url.searchParams.set("fields", "items(name,size,updated),prefixes");
   const res = await fetchWithTimeout(url.toString(), { headers: { Authorization: `Bearer ${accessToken}` } });
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`gcs_list_failed: ${text.slice(0, 400)}`);
+    throw new Error("gcs_list_failed");
   }
   const json = await res.json();
   const files = Array.isArray(json?.items) ? json.items : [];
@@ -79,8 +77,7 @@ export async function fetchGcsMetadata(cfg, sourceRef) {
   url.searchParams.set("fields", "name,updated,size,generation,md5Hash");
   const res = await fetchWithTimeout(url.toString(), { headers: { Authorization: `Bearer ${accessToken}` } });
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`gcs_metadata_failed: ${text.slice(0, 400)}`);
+    throw new Error("gcs_metadata_failed");
   }
   const meta = await res.json();
   return {
@@ -103,8 +100,7 @@ export async function downloadGcsFile(cfg, sourceRef) {
   url.searchParams.set("alt", "media");
   const res = await fetchWithTimeout(url.toString(), { headers: { Authorization: `Bearer ${accessToken}` } });
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`gcs_download_failed: ${text.slice(0, 400)}`);
+    throw new Error("gcs_download_failed");
   }
   assertProviderContentLengthWithinLimit(res);
   const buf = Buffer.from(await res.arrayBuffer());

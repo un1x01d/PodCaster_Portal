@@ -155,3 +155,20 @@ test("chatQuery runtime DB failure remains fail-safe", async () => {
     }
   );
 });
+
+
+test("chat audio requires sheetId so feature and quota checks cannot be bypassed", async () => {
+  const mod = await import(`../src/controllers/chatController.js?t=${Date.now()}_tts_requires_sheet`);
+  const req = { body: { text: "hello", locale: "en" }, user: { id: 1, role: "user" } };
+  const res = {
+    statusCode: 200,
+    payload: null,
+    status(code) { this.statusCode = code; return this; },
+    json(obj) { this.payload = obj; return this; },
+  };
+
+  await mod.getChatAudio(req, res);
+
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.payload?.error, "sheet_id_required");
+});

@@ -145,8 +145,7 @@ export async function listSftpEntries(cfg, currentPath) {
   const command = `LC_ALL=C find -- ${shellQuote(pathArg)} -mindepth 1 -maxdepth 1 -printf '%y\\t%P\\t%p\\t%s\\t%TY-%Tm-%TdT%TH:%TM:%TS\\n'`;
   const result = await runSshCommand(cfg, command);
   if (!result.ok) {
-    const text = `${result.stdout || ""}\n${result.stderr || ""}`.trim();
-    throw new Error(`sftp_list_failed: ${text.slice(0, 400)}`);
+    throw new Error("sftp_list_failed");
   }
   const entries = String(result.stdout || "")
     .split(/\r?\n/)
@@ -167,8 +166,7 @@ export async function fetchSftpMetadata(cfg, sourceRef) {
   const filePath = sanitizeSftpSourceRef(sourceRef);
   const result = await runSshCommand(cfg, `LC_ALL=C stat -c '%Y\\t%s\\t%n' -- ${shellQuote(filePath)}`);
   if (!result.ok) {
-    const text = `${result.stdout || ""}\n${result.stderr || ""}`.trim();
-    throw new Error(`sftp_metadata_failed: ${text.slice(0, 400)}`);
+    throw new Error("sftp_metadata_failed");
   }
   const [mtime = "", size = "", name = ""] = String(result.stdout || "").trim().split("\t");
   return {
@@ -204,7 +202,7 @@ export async function downloadSftpFile(cfg, sourceRef) {
         resolve(exitCode);
       });
     });
-    if (code !== 0) throw new Error(`sftp_download_failed: ${String(stderr || "").slice(0, 400)}`);
+    if (code !== 0) throw new Error("sftp_download_failed");
     const buf = await fsp.readFile(localPath);
     const lowerName = filePath.toLowerCase();
     return {

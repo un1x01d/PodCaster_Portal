@@ -77,8 +77,7 @@ export async function listS3Entries(cfg, currentPath) {
   });
   const res = await fetchWithTimeout(url.toString(), { method: "GET", headers: { Authorization: authorization, "x-amz-date": amzDate, "x-amz-content-sha256": payloadHash } });
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`s3_list_failed: ${text.slice(0, 400)}`);
+    throw new Error("s3_list_failed");
   }
   const xml = await res.text();
   const { folders, files } = parseAwsListXml(xml);
@@ -94,8 +93,7 @@ export async function fetchS3Metadata(cfg, sourceRef) {
   const { url, authorization, amzDate, payloadHash } = buildS3Url(cfg, { pathName: `/${key}`, method: "HEAD" });
   const res = await fetchWithTimeout(url.toString(), { method: "HEAD", headers: { Authorization: authorization, "x-amz-date": amzDate, "x-amz-content-sha256": payloadHash } });
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`s3_metadata_failed: ${text.slice(0, 400)}`);
+    throw new Error("s3_metadata_failed");
   }
   const etag = String(res.headers.get("etag") || "").replaceAll("\"", "");
   const lastModified = res.headers.get("last-modified") || null;
@@ -108,8 +106,7 @@ export async function downloadS3File(cfg, sourceRef) {
   const { url, authorization, amzDate, payloadHash } = buildS3Url(cfg, { pathName: `/${key}`, method: "GET" });
   const res = await fetchWithTimeout(url.toString(), { method: "GET", headers: { Authorization: authorization, "x-amz-date": amzDate, "x-amz-content-sha256": payloadHash } });
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`s3_download_failed: ${text.slice(0, 400)}`);
+    throw new Error("s3_download_failed");
   }
   assertProviderContentLengthWithinLimit(res);
   const buf = Buffer.from(await res.arrayBuffer());

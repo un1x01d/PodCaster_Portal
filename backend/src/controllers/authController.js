@@ -19,6 +19,7 @@ import {
     loadSmsOtpConfig,
     sendSmsOtpMessage,
 } from "../utils/smsOtp.js";
+import { isPlatformAdminUser } from "../utils/authorization.js";
 
 const TWO_FACTOR_CHALLENGE_TTL_SEC = Number.parseInt(process.env.TWO_FACTOR_CHALLENGE_TTL_SEC || "300", 10);
 const TWO_FACTOR_MAX_ATTEMPTS = Number.parseInt(process.env.TWO_FACTOR_MAX_ATTEMPTS || "5", 10);
@@ -171,7 +172,7 @@ async function resolveGroupAdminFlags(userId) {
 
 async function resolveTenantContextForUser(userRow) {
     if (!isTenantDbIsolationEnabled()) return {};
-    if (String(userRow?.role || "").toLowerCase() === "admin") return {};
+    if (isPlatformAdminUser(userRow)) return {};
     const rows = await query(
         `SELECT c.id AS customer_id, c.group_id AS customer_group_id, c.db_name AS tenant_database
            FROM user_groups ug
@@ -384,7 +385,7 @@ export async function acceptInvitation(req, res) {
         let userId = null;
         if (existingRes.rows.length) {
             const existing = existingRes.rows[0];
-            if (existing.role === "admin") {
+            if (isPlatformAdminUser(existing)) {
                 await client.query("ROLLBACK");
                 return res.status(403).json({ error: "admin_email_not_allowed" });
             }

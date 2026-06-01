@@ -233,6 +233,13 @@ export function useChatbotLogic({
   const [isSending, setIsSending] = useState(false);
 
   const messagesEndRef = useRef(null);
+  const chatSessionIdRef = useRef(null);
+  if (!chatSessionIdRef.current) {
+    const randomPart = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    chatSessionIdRef.current = `chat-${randomPart}`;
+  }
 
   const prevSheetRef = useRef(sheetId);
   const prevTabRef = useRef(activeTab);
@@ -430,6 +437,7 @@ export function useChatbotLogic({
         activeViewScope: activeViewScope && typeof activeViewScope === "object" ? activeViewScope : null,
         conversationHistory: buildConversationHistory(messages),
         locale,
+        sessionId: chatSessionIdRef.current,
       };
       const res = await api.post("/chat/query", payload);
       const body = res?.data || {};
@@ -519,6 +527,7 @@ export function useChatbotLogic({
               activeViewScope: current.activeViewScope && typeof current.activeViewScope === "object" ? current.activeViewScope : null,
               conversationHistory: buildConversationHistory(current.messages),
               locale: requestLocale,
+              sessionId: chatSessionIdRef.current,
             });
             const result = res?.data || {};
             const answer = typeof result.answer === "string" && result.answer.trim()
