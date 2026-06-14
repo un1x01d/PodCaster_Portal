@@ -20,8 +20,20 @@ function fmtPct(value) {
   return `${n.toFixed(2)}%`;
 }
 
+function fmtSignedPct(value) {
+  if (value === null || value === undefined) return "N/A";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "N/A";
+  const sign = n > 0 ? "+" : "";
+  return `${sign}${n.toFixed(2)}%`;
+}
+
 function metricLabel(step = {}) {
-  return String(step?.metadata?.columns_used?.metric || step?.metric?.column || "value");
+  const primary = String(step?.metadata?.columns_used?.metric || step?.metric?.column || "").trim();
+  if (primary) return primary;
+  const firstMetric = String(step?.metadata?.columns_used?.metrics?.[0] || step?.metrics?.[0]?.column || "").trim();
+  if (firstMetric) return firstMetric;
+  return "Metric";
 }
 
 function dimensionLabel(step = {}) {
@@ -160,7 +172,10 @@ function formatYoY(step, ctx) {
 
 function formatPeriodDriverDelta(step, ctx) {
   const rows = Array.isArray(step.rows) ? step.rows : [];
-  const lines = topRows(rows).map((r, i) => `${i + 1}. ${r.label}: baseline ${fmtMoney(r.baseline_value)}, comparison ${fmtMoney(r.comparison_value)}, change ${fmtMoney(r.delta)}`);
+  const baselineLabel = ctx.uk ? "базовий період" : (ctx.ru ? "базовый период" : "baseline");
+  const comparisonLabel = ctx.uk ? "порівнюваний період" : (ctx.ru ? "период сравнения" : "comparison");
+  const changeLabel = ctx.uk ? "зміна" : (ctx.ru ? "изменение" : "change");
+  const lines = topRows(rows).map((r, i) => `${i + 1}. ${r.label}: ${baselineLabel} ${fmtMoney(r.baseline_value)}, ${comparisonLabel} ${fmtMoney(r.comparison_value)}, ${changeLabel} ${fmtMoney(r.delta)}`);
   return `${sectionTitle("period_driver_delta", ctx)}:\n${lines.length ? lines.join("\n") : (ctx.uk ? "немає" : (ctx.ru ? "нет" : "none"))}`;
 }
 
@@ -183,13 +198,29 @@ function formatDimensionDelta(step, ctx) {
   }
 
   const rows = Array.isArray(step.rows) ? step.rows : [];
-  const lines = topRows(rows).map((r, i) => `${i + 1}. ${r.label}: baseline ${fmtMoney(r.baseline_value)}, comparison ${fmtMoney(r.comparison_value)}, change ${fmtMoney(r.absolute_change)} (${fmtPct(r.percent_change)})`);
+  const baselineLabel = uk ? "базовий період" : (ru ? "базовый период" : "baseline");
+  const comparisonLabel = uk ? "порівнюваний період" : (ru ? "период сравнения" : "comparison");
+  const changeLabel = uk ? "зміна" : (ru ? "изменение" : "change");
+  const lines = topRows(rows).map((r, i) => `${i + 1}. ${r.label}: ${baselineLabel} ${fmtMoney(r.baseline_value)}, ${comparisonLabel} ${fmtMoney(r.comparison_value)}, ${changeLabel} ${fmtMoney(r.absolute_change)} (${fmtPct(r.percent_change)})`);
   return `${sectionTitle("period_delta_by_dimension", ctx)} - ${dim}:\n${lines.length ? lines.join("\n") : (uk ? "немає" : (ru ? "нет" : "none"))}`;
 }
 
 function formatRanking(step, ctx) {
-  const rows = Array.isArray(step.rows) ? step.rows : [];
   const dim = dimensionLabel(step);
+  const rowsByYear = Array.isArray(step.rows_by_year) ? step.rows_by_year : [];
+  if (rowsByYear.length) {
+    const lines = rowsByYear.map((bucket) => {
+      const year = bucket?.year ?? "N/A";
+      const ranked = topRows(bucket?.top_ranked || [], 10);
+      if (!ranked.length) return `${year}: ${ctx.uk ? "немає" : (ctx.ru ? "нет" : "none")}`;
+      const yoyLabel = ctx.uk ? "зміна р/р" : (ctx.ru ? "изм. г/г" : "YoY");
+      const shareLabel = ctx.uk ? "частка року" : (ctx.ru ? "доля года" : "share");
+      return `${year}: ${ranked.map((r, i) => `${i + 1}. ${r.label}: ${fmtMoney(r.value)} (${yoyLabel} ${fmtSignedPct(r.percent_change)}, ${shareLabel} ${fmtPct(r.share_of_year_percent)})`).join("; ")}`;
+    });
+    return `${sectionTitle("ranking", ctx)} - ${dim}:\n${lines.join("\n")}`;
+  }
+
+  const rows = Array.isArray(step.rows) ? step.rows : [];
   if (!rows.length) return `${sectionTitle("ranking", ctx)} - ${dim}: ${ctx.uk ? "результатів немає" : (ctx.ru ? "нет результатов" : "no results")}.`;
   const lines = topRows(rows).map((r, i) => `${i + 1}. ${r.label}: ${fmtMoney(r.value)}`);
   return `${sectionTitle("ranking", ctx)} - ${dim}:\n${lines.join("\n")}`;
@@ -263,7 +294,13 @@ export function explainDeterministicResults({ validatedPlan = null, computed = n
   };
 
   if (stepResults.length) {
-    const sections = stepResults.map((step) => formatStep(step, ctx)).filter(Boolean);
+    const rawSections = stepResults.map((step) => formatStep(step, ctx)).filter(Boolean);
+    const sections = [];
+    for (const section of rawSections) {
+      if (!sections.length || String(sections[sections.length - 1]) !== String(section)) {
+        sections.push(section);
+      }
+    }
     if (hasDriverContent(stepResults)) sections.push(causationWarning({ uk, ru }));
     return sections.join("\n\n");
   }

@@ -1,0 +1,33 @@
+# PodCaster Portal baseline tuning for 2 CPU / 6 GB RAM VPS
+# Apply to /etc/postgresql/<major>/main/postgresql.conf (append) and restart.
+
+listen_addresses = '127.0.0.1'
+port = 5432
+
+max_connections = 50
+shared_buffers = 1GB
+effective_cache_size = 3GB
+maintenance_work_mem = 256MB
+work_mem = 8MB
+wal_buffers = 16MB
+
+min_wal_size = 1GB
+max_wal_size = 4GB
+checkpoint_completion_target = 0.9
+
+random_page_cost = 1.1
+effective_io_concurrency = 200
+
+log_min_duration_statement = 1000
+log_checkpoints = on
+log_connections = off
+log_disconnections = off
+log_lock_waits = on
+
+shared_preload_libraries = 'pg_stat_statements'
+track_io_timing = on
+
+# Safer defaults
+password_encryption = scram-sha-256
+idle_in_transaction_session_timeout = 60000
+statement_timeout = 0

@@ -93,3 +93,73 @@ test("single ranking explanation lists ranking only and does not append causatio
   assert.doesNotMatch(answer, /measurable drivers, not proven causation/i);
   assert.doesNotMatch(answer, /s1|Step /);
 });
+
+test("ranking explanation prints top-N for each year when rows_by_year is present", () => {
+  const answer = explainDeterministicResults({
+    locale: "en",
+    computed: {
+      ok: true,
+      outputType: "ranking",
+      step_results: [
+        {
+          ok: true,
+          step_id: "s_rank_year",
+          operation: "ranking",
+          rows_by_year: [
+            {
+              year: 2023,
+              top_ranked: [
+                { label: "Casey Brown", value: 300000, percent_change: null, share_of_year_percent: 54.5454 },
+                { label: "Drew Wilson", value: 250000, percent_change: null, share_of_year_percent: 45.4545 },
+              ],
+            },
+            {
+              year: 2024,
+              top_ranked: [
+                { label: "Drew Wilson", value: 330000, percent_change: 32, share_of_year_percent: 53.2258 },
+                { label: "Casey Brown", value: 290000, percent_change: -3.3333, share_of_year_percent: 46.7742 },
+              ],
+            },
+          ],
+          metadata: { columns_used: { metric: "Net Revenue", dimension: "Customer", date_column: "Date" } },
+        },
+      ],
+    },
+  });
+
+  assert.match(answer, /Ranking - Customer/);
+  assert.match(answer, /2023: 1\. Casey Brown: \$300,000\.00 \(YoY N\/A, share 54\.55%\); 2\. Drew Wilson: \$250,000\.00 \(YoY N\/A, share 45\.45%\)/);
+  assert.match(answer, /2024: 1\. Drew Wilson: \$330,000\.00 \(YoY \+32\.00%, share 53\.23%\); 2\. Casey Brown: \$290,000\.00 \(YoY -3\.33%, share 46\.77%\)/);
+});
+
+test("explanation deduplicates repeated adjacent sections and avoids generic value metric label", () => {
+  const answer = explainDeterministicResults({
+    locale: "uk",
+    computed: {
+      ok: true,
+      step_results: [
+        {
+          ok: true,
+          step_id: "a1",
+          operation: "aggregate",
+          value: 10,
+          metrics: [{ column: "Net Revenue", aggregation: "sum" }],
+          metadata: { columns_used: { metric: null, metrics: ["Net Revenue"] } },
+        },
+        {
+          ok: true,
+          step_id: "a2",
+          operation: "aggregate",
+          value: 10,
+          metrics: [{ column: "Net Revenue", aggregation: "sum" }],
+          metadata: { columns_used: { metric: null, metrics: ["Net Revenue"] } },
+        },
+      ],
+    },
+  });
+
+  const blocks = String(answer).split(/\n\n+/).filter(Boolean);
+  assert.equal(blocks.length, 1);
+  assert.match(answer, /Підсумок - Net Revenue/);
+  assert.doesNotMatch(answer, /Підсумок - value/i);
+});

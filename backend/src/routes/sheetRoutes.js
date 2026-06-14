@@ -21,6 +21,9 @@ import {
     listImportJobs,
     getImportJob,
     publishReportSourceImport,
+    getReportSourceImportHeaderRepairPreview,
+    applyReportSourceImportHeaderRow,
+    renameReportSourceImportHeader,
     rejectReportSourceImport,
     deleteRejectedReportSourceImport,
     confirmSheetBusinessClassification,
@@ -98,6 +101,9 @@ router.delete("/report-sources/:id", asyncHandler(deleteReportSource));
 router.get("/report-sources/:id/imports", asyncHandler(getReportSourceImports));
 router.get("/import-jobs", asyncHandler(listImportJobs));
 router.get("/import-jobs/:id", asyncHandler(getImportJob));
+router.get("/report-source-imports/:id/header-repair-preview", asyncHandler(getReportSourceImportHeaderRepairPreview));
+router.post("/report-source-imports/:id/header-row", expensiveTenantRateLimit, asyncHandler(applyReportSourceImportHeaderRow));
+router.post("/report-source-imports/:id/header-rename", expensiveTenantRateLimit, asyncHandler(renameReportSourceImportHeader));
 router.post("/report-source-imports/:id/publish", expensiveTenantRateLimit, asyncHandler(publishReportSourceImport));
 router.post("/report-source-imports/:id/reject", expensiveTenantRateLimit, asyncHandler(rejectReportSourceImport));
 router.delete("/report-source-imports/:id", expensiveTenantRateLimit, asyncHandler(deleteRejectedReportSourceImport));

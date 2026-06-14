@@ -1,0 +1,7 @@
+Transaction ID,Column A,Column B,Client Area,Product Family,Column C,Notes
+2024-01-15,TXN-1001,12500.25,North America,Analytics Suite,4200.10,valid values but headers intentionally hide required date and metric names
+2024-02-20,TXN-1002,18450.00,Europe,Cloud Ops,6100.00,Transaction ID contains dates but is not an allowed period header name
+2024-03-31,TXN-1003,22100.75,APAC,Security Platform,7300.25,Column B contains revenue values but is not a recognized business metric header
+2025-01-12,TXN-1004,31200.00,North America,Data Services,10400.00,repair should rename Transaction ID to Date and Column B to Revenue
+2025-04-18,TXN-1005,9800.50,Latin America,Analytics Suite,3100.75,values should remain unchanged after repair
+2025-09-05,TXN-1006,15750.90,Middle East,Cloud Ops,5300.20,expected publish block before repair

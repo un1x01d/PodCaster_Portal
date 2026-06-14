@@ -19,15 +19,31 @@ export default function ChatHistory({ sheetId = null, messages, copy = DASHBOARD
             .find((part) => part.startsWith(prefix));
         return hit ? decodeURIComponent(hit.slice(prefix.length)) : "";
     };
+    const readBearerToken = () => {
+        if (typeof window === "undefined") return "";
+        const raw = [
+            window.localStorage?.getItem("token"),
+            window.localStorage?.getItem("authToken"),
+            window.localStorage?.getItem("jwt"),
+            window.localStorage?.getItem("jwtToken"),
+        ].find((v) => String(v || "").trim());
+        const token = String(raw || "").trim();
+        if (!token) return "";
+        if (
+            token.startsWith("cookie-session:")
+            || token === "null"
+            || token === "undefined"
+        ) return "";
+        return token;
+    };
     const formatMessageForDisplay = (text = "") => {
         let out = String(text || "");
         out = out.replace(/\\r?\\n/g, "\n");
         out = out.replace(/\s+\*\*([^*\n:]{1,80}):\*\*/g, "\n$1:");
         out = out.replace(/\*\*([^*\n]+)\*\*/g, "$1");
-        // Turn inline dash lists into real bullet lines:
-        // "... shows: - A - B - C" -> "... shows:\n- A\n- B\n- C"
+        // Convert only explicit colon-introduced inline lists.
+        // Avoid rewriting generic hyphenated labels (e.g. "Name - email").
         out = out.replace(/([:])\s+-\s+/g, "$1\n- ");
-        out = out.replace(/\s+-\s+(?=\S)/g, "\n- ");
         return out;
     };
 
@@ -409,18 +425,22 @@ export default function ChatHistory({ sheetId = null, messages, copy = DASHBOARD
     };
 
     const streamTextToAudio = async (text) => {
+        if (!String(text || "").trim()) return false;
         window._stopPlayback = false;
         window._audioQueue = [];
         window._audioAbortControllers = [];
         const controller = new AbortController();
         window._audioAbortControllers.push(controller);
         const csrfToken = readCookie("csrf_token");
+        const bearerToken = readBearerToken();
+        if (!sheetId) return false;
 
         const response = await fetch(`${API}/chat/audio`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
                 ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
+                ...(bearerToken ? { Authorization: `Bearer ${bearerToken}` } : {}),
             },
             body: JSON.stringify({ text, locale, sheetId }),
             signal: controller.signal,
@@ -495,7 +515,10 @@ export default function ChatHistory({ sheetId = null, messages, copy = DASHBOARD
                 };
                 audio.onended = done;
                 audio.onerror = done;
-                audio.onpause = done;
+                // Do not treat transient buffering pauses as completion.
+                audio.onpause = () => {
+                    if (window._stopPlayback) done();
+                };
             });
             URL.revokeObjectURL(objectUrl);
             return true;
@@ -515,7 +538,10 @@ export default function ChatHistory({ sheetId = null, messages, copy = DASHBOARD
                 resolve();
             };
             audio.onended = done;
-            audio.onpause = done;
+            // Do not treat transient buffering pauses as completion.
+            audio.onpause = () => {
+                if (window._stopPlayback) done();
+            };
             audio.onerror = reject;
             audio.play().catch(reject);
         });
@@ -530,9 +556,11 @@ export default function ChatHistory({ sheetId = null, messages, copy = DASHBOARD
         }
         window._stopPlayback = false;
         const slavicLang = (locale || "en").split("-")[0].toLowerCase();
-        const speechText = ((slavicLang === "ru" || slavicLang === "uk")
+        const speechText = ((slavicLang === "ru")
                 ? normalizeSlavicPronunciation(normalizeSlavicSpeechNumbers(text, slavicLang), slavicLang)
-                : String(text || ""))
+                : ((slavicLang === "uk")
+                    ? normalizeSlavicSpeechNumbers(text, slavicLang)
+                    : String(text || "")))
             .replace(/[()]/g, " ");
         const localeMap = { 'es': 'es-ES', 'uk': 'uk-UA', 'ru': 'ru-RU', 'en': 'en-US' };
         const targetLang = localeMap[locale] || locale || 'en-US';

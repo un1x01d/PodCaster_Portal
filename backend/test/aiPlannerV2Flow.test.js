@@ -158,3 +158,67 @@ test("v2 planner returns not_answerable safely when planner cannot continue", as
   assert.equal(plan?.ok, false);
   assert.equal(String(plan?.reason || ""), "ai_not_answerable");
 });
+
+test("v2 planner injects year/date into ranking step for per-year ranking intent", async () => {
+  const plan = await buildDeterministicSpreadsheetPlan({
+    message: "revenue year over year and top two customers for every year",
+    headers: ["Date", "Net Revenue", "Customer"],
+    sampleRows: [{ Date: "2024-01-01", "Net Revenue": "10", Customer: "A" }],
+    semanticProfile: { defaults: { dateColumn: "Date" } },
+    hints: {
+      aiPlannerResponse: {
+        status: "ready",
+        intent_summary: "yoy and ranking",
+        confidence: "high",
+        analysis_plan: {
+          analysis_type: "ranking",
+          steps: [
+            {
+              step_id: "s1",
+              operation: "year_over_year",
+              metric: { column: "Net Revenue", aggregation: "sum" },
+              metrics: [],
+              driver_columns: [],
+              dimension: null,
+              date_column: "Date",
+              filters: [],
+              baseline_range: null,
+              comparison_range: null,
+              time_range: null,
+              grain: "year",
+              group_by: [],
+              sort: null,
+              limit: null,
+            },
+            {
+              step_id: "s2",
+              operation: "ranking",
+              metric: { column: "Net Revenue", aggregation: "sum" },
+              metrics: [],
+              driver_columns: [],
+              dimension: "Customer",
+              date_column: null,
+              filters: [],
+              baseline_range: null,
+              comparison_range: null,
+              time_range: null,
+              grain: "none",
+              group_by: ["Customer"],
+              sort: { by: "value", direction: "desc" },
+              limit: 2,
+            },
+          ],
+          final_response_instruction: { style: "business_explanation", include_tables: true, include_causation_warning: true },
+        },
+        clarification: null,
+        not_answerable: null,
+        warnings: [],
+      },
+    },
+  });
+
+  assert.equal(plan?.ok, true);
+  const rankingStep = plan?.analysisPlan?.steps?.find((s) => s.operation === "ranking");
+  assert.equal(String(rankingStep?.date_column || ""), "Date");
+  assert.equal(String(rankingStep?.grain || ""), "year");
+});

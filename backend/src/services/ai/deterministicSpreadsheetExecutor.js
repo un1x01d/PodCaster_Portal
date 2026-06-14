@@ -336,6 +336,7 @@ function execPeriodDeltaByDimension({ selectedRows, step, counters }) {
         const baseline = prevMap.get(label) || new Decimal(0);
         const comparison = currMap.get(label) || new Decimal(0);
         const delta = comparison.minus(baseline);
+        if (delta.isZero()) continue;
         const pct = baseline.isZero() ? null : delta.div(baseline).times(100);
         deltas.push({
           label,
@@ -376,6 +377,7 @@ function execPeriodDeltaByDimension({ selectedRows, step, counters }) {
     const baseline = aggregateRows(baselineRows, step.metric, counters);
     const comparison = aggregateRows(comparisonRows, step.metric, counters);
     const delta = comparison.minus(baseline);
+    if (delta.isZero()) continue;
     const pct = baseline.isZero() ? null : delta.div(baseline).times(100);
     rows.push({
       label: key,
@@ -394,6 +396,53 @@ function execPeriodDeltaByDimension({ selectedRows, step, counters }) {
 
 function execRanking({ selectedRows, step, counters }) {
   const dim = String(step.dimension || step.group_by?.[0] || "");
+  const grain = String(step.grain || "none").toLowerCase();
+  if (step.date_column && grain === "year") {
+    const byYear = new Map();
+    for (const r of selectedRows) {
+      const year = extractYear(r?.[step.date_column]);
+      if (!Number.isFinite(year)) continue;
+      const key = String(r?.[dim] ?? "").trim();
+      if (!key) continue;
+      const v = metricValueFromRow(r, step.metric, counters);
+      if (!v) continue;
+      const yearBucket = byYear.get(year) || new Map();
+      yearBucket.set(key, (yearBucket.get(key) || new Decimal(0)).plus(v));
+      byYear.set(year, yearBucket);
+    }
+
+    const yearEntries = Array.from(byYear.entries()).sort((a, b) => Number(a[0]) - Number(b[0]));
+    const rowsByYear = yearEntries.map(([year, bucket], idx) => {
+      const prevBucket = idx > 0 ? yearEntries[idx - 1][1] : null;
+      const yearTotal = Array.from(bucket.values()).reduce((acc, dec) => acc.plus(dec), new Decimal(0));
+      const rows = Array.from(bucket.entries()).map(([label, dec]) => {
+        const prev = prevBucket ? (prevBucket.get(label) || null) : null;
+        const absolute = prev ? dec.minus(prev) : null;
+        const pct = prev && !prev.isZero() ? absolute.div(prev).times(100) : null;
+        const share = !yearTotal.isZero() ? dec.div(yearTotal).times(100) : null;
+        return {
+          label,
+          value: dec.toNumber(),
+          previous_year_value: prev ? prev.toNumber() : null,
+          absolute_change: absolute ? absolute.toNumber() : null,
+          percent_change: pct ? pct.toNumber() : null,
+          share_of_year_percent: share ? share.toNumber() : null,
+        };
+      });
+      return {
+        year,
+        year_total_value: yearTotal.toNumber(),
+        top_ranked: sortRows(rows, step.sort, step.limit),
+      };
+    });
+
+    const rows = rowsByYear.flatMap((y) => {
+      const ranked = Array.isArray(y.top_ranked) ? y.top_ranked : [];
+      return ranked.map((r, i) => ({ year: y.year, rank: i + 1, label: r.label, value: r.value }));
+    });
+    return { rows_by_year: rowsByYear, rows };
+  }
+
   const grouped = groupAggregate(selectedRows, dim, step.metric, counters);
   const rows = Array.from(grouped.entries()).map(([label, d]) => ({ label, value: d.toNumber() }));
   return { rows: sortRows(rows, step.sort, step.limit) };

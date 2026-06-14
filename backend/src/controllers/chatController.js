@@ -14,6 +14,8 @@ import { isAiGloballyDisabled, loadAiRuntimeSettings, loadEffectiveAiRuntimeSett
 export { checkSheetAccess } from "../utils/authorization.js";
 
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
+const OPENAI_AUDIO_BASE_URL = (process.env.OPENAI_AUDIO_BASE_URL || OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
+const OPENAI_AUDIO_DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10);
 const CHAT_AUDIO_MAX_CHARS = Number.parseInt(process.env.CHAT_AUDIO_MAX_CHARS || "8000", 10);
 const CHAT_TTS_SETTINGS_KEY = "chat_tts_settings";
@@ -25,9 +27,70 @@ function aiError(code, details = {}) {
 function normalizeTtsInput(text = "", locale = "en") {
   let speechText = String(text || "").replace(/\*/g, "");
   const lang = (locale || "en").split("-")[0].toLowerCase();
+  const englishNames = lang === "uk" ? extractEnglishFullNames(speechText) : [];
   let cleanedText = naturalizeNumbersForTTS(speechText, locale);
-  if (lang === "uk" || lang === "ru") cleanedText = expandFinancialTextPhonetically(cleanedText, lang);
+  if (lang === "uk" || lang === "ru") {
+    cleanedText = expandFinancialTextPhonetically(cleanedText, lang);
+    // Keep English names/terms in Latin for Ukrainian so they are spoken with English pronunciation.
+    if (lang === "ru") cleanedText = transliterateLatinForSlavicTts(cleanedText, lang);
+  }
+  if (lang === "uk" && englishNames.length) {
+    cleanedText = `${cleanedText}\nEnglish names: ${englishNames.join(", ")}.`;
+  }
   return cleanedText;
+}
+
+function extractEnglishFullNames(text = "") {
+  const src = String(text || "");
+  if (!src) return [];
+  const matches = src.match(/\b[A-Z][a-z]+(?:[-'][A-Z][a-z]+)?\s+[A-Z][a-z]+(?:[-'][A-Z][a-z]+)?\b/g) || [];
+  const seen = new Set();
+  const out = [];
+  for (const m of matches) {
+    const name = String(m || "").trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+    if (out.length >= 12) break;
+  }
+  return out;
+}
+
+function transliterateLatinForSlavicTts(text = "", lang = "ru") {
+  const mapRu = {
+    shch: "щ", yo: "ё", zh: "ж", kh: "х", ts: "ц", ch: "ч", sh: "ш", yu: "ю", ya: "я",
+    a: "а", b: "б", c: "к", d: "д", e: "е", f: "ф", g: "г", h: "х", i: "и", j: "дж",
+    k: "к", l: "л", m: "м", n: "н", o: "о", p: "п", q: "к", r: "р", s: "с", t: "т",
+    u: "у", v: "в", w: "в", x: "кс", y: "й", z: "з",
+  };
+  const mapUk = {
+    shch: "щ", yo: "йо", zh: "ж", kh: "х", ts: "ц", ch: "ч", sh: "ш", yu: "ю", ya: "я",
+    a: "а", b: "б", c: "к", d: "д", e: "е", f: "ф", g: "г", h: "г", i: "і", j: "дж",
+    k: "к", l: "л", m: "м", n: "н", o: "о", p: "п", q: "к", r: "р", s: "с", t: "т",
+    u: "у", v: "в", w: "в", x: "кс", y: "и", z: "з",
+  };
+  const map = lang === "uk" ? mapUk : mapRu;
+
+  const translitWord = (word) => {
+    let out = "";
+    const src = String(word || "").toLowerCase();
+    let i = 0;
+    while (i < src.length) {
+      const four = src.slice(i, i + 4);
+      const three = src.slice(i, i + 3);
+      const two = src.slice(i, i + 2);
+      if (map[four]) { out += map[four]; i += 4; continue; }
+      if (map[three]) { out += map[three]; i += 3; continue; }
+      if (map[two]) { out += map[two]; i += 2; continue; }
+      out += map[src[i]] || src[i];
+      i += 1;
+    }
+    return out;
+  };
+
+  return String(text || "").replace(/\b[A-Za-z][A-Za-z0-9&.'’-]*\b/g, (w) => translitWord(w));
 }
 
 function expandLargeIntForEnglishSpeech(rawDigits = "") {
@@ -501,19 +564,43 @@ async function synthesizeAudioBufferInternal({ text, locale, runtime = null }) {
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), Number(runtime?.openaiTimeoutMs || OPENAI_TIMEOUT_MS));
+  const ttsPayload = { model, input: normalizeTtsInput(text, locale), voice, speed };
 
-  try {
-    const response = await fetch(`${OPENAI_BASE_URL}/audio/speech`, {
+  const requestTtsOnce = async (baseUrl) => {
+    const response = await fetch(`${String(baseUrl || OPENAI_AUDIO_DEFAULT_BASE_URL).replace(/\/+$/, "")}/audio/speech`, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       signal: controller.signal,
-      body: JSON.stringify({ model, input: normalizeTtsInput(text, locale), voice, speed }),
+      body: JSON.stringify(ttsPayload),
     });
     if (!response.ok) {
       const message = await response.text().catch(() => "");
       const err = new Error(message.slice(0, 300) || `upstream_status_${response.status}`);
       err.code = "tts_upstream_error";
+      err.status = Number(response.status || 0);
+      err.baseUrl = String(baseUrl || "");
       throw err;
+    }
+    return response;
+  };
+
+  const isRetryableAudioPathError = (err) => {
+    const attempted = String(err?.baseUrl || "").toLowerCase();
+    const status = Number(err?.status || 0);
+    const notDefault = attempted && attempted !== OPENAI_AUDIO_DEFAULT_BASE_URL.toLowerCase();
+    return notDefault && (status === 404 || status === 405 || status === 501);
+  };
+
+  try {
+    let response;
+    try {
+      response = await requestTtsOnce(OPENAI_AUDIO_BASE_URL);
+    } catch (e) {
+      if (e?.code === "tts_upstream_error" && isRetryableAudioPathError(e)) {
+        response = await requestTtsOnce(OPENAI_AUDIO_DEFAULT_BASE_URL);
+      } else {
+        throw e;
+      }
     }
     const audioArrayBuffer = await response.arrayBuffer();
     return Buffer.from(audioArrayBuffer);
@@ -565,23 +652,48 @@ async function synthesizeAudioStreamInternal({ text, locale, runtime = null }) {
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), Number(runtime?.openaiTimeoutMs || OPENAI_TIMEOUT_MS));
+  const ttsPayload = { model, input: normalizeTtsInput(text, locale), voice, speed };
 
-  try {
-    const response = await fetch(`${OPENAI_BASE_URL}/audio/speech`, {
+  const requestTtsOnce = async (baseUrl) => {
+    const response = await fetch(`${String(baseUrl || OPENAI_AUDIO_DEFAULT_BASE_URL).replace(/\/+$/, "")}/audio/speech`, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       signal: controller.signal,
-      body: JSON.stringify({ model, input: normalizeTtsInput(text, locale), voice, speed }),
+      body: JSON.stringify(ttsPayload),
     });
     if (!response.ok) {
       const message = await response.text().catch(() => "");
       const err = new Error(message.slice(0, 300) || `upstream_status_${response.status}`);
       err.code = "tts_upstream_error";
+      err.status = Number(response.status || 0);
+      err.baseUrl = String(baseUrl || "");
       throw err;
+    }
+    return response;
+  };
+
+  const isRetryableAudioPathError = (err) => {
+    const attempted = String(err?.baseUrl || "").toLowerCase();
+    const status = Number(err?.status || 0);
+    const notDefault = attempted && attempted !== OPENAI_AUDIO_DEFAULT_BASE_URL.toLowerCase();
+    return notDefault && (status === 404 || status === 405 || status === 501);
+  };
+
+  try {
+    let response;
+    try {
+      response = await requestTtsOnce(OPENAI_AUDIO_BASE_URL);
+    } catch (e) {
+      if (e?.code === "tts_upstream_error" && isRetryableAudioPathError(e)) {
+        response = await requestTtsOnce(OPENAI_AUDIO_DEFAULT_BASE_URL);
+      } else {
+        throw e;
+      }
     }
     if (!response.body) {
       const err = new Error("tts_empty_response");
       err.code = "tts_upstream_error";
+      err.baseUrl = OPENAI_AUDIO_BASE_URL;
       throw err;
     }
     return { response, controller, timeout };
@@ -654,6 +766,13 @@ export async function getChatAudio(req, res) {
     return;
   } catch (e) {
     const errorCode = e?.code || "internal_server_error";
+    if (errorCode === "tts_upstream_error") {
+      console.warn("[chat/audio] tts_upstream_error", {
+        status: Number(e?.status || 0) || null,
+        baseUrl: String(e?.baseUrl || OPENAI_AUDIO_BASE_URL || ""),
+        message: String(e?.message || "").slice(0, 300),
+      });
+    }
     const status = errorCode === "global_ai_disabled" ? 403
       : errorCode === "text_too_large" ? 413
       : errorCode === "tts_timeout" ? 504

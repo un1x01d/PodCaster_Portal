@@ -130,6 +130,93 @@ test("year-over-year execution produces rows and divide-by-zero percent as null"
   assert.equal(y2023.percent_change, null);
 });
 
+test("ranking with year grain returns top-N per year", () => {
+  const plan = {
+    ok: true,
+    operation: "multi_step_analysis",
+    metric: "Net Revenue",
+    analysisPlan: {
+      analysis_type: "ranking",
+      steps: [{
+        step_id: "s_rank_year",
+        operation: "ranking",
+        metric: { column: "Net Revenue", aggregation: "sum" },
+        metrics: [],
+        driver_columns: [],
+        dimension: "Customer",
+        date_column: "Date",
+        filters: [],
+        baseline_range: null,
+        comparison_range: null,
+        time_range: null,
+        grain: "year",
+        group_by: ["Customer"],
+        sort: { by: "value", direction: "desc" },
+        limit: 2,
+      }],
+    },
+  };
+  const rows = [
+    { Date: "2023-01-05", Customer: "A", "Net Revenue": 100 },
+    { Date: "2023-01-06", Customer: "B", "Net Revenue": 80 },
+    { Date: "2023-01-07", Customer: "C", "Net Revenue": 60 },
+    { Date: "2024-02-05", Customer: "A", "Net Revenue": 70 },
+    { Date: "2024-02-06", Customer: "B", "Net Revenue": 140 },
+    { Date: "2024-02-07", Customer: "C", "Net Revenue": 120 },
+  ];
+  const out = executeDeterministicSpreadsheetPlan({ plan, rows, filters: [], userContext: {} });
+  assert.equal(out.ok, true);
+  assert.equal(out.outputType, "ranking");
+  assert.equal(Array.isArray(out.rows_by_year), true);
+  assert.equal(out.rows_by_year.length, 2);
+  assert.deepEqual(out.rows_by_year[0].top_ranked.map((r) => r.label), ["A", "B"]);
+  assert.deepEqual(out.rows_by_year[1].top_ranked.map((r) => r.label), ["B", "C"]);
+  assert.equal(Number.isFinite(Number(out.rows_by_year[0].year_total_value)), true);
+  assert.equal(Number.isFinite(Number(out.rows_by_year[1].top_ranked[0].share_of_year_percent)), true);
+  assert.equal(out.rows_by_year[1].top_ranked[0].percent_change > 0, true);
+});
+
+test("period delta by dimension excludes zero-impact rows", () => {
+  const plan = {
+    ok: true,
+    operation: "multi_step_analysis",
+    metric: "Net Revenue",
+    analysisPlan: {
+      analysis_type: "driver_analysis",
+      steps: [{
+        step_id: "s_dim_delta",
+        operation: "period_delta_by_dimension",
+        metric: { column: "Net Revenue", aggregation: "sum" },
+        metrics: [],
+        driver_columns: [],
+        dimension: "Customer",
+        date_column: "Date",
+        filters: [],
+        baseline_range: ["2023-01-01", "2023-12-31"],
+        comparison_range: ["2024-01-01", "2024-12-31"],
+        time_range: null,
+        grain: "year",
+        group_by: ["Customer"],
+        sort: { by: "value", direction: "desc" },
+        limit: 10,
+      }],
+    },
+  };
+  const rows = [
+    { Date: "2023-01-10", Customer: "A", "Net Revenue": 100 },
+    { Date: "2024-02-10", Customer: "A", "Net Revenue": 100 },
+    { Date: "2023-03-10", Customer: "B", "Net Revenue": 20 },
+    { Date: "2024-04-10", Customer: "B", "Net Revenue": 55 },
+    { Date: "2023-05-10", Customer: "C", "Net Revenue": 30 },
+  ];
+  const out = executeDeterministicSpreadsheetPlan({ plan, rows, filters: [], userContext: {} });
+  assert.equal(out.ok, true);
+  assert.equal(Array.isArray(out.rows), true);
+  assert.equal(out.rows.some((r) => r.label === "A"), false);
+  assert.equal(out.rows.some((r) => r.label === "B"), true);
+  assert.equal(out.rows.some((r) => r.label === "C"), true);
+});
+
 test("period delta memory stores compact analysis summary", async () => {
   const memory = {
     last_successful_analysis: {

@@ -1462,9 +1462,11 @@ export default function App() {
       }
       if (res.data?.status === "pending_approval") {
         maybePromptBusinessClassification(res.data);
+        setUploadProgressOpen(false);
         setUploadProgressError("Uploaded and held for review before publishing.");
         setUploadDisplayName("");
         setReportSourceName("");
+        setWorkspaceView("review");
         refreshReportSources();
         return;
       }
@@ -1540,9 +1542,10 @@ export default function App() {
       }
       if (res.data?.status === "pending_approval") {
         maybePromptBusinessClassification(res.data);
-        alert("Imported from Google Drive and held for review before publishing.");
+                alert("Imported from Google Drive and held for review before publishing.");
         setUploadDisplayName("");
         setReportSourceName("");
+        setWorkspaceView("review");
         refreshReportSources();
         return;
       }
@@ -1597,9 +1600,10 @@ export default function App() {
         return;
       }
       if (res.data?.status === "pending_approval") {
-        alert("Imported from Dropbox and held for review before publishing.");
+                alert("Imported from Dropbox and held for review before publishing.");
         setUploadDisplayName("");
         setReportSourceName("");
+        setWorkspaceView("review");
         refreshReportSources();
         return;
       }
@@ -1653,9 +1657,10 @@ export default function App() {
         return;
       }
       if (res.data?.status === "pending_approval") {
-        alert("Imported from OneDrive and held for review before publishing.");
+                alert("Imported from OneDrive and held for review before publishing.");
         setUploadDisplayName("");
         setReportSourceName("");
+        setWorkspaceView("review");
         refreshReportSources();
         return;
       }

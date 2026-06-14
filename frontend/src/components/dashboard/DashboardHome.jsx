@@ -18,6 +18,7 @@ import {
   Tooltip,
   Legend,
 } from "recharts";
+import SheetTabBar from "./SheetTabBar";
 
 const DATE_HINTS = ["date", "time", "month", "year", "day"];
 const METRIC_HINTS = ["revenue", "sales", "amount", "total", "cost", "income", "value", "ebitda"];
@@ -528,7 +529,23 @@ export default function DashboardHome({
   const [kpiOverridesLoaded, setKpiOverridesLoaded] = React.useState(false);
   const [reviewBusyId, setReviewBusyId] = React.useState("");
   const [reviewInlineErrorByImportId, setReviewInlineErrorByImportId] = React.useState({});
+  const [headerRepairModal, setHeaderRepairModal] = React.useState({
+    open: false,
+    row: null,
+    loading: false,
+    saving: false,
+    error: "",
+    success: "",
+    preview: null,
+    tabName: "",
+    previewLimit: 300,
+    showHeaderRowTools: false,
+    headerRowIndex: "",
+    sourceHeader: "",
+    targetHeader: "",
+  });
   const reviewQueueRef = React.useRef(null);
+  const autoOpenedHeaderRepairImportRef = React.useRef(new Set());
   const [topCategoriesConfig, setTopCategoriesConfig] = React.useState({
     title: "",
     categoryColumn: "",
@@ -2239,6 +2256,260 @@ export default function DashboardHome({
     }
   }, [reviewBusyId, refreshReportSources]);
 
+  const loadHeaderRepairPreview = React.useCallback(async (importId, tabName = "", previewLimit = 300) => {
+    const params = {};
+    const safeTab = String(tabName || "").trim();
+    const safeLimit = Number.parseInt(String(previewLimit || 300), 10);
+    if (safeTab) params.tab = safeTab;
+    if (Number.isInteger(safeLimit) && safeLimit > 0) params.limit = safeLimit;
+    const response = await api.get(`/report-source-imports/${importId}/header-repair-preview`, {
+      params,
+    });
+    return response?.data || {};
+  }, []);
+
+  const openHeaderRepairModal = React.useCallback(async (row) => {
+    if (!row?.importId) return;
+    setHeaderRepairModal({
+      open: true,
+      row,
+      loading: true,
+      saving: false,
+      error: "",
+      success: "",
+      preview: null,
+      tabName: "",
+      previewLimit: 300,
+      showHeaderRowTools: false,
+      headerRowIndex: "",
+      sourceHeader: "",
+      targetHeader: "",
+    });
+    try {
+      const preview = await loadHeaderRepairPreview(row.importId, "", 300);
+      const firstTarget = Array.isArray(preview.repair_targets) ? preview.repair_targets[0] : null;
+      const firstRowIndex = Array.isArray(preview.sample_row_indexes) ? Number(preview.sample_row_indexes[0]) : null;
+      const previewHasUsableHeaders = (Array.isArray(preview?.headers) ? preview.headers : []).some((header) => {
+        const text = String(header || "").trim();
+        if (!text) return false;
+        if (isHeaderRepairRedactedValue(text)) return false;
+        return /[A-Za-z]/.test(text);
+      });
+      setHeaderRepairModal((prev) => ({
+        ...prev,
+        loading: false,
+        preview,
+        tabName: String(preview?.tab_name || "").trim(),
+        showHeaderRowTools: prev.showHeaderRowTools || !previewHasUsableHeaders,
+        headerRowIndex: Number.isInteger(firstRowIndex) && firstRowIndex >= 0 ? String(firstRowIndex) : "",
+        targetHeader: firstTarget?.targetHeader || firstTarget?.options?.[0] || "Date",
+      }));
+    } catch (error) {
+      setHeaderRepairModal((prev) => ({
+        ...prev,
+        loading: false,
+        error: error?.response?.data?.error || "Failed to load uploaded sheet preview.",
+      }));
+    }
+  }, [loadHeaderRepairPreview]);
+
+  const closeHeaderRepairModal = React.useCallback(() => {
+    if (headerRepairModal.saving) return;
+    setHeaderRepairModal({
+      open: false,
+      row: null,
+      loading: false,
+      saving: false,
+      error: "",
+      success: "",
+      preview: null,
+      tabName: "",
+      previewLimit: 300,
+      showHeaderRowTools: false,
+      headerRowIndex: "",
+      sourceHeader: "",
+      targetHeader: "",
+    });
+  }, [headerRepairModal.saving]);
+
+  const handleHeaderRepairTabChange = React.useCallback(async (nextTabName) => {
+    const row = headerRepairModal.row;
+    if (!row?.importId) return;
+    const tabName = String(nextTabName || "").trim();
+    setHeaderRepairModal((prev) => ({
+      ...prev,
+      loading: true,
+      error: "",
+      success: "",
+      tabName,
+    }));
+    try {
+      const preview = await loadHeaderRepairPreview(row.importId, tabName, headerRepairModal.previewLimit || 300);
+      const firstTarget = Array.isArray(preview.repair_targets) ? preview.repair_targets[0] : null;
+      const firstRowIndex = Array.isArray(preview.sample_row_indexes) ? Number(preview.sample_row_indexes[0]) : null;
+      const previewHasUsableHeaders = (Array.isArray(preview?.headers) ? preview.headers : []).some((header) => {
+        const text = String(header || "").trim();
+        if (!text) return false;
+        if (isHeaderRepairRedactedValue(text)) return false;
+        return /[A-Za-z]/.test(text);
+      });
+      setHeaderRepairModal((prev) => ({
+        ...prev,
+        loading: false,
+        preview,
+        tabName: String(preview?.tab_name || tabName || "").trim(),
+        showHeaderRowTools: prev.showHeaderRowTools || !previewHasUsableHeaders,
+        headerRowIndex: Number.isInteger(firstRowIndex) && firstRowIndex >= 0 ? String(firstRowIndex) : prev.headerRowIndex,
+        sourceHeader: "",
+        targetHeader: firstTarget?.targetHeader || firstTarget?.options?.[0] || prev.targetHeader,
+      }));
+    } catch (error) {
+      setHeaderRepairModal((prev) => ({
+        ...prev,
+        loading: false,
+        error: error?.response?.data?.error || "Failed to load uploaded sheet preview.",
+      }));
+    }
+  }, [headerRepairModal.row, headerRepairModal.previewLimit, loadHeaderRepairPreview]);
+
+  const loadMoreHeaderRepairRows = React.useCallback(async () => {
+    const row = headerRepairModal.row;
+    if (!row?.importId || headerRepairModal.loading || headerRepairModal.saving) return;
+    const nextLimit = Math.min(2000, Number(headerRepairModal.previewLimit || 300) + 300);
+    if (nextLimit === Number(headerRepairModal.previewLimit || 300)) return;
+    setHeaderRepairModal((prev) => ({
+      ...prev,
+      loading: true,
+      error: "",
+      previewLimit: nextLimit,
+    }));
+    try {
+      const preview = await loadHeaderRepairPreview(row.importId, headerRepairModal.tabName || "", nextLimit);
+      const firstTarget = Array.isArray(preview.repair_targets) ? preview.repair_targets[0] : null;
+      const firstRowIndex = Array.isArray(preview.sample_row_indexes) ? Number(preview.sample_row_indexes[0]) : null;
+      const previewHasUsableHeaders = (Array.isArray(preview?.headers) ? preview.headers : []).some((header) => {
+        const text = String(header || "").trim();
+        if (!text) return false;
+        if (isHeaderRepairRedactedValue(text)) return false;
+        return /[A-Za-z]/.test(text);
+      });
+      setHeaderRepairModal((prev) => ({
+        ...prev,
+        loading: false,
+        preview,
+        tabName: String(preview?.tab_name || prev.tabName || "").trim(),
+        showHeaderRowTools: prev.showHeaderRowTools || !previewHasUsableHeaders,
+        headerRowIndex: Number.isInteger(firstRowIndex) && firstRowIndex >= 0 ? prev.headerRowIndex || String(firstRowIndex) : prev.headerRowIndex,
+        targetHeader: firstTarget?.targetHeader || firstTarget?.options?.[0] || prev.targetHeader,
+      }));
+    } catch (error) {
+      setHeaderRepairModal((prev) => ({
+        ...prev,
+        loading: false,
+        error: error?.response?.data?.error || "Failed to load more preview rows.",
+      }));
+    }
+  }, [headerRepairModal, loadHeaderRepairPreview]);
+
+  const submitHeaderRowRepair = React.useCallback(async () => {
+    const row = headerRepairModal.row;
+    const headerRowIndex = Number.parseInt(String(headerRepairModal.headerRowIndex || "").trim(), 10);
+    if (!row?.importId || !Number.isInteger(headerRowIndex) || headerRowIndex < 0) {
+      setHeaderRepairModal((prev) => ({ ...prev, error: "Select which row contains the real headers first." }));
+      return;
+    }
+    const selectedInternalRow = Number.parseInt(String(headerRepairModal.headerRowIndex || "").trim(), 10);
+    const sampleIndexes = Array.isArray(headerRepairModal.preview?.sample_row_indexes)
+      ? headerRepairModal.preview.sample_row_indexes
+        .map((v) => Number(v))
+        .filter((v) => Number.isInteger(v) && v >= 0)
+      : [];
+    const orderedIndexes = Array.from(new Set(sampleIndexes)).sort((a, b) => a - b);
+    const foundPos = orderedIndexes.findIndex((v) => v === selectedInternalRow);
+    const selectedDisplayRow = foundPos >= 0 ? (foundPos + 1) : 1;
+    const confirmed = window.confirm(`Use file row ${selectedDisplayRow} as the header row? Rows up to that line will be removed from the dataset.`);
+    if (!confirmed) return;
+    setHeaderRepairModal((prev) => ({ ...prev, saving: true, error: "", success: "" }));
+    try {
+      const response = await api.post(`/report-source-imports/${row.importId}/header-row`, {
+        headerRowIndex,
+        tabName: headerRepairModal.tabName || "",
+        previewLimit: headerRepairModal.previewLimit || 300,
+        confirm: true,
+      });
+      const preview = response?.data || {};
+      const nextTarget = Array.isArray(preview.repair_targets) ? preview.repair_targets[0] : null;
+      const nextFirstRowIndex = Array.isArray(preview.sample_row_indexes) ? Number(preview.sample_row_indexes[0]) : null;
+      await refreshReportSources?.();
+      setHeaderRepairModal((prev) => ({
+        ...prev,
+        saving: false,
+        preview,
+        tabName: String(preview?.tab_name || prev.tabName || "").trim(),
+        headerRowIndex: Number.isInteger(nextFirstRowIndex) && nextFirstRowIndex >= 0 ? String(nextFirstRowIndex) : prev.headerRowIndex,
+        sourceHeader: "",
+        targetHeader: nextTarget?.targetHeader || nextTarget?.options?.[0] || prev.targetHeader,
+        success: preview?.compatibility?.approval_ready
+          ? "Header row applied. This import can now be published."
+          : "Header row applied. Additional required mappings may still be missing.",
+      }));
+    } catch (error) {
+      const raw = String(error?.response?.data?.error || "").trim();
+      const human = raw === "header_row_not_found_in_tab"
+        ? "The selected row was not found in this tab. Refresh preview and try again."
+        : raw === "invalid_header_row_index"
+          ? "Selected header row index is invalid."
+          : raw || "Failed to apply the selected header row.";
+      setHeaderRepairModal((prev) => ({
+        ...prev,
+        saving: false,
+        error: human,
+      }));
+    }
+  }, [headerRepairModal, refreshReportSources]);
+
+  const submitHeaderRepair = React.useCallback(async () => {
+    const row = headerRepairModal.row;
+    const sourceHeader = String(headerRepairModal.sourceHeader || "").trim();
+    const targetHeader = String(headerRepairModal.targetHeader || "").trim();
+    if (!row?.importId || !sourceHeader || !targetHeader) {
+      setHeaderRepairModal((prev) => ({ ...prev, error: "Select the uploaded column and the required header first." }));
+      return;
+    }
+    const confirmed = window.confirm(`Rename uploaded column "${sourceHeader}" to required header "${targetHeader}"? Continue or cancel.`);
+    if (!confirmed) return;
+    setHeaderRepairModal((prev) => ({ ...prev, saving: true, error: "", success: "" }));
+    try {
+      const response = await api.post(`/report-source-imports/${row.importId}/header-rename`, {
+        sourceHeader,
+        targetHeader,
+        tabName: headerRepairModal.tabName || "",
+        previewLimit: headerRepairModal.previewLimit || 300,
+        confirm: true,
+      });
+      const preview = response?.data || {};
+      const nextTarget = Array.isArray(preview.repair_targets) ? preview.repair_targets[0] : null;
+      await refreshReportSources?.();
+      setHeaderRepairModal((prev) => ({
+        ...prev,
+        saving: false,
+        preview,
+        tabName: String(preview?.tab_name || prev.tabName || "").trim(),
+        sourceHeader: "",
+        targetHeader: nextTarget?.targetHeader || nextTarget?.options?.[0] || prev.targetHeader,
+        success: preview?.compatibility?.approval_ready
+          ? "Header repaired. This import can now be published."
+          : "Header repaired. Additional required mappings may still be missing.",
+      }));
+    } catch (error) {
+      setHeaderRepairModal((prev) => ({
+        ...prev,
+        saving: false,
+        error: error?.response?.data?.error || "Failed to rename the uploaded column.",
+      }));
+    }
+  }, [headerRepairModal, refreshReportSources]);
+
   const handleDeleteImport = React.useCallback(async (row) => {
     if (!row?.importId || reviewBusyId) return;
     const status = String(row?.status || "");
@@ -2308,12 +2579,90 @@ export default function DashboardHome({
     ["Published", publishedImports.toLocaleString("en-US"), "Ready for questions"],
     ["Sources", explicitReportSources.length.toLocaleString("en-US"), "Data collections"],
   ];
+  const headerRepairPreview = headerRepairModal.preview || {};
+  const headerRepairTabs = Array.isArray(headerRepairPreview.tabs)
+    ? headerRepairPreview.tabs.map((tab) => String(tab || "").trim()).filter(Boolean)
+    : [];
+  const headerRepairTabStatuses = Array.isArray(headerRepairPreview.tab_statuses)
+    ? headerRepairPreview.tab_statuses
+    : [];
+  const headerRepairTabStatusByName = React.useMemo(() => {
+    const out = new Map();
+    headerRepairTabStatuses.forEach((status) => {
+      const tabName = String(status?.tab_name || "").trim();
+      if (!tabName) return;
+      out.set(tabName, status);
+    });
+    return out;
+  }, [headerRepairTabStatuses]);
+  const headerRepairHeaders = Array.isArray(headerRepairPreview.headers) ? headerRepairPreview.headers : [];
+  const headerRepairSourceHeaderOptions = React.useMemo(() => {
+    return Array.from(new Set(
+      headerRepairHeaders.map((header) => String(header || "").trim()).filter(Boolean)
+    ));
+  }, [headerRepairHeaders]);
+  const headerRepairVisibleHeaders = headerRepairHeaders.slice(0, 12);
+  const headerRepairRows = Array.isArray(headerRepairPreview.sample_rows) ? headerRepairPreview.sample_rows : [];
+  const headerRepairRowIndexes = Array.isArray(headerRepairPreview.sample_row_indexes) ? headerRepairPreview.sample_row_indexes : [];
+  const headerRepairPreviewRowCount = Number(headerRepairPreview?.preview_row_count || 0);
+  const headerRepairHasMoreRows = !!headerRepairPreview?.has_more_rows;
+  const headerRepairTargets = Array.isArray(headerRepairPreview.repair_targets) ? headerRepairPreview.repair_targets : [];
+  const headerRepairTargetOptions = Array.from(new Set(
+    headerRepairTargets.flatMap((target) => Array.isArray(target?.options) ? target.options : []).filter(Boolean)
+  ));
+  const headerRepairMissing = Array.isArray(headerRepairPreview?.compatibility?.missing)
+    ? headerRepairPreview.compatibility.missing.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  const isHeaderRepairRedactedValue = React.useCallback((value) => {
+    const normalized = String(value ?? "").trim().toLowerCase();
+    if (!normalized) return false;
+    if (normalized === "[redacted]" || normalized === "redacted" || normalized === "[masked]" || normalized === "masked") return true;
+    return normalized.includes("redacted") || normalized.includes("masked");
+  }, []);
+  const headerRepairHeaderRowOptions = React.useMemo(() => {
+    const options = [];
+    headerRepairRows.forEach((row, idx) => {
+      const rowIndexCandidate = Number(headerRepairRowIndexes[idx]);
+      const rowIndex = Number.isInteger(rowIndexCandidate) && rowIndexCandidate >= 0 ? rowIndexCandidate : idx;
+      const byHeader = headerRepairVisibleHeaders
+        .slice(0, 3)
+        .map((header) => String(row?.[header] ?? "").trim())
+        .filter(Boolean);
+      const fallback = Object.values(row || {})
+        .slice(0, 3)
+        .map((value) => String(value ?? "").trim())
+        .filter(Boolean);
+      const previewValues = (byHeader.length ? byHeader : fallback).slice(0, 3);
+      const labelSuffix = previewValues.length ? ` - ${previewValues.join(" | ").slice(0, 90)}` : "";
+      options.push({
+        value: String(rowIndex),
+        labelSuffix,
+      });
+    });
+    return options
+      .sort((a, b) => Number(a.value) - Number(b.value))
+      .map((opt, idx) => ({
+        value: opt.value,
+        label: `Row ${idx + 1}${opt.labelSuffix || ""}`,
+      }));
+  }, [headerRepairRows, headerRepairVisibleHeaders, headerRepairRowIndexes]);
+  const headerRepairHasUsableHeaders = React.useMemo(() => {
+    return headerRepairHeaders.some((header) => {
+      const text = String(header || "").trim();
+      if (!text) return false;
+      if (isHeaderRepairRedactedValue(text)) return false;
+      return /[A-Za-z]/.test(text);
+    });
+  }, [headerRepairHeaders, isHeaderRepairRedactedValue]);
   React.useEffect(() => {
     if (!focusReviewQueue) return;
     window.requestAnimationFrame(() => {
       reviewQueueRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
   }, [focusReviewQueue]);
+
+
+
 
   return (
     <div className="flex-1 min-h-0 bg-[#f6f8fb] relative">
@@ -2510,14 +2859,24 @@ export default function DashboardHome({
                       )
                     )}
                     {publishBlockedByCompatibility ? (
-                      <div className="mt-2 text-[10px] font-semibold text-amber-700">
-                        Cannot publish: {compatibilityBlockReason}
+                      <div className="mt-2 rounded-md border border-amber-200 bg-white/70 p-2 text-[10px] font-semibold text-amber-700">
+                        <div>Cannot publish: {compatibilityBlockReason}</div>
                         {compatibilityMissingList.length ? (
                           <div className="mt-1 space-y-0.5 text-[10px] font-semibold text-amber-700/90">
                             {compatibilityMissingList.slice(0, 5).map((reason, idx) => (
                               <div key={`compat-missing-${idx}`}>{idx + 1}. {reason}</div>
                             ))}
                           </div>
+                        ) : null}
+                        {canReviewImports ? (
+                          <button
+                            type="button"
+                            disabled={headerRepairModal.loading || headerRepairModal.saving}
+                            onClick={() => openHeaderRepairModal(row)}
+                            className="mt-2 rounded-md border border-amber-300 bg-amber-100 px-2 py-1 text-[10px] font-black text-amber-800 hover:bg-amber-200 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            Fix headers in uploaded sheet
+                          </button>
                         ) : null}
                       </div>
                     ) : null}
@@ -3406,6 +3765,241 @@ export default function DashboardHome({
             </div>
           </div>
         </div>
+
+        {headerRepairModal.open && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4">
+            <div className="max-h-[90vh] w-full max-w-6xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+              <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
+                <div>
+                  <h3 className="text-base font-black text-slate-950">Repair required upload headers</h3>
+                  <p className="mt-1 text-xs font-semibold text-slate-500">
+                    Preview the uploaded sheet, choose the wrong column, and rename it to the required publish header.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeHeaderRepairModal}
+                  disabled={headerRepairModal.saving}
+                  className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-black text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {headerRepairPreview?.compatibility?.approval_ready ? "OK" : "Cancel"}
+                </button>
+              </div>
+              <div className="max-h-[calc(90vh-88px)] overflow-auto p-5">
+                {headerRepairModal.loading ? (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm font-semibold text-slate-600">
+                    Loading uploaded sheet preview...
+                  </div>
+                ) : (
+                  <>
+                    {headerRepairModal.error ? (
+                      <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs font-semibold text-rose-700">
+                        {headerRepairModal.error}
+                      </div>
+                    ) : null}
+                    {headerRepairModal.success ? (
+                      <div className="mb-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs font-semibold text-emerald-700">
+                        {headerRepairModal.success}
+                      </div>
+                    ) : null}
+                    <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_22rem]">
+                      <div className="min-w-0 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <div className="text-xs font-black text-slate-900">{headerRepairPreview.file_label || headerRepairModal.row?.latestFile || "Uploaded sheet"}</div>
+                            <div className="mt-0.5 text-[11px] font-semibold text-slate-500">
+                              Showing {headerRepairRows.length.toLocaleString("en-US")} of {headerRepairPreviewRowCount.toLocaleString("en-US")} rows and {headerRepairVisibleHeaders.length.toLocaleString("en-US")} columns.
+                            </div>
+                          </div>
+                          {headerRepairPreview?.compatibility?.approval_ready ? (
+                            <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[10px] font-black text-emerald-700">Ready to publish</span>
+                          ) : (
+                            <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[10px] font-black text-amber-700">Needs repair</span>
+                          )}
+                        </div>
+                        <div className="mt-3 max-h-[380px] overflow-auto rounded-lg border border-slate-200 bg-white">
+                          <table className="min-w-full table-fixed divide-y divide-slate-200 text-left text-[11px]">
+                            <thead className="sticky top-0 z-20 bg-slate-100 text-slate-700">
+                              <tr>
+                                <th className="sticky left-0 top-0 z-30 w-16 whitespace-nowrap border-r border-slate-200 bg-slate-100 px-2 py-2 font-black">
+                                  Row
+                                </th>
+                                {headerRepairVisibleHeaders.map((header) => {
+                                  return (
+                                    <th
+                                      key={`repair-head-${header}`}
+                                      className="sticky top-0 whitespace-nowrap px-2 py-2 font-black"
+                                    >
+                                      {header}
+                                    </th>
+                                  );
+                                })}
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 bg-white">
+                              {headerRepairRows.length ? headerRepairRows.map((row, rowIdx) => (
+                                <tr key={`repair-row-${rowIdx}`}>
+                                  <td className="sticky left-0 z-10 w-16 whitespace-nowrap border-r border-slate-100 bg-white px-2 py-1.5 font-bold text-slate-500">
+                                    {rowIdx + 1}
+                                  </td>
+                                  {headerRepairVisibleHeaders.map((header) => {
+                                    const cellValue = String(row?.[header] ?? "");
+                                    const maskedCell = isMaskedColumn(header) || isHeaderRepairRedactedValue(cellValue);
+                                    return (
+                                      <td
+                                        key={`repair-cell-${rowIdx}-${header}`}
+                                        className={`max-w-[180px] truncate px-2 py-1.5 font-semibold ${maskedCell ? "bg-amber-50 ring-1 ring-inset ring-amber-300 font-bold text-slate-900" : "text-slate-600"}`}
+                                        title={cellValue}
+                                      >
+                                        {cellValue}
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              )) : (
+                                <tr>
+                                  <td className="px-2 py-4 text-center font-semibold text-slate-500" colSpan={Math.max(2, headerRepairVisibleHeaders.length + 1)}>
+                                    No preview rows available.
+                                  </td>
+                                </tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                        {headerRepairTabs.length > 1 ? (
+                          <div className="mt-2 overflow-x-auto rounded-lg border border-slate-200 bg-white">
+                            <SheetTabBar
+                              tabs={headerRepairTabs}
+                              activeTab={headerRepairModal.tabName || headerRepairTabs[0]}
+                              onTabClick={handleHeaderRepairTabChange}
+                              warningTabs={headerRepairTabs.filter((tab) => !!headerRepairTabStatusByName.get(tab)?.needs_repair)}
+                            />
+                          </div>
+                        ) : null}
+                        {headerRepairHasMoreRows ? (
+                          <div className="mt-2 flex justify-end">
+                            <button
+                              type="button"
+                              onClick={loadMoreHeaderRepairRows}
+                              disabled={headerRepairModal.loading || headerRepairModal.saving}
+                              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-[11px] font-black text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {headerRepairModal.loading ? "Loading..." : "Load more rows"}
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-3 lg:sticky lg:top-0 self-start">
+                        <div className="text-xs font-black text-slate-950">Required publish columns</div>
+                        {headerRepairMissing.length ? (
+                          <div className="mt-2 space-y-1 text-[11px] font-semibold text-amber-800">
+                            {headerRepairMissing.slice(0, 6).map((reason, idx) => (
+                              <div key={`repair-missing-${idx}`}>{idx + 1}. {reason}</div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="mt-2 text-[11px] font-semibold text-emerald-700">No required publish header issues are currently detected.</div>
+                        )}
+                        <div className="mt-3 space-y-3">
+                          <button
+                            type="button"
+                            onClick={() => setHeaderRepairModal((prev) => ({ ...prev, showHeaderRowTools: !prev.showHeaderRowTools }))}
+                            className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-left text-[11px] font-black text-slate-700 hover:bg-slate-50"
+                          >
+                            {headerRepairModal.showHeaderRowTools ? "Hide header-row adjustment" : "Adjust header row (optional)"}
+                          </button>
+                          {!headerRepairModal.showHeaderRowTools && headerRepairHasUsableHeaders ? (
+                            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-2 text-[11px] font-semibold text-emerald-700">
+                              Existing headers look usable. You can continue with column rename fixes below.
+                            </div>
+                          ) : null}
+                          {(headerRepairModal.showHeaderRowTools || !headerRepairHasUsableHeaders) ? (
+                            <>
+                              <label className="block text-[11px] font-black text-slate-700">
+                                Header row in uploaded file
+                                  <select
+                                    value={headerRepairModal.headerRowIndex}
+                                    onChange={(e) => setHeaderRepairModal((prev) => ({ ...prev, headerRowIndex: e.target.value, error: "" }))}
+                                    className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-2 text-xs font-semibold text-slate-900"
+                                  >
+                                    <option value="">Select row...</option>
+                                    {headerRepairHeaderRowOptions.map((opt) => (
+                                      <option key={`repair-header-row-${opt.value}`} value={opt.value}>{opt.label}</option>
+                                    ))}
+                                  </select>
+                                </label>
+                                {headerRepairHasMoreRows ? (
+                                  <div className="text-[10px] font-semibold text-slate-500">
+                                    More rows exist. Use "Load more rows" below to include additional row options with values.
+                                  </div>
+                                ) : null}
+                              <button
+                                type="button"
+                                onClick={submitHeaderRowRepair}
+                                disabled={headerRepairModal.saving || !headerRepairModal.headerRowIndex}
+                                className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-black text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                {headerRepairModal.saving ? "Applying row..." : "Apply selected row as headers"}
+                              </button>
+                              <div className="rounded-lg border border-slate-200 bg-white p-2 text-[11px] font-semibold text-slate-600">
+                                This will rebuild column headers from the selected row and remove rows up to that line from this tab.
+                              </div>
+                            </>
+                          ) : null}
+                        </div>
+                        {headerRepairTargets.length ? (
+                          <div className="mt-3 space-y-3">
+                            <label className="block text-[11px] font-black text-slate-700">
+                              Uploaded column to rename
+                              <select
+                                value={headerRepairModal.sourceHeader}
+                                onChange={(e) => setHeaderRepairModal((prev) => ({ ...prev, sourceHeader: e.target.value, error: "" }))}
+                                className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-2 text-xs font-semibold text-slate-900"
+                              >
+                                <option value="">Select uploaded column...</option>
+                                {headerRepairSourceHeaderOptions.map((header) => (
+                                  <option key={`repair-source-${header}`} value={header}>{header}</option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="block text-[11px] font-black text-slate-700">
+                              Required header name
+                              <select
+                                value={headerRepairModal.targetHeader}
+                                onChange={(e) => setHeaderRepairModal((prev) => ({ ...prev, targetHeader: e.target.value, error: "" }))}
+                                className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-2 text-xs font-semibold text-slate-900"
+                              >
+                                {headerRepairTargetOptions.map((header) => (
+                                  <option key={`repair-target-${header}`} value={header}>{header}</option>
+                                ))}
+                              </select>
+                            </label>
+                            <div className="rounded-lg border border-amber-200 bg-white p-2 text-[11px] font-semibold text-amber-800">
+                              This will rename the selected uploaded column header and stored row key. It does not create calculated data or change cell values.
+                            </div>
+                            <button
+                              type="button"
+                              onClick={submitHeaderRepair}
+                              disabled={headerRepairModal.saving || !headerRepairModal.sourceHeader || !headerRepairModal.targetHeader}
+                              className="w-full rounded-md bg-slate-900 px-3 py-2 text-xs font-black text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {headerRepairModal.saving ? "Renaming..." : "Continue and rename header"}
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="mt-3 rounded-lg border border-slate-200 bg-white p-2 text-[11px] font-semibold text-slate-600">
+                            No rename repair is available for the current publish block.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
         {insightSection && (
           <div className="mt-5">

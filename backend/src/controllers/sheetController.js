@@ -952,6 +952,236 @@ async function userCanApproveReportSource(client, user, reportSourceId) {
     return canWriteToReportSource(client, user, reportSourceId);
 }
 
+const HEADER_REPAIR_DATE_TARGETS = ["Date", "Month", "Quarter", "Year"];
+const HEADER_REPAIR_METRIC_TARGETS = ["Revenue", "Cost", "Profit", "Net Income", "Total Expense"];
+const HEADER_REPAIR_ALLOWED_TARGETS = new Set([...HEADER_REPAIR_DATE_TARGETS, ...HEADER_REPAIR_METRIC_TARGETS]);
+const HEADER_REPAIR_PREVIEW_DEFAULT_ROWS = 300;
+const HEADER_REPAIR_PREVIEW_MAX_ROWS = 2000;
+
+function evaluateCanonicalPublishHeaderMissing(headers = []) {
+    const headerList = (Array.isArray(headers) ? headers : [])
+        .map((h) => String(h || "").trim().toLowerCase())
+        .filter(Boolean);
+    const normalized = new Set(headerList);
+    const includesAny = (value, phrases) => {
+        const text = String(value || "").toLowerCase();
+        return phrases.some((phrase) => text.includes(String(phrase).toLowerCase()));
+    };
+    const dateHints = ["date", "month", "quarter", "year", "period", "fiscal period", "reporting date"];
+    const metricHints = [
+        "revenue",
+        "sales",
+        "turnover",
+        "income",
+        "net income",
+        "profit",
+        "gross profit",
+        "operating profit",
+        "expense",
+        "total expense",
+        "operating expense",
+        "cost",
+        "cogs",
+        "ebitda",
+    ];
+    const hasDate = HEADER_REPAIR_DATE_TARGETS.some((h) => normalized.has(h.toLowerCase()))
+        || headerList.some((h) => includesAny(h, dateHints));
+    const hasMetric = HEADER_REPAIR_METRIC_TARGETS.some((h) => normalized.has(h.toLowerCase()))
+        || headerList.some((h) => includesAny(h, metricHints));
+    const missing = [];
+    if (!hasDate) {
+        missing.push("Expected reporting date column does not exist. Expected one of: Date, Month, Quarter, Year.");
+    }
+    if (!hasMetric) {
+        missing.push("Expected metric columns do not exist. Expected at least one of: Revenue, Cost, Profit, Net Income, Total Expense.");
+    }
+    return missing;
+}
+
+function mergeCompatibilityMissingReasons(...lists) {
+    const seen = new Set();
+    const merged = [];
+    for (const list of lists) {
+        const normalized = normalizeCompatibilityMissingReasons(list || []);
+        for (const reason of normalized) {
+            const key = String(reason || "").trim();
+            if (!key) continue;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            merged.push(key);
+        }
+    }
+    return merged;
+}
+
+function buildHeaderRepairTargets(missingReasons = []) {
+
+    const reasons = normalizeCompatibilityMissingReasons(missingReasons);
+    const targets = [];
+    const hasDateIssue = reasons.some((reason) => /date|period|month|quarter|year/i.test(String(reason || "")));
+    const hasMetricIssue = reasons.some((reason) => /metric|numeric|revenue|cost|profit|income|expense/i.test(String(reason || "")));
+    if (hasDateIssue) {
+        targets.push({
+            kind: "date",
+            label: "Reporting date column",
+            targetHeader: "Date",
+            options: HEADER_REPAIR_DATE_TARGETS,
+            reason: reasons.find((reason) => /date|period|month|quarter|year/i.test(String(reason || ""))) || "Date mapping is missing.",
+        });
+    }
+    if (hasMetricIssue) {
+        targets.push({
+            kind: "metric",
+            label: "Metric column",
+            targetHeader: "Revenue",
+            options: HEADER_REPAIR_METRIC_TARGETS,
+            reason: reasons.find((reason) => /metric|numeric|revenue|cost|profit|income|expense/i.test(String(reason || ""))) || "Metric mapping is missing.",
+        });
+    }
+    return targets;
+}
+
+function defaultsForHeaderRepairTarget(targetHeader) {
+    const target = String(targetHeader || "").trim();
+    if (!target) return {};
+    if (HEADER_REPAIR_DATE_TARGETS.includes(target)) {
+        return { dateColumn: target };
+    }
+    const metricColumns = {};
+    if (target === "Revenue") {
+        metricColumns.revenue = target;
+        metricColumns.total_revenue = target;
+    } else if (target === "Cost") {
+        metricColumns.cost = target;
+    } else if (target === "Profit") {
+        metricColumns.profit = target;
+    } else if (target === "Net Income") {
+        metricColumns.net_income = target;
+        metricColumns.profit = target;
+    } else if (target === "Total Expense") {
+        metricColumns.expense = target;
+        metricColumns.total_expense = target;
+        metricColumns.cost = target;
+    }
+    return Object.keys(metricColumns).length
+        ? { metricColumns, metrics: [target] }
+        : {};
+}
+
+async function loadImportForHeaderRepair(client, importId, lock = false) {
+    const result = await client.query(
+        `SELECT rsi.id, rsi.report_source_id, rsi.sheet_id, rsi.status, rsi.file_label, rsi.job_id,
+                s.headers, s.tab_name, s.tabs, s.semantic_profile, s.filename, s.display_name
+           FROM report_source_imports rsi
+           JOIN sheets s ON s.id = rsi.sheet_id
+          WHERE rsi.id = $1
+          ${lock ? "FOR UPDATE OF rsi, s" : ""}`,
+        [importId]
+    );
+    return result.rows?.[0] || null;
+}
+
+async function loadHeaderRepairSampleRows(client, sheetId, tabName, limit = 50, options = {}) {
+    const includeRowIndex = options && options.includeRowIndex === true;
+    const result = await client.query(
+        `SELECT row_index, row_data
+           FROM sheet_rows
+          WHERE sheet_id = $1
+            AND ($2::text IS NULL OR tab_name = $2)
+          ORDER BY row_index ASC
+          LIMIT $3`,
+        [sheetId, tabName || null, limit]
+    );
+    if (includeRowIndex) {
+        return result.rows.map((row) => ({
+            rowIndex: Number(row.row_index),
+            rowData: row.row_data || {},
+        }));
+    }
+    return result.rows.map((row) => row.row_data || {});
+}
+
+async function loadHeaderRepairRowCount(client, sheetId, tabName) {
+    const result = await client.query(
+        `SELECT COUNT(*)::int AS c
+           FROM sheet_rows
+          WHERE sheet_id = $1
+            AND ($2::text IS NULL OR tab_name = $2)`,
+        [sheetId, tabName || null]
+    );
+    return Number(result.rows?.[0]?.c || 0);
+}
+
+function normalizeHeaderRepairPreviewLimit(value, fallback = HEADER_REPAIR_PREVIEW_DEFAULT_ROWS) {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isInteger(parsed) || parsed <= 0) return fallback;
+    return Math.max(1, Math.min(parsed, HEADER_REPAIR_PREVIEW_MAX_ROWS));
+}
+
+function sanitizeHeaderCellValue(value) {
+    const cleaned = String(value ?? "")
+        .replace(/[\u0000-\u001F\u007F]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    return cleaned.slice(0, 120);
+}
+
+function isRedactedHeaderCandidate(value) {
+    const normalized = String(value ?? "").trim().toLowerCase();
+    if (!normalized) return false;
+    if (normalized === "[redacted]" || normalized === "redacted" || normalized === "[masked]" || normalized === "masked") {
+        return true;
+    }
+    return normalized.includes("redacted") || normalized.includes("masked");
+}
+
+function resolveHeaderRepairTabs(record = {}) {
+    const parsedTabs = parseJsonMaybe(record?.tabs, []);
+    const tabs = Array.isArray(parsedTabs)
+        ? parsedTabs.map((tab) => String(tab || "").trim()).filter(Boolean)
+        : [];
+    const fallbackTab = String(record?.tab_name || "").trim();
+    if (fallbackTab && !tabs.includes(fallbackTab)) tabs.unshift(fallbackTab);
+    if (!tabs.length && fallbackTab) tabs.push(fallbackTab);
+    return tabs;
+}
+
+async function buildHeaderRepairTabStatuses(client, { sheetId, tabs = [], semanticProfile = {} }) {
+    const out = [];
+    for (const tabName of Array.isArray(tabs) ? tabs : []) {
+        const sampleRows = await loadHeaderRepairSampleRows(client, sheetId, tabName, 50);
+        const compatibility = evaluateAiChatCompatibilityForImport({
+            semanticProfile: semanticProfile || {},
+            sampleRows,
+        });
+        const missing = normalizeCompatibilityMissingReasons(compatibility?.missing || []);
+        const approvalReady = compatibility.ready || canApproveWithMaskedDlp({
+            semanticProfile: semanticProfile || {},
+            compatibility,
+        });
+        out.push({
+            tab_name: tabName,
+            approval_ready: !!approvalReady,
+            needs_repair: !approvalReady,
+            missing_count: missing.length,
+            missing_preview: missing.slice(0, 2),
+        });
+    }
+    return out;
+}
+
+function makeUniqueHeaderList(candidateHeaders = []) {
+    const used = new Map();
+    return candidateHeaders.map((raw, idx) => {
+        const base = sanitizeHeaderCellValue(raw) || `Column ${idx + 1}`;
+        const key = base.toLowerCase();
+        const seen = used.get(key) || 0;
+        used.set(key, seen + 1);
+        if (seen === 0) return base;
+        return `${base} (${seen + 1})`;
+    });
+}
+
 async function createImportJob(client, { id, mode, status = "running", stage = "processing", requestedBy, originalFilename, reportSourceId = null, maxAttempts = IMPORT_JOB_MAX_ATTEMPTS }) {
     await client.query(
         `INSERT INTO import_jobs
@@ -1626,6 +1856,13 @@ async function executeImportFromParsedWorkbook({
             semanticProfile,
             sampleRows: firstTabRowsRaw,
         });
+        const canonicalMissingReasons = evaluateCanonicalPublishHeaderMissing(headers);
+        const combinedMissingReasons = mergeCompatibilityMissingReasons(aiChatCompatibility.missing, canonicalMissingReasons);
+        const combinedReady = combinedMissingReasons.length === 0;
+        const combinedCompatibility = {
+            ready: combinedReady,
+            missing: combinedMissingReasons,
+        };
         semanticProfile = {
             ...(semanticProfile || {}),
             learned: {
@@ -1633,13 +1870,15 @@ async function executeImportFromParsedWorkbook({
                     ? semanticProfile.learned
                     : {}),
                 ai_chat_compatibility: {
-                    ...aiChatCompatibility,
-                    approval_ready: aiChatCompatibility.ready || canApproveWithMaskedDlp({ semanticProfile, compatibility: aiChatCompatibility }),
+                    ...combinedCompatibility,
+                    approval_ready: combinedCompatibility.ready || canApproveWithMaskedDlp({ semanticProfile, compatibility: combinedCompatibility }),
                     evaluatedAt: new Date().toISOString(),
                 },
             },
         };
-        const compatibilityReviewRequired = AI_CHAT_COMPATIBILITY_ENFORCE_IMPORT && !aiChatCompatibility.ready;
+        const semanticCompatibilityReviewRequired = AI_CHAT_COMPATIBILITY_ENFORCE_IMPORT && !aiChatCompatibility.ready;
+        const canonicalCompatibilityReviewRequired = canonicalMissingReasons.length > 0;
+        const compatibilityReviewRequired = semanticCompatibilityReviewRequired || canonicalCompatibilityReviewRequired;
 
         const versionedFilename = await getVersionedFilename(client, reportSource.id, originalName);
         const headerDiff = buildHeaderDiff(reportSource.previousHeaders, headers);
@@ -1841,7 +2080,7 @@ async function executeImportFromParsedWorkbook({
             schema_diff: headerDiff,
             review_required: reviewRequired,
             review_reasons: compatibilityReviewRequired
-                ? [...baseReviewReasons, ...aiChatCompatibility.missing.map((reason) => `AI chat compatibility: ${reason}`)]
+                ? [...baseReviewReasons, ...combinedCompatibility.missing.map((reason) => `AI chat compatibility: ${reason}`)]
                 : baseReviewReasons,
             semantic_profile: semanticProfile,
             headers,
@@ -3526,7 +3765,7 @@ export async function getReportSourceImports(req, res) {
                 rsi.original_filename, rsi.schema_status, rsi.schema_diff, rsi.status,
                 rsi.published_at, rsi.published_by, rsi.rejected_at, rsi.rejected_by,
                 rsi.review_notes, rsi.job_id, rsi.file_size_bytes, rsi.created_at,
-                s.display_name, s.filename, s.uploaded_at, s.semantic_profile,
+                s.display_name, s.filename, s.uploaded_at, s.headers, s.semantic_profile,
                 COALESCE(NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), u.email) AS imported_by_name
          FROM report_source_imports rsi
          JOIN sheets s ON s.id = rsi.sheet_id
@@ -3573,12 +3812,14 @@ export async function getReportSourceImports(req, res) {
             }
         }
         const dlp = semanticProfile?.dlp && typeof semanticProfile.dlp === "object" ? semanticProfile.dlp : {};
-        const baseMissing = Array.isArray(learnedCompatibility?.missing)
+        const canonicalMissing = evaluateCanonicalPublishHeaderMissing(normalizeStoredHeaders(row?.headers));
+        const learnedMissing = Array.isArray(learnedCompatibility?.missing)
             ? learnedCompatibility.missing.map((m) => String(m || "").trim()).filter(Boolean)
             : fallbackMissing;
-        const missing = normalizeCompatibilityMissingReasons(baseMissing);
-        const compatibilityReady = learnedCompatibility?.ready === true;
-        const approvalReady = compatibilityReady;
+        const missing = mergeCompatibilityMissingReasons(learnedMissing, canonicalMissing);
+        const compatibilityReady = missing.length === 0;
+        const learnedApprovalReady = learnedCompatibility?.approval_ready === true;
+        const approvalReady = compatibilityReady && learnedApprovalReady;
         return {
             ...row,
             selectable,
@@ -3659,6 +3900,450 @@ export async function getImportJob(req, res) {
     res.json(job);
 }
 
+export async function getReportSourceImportHeaderRepairPreview(req, res) {
+    const importId = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(importId) || importId <= 0) {
+        return res.status(400).json({ error: "invalid_import_id" });
+    }
+
+    const client = await getClient();
+    try {
+        const record = await loadImportForHeaderRepair(client, importId, false);
+        if (!record) return res.status(404).json({ error: "not_found" });
+        const canApprove = await userCanApproveReportSource(client, req.user, record.report_source_id);
+        if (!canApprove) return res.status(403).json({ error: "Forbidden" });
+
+        const tabs = resolveHeaderRepairTabs(record);
+        const requestedTab = String(req.query?.tab || "").trim();
+        const effectiveTab = requestedTab && tabs.includes(requestedTab)
+            ? requestedTab
+            : (String(record.tab_name || "").trim() || tabs[0] || null);
+        const previewLimit = normalizeHeaderRepairPreviewLimit(req.query?.limit, HEADER_REPAIR_PREVIEW_DEFAULT_ROWS);
+        const headers = normalizeStoredHeaders(record.headers);
+        const sampleRowsWithMeta = await loadHeaderRepairSampleRows(client, record.sheet_id, effectiveTab, previewLimit, { includeRowIndex: true });
+        const sampleRows = sampleRowsWithMeta.map((entry) => entry.rowData || {});
+        const sampleRowIndexes = sampleRowsWithMeta.map((entry) => Number(entry.rowIndex));
+        const totalRows = await loadHeaderRepairRowCount(client, record.sheet_id, effectiveTab);
+        const compatibility = evaluateAiChatCompatibilityForImport({
+            semanticProfile: record.semantic_profile || {},
+            sampleRows,
+        });
+        const missing = normalizeCompatibilityMissingReasons(compatibility?.missing || []);
+        const approvalReady = compatibility.ready || canApproveWithMaskedDlp({
+            semanticProfile: record.semantic_profile || {},
+            compatibility,
+        });
+        const tabStatuses = await buildHeaderRepairTabStatuses(client, {
+            sheetId: record.sheet_id,
+            tabs,
+            semanticProfile: record.semantic_profile || {},
+        });
+
+        return res.json({
+            import_id: importId,
+            report_source_id: record.report_source_id,
+            sheet_id: record.sheet_id,
+            status: record.status,
+            file_label: record.file_label || record.display_name || record.filename || "Uploaded sheet",
+            tab_name: effectiveTab,
+            tabs,
+            tab_statuses: tabStatuses,
+            headers,
+            sample_rows: sampleRows,
+            sample_row_indexes: sampleRowIndexes,
+            preview_row_count: totalRows,
+            preview_limit: previewLimit,
+            has_more_rows: totalRows > sampleRows.length,
+            compatibility: {
+                ready: !!compatibility?.ready,
+                approval_ready: !!approvalReady,
+                missing,
+            },
+            repair_targets: buildHeaderRepairTargets(missing),
+        });
+    } finally {
+        client.release();
+    }
+}
+
+export async function applyReportSourceImportHeaderRow(req, res) {
+    const importId = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(importId) || importId <= 0) {
+        return res.status(400).json({ error: "invalid_import_id" });
+    }
+    const headerRowIndex = Number.parseInt(
+        req.body?.headerRowIndex ?? req.body?.header_row_index ?? req.body?.row_index,
+        10
+    );
+    if (!Number.isInteger(headerRowIndex) || headerRowIndex < 0) {
+        return res.status(400).json({ error: "invalid_header_row_index" });
+    }
+    if (req.body?.confirm !== true) {
+        return res.status(409).json({ error: "confirmation_required" });
+    }
+
+    const client = await getClient();
+    try {
+        await client.query("BEGIN");
+        const record = await loadImportForHeaderRepair(client, importId, true);
+        if (!record) {
+            await client.query("ROLLBACK");
+            return res.status(404).json({ error: "not_found" });
+        }
+        const canApprove = await userCanApproveReportSource(client, req.user, record.report_source_id);
+        if (!canApprove) {
+            await client.query("ROLLBACK");
+            return res.status(403).json({ error: "Forbidden" });
+        }
+        if (String(record.status || "").toLowerCase() === "published") {
+            await client.query("ROLLBACK");
+            return res.status(409).json({ error: "published_import_cannot_be_repaired" });
+        }
+
+        const headers = normalizeStoredHeaders(record.headers);
+        if (!headers.length) {
+            await client.query("ROLLBACK");
+            return res.status(409).json({ error: "missing_existing_headers" });
+        }
+        const tabs = resolveHeaderRepairTabs(record);
+        const requestedTab = String(req.body?.tabName || req.body?.tab_name || "").trim();
+        const effectiveTab = requestedTab && tabs.includes(requestedTab)
+            ? requestedTab
+            : (String(record.tab_name || "").trim() || tabs[0] || null);
+        const previewLimit = normalizeHeaderRepairPreviewLimit(req.body?.previewLimit ?? req.body?.preview_limit, HEADER_REPAIR_PREVIEW_DEFAULT_ROWS);
+
+        const headerRowRes = await client.query(
+            `SELECT row_index, row_data
+               FROM sheet_rows
+              WHERE sheet_id = $1
+                AND ($2::text IS NULL OR tab_name = $2)
+                AND row_index = $3
+              LIMIT 1`,
+            [record.sheet_id, effectiveTab, headerRowIndex]
+        );
+        if (!headerRowRes.rows.length) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({ error: "header_row_not_found_in_tab" });
+        }
+
+        const headerRowData = headerRowRes.rows[0]?.row_data || {};
+        // Keep currently-set header by position for blank/redacted candidates; never emit empty header names.
+        const rawNextHeaders = headers.map((oldHeader, idx) => {
+            const selected = sanitizeHeaderCellValue(headerRowData?.[oldHeader]);
+            const existing = sanitizeHeaderCellValue(oldHeader);
+            const safeExisting = (!existing || isRedactedHeaderCandidate(existing))
+                ? `Column ${idx + 1}`
+                : existing;
+            if (!selected || isRedactedHeaderCandidate(selected)) return safeExisting;
+            return selected;
+        });
+        const nextHeaders = makeUniqueHeaderList(rawNextHeaders);
+        const oldHeaders = headers.slice(0, nextHeaders.length);
+
+        const rekeyParams = [
+            record.sheet_id,
+            headerRowIndex,
+            ...oldHeaders,
+            ...nextHeaders,
+        ];
+        const oldStart = 3;
+        const newStart = oldStart + oldHeaders.length;
+        const removeArraySql = oldHeaders.length
+            ? `row_data - ARRAY[${oldHeaders.map((_, idx) => `$${oldStart + idx}::text`).join(", ")}]`
+            : "row_data";
+        const buildObjectSql = oldHeaders.length
+            ? `jsonb_build_object(${oldHeaders
+                .map((_, idx) => `$${newStart + idx}::text, row_data -> $${oldStart + idx}::text`)
+                .join(", ")})`
+            : "'{}'::jsonb";
+        const rekeySql = `(${removeArraySql}) || ${buildObjectSql}`;
+
+        await client.query(
+            `UPDATE sheet_rows
+                SET row_data = ${rekeySql}
+              WHERE sheet_id = $1
+                AND row_index > $2`,
+            rekeyParams
+        );
+
+        await client.query(
+            `DELETE FROM sheet_rows
+              WHERE sheet_id = $1
+                AND row_index <= $2`,
+            [record.sheet_id, headerRowIndex]
+        );
+
+        const profileSampleRows = await loadHeaderRepairSampleRows(client, record.sheet_id, effectiveTab, 300);
+        const rules = await loadSemanticProfileRules();
+        const rebuiltProfile = buildSheetSemanticProfile({
+            headers: nextHeaders,
+            sampleRows: profileSampleRows,
+            previousProfile: record.semantic_profile || {},
+            rules,
+        });
+        const learnedProfile = mergeSheetSemanticProfileLearning(rebuiltProfile, {
+            notes: `Header row reset to file row ${headerRowIndex}.`,
+        });
+        const compatibility = evaluateAiChatCompatibilityForImport({
+            semanticProfile: learnedProfile,
+            sampleRows: profileSampleRows,
+        });
+        const missing = normalizeCompatibilityMissingReasons(compatibility?.missing || []);
+        const approvalReady = compatibility.ready || canApproveWithMaskedDlp({
+            semanticProfile: learnedProfile,
+            compatibility,
+        });
+        const finalProfile = {
+            ...learnedProfile,
+            learned: {
+                ...(learnedProfile.learned || {}),
+                ai_chat_compatibility: {
+                    ready: !!compatibility?.ready,
+                    approval_ready: !!approvalReady,
+                    missing,
+                    checked_at: new Date().toISOString(),
+                },
+            },
+        };
+
+        await client.query(
+            `UPDATE sheets
+                SET headers = $2::jsonb,
+                    semantic_profile = $3::jsonb,
+                    semantic_profile_updated_at = CURRENT_TIMESTAMP
+              WHERE id = $1`,
+            [record.sheet_id, JSON.stringify(nextHeaders), JSON.stringify(finalProfile)]
+        );
+
+        await client.query("COMMIT");
+
+        try {
+            await writeAuditLog({
+                req,
+                action: "import.header_row_applied",
+                resourceType: "report_source_import",
+                resourceId: importId,
+                metadata: {
+                    report_source_id: record.report_source_id,
+                    sheet_id: record.sheet_id,
+                    tab_name: record.tab_name || null,
+                    selected_tab_name: effectiveTab,
+                    header_row_index: headerRowIndex,
+                    compatibility_ready: !!approvalReady,
+                },
+            });
+        } catch (auditErr) {
+            console.warn("[audit] import.header_row_applied failed:", auditErr?.message || auditErr);
+        }
+
+        const sampleRowsWithMeta = await loadHeaderRepairSampleRows(client, record.sheet_id, effectiveTab, previewLimit, { includeRowIndex: true });
+        const sampleRows = sampleRowsWithMeta.map((entry) => entry.rowData || {});
+        const sampleRowIndexes = sampleRowsWithMeta.map((entry) => Number(entry.rowIndex));
+        const totalRows = await loadHeaderRepairRowCount(client, record.sheet_id, effectiveTab);
+        const tabStatuses = await buildHeaderRepairTabStatuses(client, {
+            sheetId: record.sheet_id,
+            tabs,
+            semanticProfile: finalProfile,
+        });
+
+        return res.json({
+            success: true,
+            import_id: importId,
+            sheet_id: record.sheet_id,
+            status: String(record.status || "").toLowerCase(),
+            header_row_index: headerRowIndex,
+            tab_name: effectiveTab,
+            tabs,
+            tab_statuses: tabStatuses,
+            headers: nextHeaders,
+            sample_rows: sampleRows,
+            sample_row_indexes: sampleRowIndexes,
+            preview_row_count: totalRows,
+            preview_limit: previewLimit,
+            has_more_rows: totalRows > sampleRows.length,
+            compatibility: {
+                ready: !!compatibility?.ready,
+                approval_ready: !!approvalReady,
+                missing,
+            },
+            repair_targets: buildHeaderRepairTargets(missing),
+        });
+    } catch (err) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw err;
+    } finally {
+        client.release();
+    }
+}
+
+export async function renameReportSourceImportHeader(req, res) {
+    const importId = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(importId) || importId <= 0) {
+        return res.status(400).json({ error: "invalid_import_id" });
+    }
+    const sourceHeader = String(req.body?.sourceHeader || req.body?.source_header || "").trim();
+    const targetHeader = String(req.body?.targetHeader || req.body?.target_header || "").trim();
+    if (req.body?.confirm !== true) {
+        return res.status(409).json({ error: "confirmation_required" });
+    }
+    if (!sourceHeader || !targetHeader) {
+        return res.status(400).json({ error: "source_and_target_headers_required" });
+    }
+    if (!HEADER_REPAIR_ALLOWED_TARGETS.has(targetHeader)) {
+        return res.status(400).json({ error: "unsupported_required_header", allowed: Array.from(HEADER_REPAIR_ALLOWED_TARGETS) });
+    }
+    if (sourceHeader === targetHeader) {
+        return res.status(409).json({ error: "source_header_already_matches_target" });
+    }
+
+    const client = await getClient();
+    try {
+        await client.query("BEGIN");
+        const record = await loadImportForHeaderRepair(client, importId, true);
+        if (!record) {
+            await client.query("ROLLBACK");
+            return res.status(404).json({ error: "not_found" });
+        }
+        const canApprove = await userCanApproveReportSource(client, req.user, record.report_source_id);
+        if (!canApprove) {
+            await client.query("ROLLBACK");
+            return res.status(403).json({ error: "Forbidden" });
+        }
+        if (String(record.status || "").toLowerCase() === "published") {
+            await client.query("ROLLBACK");
+            return res.status(409).json({ error: "published_import_cannot_be_repaired" });
+        }
+
+        const tabs = resolveHeaderRepairTabs(record);
+        const requestedTab = String(req.body?.tabName || req.body?.tab_name || "").trim();
+        const effectiveTab = requestedTab && tabs.includes(requestedTab)
+            ? requestedTab
+            : (String(record.tab_name || "").trim() || tabs[0] || null);
+        const previewLimit = normalizeHeaderRepairPreviewLimit(req.body?.previewLimit ?? req.body?.preview_limit, HEADER_REPAIR_PREVIEW_DEFAULT_ROWS);
+
+        const headers = normalizeStoredHeaders(record.headers);
+        if (!headers.includes(sourceHeader)) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({ error: "source_header_not_found" });
+        }
+        if (headers.includes(targetHeader)) {
+            await client.query("ROLLBACK");
+            return res.status(409).json({ error: "target_header_already_exists" });
+        }
+
+        const nextHeaders = headers.map((header) => header === sourceHeader ? targetHeader : header);
+        await client.query(
+            `UPDATE sheet_rows
+                SET row_data = (row_data - $2::text) || jsonb_build_object($3::text, row_data -> $2::text)
+              WHERE sheet_id = $1
+                AND row_data ? $2::text`,
+            [record.sheet_id, sourceHeader, targetHeader]
+        );
+
+        const profileSampleRows = await loadHeaderRepairSampleRows(client, record.sheet_id, effectiveTab, 300);
+        const rules = await loadSemanticProfileRules();
+        const rebuiltProfile = buildSheetSemanticProfile({
+            headers: nextHeaders,
+            sampleRows: profileSampleRows,
+            previousProfile: record.semantic_profile || {},
+            rules,
+        });
+        const learnedProfile = mergeSheetSemanticProfileLearning(rebuiltProfile, {
+            defaults: defaultsForHeaderRepairTarget(targetHeader),
+            notes: `Header repair renamed "${sourceHeader}" to required header "${targetHeader}".`,
+        });
+        const compatibility = evaluateAiChatCompatibilityForImport({
+            semanticProfile: learnedProfile,
+            sampleRows: profileSampleRows,
+        });
+        const missing = normalizeCompatibilityMissingReasons(compatibility?.missing || []);
+        const approvalReady = compatibility.ready || canApproveWithMaskedDlp({
+            semanticProfile: learnedProfile,
+            compatibility,
+        });
+        const finalProfile = {
+            ...learnedProfile,
+            learned: {
+                ...(learnedProfile.learned || {}),
+                ai_chat_compatibility: {
+                    ready: !!compatibility?.ready,
+                    approval_ready: !!approvalReady,
+                    missing,
+                    checked_at: new Date().toISOString(),
+                },
+            },
+        };
+
+        await client.query(
+            `UPDATE sheets
+                SET headers = $2::jsonb,
+                    semantic_profile = $3::jsonb,
+                    semantic_profile_updated_at = CURRENT_TIMESTAMP
+              WHERE id = $1`,
+            [record.sheet_id, JSON.stringify(nextHeaders), JSON.stringify(finalProfile)]
+        );
+
+        await client.query("COMMIT");
+
+        try {
+            await writeAuditLog({
+                req,
+                action: "import.header_renamed",
+                resourceType: "report_source_import",
+                resourceId: importId,
+                metadata: {
+                    report_source_id: record.report_source_id,
+                    sheet_id: record.sheet_id,
+                    source_header: sourceHeader,
+                    target_header: targetHeader,
+                    compatibility_ready: !!approvalReady,
+                },
+            });
+        } catch (auditErr) {
+            console.warn("[audit] import.header_renamed failed:", auditErr?.message || auditErr);
+        }
+
+        const previewRowsWithMeta = await loadHeaderRepairSampleRows(client, record.sheet_id, effectiveTab, previewLimit, { includeRowIndex: true });
+        const previewRows = previewRowsWithMeta.map((entry) => entry.rowData || {});
+        const previewRowIndexes = previewRowsWithMeta.map((entry) => Number(entry.rowIndex));
+        const totalRows = await loadHeaderRepairRowCount(client, record.sheet_id, effectiveTab);
+        const tabStatuses = await buildHeaderRepairTabStatuses(client, {
+            sheetId: record.sheet_id,
+            tabs,
+            semanticProfile: finalProfile,
+        });
+
+        return res.json({
+            success: true,
+            import_id: importId,
+            sheet_id: record.sheet_id,
+            status: String(record.status || "").toLowerCase(),
+            source_header: sourceHeader,
+            target_header: targetHeader,
+            tab_name: effectiveTab,
+            tabs,
+            tab_statuses: tabStatuses,
+            headers: nextHeaders,
+            sample_rows: previewRows,
+            sample_row_indexes: previewRowIndexes,
+            preview_row_count: totalRows,
+            preview_limit: previewLimit,
+            has_more_rows: totalRows > previewRows.length,
+            compatibility: {
+                ready: !!compatibility?.ready,
+                approval_ready: !!approvalReady,
+                missing,
+            },
+            repair_targets: buildHeaderRepairTargets(missing),
+        });
+    } catch (err) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw err;
+    } finally {
+        client.release();
+    }
+}
+
 export async function publishReportSourceImport(req, res) {
     const importId = Number.parseInt(req.params.id, 10);
     if (!Number.isInteger(importId) || importId <= 0) {
@@ -3726,8 +4411,14 @@ export async function publishReportSourceImport(req, res) {
                     semanticProfile: sheet.semantic_profile || {},
                     sampleRows,
                 });
-                const normalizedReasons = normalizeCompatibilityMissingReasons(compatibility?.missing || []);
-                const approvalReady = compatibility.ready || canApproveWithMaskedDlp({ semanticProfile: sheet.semantic_profile || {}, compatibility });
+                const canonicalMissing = evaluateCanonicalPublishHeaderMissing(normalizeStoredHeaders(sheet.headers));
+                const combinedMissing = mergeCompatibilityMissingReasons(compatibility?.missing || [], canonicalMissing);
+                const combinedCompatibility = {
+                    ready: combinedMissing.length === 0,
+                    missing: combinedMissing,
+                };
+                const normalizedReasons = normalizeCompatibilityMissingReasons(combinedCompatibility.missing || []);
+                const approvalReady = combinedCompatibility.ready || canApproveWithMaskedDlp({ semanticProfile: sheet.semantic_profile || {}, compatibility: combinedCompatibility });
                 if (!approvalReady) {
                     await client.query("ROLLBACK");
                     return res.status(422).json({

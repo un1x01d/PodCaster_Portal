@@ -56,3 +56,18 @@ test("sheet data cursor pagination adds predicate before ordering and uses actua
   assert.match(source, /JSON\.stringify\(\{ rowIndex: lastRowIndex \}\)/);
   assert.doesNotMatch(source, /decodedCursor\?\.rowIndex \|\| 0\) \+ items\.length/);
 });
+
+test("pending import header repair requires explicit confirmation and rewrites stored row keys", () => {
+  const source = read("src/controllers/sheetController.js");
+  const routes = read("src/routes/sheetRoutes.js");
+
+  assert.match(routes, /\/report-source-imports\/:id\/header-repair-preview/);
+  assert.match(routes, /\/report-source-imports\/:id\/header-rename/);
+  assert.match(source, /req\.body\?\.confirm !== true/);
+  assert.match(source, /confirmation_required/);
+  assert.match(source, /HEADER_REPAIR_ALLOWED_TARGETS\.has\(targetHeader\)/);
+  assert.match(source, /unsupported_required_header/);
+  assert.match(source, /row_data = \(row_data - \$2::text\) \|\| jsonb_build_object\(\$3::text, row_data -> \$2::text\)/);
+  assert.match(source, /semantic_profile_updated_at = CURRENT_TIMESTAMP/);
+  assert.match(source, /evaluateAiChatCompatibilityForImport/);
+});
