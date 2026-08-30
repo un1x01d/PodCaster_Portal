@@ -3,7 +3,7 @@ import api from "../api";
 
 const DASHBOARD_COPY_CACHE = new Map();
 const DASHBOARD_COPY_IN_FLIGHT = new Map();
-const DASHBOARD_COPY_STORAGE_PREFIX = "dashboardCopy:v2:";
+const DASHBOARD_COPY_STORAGE_PREFIX = "dashboardCopy:v3:";
 
 export const DASHBOARD_COPY_EN = {
   portalTitle: "TFORN Insights",

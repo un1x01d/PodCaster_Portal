@@ -95,6 +95,83 @@ export function extractOpenAiAssistantText(payload) {
   return parts.join("").trim();
 }
 
+function extractBalancedJsonSlice(text = "") {
+  const source = String(text || "");
+  for (let start = 0; start < source.length; start += 1) {
+    const open = source[start];
+    if (open !== "{" && open !== "[") continue;
+    const close = open === "{" ? "}" : "]";
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < source.length; i += 1) {
+      const ch = source[i];
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (ch === "\"") {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+      if (ch === open) depth += 1;
+      if (ch === close) {
+        depth -= 1;
+        if (depth === 0) {
+          return source.slice(start, i + 1);
+        }
+      }
+    }
+  }
+  return "";
+}
+
+function extractCodeFenceCandidates(text = "") {
+  const source = String(text || "");
+  const candidates = [];
+  const fencePattern = /```(?:json)?\s*([\s\S]*?)```/gi;
+  let match = null;
+  while ((match = fencePattern.exec(source)) !== null) {
+    const body = String(match[1] || "").trim();
+    if (body) candidates.push(body);
+  }
+  return candidates;
+}
+
+function tryParseJson(value) {
+  const source = String(value || "").trim();
+  if (!source) return null;
+  try {
+    return JSON.parse(source);
+  } catch {
+    return null;
+  }
+}
+
+export function parseOpenAiAssistantJson(rawText) {
+  const source = String(rawText || "").trim();
+  if (!source) return null;
+  const direct = tryParseJson(source);
+  if (direct !== null) return direct;
+  const fenceCandidates = extractCodeFenceCandidates(source);
+  for (const candidate of fenceCandidates) {
+    const parsed = tryParseJson(candidate);
+    if (parsed !== null) return parsed;
+    const balanced = extractBalancedJsonSlice(candidate);
+    if (!balanced) continue;
+    const parsedBalanced = tryParseJson(balanced);
+    if (parsedBalanced !== null) return parsedBalanced;
+  }
+  const balanced = extractBalancedJsonSlice(source);
+  if (!balanced) return null;
+  return tryParseJson(balanced);
+}
+
 export function getOpenAiResponseDiagnostics(payload) {
   const choice = payload?.choices?.[0];
   const message = choice?.message;

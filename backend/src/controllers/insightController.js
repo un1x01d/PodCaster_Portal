@@ -6,7 +6,7 @@ import { synthesizeChatAudioBuffer } from "./chatController.js";
 import { resolveAiGroupIdForSheet } from "../utils/aiQuota.js";
 import { isAiGloballyDisabled, loadAiRuntimeSettings, loadEffectiveAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
 import { resolveChatCompletionProviderConfig } from "../utils/llmProvider.js";
-import { buildChatCompletionRequestBody, extractOpenAiAssistantText, minCompletionTokensForModel } from "../utils/openAiCompat.js";
+import { buildChatCompletionRequestBody, extractOpenAiAssistantText, minCompletionTokensForModel, parseOpenAiAssistantJson } from "../utils/openAiCompat.js";
 import { enforceAiPromptBudget } from "../utils/aiBudget.js";
 import { buildRowFilterWhereClause } from "../utils/rowFilters.js";
 
@@ -251,6 +251,16 @@ function parseNum(v) {
   return negativeByParens ? -Math.abs(n) : n;
 }
 
+function parseJsonOrFallback(value, fallback) {
+  if (value === null || value === undefined || value === "") return fallback;
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
 function toLocalDateFromExcelSerial(serial) {
   if (!Number.isFinite(serial)) return null;
   const ms = (serial - 25569) * 86400 * 1000;
@@ -455,7 +465,7 @@ async function callInsightRag({ metricCol, dateCol, categoryCol, series, categor
     const json = await resp.json();
     const raw = extractOpenAiAssistantText(json);
     if (!raw) return null;
-    const parsed = JSON.parse(raw);
+    const parsed = parseOpenAiAssistantJson(raw);
     if (!Array.isArray(parsed?.forecast_periods) || !Array.isArray(parsed?.recommendations)) return null;
     return parsed;
   } catch (_) {
@@ -594,7 +604,7 @@ async function loadAccessibleRows(sheetId, user) {
       sourceVersion: null,
     };
   }
-  const headers = Array.isArray(sheet[0].headers) ? sheet[0].headers : JSON.parse(sheet[0].headers || "[]");
+  const headers = Array.isArray(sheet[0].headers) ? sheet[0].headers : parseJsonOrFallback(sheet[0].headers, []);
   const reportSourceId = sheet[0].report_source_id || null;
   const sourceVersion = Number.isFinite(Number(sheet[0].source_version)) ? Number(sheet[0].source_version) : null;
   let visibleHeaders = headers;
@@ -669,7 +679,10 @@ async function loadAccessibleRows(sheetId, user) {
     return { headers: visibleHeaders, rows: [], tooLarge: true, forbidden: false, reportSourceId, sourceVersion };
   }
 
-  const rows = allRows.map((r) => (typeof r.row_data === "string" ? JSON.parse(r.row_data) : r.row_data));
+  const rows = allRows.map((r) => {
+    const parsedRow = typeof r.row_data === "string" ? parseJsonOrFallback(r.row_data, {}) : r.row_data;
+    return parsedRow && typeof parsedRow === "object" && !Array.isArray(parsedRow) ? parsedRow : {};
+  });
   return { headers: visibleHeaders, rows, tooLarge: false, forbidden: false, reportSourceId, sourceVersion };
 }
 

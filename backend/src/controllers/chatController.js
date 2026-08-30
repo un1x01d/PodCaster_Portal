@@ -18,6 +18,7 @@ const OPENAI_AUDIO_BASE_URL = (process.env.OPENAI_AUDIO_BASE_URL || OPENAI_BASE_
 const OPENAI_AUDIO_DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "60000", 10);
 const CHAT_AUDIO_MAX_CHARS = Number.parseInt(process.env.CHAT_AUDIO_MAX_CHARS || "8000", 10);
+const OPENAI_TTS_INPUT_MAX_CHARS = Number.parseInt(process.env.OPENAI_TTS_INPUT_MAX_CHARS || "4096", 10);
 const CHAT_TTS_SETTINGS_KEY = "chat_tts_settings";
 
 function aiError(code, details = {}) {
@@ -27,70 +28,18 @@ function aiError(code, details = {}) {
 function normalizeTtsInput(text = "", locale = "en") {
   let speechText = String(text || "").replace(/\*/g, "");
   const lang = (locale || "en").split("-")[0].toLowerCase();
-  const englishNames = lang === "uk" ? extractEnglishFullNames(speechText) : [];
   let cleanedText = naturalizeNumbersForTTS(speechText, locale);
   if (lang === "uk" || lang === "ru") {
     cleanedText = expandFinancialTextPhonetically(cleanedText, lang);
-    // Keep English names/terms in Latin for Ukrainian so they are spoken with English pronunciation.
-    if (lang === "ru") cleanedText = transliterateLatinForSlavicTts(cleanedText, lang);
-  }
-  if (lang === "uk" && englishNames.length) {
-    cleanedText = `${cleanedText}\nEnglish names: ${englishNames.join(", ")}.`;
   }
   return cleanedText;
 }
 
-function extractEnglishFullNames(text = "") {
-  const src = String(text || "");
-  if (!src) return [];
-  const matches = src.match(/\b[A-Z][a-z]+(?:[-'][A-Z][a-z]+)?\s+[A-Z][a-z]+(?:[-'][A-Z][a-z]+)?\b/g) || [];
-  const seen = new Set();
-  const out = [];
-  for (const m of matches) {
-    const name = String(m || "").trim();
-    if (!name) continue;
-    const key = name.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(name);
-    if (out.length >= 12) break;
-  }
-  return out;
-}
-
-function transliterateLatinForSlavicTts(text = "", lang = "ru") {
-  const mapRu = {
-    shch: "щ", yo: "ё", zh: "ж", kh: "х", ts: "ц", ch: "ч", sh: "ш", yu: "ю", ya: "я",
-    a: "а", b: "б", c: "к", d: "д", e: "е", f: "ф", g: "г", h: "х", i: "и", j: "дж",
-    k: "к", l: "л", m: "м", n: "н", o: "о", p: "п", q: "к", r: "р", s: "с", t: "т",
-    u: "у", v: "в", w: "в", x: "кс", y: "й", z: "з",
-  };
-  const mapUk = {
-    shch: "щ", yo: "йо", zh: "ж", kh: "х", ts: "ц", ch: "ч", sh: "ш", yu: "ю", ya: "я",
-    a: "а", b: "б", c: "к", d: "д", e: "е", f: "ф", g: "г", h: "г", i: "і", j: "дж",
-    k: "к", l: "л", m: "м", n: "н", o: "о", p: "п", q: "к", r: "р", s: "с", t: "т",
-    u: "у", v: "в", w: "в", x: "кс", y: "и", z: "з",
-  };
-  const map = lang === "uk" ? mapUk : mapRu;
-
-  const translitWord = (word) => {
-    let out = "";
-    const src = String(word || "").toLowerCase();
-    let i = 0;
-    while (i < src.length) {
-      const four = src.slice(i, i + 4);
-      const three = src.slice(i, i + 3);
-      const two = src.slice(i, i + 2);
-      if (map[four]) { out += map[four]; i += 4; continue; }
-      if (map[three]) { out += map[three]; i += 3; continue; }
-      if (map[two]) { out += map[two]; i += 2; continue; }
-      out += map[src[i]] || src[i];
-      i += 1;
-    }
-    return out;
-  };
-
-  return String(text || "").replace(/\b[A-Za-z][A-Za-z0-9&.'’-]*\b/g, (w) => translitWord(w));
+function clampTtsInputLength(text = "", maxChars = OPENAI_TTS_INPUT_MAX_CHARS) {
+  const source = String(text || "");
+  const cap = Number.isFinite(Number(maxChars)) && Number(maxChars) > 0 ? Number(maxChars) : 4096;
+  if (source.length <= cap) return source;
+  return source.slice(0, cap).trimEnd();
 }
 
 function expandLargeIntForEnglishSpeech(rawDigits = "") {
@@ -197,10 +146,6 @@ function naturalizeNumbersForTTS(text = "", locale = "en") {
     // Drop decimal tails in spoken output for non-percent numbers.
     out = out.replace(/(\d[\d,\s]*)[.,]\d{1,2}\b(?!\s*відсот)/g, "$1");
     out = out.replace(/\bvs\b/gi, "проти");
-    out = out.replace(/\bNet Income\b/gi, "Прибуток");
-    out = out.replace(/\bNet Revenue\b/gi, "Чистий виторг");
-    out = out.replace(/\bRevenue\b/gi, "Виторг");
-    out = out.replace(/\btab\b/gi, "вкладка");
     out = out.replace(/\$([\d,.\s]+)\b/g, "$1 доларів");
   } else if (lang === "ru") {
     // Normalize year ranges so both years are spoken as years, not digits.
@@ -234,10 +179,6 @@ function naturalizeNumbersForTTS(text = "", locale = "en") {
     // Drop decimal tails in spoken output for non-percent numbers.
     out = out.replace(/(\d[\d,\s]*)[.,]\d{1,2}\b(?!\s*процент)/g, "$1");
     out = out.replace(/\bvs\b/gi, "против");
-    out = out.replace(/\bNet Income\b/gi, "Чистая прибыль");
-    out = out.replace(/\bNet Revenue\b/gi, "Чистая выручка");
-    out = out.replace(/\bRevenue\b/gi, "Выручка");
-    out = out.replace(/\btab\b/gi, "вкладка");
     out = out.replace(/\$([\d,.\s]+)\b/g, "$1 долларов");
   } else {
     // English defaults
@@ -564,7 +505,8 @@ async function synthesizeAudioBufferInternal({ text, locale, runtime = null }) {
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), Number(runtime?.openaiTimeoutMs || OPENAI_TIMEOUT_MS));
-  const ttsPayload = { model, input: normalizeTtsInput(text, locale), voice, speed };
+  const ttsInput = clampTtsInputLength(normalizeTtsInput(text, locale), OPENAI_TTS_INPUT_MAX_CHARS);
+  const ttsPayload = { model, input: ttsInput, voice, speed };
 
   const requestTtsOnce = async (baseUrl) => {
     const response = await fetch(`${String(baseUrl || OPENAI_AUDIO_DEFAULT_BASE_URL).replace(/\/+$/, "")}/audio/speech`, {
@@ -652,7 +594,8 @@ async function synthesizeAudioStreamInternal({ text, locale, runtime = null }) {
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), Number(runtime?.openaiTimeoutMs || OPENAI_TIMEOUT_MS));
-  const ttsPayload = { model, input: normalizeTtsInput(text, locale), voice, speed };
+  const ttsInput = clampTtsInputLength(normalizeTtsInput(text, locale), OPENAI_TTS_INPUT_MAX_CHARS);
+  const ttsPayload = { model, input: ttsInput, voice, speed };
 
   const requestTtsOnce = async (baseUrl) => {
     const response = await fetch(`${String(baseUrl || OPENAI_AUDIO_DEFAULT_BASE_URL).replace(/\/+$/, "")}/audio/speech`, {

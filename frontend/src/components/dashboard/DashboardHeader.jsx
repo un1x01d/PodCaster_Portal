@@ -1,5 +1,5 @@
 import React from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import axios from "axios";
 import { DASHBOARD_COPY_EN, DASHBOARD_LANGUAGES, normalizeDashboardLocale } from "../../hooks/useDashboardI18n";
 import SourceProviderIcon from "../common/SourceProviderIcon";
@@ -9,6 +9,7 @@ import { buildSourceImports, resolveFileLabel } from "../../utils/reportSelector
 export default function DashboardHeader({
     user,
     onLogout,
+    onOpenWorkspaceDashboard,
     apiBase,
     token,
     myFiles,
@@ -26,7 +27,8 @@ export default function DashboardHeader({
     supportedLanguages = DASHBOARD_LANGUAGES,
 }) {
     const location = useLocation();
-    const isDashboardRoute = location.pathname === "/";
+    const navigate = useNavigate();
+    const isWorkspaceDashboardRoute = location.pathname === "/workspace";
     const ui = copy || DASHBOARD_COPY_EN;
     const effectiveLocale = normalizeDashboardLocale(locale) || "en";
     const [languageMenuOpen, setLanguageMenuOpen] = React.useState(false);
@@ -163,6 +165,8 @@ export default function DashboardHeader({
     const selectSheet = (id, label) => {
         if (!id) return;
         onSwitchSheet(id, label);
+        if (typeof onOpenWorkspaceDashboard === "function") onOpenWorkspaceDashboard();
+        if (location.pathname !== "/workspace") navigate("/workspace");
         setSourcePickerOpen(false);
     };
     const deleteImportRevision = React.useCallback(async (item) => {
@@ -223,32 +227,51 @@ export default function DashboardHeader({
             <div className="flex items-center justify-end gap-3 lg:gap-4">
                 <div className="hidden h-8 w-px bg-slate-200/80 lg:block"></div>
 
-                    <div className="hidden md:block w-full max-w-[420px]">
-                        <ReportVersionPicker
-                            pickerRef={sourcePickerRef}
-                            isOpen={sourcePickerOpen}
-                            setIsOpen={setSourcePickerOpen}
-                            query={sourceQuery}
-                            setQuery={setSourceQuery}
-                            expandedSources={expandedSources}
-                            setExpandedSources={setExpandedSources}
-                            fileVersionMenuKey={fileVersionMenuKey}
-                            setFileVersionMenuKey={setFileVersionMenuKey}
-                            sources={visibleSources}
-                            getSourceImports={getSourceImports}
-                            selectedSheetId={sheetId}
-                            selectedPickerLabel={selectedPickerLabel}
-                            onSelectSheet={selectSheet}
-                            canManageImports={canManageImports}
-                            deleteImportBusyId={deleteImportBusyId}
-                            deleteSourceBusyId={deleteSourceBusyId}
-                            onDeleteImportRevision={deleteImportRevision}
-                            onDeleteSource={deleteSourceLabel}
-                            revisionMenuAlign="top"
-                            embedRevisionMenu={true}
-                            buttonClassName="w-full h-8 px-2.5 rounded-lg border border-slate-300 bg-white text-slate-900 text-[11px] font-bold shadow-sm hover:border-slate-400 transition-all flex items-center justify-between gap-2 overflow-hidden"
-                            panelClassName="absolute left-0 mt-1 w-[min(620px,calc(100vw-2rem))] rounded-xl border border-slate-200 bg-white shadow-2xl z-50 p-2"
-                        />
+                    <div className="hidden md:block w-full max-w-[560px]">
+                        <div className="flex items-center gap-2">
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    if (typeof onOpenWorkspaceDashboard === "function") onOpenWorkspaceDashboard();
+                                    if (!isWorkspaceDashboardRoute) navigate("/workspace");
+                                }}
+                                className={`inline-flex h-8 shrink-0 items-center rounded-lg border px-3 text-[11px] font-black tracking-wide transition-all ${
+                                    isWorkspaceDashboardRoute
+                                        ? "border-slate-800 bg-slate-950 text-white shadow-sm"
+                                        : "border-slate-800 bg-blue-900 text-white hover:border-blue-800 hover:bg-blue-800"
+                                }`}
+                                title="Dashboard"
+                            >
+                                Dashboard
+                            </button>
+                            <div className="min-w-0 flex-1">
+                                <ReportVersionPicker
+                                    pickerRef={sourcePickerRef}
+                                    isOpen={sourcePickerOpen}
+                                    setIsOpen={setSourcePickerOpen}
+                                    query={sourceQuery}
+                                    setQuery={setSourceQuery}
+                                    expandedSources={expandedSources}
+                                    setExpandedSources={setExpandedSources}
+                                    fileVersionMenuKey={fileVersionMenuKey}
+                                    setFileVersionMenuKey={setFileVersionMenuKey}
+                                    sources={visibleSources}
+                                    getSourceImports={getSourceImports}
+                                    selectedSheetId={sheetId}
+                                    selectedPickerLabel={selectedPickerLabel}
+                                    onSelectSheet={selectSheet}
+                                    canManageImports={canManageImports}
+                                    deleteImportBusyId={deleteImportBusyId}
+                                    deleteSourceBusyId={deleteSourceBusyId}
+                                    onDeleteImportRevision={deleteImportRevision}
+                                    onDeleteSource={deleteSourceLabel}
+                                    revisionMenuAlign="top"
+                                    embedRevisionMenu={true}
+                                    buttonClassName="w-full h-8 px-2.5 rounded-lg border border-slate-300 bg-white text-slate-900 text-[11px] font-bold shadow-sm hover:border-slate-400 transition-all flex items-center justify-between gap-2 overflow-hidden"
+                                    panelClassName="absolute left-0 mt-1 w-[min(620px,calc(100vw-2rem))] rounded-xl border border-slate-200 bg-white shadow-2xl z-50 p-2"
+                                />
+                            </div>
+                        </div>
                     </div>
                     <div className="hidden lg:flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50/90 px-2.5 py-1.5">
                         <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[9px] font-black uppercase tracking-wider ${trustMeta.statusClass}`}>

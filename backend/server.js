@@ -181,6 +181,9 @@ app.use((err, req, res, next) => {
   if (err?.message === "unsupported_file_type") {
     return res.status(415).json({ error: "unsupported_file_type" });
   }
+  if (err?.type === "entity.parse.failed" || (err instanceof SyntaxError && /json/i.test(String(err?.message || "")))) {
+    return res.status(400).json({ error: "invalid_json_payload" });
+  }
   if (err?.code === "LIMIT_FILE_SIZE") {
     return res.status(413).json({ error: "file_too_large", maxMB: 100 });
   }

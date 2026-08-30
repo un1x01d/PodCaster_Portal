@@ -5,6 +5,7 @@ import DashboardHeader from "../dashboard/DashboardHeader";
 export default function AuthenticatedAppHeader({
   user,
   onLogout,
+  onOpenWorkspaceDashboard,
   apiBase,
   token,
   myFiles,
@@ -29,6 +30,7 @@ export default function AuthenticatedAppHeader({
     <DashboardHeader
       user={user}
       onLogout={onLogout}
+      onOpenWorkspaceDashboard={onOpenWorkspaceDashboard}
       apiBase={apiBase}
       token={token}
       myFiles={myFiles}

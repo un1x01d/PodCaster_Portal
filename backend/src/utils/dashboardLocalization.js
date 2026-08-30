@@ -1,11 +1,12 @@
 import { isAiGloballyDisabled, loadAiRuntimeSettings } from "./aiRuntimeSettings.js";
 import { resolveChatCompletionProviderConfig } from "./llmProvider.js";
-import { buildChatCompletionRequestBody, extractOpenAiAssistantText, minCompletionTokensForModel } from "./openAiCompat.js";
+import { buildChatCompletionRequestBody, extractOpenAiAssistantText, minCompletionTokensForModel, parseOpenAiAssistantJson } from "./openAiCompat.js";
 const OPENAI_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "25000", 10);
 const TRANSLATION_CACHE = new Map();
 const TRANSLATION_IN_FLIGHT = new Map();
 const TRANSLATION_CACHE_TTL_MS = Number.parseInt(process.env.TRANSLATION_CACHE_TTL_MS || `${60 * 60 * 1000}`, 10);
 const TRANSLATION_CACHE_MAX_ENTRIES = Number.parseInt(process.env.TRANSLATION_CACHE_MAX_ENTRIES || "500", 10);
+const TRANSLATION_BATCH_MAX_ITEMS = Number.parseInt(process.env.DASHBOARD_TRANSLATION_BATCH_MAX_ITEMS || "24", 10);
 
 const LANGUAGE_LABELS = {
   en: "English",
@@ -148,7 +149,7 @@ function setCachedTranslation(cacheKey, value) {
   }
 }
 
-async function callOpenAITranslation({ locale, items, context }) {
+async function callOpenAITranslation({ locale, items, context, runtime = null }) {
   if (!Array.isArray(items)) return [];
   if (!items.length || isEnglishLocale(locale)) {
     return items.map((item) => ({ key: item.key, text: item.text }));
@@ -160,104 +161,127 @@ async function callOpenAITranslation({ locale, items, context }) {
   const inFlight = TRANSLATION_IN_FLIGHT.get(cacheKey);
   if (inFlight) return inFlight.then((result) => result.map((item) => ({ ...item })));
 
-  const runtime = await loadAiRuntimeSettings(null);
-  if (isAiGloballyDisabled(runtime)) {
+  const effectiveRuntime = runtime && typeof runtime === "object"
+    ? runtime
+    : await loadAiRuntimeSettings(null);
+  if (isAiGloballyDisabled(effectiveRuntime)) {
     return items.map((item) => ({ key: item.key, text: item.text }));
   }
-  if (runtime?.dashboardTranslationEnabled !== true) {
+  if (effectiveRuntime?.dashboardTranslationEnabled !== true) {
     return items.map((item) => ({ key: item.key, text: item.text }));
   }
-  const { provider, model, baseUrl, apiKey } = resolveChatCompletionProviderConfig(runtime, runtime?.translationOpenaiModel);
+  const { provider, model, baseUrl, apiKey } = resolveChatCompletionProviderConfig(effectiveRuntime, effectiveRuntime?.translationOpenaiModel);
   if (!apiKey) {
     return items.map((item) => ({ key: item.key, text: item.text }));
   }
-  const timeoutMs = Number(runtime?.openaiTimeoutMs || OPENAI_TIMEOUT_MS);
-  const temperature = Number(runtime?.translationTemperature);
-  const maxOutputTokens = Number(runtime?.translationMaxOutputTokens);
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  const promise = (async () => {
-    const targetLanguage = getLanguageLabel(locale);
-    const preparedItems = items.map((item) => {
-      const placeholderTerms = String(item.text ?? "").match(/\{[^{}]+\}/g) || [];
-      const protectedTerms = [
-        ...(Array.isArray(item.preserveTerms) ? item.preserveTerms : []),
-        ...placeholderTerms,
-      ];
-      const protectedResult = protectTerms(item.text, protectedTerms);
-      return {
-        key: String(item.key),
-        text: protectedResult.text,
-        placeholders: protectedResult.placeholders,
-      };
-    });
+  const timeoutMs = Number(effectiveRuntime?.openaiTimeoutMs || OPENAI_TIMEOUT_MS);
+  const temperature = Number(effectiveRuntime?.translationTemperature);
+  const maxOutputTokens = Number(effectiveRuntime?.translationMaxOutputTokens);
+  const batchSize = Math.max(1, Math.min(50, Number.parseInt(String(effectiveRuntime?.dashboardTranslateBatchMaxItems || TRANSLATION_BATCH_MAX_ITEMS), 10) || TRANSLATION_BATCH_MAX_ITEMS));
 
-    const payload = {
-      locale: normalizeLocale(locale),
-      target_language: targetLanguage,
-      context,
-      items: preparedItems.map(({ key, text }) => ({ key, text })),
-      instructions: [
-        `Translate each text into ${targetLanguage}.`,
-        "Return valid JSON only.",
-        "Preserve the key names exactly.",
-        "Preserve placeholders, tokens, numbers, percentages, currency values, and dates exactly as written.",
-        "Do not translate text wrapped in tokens such as __KEEP_*__.",
-        "Keep line breaks and bullet structure intact.",
-        "Do not add explanations.",
-      ],
-      output_schema: {
-        translations: [{ key: "string", text: "string" }],
-      },
-    };
+  async function translateBatch(batchItems) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const targetLanguage = getLanguageLabel(locale);
+      const preparedItems = batchItems.map((item) => {
+        const placeholderTerms = String(item.text ?? "").match(/\{[^{}]+\}/g) || [];
+        const protectedTerms = [
+          ...(Array.isArray(item.preserveTerms) ? item.preserveTerms : []),
+          ...placeholderTerms,
+        ];
+        const protectedResult = protectTerms(item.text, protectedTerms);
+        return {
+          key: String(item.key),
+          text: protectedResult.text,
+          placeholders: protectedResult.placeholders,
+        };
+      });
 
-    const requestBody = buildChatCompletionRequestBody({
-      provider,
-      model,
-      maxCompletionTokens: minCompletionTokensForModel(model, maxOutputTokens, 512, 512),
-      responseFormat: { type: "json_object" },
-      temperature: Number.isFinite(temperature) ? temperature : 0,
-      messages: [
-        {
-          role: "system",
-          content: [
-            "You are a precise translation engine for dashboard UI copy.",
-            "Return only JSON.",
-            "Preserve all provided tokens, placeholders, and values exactly.",
-          ].join(" "),
+      const payload = {
+        locale: normalizeLocale(locale),
+        target_language: targetLanguage,
+        context,
+        items: preparedItems.map(({ key, text }) => ({ key, text })),
+        instructions: [
+          `Translate each text into ${targetLanguage}.`,
+          "Return valid JSON only.",
+          "Preserve the key names exactly.",
+          "Preserve placeholders, tokens, numbers, percentages, currency values, and dates exactly as written.",
+          "Do not translate text wrapped in tokens such as __KEEP_*__.",
+          "Keep line breaks and bullet structure intact.",
+          "Do not add explanations.",
+        ],
+        output_schema: {
+          translations: [{ key: "string", text: "string" }],
         },
-        { role: "user", content: JSON.stringify(payload) },
-      ],
-    });
+      };
 
-    const resp = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(requestBody),
-    });
+      const requestBody = buildChatCompletionRequestBody({
+        provider,
+        model,
+        maxCompletionTokens: minCompletionTokensForModel(model, maxOutputTokens, 768, 768),
+        responseFormat: { type: "json_object" },
+        temperature: Number.isFinite(temperature) ? temperature : 0,
+        messages: [
+          {
+            role: "system",
+            content: [
+              "You are a precise translation engine for dashboard UI copy.",
+              "Return only JSON.",
+              "Preserve all provided tokens, placeholders, and values exactly.",
+            ].join(" "),
+          },
+          { role: "user", content: JSON.stringify(payload) },
+        ],
+      });
 
-    if (!resp.ok) {
-      const body = await resp.text();
-      throw new Error(`openai_error_${resp.status}: ${body.slice(0, 400)}`);
+      const resp = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+      });
+
+      if (!resp.ok) {
+        const body = await resp.text();
+        throw new Error(`openai_error_${resp.status}: ${body.slice(0, 400)}`);
+      }
+
+      const json = await resp.json();
+      const content = extractOpenAiAssistantText(json) || "{}";
+      const parsed = parseOpenAiAssistantJson(content);
+      if (!parsed || typeof parsed !== "object") {
+        throw new Error("translation_invalid_json");
+      }
+      const translated = new Map(
+        Array.isArray(parsed?.translations)
+          ? parsed.translations.map((item) => [String(item?.key ?? ""), String(item?.text ?? "")])
+          : []
+      );
+
+      return preparedItems.map((item) => ({
+        key: item.key,
+        text: restoreTerms(translated.get(item.key) || item.text, item.placeholders),
+      }));
+    } finally {
+      clearTimeout(timeout);
     }
+  }
 
-    const json = await resp.json();
-    const content = extractOpenAiAssistantText(json) || "{}";
-    const parsed = JSON.parse(content);
-    const translated = new Map(
-      Array.isArray(parsed?.translations)
-        ? parsed.translations.map((item) => [String(item?.key ?? ""), String(item?.text ?? "")])
-        : []
-    );
-
-    const result = preparedItems.map((item) => ({
-      key: item.key,
-      text: restoreTerms(translated.get(item.key) || item.text, item.placeholders),
-    }));
+  const promise = (async () => {
+    const chunks = [];
+    for (let i = 0; i < items.length; i += batchSize) {
+      chunks.push(items.slice(i, i + batchSize));
+    }
+    const translatedChunks = [];
+    for (const chunk of chunks) {
+      translatedChunks.push(await translateBatch(chunk));
+    }
+    const result = translatedChunks.flat();
     setCachedTranslation(cacheKey, result);
     return result;
   })();
@@ -269,21 +293,20 @@ async function callOpenAITranslation({ locale, items, context }) {
     console.error("dashboard translation failed:", error?.message || error);
     return items.map((item) => ({ key: item.key, text: item.text }));
   } finally {
-    clearTimeout(timeout);
     TRANSLATION_IN_FLIGHT.delete(cacheKey);
   }
 }
 
-export async function translateDashboardItems({ locale, items, context = "dashboard-ui" }) {
-  return callOpenAITranslation({ locale, items, context });
+export async function translateDashboardItems({ locale, items, context = "dashboard-ui", runtime = null }) {
+  return callOpenAITranslation({ locale, items, context, runtime });
 }
 
-export async function translateDashboardItemsWithUsage({ locale, items, context = "dashboard-ui" }) {
-  const translatedItems = await callOpenAITranslation({ locale, items, context });
+export async function translateDashboardItemsWithUsage({ locale, items, context = "dashboard-ui", runtime = null }) {
+  const translatedItems = await callOpenAITranslation({ locale, items, context, runtime });
   return { items: translatedItems, usage: null };
 }
 
-export async function translateDashboardCards({ locale, cards, preserveTerms = [], context = "dashboard-cards" }) {
+export async function translateDashboardCards({ locale, cards, preserveTerms = [], context = "dashboard-cards", runtime = null }) {
   if (!Array.isArray(cards) || !cards.length || isEnglishLocale(locale)) return cards;
   const items = [];
   cards.forEach((card) => {
@@ -301,7 +324,7 @@ export async function translateDashboardCards({ locale, cards, preserveTerms = [
     });
   });
 
-  const translated = await callOpenAITranslation({ locale, items, context });
+  const translated = await callOpenAITranslation({ locale, items, context, runtime });
   const byKey = new Map(translated.map((item) => [item.key, item.text]));
   return cards.map((card) => ({
     ...card,

@@ -2218,7 +2218,7 @@ export async function listAiLearningCandidates(req, res) {
             locale,
             LOWER(TRIM(phrase)) AS phrase,
             suggested_intent,
-            MAX(suggested_payload) AS suggested_payload,
+            (ARRAY_AGG(suggested_payload ORDER BY updated_at DESC, id DESC))[1] AS suggested_payload,
             SUM(COALESCE(evidence_count, 0))::int AS evidence_count,
             MAX(confidence) AS confidence,
             'approved'::text AS status,

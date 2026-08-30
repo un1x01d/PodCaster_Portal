@@ -5,6 +5,7 @@ import {
   extractOpenAiAssistantText,
   getOpenAiResponseDiagnostics,
   minCompletionTokensForModel,
+  parseOpenAiAssistantJson,
 } from "../src/utils/openAiCompat.js";
 
 test("GPT-5 chat completions use reasoning effort and omit temperature", () => {
@@ -79,4 +80,20 @@ test("OpenAI diagnostics include finish reason and token details for empty conte
 
   assert.match(diagnostics, /finish_reason=length/);
   assert.match(diagnostics, /reasoning_tokens=100/);
+});
+
+test("assistant JSON parser supports fenced and prefixed JSON payloads", () => {
+  assert.deepEqual(
+    parseOpenAiAssistantJson("```json\n{\"ok\":true,\"n\":1}\n```"),
+    { ok: true, n: 1 }
+  );
+  assert.deepEqual(
+    parseOpenAiAssistantJson("Result:\n{\"translations\":[{\"key\":\"k\",\"text\":\"v\"}]}"),
+    { translations: [{ key: "k", text: "v" }] }
+  );
+});
+
+test("assistant JSON parser returns null for truncated JSON payloads", () => {
+  assert.equal(parseOpenAiAssistantJson("{\"ok\":true"), null);
+  assert.equal(parseOpenAiAssistantJson("```json\n{\"a\":1"), null);
 });

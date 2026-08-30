@@ -1,7 +1,8 @@
 import { normalizeLocale, translateDashboardItemsWithUsage } from "../utils/dashboardLocalization.js";
 import { recordAiUsage, reserveAiQueryForUser } from "../utils/aiQuota.js";
 import { resolveEffectiveAiFeaturesForUser } from "../utils/aiFeatureToggles.js";
-import { isAiGloballyDisabled, loadAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
+import { isAiGloballyDisabled, loadEffectiveAiRuntimeSettings } from "../utils/aiRuntimeSettings.js";
+import { resolveRuntimeGroupIdForUser } from "../utils/authorization.js";
 
 function aiError(code, details = {}) {
   return { error: code, code, ...details };
@@ -20,15 +21,21 @@ export async function translateDashboardCopy(req, res) {
     return res.json({ locale, translations: {} });
   }
 
-  const runtime = await loadAiRuntimeSettings(null).catch(() => ({}));
-  if (isAiGloballyDisabled(runtime)) {
+  const runtimeGroupId = await resolveRuntimeGroupIdForUser(req.user);
+  const { runtime = {}, globalRuntime = {} } = await loadEffectiveAiRuntimeSettings(runtimeGroupId || null).catch(() => ({
+    runtime: {},
+    globalRuntime: {},
+  }));
+  if (isAiGloballyDisabled(globalRuntime) || isAiGloballyDisabled(runtime)) {
     return res.status(403).json(aiError("global_ai_disabled"));
   }
-  if (runtime?.dashboardTranslationEnabled !== true) {
+  const runtimeEnabled = runtime?.dashboardTranslationEnabled === true || globalRuntime?.dashboardTranslationEnabled === true;
+  if (!runtimeEnabled) {
     return res.status(403).json(aiError("ai_feature_disabled:dashboard_translation"));
   }
-  const maxItems = Number.parseInt(runtime?.dashboardTranslateMaxItems, 10) || 200;
-  const maxCharsPerItem = Number.parseInt(runtime?.dashboardTranslateMaxCharsPerItem, 10) || 500;
+  const translationRuntime = runtime?.dashboardTranslationEnabled === true ? runtime : globalRuntime;
+  const maxItems = Number.parseInt(translationRuntime?.dashboardTranslateMaxItems, 10) || 200;
+  const maxCharsPerItem = Number.parseInt(translationRuntime?.dashboardTranslateMaxCharsPerItem, 10) || 500;
   if (items.length > maxItems) {
     return res.status(413).json(aiError("dashboard_translate_too_many_items", { maxItems }));
   }
@@ -58,6 +65,7 @@ export async function translateDashboardCopy(req, res) {
     locale,
     context: "dashboard-ui",
     items: normalizedItems,
+    runtime: translationRuntime,
   });
   const translated = translatedResult?.items || [];
   const usage = translatedResult?.usage || null;

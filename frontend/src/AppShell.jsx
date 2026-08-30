@@ -1,5 +1,5 @@
 import React, { Suspense, lazy, useState, useEffect, useRef, useMemo } from "react";
-import { BrowserRouter as Router, Routes, Route, Link, Navigate, useLocation } from "react-router-dom";
+import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate } from "react-router-dom";
 import axios from "axios";
 
 import ErrorBoundary from "./ErrorBoundary";
@@ -155,6 +155,16 @@ function ScrollToHash() {
     };
     window.setTimeout(scrollToTarget, 0);
   }, [location.pathname, location.hash]);
+
+  return null;
+}
+
+function Redirect({ to, replace = false }) {
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    navigate(to, { replace });
+  }, [navigate, replace, to]);
 
   return null;
 }
@@ -2314,6 +2324,7 @@ export default function App() {
         <AuthenticatedAppHeader
           user={user}
           onLogout={handleLogout}
+          onOpenWorkspaceDashboard={() => setWorkspaceView("grid")}
           apiBase={API}
           token={token}
           myFiles={myFiles}
@@ -2396,7 +2407,7 @@ export default function App() {
                     onResendTwoFactorSms={handleResendTwoFactorSms}
                     onCancelTwoFactor={clearTwoFactorChallenge}
                   />
-                ) : <Navigate to="/workspace" replace />}
+                ) : <Redirect to="/workspace" replace />}
               </ErrorBoundary>
             } />
             <Route path="/pricing" element={<PricingPage user={user} />} />
@@ -2409,7 +2420,7 @@ export default function App() {
                     <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Loading workspace...</div>
                   </div>
                 ) : !user ? (
-                  <Navigate to="/login" replace />
+                  <Redirect to="/login" replace />
                 ) : (
                   <DashboardHome
                     user={user}
@@ -2471,7 +2482,7 @@ export default function App() {
                     <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Loading workspace...</div>
                   </div>
                 ) : !user ? (
-                  <Navigate to="/login" replace />
+                  <Redirect to="/login" replace />
                 ) : (
                   <DashboardHome
                     user={user}
@@ -2771,7 +2782,7 @@ export default function App() {
                     <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Loading workspace...</div>
                   </div>
                 ) : !user ? (
-                  <Navigate to="/login" replace />
+                  <Redirect to="/login" replace />
                 ) : (
                     <DashboardBody
                     user={user} token={token} API={API}
@@ -2885,7 +2896,7 @@ export default function App() {
                   <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Loading workspace...</div>
                 </div>
               ) : !user ? (
-                <Navigate to="/login" replace />
+                <Redirect to="/login" replace />
               ) : (user?.role === "admin" || user?.is_group_admin || user?.group_admin || user?.is_admin)
                 ? (
                   <ErrorBoundary>
