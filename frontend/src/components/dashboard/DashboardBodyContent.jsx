@@ -718,9 +718,11 @@ export default function DashboardBody(props) {
     const buildSelectionFilters = React.useCallback(() => {
         // Explicit column selection means "keep full column", not "filter rows".
         if (selectedColIndexes.size > 0) return null;
-        // Only build value filters when rows are explicitly selected.
-        // Column-only selection should create a visible-columns view without row filtering.
-        if (selectedRowIndexes.size === 0) return null;
+        // A mouse drag stores its rows in selectionBounds rather than in the
+        // explicit row set. Treat both forms as row selection so a dragged
+        // rectangle does not become a view containing every row.
+        const hasSelectedRows = selectedRowIndexes.size > 0 || !!selectionBounds;
+        if (!hasSelectedRows) return null;
         if (selectedPrimaryColumns.length === 0 || selectedPrimaryRowIndexes.length === 0) return null;
         const next = {};
         selectedPrimaryColumns.forEach((col) => {
@@ -733,7 +735,7 @@ export default function DashboardBody(props) {
             });
         }
         return next;
-    }, [sortedData, selectedPrimaryColumns, selectedPrimaryRowIndexes, selectedRowIndexes, selectedColIndexes]);
+    }, [sortedData, selectedPrimaryColumns, selectedPrimaryRowIndexes, selectedRowIndexes, selectedColIndexes, selectionBounds]);
 
     const buildSecondarySelectionFilters = React.useCallback(() => {
         if (secondarySelectedColIndexes.size > 0) return null;

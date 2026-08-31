@@ -352,8 +352,16 @@ export default function App() {
   const displayHeaders = React.useMemo(() => {
     // If no data loaded, empty
     if (!headers.length) return [];
-    return headers;
-  }, [headers]);
+    const savedColumns = Array.isArray(activeViewConfig?.visibleColumns)
+      ? activeViewConfig.visibleColumns
+      : [];
+    if (savedColumns.length === 0) return headers;
+
+    // Keep the source/header order while applying the view's column scope.
+    // Ignore stale column names so a view remains usable after a source changes.
+    const selected = new Set(savedColumns.map((column) => String(column || "").trim().toLowerCase()));
+    return headers.filter((header) => selected.has(String(header || "").trim().toLowerCase()));
+  }, [headers, activeViewConfig]);
 
   const [uniqueValuesByColumn, setUniqueValuesByColumn] = useState({});
   const uniqueValuesCacheKey = (sid, tabName, col) => (
