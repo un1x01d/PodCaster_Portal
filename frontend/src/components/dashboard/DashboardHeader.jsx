@@ -28,7 +28,7 @@ export default function DashboardHeader({
 }) {
     const location = useLocation();
     const navigate = useNavigate();
-    const isWorkspaceDashboardRoute = location.pathname === "/workspace";
+    const isDashboardRoute = location.pathname === "/workspace/files";
     const ui = copy || DASHBOARD_COPY_EN;
     const effectiveLocale = normalizeDashboardLocale(locale) || "en";
     const [languageMenuOpen, setLanguageMenuOpen] = React.useState(false);
@@ -233,10 +233,10 @@ export default function DashboardHeader({
                                 type="button"
                                 onClick={() => {
                                     if (typeof onOpenWorkspaceDashboard === "function") onOpenWorkspaceDashboard();
-                                    if (!isWorkspaceDashboardRoute) navigate("/workspace");
+                                    if (!isDashboardRoute) navigate("/workspace/files");
                                 }}
                                 className={`inline-flex h-8 shrink-0 items-center rounded-lg border px-3 text-[11px] font-black tracking-wide transition-all ${
-                                    isWorkspaceDashboardRoute
+                                    isDashboardRoute
                                         ? "border-slate-800 bg-slate-950 text-white shadow-sm"
                                         : "border-slate-800 bg-blue-900 text-white hover:border-blue-800 hover:bg-blue-800"
                                 }`}
