@@ -19,7 +19,9 @@ cd "${ROOT_DIR}"
 [[ -f "${RELEASE_ENV}" ]] || fail "release env missing: ${RELEASE_ENV}"
 [[ -n "${RELEASE_TAG:-}" ]] || fail "RELEASE_TAG is required"
 
-docker compose -f "${COMPOSE_FILE}" --env-file "${RELEASE_ENV}" ps >/tmp/tforn_insights_compose_ps.txt || fail "compose ps failed"
+COMPOSE_PS_OUTPUT="$(mktemp "${TMPDIR:-/tmp}/tforn_insights_compose_ps.XXXXXX")" || fail "could not create temporary compose status file"
+trap 'rm -f "${COMPOSE_PS_OUTPUT}"' EXIT
+docker compose -f "${COMPOSE_FILE}" --env-file "${RELEASE_ENV}" ps >"${COMPOSE_PS_OUTPUT}" || fail "compose ps failed"
 
 if ! docker compose -f "${COMPOSE_FILE}" --env-file "${RELEASE_ENV}" ps | grep -q "tforn_insights_backend"; then
   fail "backend container missing"

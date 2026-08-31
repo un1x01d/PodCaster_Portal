@@ -58,13 +58,8 @@
   }
 }
 
-.resizing-active * {
+.resizing-active iframe {
   pointer-events: none !important;
-}
-
-/* Keep critical admin actions usable if a resize ends outside the browser. */
-.resizing-active .password-reset-trigger {
-  pointer-events: auto !important;
 }
 
 .no-scrollbar {
