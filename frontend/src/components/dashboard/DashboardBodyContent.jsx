@@ -2238,51 +2238,30 @@ export default function DashboardBody(props) {
                             </button>
                             {expandedMenus.charts && (
                             <div className="left-menu-submenu">
-                                    <div
-                                        role="button"
-                                        tabIndex={0}
+                                    <button
+                                        type="button"
                                         className="left-menu-text-item left-menu-toggle-row"
-                                        onKeyDown={(event) => {
-                                            if (event.key === "Enter" || event.key === " ") {
-                                                event.preventDefault();
-                                                setWorkspacePivotOn((p) => !p);
-                                            }
-                                        }}
                                         onClick={() => setWorkspacePivotOn((p) => !p)}
                                     >
                                         <span>Pivot Table</span>
                                         <span className="left-menu-state">{pivotOn ? "ON" : "OFF"}</span>
-                                    </div>
-                                    <div
-                                        role="button"
-                                        tabIndex={0}
+                                    </button>
+                                    <button
+                                        type="button"
                                         className="left-menu-text-item left-menu-toggle-row"
-                                        onKeyDown={(event) => {
-                                            if (event.key === "Enter" || event.key === " ") {
-                                                event.preventDefault();
-                                                setWorkspaceTwoOn((p) => !p);
-                                            }
-                                        }}
                                         onClick={() => setWorkspaceTwoOn((p) => !p)}
                                     >
                                         <span>Two-Condition</span>
                                         <span className="left-menu-state">{twoOn ? "ON" : "OFF"}</span>
-                                    </div>
-                                    <div
-                                        role="button"
-                                        tabIndex={0}
+                                    </button>
+                                    <button
+                                        type="button"
                                         className="left-menu-text-item left-menu-toggle-row"
-                                        onKeyDown={(event) => {
-                                            if (event.key === "Enter" || event.key === " ") {
-                                                event.preventDefault();
-                                                setWorkspaceTrendsOn((p) => !p);
-                                            }
-                                        }}
                                         onClick={() => setWorkspaceTrendsOn((p) => !p)}
                                     >
                                         <span>Trends</span>
                                         <span className="left-menu-state">{trendsOn ? "ON" : "OFF"}</span>
-                                    </div>
+                                    </button>
                                     <details className="left-menu-disclosure">
                                         <summary className="left-menu-summary">EBITDA Calculator</summary>
                                         <div className="left-menu-nested">
@@ -2306,33 +2285,27 @@ export default function DashboardBody(props) {
                             </button>
                             {expandedMenus.export && (
                                 <div className="left-menu-submenu">
-                                    <div
-                                        role="button"
-                                        tabIndex={0}
+                                    <button
+                                        type="button"
                                         className="left-menu-text-item"
-                                        onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); exportCSV(); } }}
-                                        onClick={() => { exportCSV(); }}
+                                        onClick={exportCSV}
                                     >
                                         Export CSV (.csv)
-                                    </div>
-                                    <div
-                                        role="button"
-                                        tabIndex={0}
+                                    </button>
+                                    <button
+                                        type="button"
                                         className="left-menu-text-item"
-                                        onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); exportXLSX(); } }}
-                                        onClick={() => { exportXLSX(); }}
+                                        onClick={exportXLSX}
                                     >
                                         Export Excel (.xlsx)
-                                    </div>
-                                    <div
-                                        role="button"
-                                        tabIndex={0}
+                                    </button>
+                                    <button
+                                        type="button"
                                         className="left-menu-text-item"
-                                        onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); exportPDF(); } }}
-                                        onClick={() => { exportPDF(); }}
+                                        onClick={exportPDF}
                                     >
                                         Export PDF (.pdf)
-                                    </div>
+                                    </button>
                                 </div>
                             )}
                         </div>
