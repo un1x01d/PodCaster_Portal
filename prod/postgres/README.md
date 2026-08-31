@@ -15,17 +15,17 @@ This folder configures PostgreSQL on the VPS host (not in Docker).
 ## Quick Start
 
 1. Install PostgreSQL:
-   - `sudo PG_MAJOR=16 bash prod/postgres/scripts/install_postgres.sh`
+   - `sudo PG_MAJOR=18 bash prod/postgres/scripts/install_postgres.sh`
 2. Apply config snippets:
-   - `sudo PG_MAJOR=16 bash prod/postgres/scripts/apply_config.sh`
+   - `sudo PG_MAJOR=18 bash prod/postgres/scripts/apply_config.sh`
 3. Bootstrap app DB/user:
    - `sudo -u postgres psql -f prod/postgres/sql/bootstrap.sql`
 4. Update backend env:
-   - `DB_HOST=host.docker.internal`
-   - `DB_PORT=5432`
-   - `DB_NAME=podcaster_portal`
-   - `DB_USER=podcaster_app`
-   - `DB_PASSWORD=<your-strong-password>`
+   - `POSTGRES_HOST=host.docker.internal`
+   - `POSTGRES_PORT=5432`
+   - `POSTGRES_DB=tforn_insights_db`
+   - `POSTGRES_USER=tforn_insights`
+   - `POSTGRES_PASSWORD=<your-strong-password>`
 
 ## Backup Automation
 

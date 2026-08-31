@@ -2,8 +2,8 @@ version: "3.9"
 
 services:
   backend:
-    image: "${BACKEND_IMAGE_REPO:?BACKEND_IMAGE_REPO required}:${RELEASE_TAG:?RELEASE_TAG required}"
-    container_name: podcaster_backend
+    image: "${BACKEND_IMAGE_REPO:-tforn-insights-backend}:${RELEASE_TAG:-latest}"
+    container_name: tforn_insights_backend
     restart: unless-stopped
     env_file:
       - ./config/backend.env
@@ -12,19 +12,19 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
-      - podcaster_internal
+      - tforn_insights_internal
 
   frontend:
-    image: "${FRONTEND_IMAGE_REPO:?FRONTEND_IMAGE_REPO required}:${RELEASE_TAG:?RELEASE_TAG required}"
-    container_name: podcaster_frontend
+    image: "${FRONTEND_IMAGE_REPO:-tforn-insights-frontend}:${RELEASE_TAG:-latest}"
+    container_name: tforn_insights_frontend
     restart: unless-stopped
     env_file:
       - ./config/frontend.env
     ports:
       - "127.0.0.1:5173:5173"
     networks:
-      - podcaster_internal
+      - tforn_insights_internal
 
 networks:
-  podcaster_internal:
+  tforn_insights_internal:
     driver: bridge

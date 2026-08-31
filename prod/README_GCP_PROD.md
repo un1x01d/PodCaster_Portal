@@ -52,7 +52,7 @@ gcloud auth configure-docker "${REGION}-docker.pkg.dev"
 
 ```bash
 gcloud sql instances create "$DB_INSTANCE" \
-  --database-version=POSTGRES_15 \
+  --database-version=POSTGRES_18 \
   --cpu=2 \
   --memory=8GB \
   --region="$REGION"

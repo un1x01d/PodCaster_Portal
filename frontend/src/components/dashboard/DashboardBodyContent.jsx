@@ -515,10 +515,17 @@ export default function DashboardBody(props) {
         };
         window.addEventListener('mousemove', handleMouseMove);
         window.addEventListener('mouseup', handleMouseUp);
+        window.addEventListener('blur', handleMouseUp);
+        document.addEventListener('visibilitychange', handleMouseUp);
         return () => {
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
+            window.removeEventListener('blur', handleMouseUp);
+            document.removeEventListener('visibilitychange', handleMouseUp);
             if (animationFrameId) cancelAnimationFrame(animationFrameId);
+            document.body.classList.remove('resizing-active');
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
         };
     }, []);
 

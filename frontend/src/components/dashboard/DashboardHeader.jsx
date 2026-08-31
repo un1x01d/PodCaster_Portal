@@ -304,11 +304,7 @@ export default function DashboardHeader({
                                     const currentLang = supportedLanguages.find(l => normalizeDashboardLocale(l.code) === effectiveLocale) || supportedLanguages[0];
                                     return (
                                         <>
-                                            <img 
-                                                src={currentLang.flag} 
-                                                alt="" 
-                                                className="w-3.5 h-3.5 rounded-sm object-cover" 
-                                            />
+                                            <img src={currentLang.flag} alt="" width="14" height="14" className="block w-3.5 h-3.5 shrink-0 rounded-sm object-cover" />
                                             <span className="text-[10px] font-bold tracking-widest uppercase">{currentLang.code}</span>
                                             <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className={`opacity-40 transition-transform duration-200 ${languageMenuOpen ? 'rotate-180' : ''}`}>
                                                 <path d="m6 9 6 6 6-6"/>
@@ -337,11 +333,7 @@ export default function DashboardHeader({
                                                     }`}
                                                 >
                                                     <div className="flex items-center gap-2.5">
-                                                        <img 
-                                                            src={lang.flag} 
-                                                            alt={lang.label} 
-                                                            className="w-4 h-4 rounded-sm object-cover border border-slate-100"
-                                                        />
+                                                        <img src={lang.flag} alt={lang.label} width="16" height="16" className="block w-4 h-4 shrink-0 rounded-sm object-cover border border-slate-100" />
                                                         <span className="text-xs font-bold">{lang.label}</span>
                                                     </div>
                                                     {isActive && (

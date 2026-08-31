@@ -26,7 +26,7 @@ source "${RELEASE_ENV}"
 command -v git >/dev/null 2>&1 || fail "git is not installed"
 command -v docker >/dev/null 2>&1 || fail "docker is not installed"
 
-TMP_DIR="$(mktemp -d /tmp/podcaster-release-XXXXXX)"
+TMP_DIR="$(mktemp -d /tmp/tforn-insights-release-XXXXXX)"
 cleanup() {
   rm -rf "${TMP_DIR}" || true
 }

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BACKUP_DIR="${BACKUP_DIR:-/var/backups/podcaster-postgres}"
-DB_USER="${DB_USER:-postgres}"
-DRILL_DB="${DRILL_DB:-podcaster_portal_restore_drill}"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/tforn-insights-postgres}"
+DB_USER="${DB_USER:-tforn_insights}"
+DRILL_DB="${DRILL_DB:-tforn_insights_restore_drill}"
 
 LATEST_DUMP="$(ls -1t "${BACKUP_DIR}"/*.dump 2>/dev/null | head -n1 || true)"
 if [[ -z "${LATEST_DUMP}" ]]; then

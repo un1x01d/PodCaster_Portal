@@ -6,7 +6,7 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
-PG_MAJOR="${PG_MAJOR:-16}"
+PG_MAJOR="${PG_MAJOR:-18}"
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update

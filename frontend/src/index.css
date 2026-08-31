@@ -62,6 +62,11 @@
   pointer-events: none !important;
 }
 
+/* Keep critical admin actions usable if a resize ends outside the browser. */
+.resizing-active .password-reset-trigger {
+  pointer-events: auto !important;
+}
+
 .no-scrollbar {
     -ms-overflow-style: none;
     scrollbar-width: none;

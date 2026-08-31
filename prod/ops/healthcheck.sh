@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE_FILE="${ROOT_DIR}/prod/docker/docker-compose.prod.yml"
+RELEASE_ENV="${ROOT_DIR}/prod/docker/config/release.env"
 
 fail() {
   echo "[healthcheck] FAIL: $1" >&2
@@ -15,12 +16,15 @@ ok() {
 
 cd "${ROOT_DIR}"
 
-docker compose -f "${COMPOSE_FILE}" ps >/tmp/podcaster_compose_ps.txt || fail "compose ps failed"
+[[ -f "${RELEASE_ENV}" ]] || fail "release env missing: ${RELEASE_ENV}"
+[[ -n "${RELEASE_TAG:-}" ]] || fail "RELEASE_TAG is required"
 
-if ! docker compose -f "${COMPOSE_FILE}" ps | grep -q "podcaster_backend"; then
+docker compose -f "${COMPOSE_FILE}" --env-file "${RELEASE_ENV}" ps >/tmp/tforn_insights_compose_ps.txt || fail "compose ps failed"
+
+if ! docker compose -f "${COMPOSE_FILE}" --env-file "${RELEASE_ENV}" ps | grep -q "tforn_insights_backend"; then
   fail "backend container missing"
 fi
-if ! docker compose -f "${COMPOSE_FILE}" ps | grep -q "podcaster_frontend"; then
+if ! docker compose -f "${COMPOSE_FILE}" --env-file "${RELEASE_ENV}" ps | grep -q "tforn_insights_frontend"; then
   fail "frontend container missing"
 fi
 ok "containers are present"

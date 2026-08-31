@@ -60,6 +60,21 @@ function localizeClarificationQuestion(question = "", locale = "en") {
   return q;
 }
 
+function humanizeClarificationOption(value = "") {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const yearMatch = raw.match(/_(20\d{2})$/);
+  const year = yearMatch?.[1] || "";
+  const base = year ? raw.slice(0, -yearMatch[0].length) : raw;
+  const label = base
+    .replace(/_/g, " ")
+    .replace(/\bpnl\b/gi, "P&L")
+    .replace(/\bavg\b/gi, "Average")
+    .replace(/\byoy\b/gi, "year-over-year")
+    .replace(/\b\w/g, (ch) => ch.toUpperCase());
+  return year ? `${label} for ${year}` : label;
+}
+
 function normalizeHistory(history = []) {
   return (Array.isArray(history) ? history : [])
     .slice(-8)
@@ -187,7 +202,12 @@ export async function chatQueryV3(req, res) {
   });
 
   if (!compiledPlan?.ok && compiledPlan?.clarification_needed) {
-    const options = (compiledPlan?.clarification_options || []).map((v) => ({ value: String(v) })).filter((v) => v.value);
+    const options = (compiledPlan?.clarification_options || [])
+      .map((v) => {
+        const value = String(v || "").trim();
+        return { value, label: humanizeClarificationOption(value) };
+      })
+      .filter((v) => v.value);
 
     const repeatedField = String(compiledPlan?.clarification_field || "selection");
     const alreadyResolved = (clarificationState?.resolvedAnswers || []).find((a) => String(a?.field || "") === repeatedField);
@@ -241,10 +261,10 @@ export async function chatQueryV3(req, res) {
         options,
       });
       return res.json({
-        answer: `${clarificationQuestion}\n${options.map((o, i) => `${i + 1}. ${o.value}`).join("\n")}`,
+        answer: `${clarificationQuestion}\n${options.map((o, i) => `${i + 1}. ${o.label}`).join("\n")}`,
         actions: { reset_filters: false, filters: [], chart: null },
         preview_rows: [],
-        meta: { phase: "clarification_required", options: options.map((o) => o.value) },
+        meta: { phase: "clarification_required", options: options.map((o) => ({ value: o.value, label: o.label })) },
       });
     }
   } else if (!compiledPlan?.ok) {

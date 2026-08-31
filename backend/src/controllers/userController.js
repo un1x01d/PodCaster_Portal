@@ -420,7 +420,7 @@ export async function listUsers(req, res) {
         }
     } catch (e) {
         console.error("listUsers error:", e);
-        res.status(500).json({ error: "user_create_failed", details: { message: String(e?.message || "user_create_failed") } });
+        res.status(500).json({ error: "users_list_failed", details: { message: String(e?.message || "users_list_failed") } });
     }
 }
 
@@ -498,7 +498,7 @@ export async function createUser(req, res) {
         res.json(payload);
     } catch (e) {
         if (String(e).includes("unique constraint")) return res.status(400).json({ error: "Email exists" });
-        res.status(500).json({ error: "users_list_failed", details: { message: String(e?.message || "users_list_failed") } });
+        res.status(500).json({ error: "user_create_failed", details: { message: String(e?.message || "user_create_failed") } });
     }
 }
 
@@ -3159,7 +3159,6 @@ export async function toggleGroupAdmin(req, res) {
             const client = await getClient();
             try {
                 await client.query("BEGIN");
-                await client.query("UPDATE user_groups SET is_admin = FALSE WHERE group_id = $1", [numericGroupId]);
                 await client.query("UPDATE user_groups SET is_admin = TRUE WHERE group_id = $1 AND user_id = $2", [numericGroupId, numericUserId]);
                 await client.query("COMMIT");
             } catch (txErr) {

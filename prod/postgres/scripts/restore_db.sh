@@ -7,8 +7,8 @@ if [[ $# -lt 1 ]]; then
 fi
 
 DUMP_FILE="$1"
-DB_NAME="${2:-podcaster_portal}"
-DB_USER="${3:-postgres}"
+DB_NAME="${2:-tforn_insights_db}"
+DB_USER="${3:-tforn_insights}"
 
 if [[ ! -f "${DUMP_FILE}" ]]; then
   echo "Dump file not found: ${DUMP_FILE}"

@@ -1,4 +1,4 @@
-# PodCaster Portal baseline tuning for 2 CPU / 6 GB RAM VPS
+# TFORN Insights baseline tuning for 2 CPU / 6 GB RAM VPS
 # Apply to /etc/postgresql/<major>/main/postgresql.conf (append) and restart.
 
 listen_addresses = '127.0.0.1'

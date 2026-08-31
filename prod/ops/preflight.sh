@@ -34,11 +34,11 @@ source "${RELEASE_ENV}"
 [[ -n "${FRONTEND_IMAGE_REPO:-}" ]] || fail "FRONTEND_IMAGE_REPO missing in release.env"
 ok "release image repos are configured"
 
-grep -q '^DB_HOST=' "${BACKEND_ENV}" || fail "DB_HOST is missing in backend.env"
-grep -q '^DB_PORT=' "${BACKEND_ENV}" || fail "DB_PORT is missing in backend.env"
-grep -q '^DB_NAME=' "${BACKEND_ENV}" || fail "DB_NAME is missing in backend.env"
-grep -q '^DB_USER=' "${BACKEND_ENV}" || fail "DB_USER is missing in backend.env"
-grep -q '^DB_PASSWORD=' "${BACKEND_ENV}" || fail "DB_PASSWORD is missing in backend.env"
+grep -q '^POSTGRES_HOST=' "${BACKEND_ENV}" || fail "POSTGRES_HOST is missing in backend.env"
+grep -q '^POSTGRES_PORT=' "${BACKEND_ENV}" || fail "POSTGRES_PORT is missing in backend.env"
+grep -q '^POSTGRES_DB=' "${BACKEND_ENV}" || fail "POSTGRES_DB is missing in backend.env"
+grep -q '^POSTGRES_USER=' "${BACKEND_ENV}" || fail "POSTGRES_USER is missing in backend.env"
+grep -q '^POSTGRES_PASSWORD=' "${BACKEND_ENV}" || fail "POSTGRES_PASSWORD is missing in backend.env"
 ok "backend DB env keys present"
 
 if ! nginx -t >/dev/null 2>&1; then

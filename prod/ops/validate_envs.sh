@@ -35,13 +35,13 @@ check_file "$BACKEND_ENV"
 check_file "$FRONTEND_ENV"
 check_file "$RELEASE_ENV"
 
-check_kv "$BACKEND_ENV" DB_HOST
-check_kv "$BACKEND_ENV" DB_PORT
-check_kv "$BACKEND_ENV" DB_NAME
-check_kv "$BACKEND_ENV" DB_USER
-check_kv "$BACKEND_ENV" DB_PASSWORD
+check_kv "$BACKEND_ENV" POSTGRES_HOST
+check_kv "$BACKEND_ENV" POSTGRES_PORT
+check_kv "$BACKEND_ENV" POSTGRES_DB
+check_kv "$BACKEND_ENV" POSTGRES_USER
+check_kv "$BACKEND_ENV" POSTGRES_PASSWORD
 check_kv "$BACKEND_ENV" JWT_SECRET
-check_not_placeholder "$BACKEND_ENV" DB_PASSWORD
+check_not_placeholder "$BACKEND_ENV" POSTGRES_PASSWORD
 check_not_placeholder "$BACKEND_ENV" JWT_SECRET
 
 check_kv "$RELEASE_ENV" BACKEND_IMAGE_REPO

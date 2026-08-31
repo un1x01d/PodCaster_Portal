@@ -5,6 +5,10 @@ dist
 .DS_Store
 .env
 .env*.local
+prod/docker/config/backend.env
+prod/docker/config/frontend.env
+prod/docker/config/release.env
+prod/releases/current_release.env
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

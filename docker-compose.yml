@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:15
+    image: postgres:18
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-tforn_insights}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tforn_insights_pass}

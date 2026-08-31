@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BACKUP_DIR="${BACKUP_DIR:-/var/backups/podcaster-postgres}"
-DB_NAME="${DB_NAME:-podcaster_portal}"
-DB_USER="${DB_USER:-postgres}"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/tforn-insights-postgres}"
+DB_NAME="${DB_NAME:-tforn_insights_db}"
+DB_USER="${DB_USER:-tforn_insights}"
 RETENTION_DAYS="${RETENTION_DAYS:-14}"
 
 mkdir -p "${BACKUP_DIR}"

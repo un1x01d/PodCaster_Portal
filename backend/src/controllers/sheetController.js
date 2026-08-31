@@ -5389,11 +5389,14 @@ export async function deleteSheet(req, res) {
                 const sets = [];
                 if (importJobsHasImportId) sets.push("import_id = NULL");
                 if (importJobsHasSheetId) sets.push("sheet_id = NULL");
+                const predicates = [];
+                if (importJobsHasImportId) predicates.push("import_id = ANY($1::int[])");
+                if (importJobsHasSheetId) predicates.push("sheet_id = $2");
                 await client.query(
                     `UPDATE import_jobs
                         SET ${sets.join(", ")}
-                      WHERE import_id = ANY($1::int[])`,
-                    [importIds]
+                      WHERE ${predicates.join(" OR ")}`,
+                    importJobsHasSheetId ? [importIds, id] : [importIds]
                 );
             }
             await client.query("DELETE FROM report_source_imports WHERE id = ANY($1::int[])", [importIds]);

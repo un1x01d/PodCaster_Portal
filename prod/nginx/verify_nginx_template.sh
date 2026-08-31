@@ -6,7 +6,8 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
-TEMPLATE="/home/zed/git/tforn/PodCaster_Portal/prod/nginx/nginx_site.conf"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TEMPLATE="${SCRIPT_DIR}/nginx_site.conf"
 if [[ ! -f "${TEMPLATE}" ]]; then
   echo "Template not found: ${TEMPLATE}"
   exit 1

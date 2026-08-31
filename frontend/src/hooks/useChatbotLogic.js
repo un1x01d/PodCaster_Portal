@@ -209,7 +209,24 @@ function getInitialSystemMessage(copy = {}) {
 }
 
 function restoreMessagesFromStorage(key) {
-  return null;
+  if (!key || typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((message) => message && (message.type === "user" || message.type === "bot"))
+      .slice(-100)
+      .map((message) => ({
+        ...message,
+        text: String(message.text || "").slice(0, 12000),
+        timestamp: message.timestamp ? new Date(message.timestamp) : new Date(),
+      }))
+      .filter((message) => message.text.trim());
+  } catch (_) {
+    return [];
+  }
 }
 
 export function useChatbotLogic({
@@ -244,17 +261,7 @@ export function useChatbotLogic({
   const prevSheetRef = useRef(sheetId);
   const prevTabRef = useRef(activeTab);
   const prevLocaleRef = useRef(locale);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    try {
-      Object.keys(window.localStorage)
-        .filter((key) => key.startsWith("dashboardChat:"))
-        .forEach((key) => window.localStorage.removeItem(key));
-    } catch (_) {
-      // no-op: private mode or locked-down storage
-    }
-  }, []);
+  const persistedChatKeyRef = useRef("");
 
   useEffect(() => {
     // Only reset if it's a real change, not the initial mount
@@ -283,6 +290,28 @@ export function useChatbotLogic({
       setMessages(restored && restored.length ? restored : [getInitialSystemMessage(copy)]);
     }
   }, [headers, messages.length, sheetId, activeTab, copy.chatInitialMessage]);
+
+  useEffect(() => {
+    const key = makeChatStorageKey(sheetId, activeTab);
+    if (!key || !messages.length || typeof window === "undefined") return;
+    if (persistedChatKeyRef.current !== key) {
+      // The sheet/tab restore effect runs before the next render. Do not copy
+      // the previous context's messages into the new context's storage key.
+      persistedChatKeyRef.current = key;
+      return;
+    }
+    try {
+      const persisted = messages.slice(-100).map((message) => ({
+        ...message,
+        timestamp: message.timestamp instanceof Date
+          ? message.timestamp.toISOString()
+          : message.timestamp || new Date().toISOString(),
+      }));
+      window.localStorage.setItem(key, JSON.stringify(persisted));
+    } catch (_) {
+      // no-op: private mode, quota, or locked-down storage
+    }
+  }, [messages, sheetId, activeTab]);
 
   // Update initial message when copy/language changes
   useEffect(() => {

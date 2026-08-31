@@ -8,8 +8,8 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKUP_SCRIPT="${SCRIPT_DIR}/backup_db.sh"
-LOG_FILE="/var/log/podcaster-db-backup.log"
-CRON_FILE="/etc/cron.d/podcaster-db-backup"
+LOG_FILE="/var/log/tforn-insights-db-backup.log"
+CRON_FILE="/etc/cron.d/tforn-insights-db-backup"
 CRON_SCHEDULE="${CRON_SCHEDULE:-30 2 * * *}"
 RUN_AS_USER="${RUN_AS_USER:-postgres}"
 

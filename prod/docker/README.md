@@ -28,5 +28,5 @@ PostgreSQL remains on the VPS host.
 
 ## Host PostgreSQL
 
-- Set backend DB host to `host.docker.internal`.
+- Set backend `POSTGRES_HOST` to `host.docker.internal`.
 - Compose includes `extra_hosts: host.docker.internal:host-gateway` for Linux.

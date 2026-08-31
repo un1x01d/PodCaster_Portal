@@ -734,6 +734,7 @@ export async function initDb(targetPool = pool, options = {}) {
   await db.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS tabs JSONB DEFAULT '[]'::jsonb;`);
   await db.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS display_name TEXT;`);
   await db.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS report_source_id INT;`);
+  await db.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS group_id INT;`);
   await db.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS source_version INT;`);
   await db.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS business_classification JSONB NOT NULL DEFAULT '{}'::jsonb;`);
   await db.query(`ALTER TABLE sheets ADD COLUMN IF NOT EXISTS business_classification_model TEXT;`);

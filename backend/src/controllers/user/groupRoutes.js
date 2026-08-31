@@ -488,7 +488,6 @@ async function toggleGroupAdmin(req, res) {
             const client = await getClient();
             try {
                 await client.query("BEGIN");
-                await client.query("UPDATE user_groups SET is_admin = FALSE WHERE group_id = $1", [numericGroupId]);
                 await client.query("UPDATE user_groups SET is_admin = TRUE WHERE group_id = $1 AND user_id = $2", [numericGroupId, numericUserId]);
                 await client.query("COMMIT");
             } catch (txErr) {

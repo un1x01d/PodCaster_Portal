@@ -1,5 +1,25 @@
 # Production Deployment Runbook
 
+For the single-VPS deployment, run the bootstrap entrypoint as root:
+
+```bash
+sudo DOMAIN=app.example.com \
+  SSL_CERT_PATH=/etc/ssl/tforn/fullchain.pem \
+  SSL_KEY_PATH=/etc/ssl/tforn/privkey.pem \
+  bash prod/deploy-prod.sh
+```
+
+It installs Docker, Nginx, PostgreSQL 18, Certbot, and required packages;
+creates local production configuration (generating missing secrets),
+bootstraps the database, builds both images, starts Compose, and configures
+HTTPS using the supplied certificate and key files. Set
+`POSTGRES_PASSWORD`, `JWT_SECRET`, `SETTINGS_CRYPTO_KEY`, or `TAG` in the
+environment to provide explicit values. The certificate and key must already
+exist on the VPS; Certbot/Let’s Encrypt is not used.
+
+The Cloud Run procedure is historical reference only and is not used by
+`prod/deploy-prod.sh`.
+
 This file is the production source of truth for taking TFORN Insights from local/dev into a real customer-facing deployment.
 
 Current status: **No-Go until the launch gates below are closed.**
@@ -46,7 +66,7 @@ Minimum practical VM shape for the app tier:
 
 Database baseline:
 
-- Managed PostgreSQL 15+ or compatible.
+- Managed PostgreSQL 18+ or compatible.
 - Private IP only.
 - 4 vCPU / 8-16 GB RAM for production-like imports and dashboard workloads.
 - SSD storage with autoscaling enabled if available.

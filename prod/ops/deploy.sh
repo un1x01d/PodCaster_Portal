@@ -14,7 +14,7 @@ TAG="${1:-}"
 SKIP_PULL="${SKIP_PULL:-false}"
 RUN_MIGRATIONS="${RUN_MIGRATIONS:-true}"
 RUN_SMOKE_TEST="${RUN_SMOKE_TEST:-true}"
-MIGRATION_COMMAND="${MIGRATION_COMMAND:-node backend/scripts/check_db.js}"
+MIGRATION_COMMAND="${MIGRATION_COMMAND:-node scripts/migrateTenantDatabases.js}"
 
 fail() {
   echo "[deploy] FAIL: $1" >&2
@@ -33,7 +33,7 @@ source "${RELEASE_ENV}"
 [[ -n "${BACKEND_IMAGE_REPO:-}" ]] || fail "BACKEND_IMAGE_REPO missing"
 [[ -n "${FRONTEND_IMAGE_REPO:-}" ]] || fail "FRONTEND_IMAGE_REPO missing"
 
-"${PRECHECK}"
+RELEASE_TAG="${TAG}" "${PRECHECK}"
 
 if [[ "${SKIP_PULL}" != "true" ]]; then
   echo "[deploy] pulling images for tag ${TAG}"
@@ -55,7 +55,7 @@ RELEASE_TAG="${TAG}" docker compose -f "${COMPOSE_FILE}" --env-file "${RELEASE_E
 echo "[deploy] waiting for services to settle"
 sleep 3
 
-"${HEALTHCHECK}"
+RELEASE_TAG="${TAG}" "${HEALTHCHECK}"
 
 if [[ "${RUN_SMOKE_TEST}" == "true" ]]; then
   "${SMOKE_TEST}" || fail "smoke test failed"
