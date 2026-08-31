@@ -41,9 +41,11 @@ grep -q '^POSTGRES_USER=' "${BACKEND_ENV}" || fail "POSTGRES_USER is missing in 
 grep -q '^POSTGRES_PASSWORD=' "${BACKEND_ENV}" || fail "POSTGRES_PASSWORD is missing in backend.env"
 ok "backend DB env keys present"
 
-if ! nginx -t >/dev/null 2>&1; then
+NGINX_TEST_OUTPUT="$(nginx -t 2>&1)" || {
+  echo "${NGINX_TEST_OUTPUT}" >&2
   fail "nginx config test failed"
-fi
+}
+echo "${NGINX_TEST_OUTPUT}"
 ok "nginx config test passed"
 
 if ! systemctl is-active --quiet postgresql; then
