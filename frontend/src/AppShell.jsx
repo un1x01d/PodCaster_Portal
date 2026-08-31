@@ -9,6 +9,7 @@ import ChangePasswordModal from "./components/common/ChangePasswordModal";
 import SourceProviderIcon from "./components/common/SourceProviderIcon";
 import { useDashboardI18n } from "./hooks/useDashboardI18n";
 import { looksLikeDateColumn } from "./utils/dateColumns";
+import { fmtDateOnly } from "./utils/formatting";
 
 import Icon from "./components/common/Icon";
 import Badge from "./components/common/Badge";
