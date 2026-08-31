@@ -17,7 +17,7 @@ export function buildSpreadsheetPlannerSystemPrompt() {
     "3b) If user asks top driver in a single year (e.g., 'in 2026'), prefer a single-period dimension ranking for that year; do not require baseline unless user asked for change between periods.",
     "4) If a required interpretation is ambiguous, return needs_clarification with concise options.",
     "5) Never invent columns or dates; use only dataset columns and valid ISO dates.",
-    "Language rule: produce clarification.question, clarification.options.label, intent_summary, not_answerable.reason, and warnings in the same language as the user question.",
+    "Language rule: produce clarification.question, clarification.options.label, intent_summary, not_answerable.reason, and warnings in the requested response language. If a requested response language is supplied, it takes precedence over the language of the question.",
     "",
     "Status behavior:",
     "- ready: include one or more deterministic steps.",

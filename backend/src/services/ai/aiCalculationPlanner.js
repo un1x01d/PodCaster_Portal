@@ -178,6 +178,7 @@ export async function generateStructuredCalculationPlan({
 
   const userPayload = {
     question: String(question || ""),
+    requested_response_language: String(runtime?.locale || "en"),
     dataset_context: datasetContext,
     allowed_operations: Array.isArray(allowedOperations) ? allowedOperations : [],
     conversation_history: Array.isArray(conversationHistory) ? conversationHistory.slice(-8) : [],

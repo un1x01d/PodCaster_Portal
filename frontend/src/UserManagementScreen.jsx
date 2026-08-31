@@ -4024,7 +4024,7 @@ export default function UserManagement({ token, user, sheetId }) {
                         </button>
                         <button
                           type="button"
-                          className="password-reset-trigger relative z-30 min-h-[28px] min-w-[68px] px-3 py-1 text-xs font-bold leading-none rounded-md border border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100 cursor-pointer pointer-events-auto"
+                          className="password-reset-trigger p-1.5 text-slate-300 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
                           onClick={(e) => {
                             e.stopPropagation();
                             openPasswordResetModal(m.id, displayNameForUser(full));
@@ -4994,7 +4994,7 @@ export default function UserManagement({ token, user, sheetId }) {
                       )}
                         <button
                           type="button"
-                          className="password-reset-trigger relative z-30 min-h-[28px] min-w-[68px] px-3 py-1 text-xs font-bold leading-none rounded-md border border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100 cursor-pointer pointer-events-auto"
+                          className="password-reset-trigger p-1.5 text-slate-300 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
                           onClick={(e) => {
                             e.stopPropagation();
                             openPasswordResetModal(m.id, m.email || "this user");

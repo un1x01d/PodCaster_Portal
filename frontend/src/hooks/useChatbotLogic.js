@@ -332,13 +332,21 @@ export function useChatbotLogic({
   // Translate existing messages when locale changes (except English)
   useEffect(() => {
     const normalizedLocale = String(locale || "").toLowerCase();
-    if (!normalizedLocale || normalizedLocale.startsWith("en")) return;
-    if (!messages.length) return;
-
-    // We only translate if the locale actually changed from what's currently in messages
-    // To keep it simple and avoid loops, we check a ref
     if (prevLocaleRef.current === locale) return;
     prevLocaleRef.current = locale;
+
+    // English is the canonical chat language. Existing messages may have been
+    // translated from another locale, and the translation endpoint intentionally
+    // returns English input unchanged, so clear stale translated history when
+    // switching back to English instead of leaving the chat visibly in Spanish.
+    if (!normalizedLocale || normalizedLocale.startsWith("en")) {
+      setMessages([getInitialSystemMessage({
+        ...copy,
+        chatInitialMessage: copy.chatInitialMessage || "Ask about what changed, why it changed, top drivers, and year-over-year differences in this dataset.",
+      })]);
+      return;
+    }
+    if (!messages.length) return;
 
     const items = messages
       .filter(m => !m.isSystem) // System message is already handled above
