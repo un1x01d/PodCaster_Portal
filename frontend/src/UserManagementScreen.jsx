@@ -4011,8 +4011,9 @@ export default function UserManagement({ token, user, sheetId }) {
                         </span>
                         {m.is_admin && <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded border border-emerald-200 text-emerald-700 bg-emerald-50">Admin</span>}
                       </div>
-                      <div className="flex items-center gap-0.5 shrink-0">
+                      <div className="relative z-20 flex items-center gap-1 shrink-0 pointer-events-auto">
                         <button
+                          type="button"
                           className="gm-action-btn h-[14px] min-w-[28px] px-1 leading-none text-[5px] font-semibold rounded-sm border border-slate-300 text-slate-600 hover:bg-slate-100"
                           onClick={(e) => {
                             e.stopPropagation();
@@ -4023,7 +4024,7 @@ export default function UserManagement({ token, user, sheetId }) {
                         </button>
                         <button
                           type="button"
-                          className="password-reset-trigger gm-action-btn h-[14px] min-w-[30px] px-1 leading-none text-[5px] font-semibold rounded-sm border border-amber-200 text-amber-700 hover:bg-amber-50"
+                          className="password-reset-trigger relative z-30 min-h-[28px] min-w-[68px] px-3 py-1 text-xs font-bold leading-none rounded-md border border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100 cursor-pointer pointer-events-auto"
                           onClick={(e) => {
                             e.stopPropagation();
                             openPasswordResetModal(m.id, displayNameForUser(full));
@@ -4033,6 +4034,7 @@ export default function UserManagement({ token, user, sheetId }) {
                         </button>
                         {canManageGroupAdmins && (
                           <button
+                            type="button"
                             className="gm-action-btn h-[14px] min-w-[34px] px-1 leading-none text-[5px] font-semibold rounded-sm border border-slate-300 text-slate-600 hover:bg-slate-100"
                             onClick={(e) => { e.stopPropagation(); toggleGroupAdmin(m.id, m.is_admin); }}
                           >
@@ -4040,6 +4042,7 @@ export default function UserManagement({ token, user, sheetId }) {
                           </button>
                         )}
                         <button
+                          type="button"
                           className="gm-action-btn h-[14px] min-w-[30px] px-1 leading-none text-[5px] font-semibold rounded-sm border border-red-200 text-red-600 hover:bg-red-50"
                           onClick={(e) => { e.stopPropagation(); removeUserFromGroup(m.id); }}
                         >
@@ -4975,7 +4978,7 @@ export default function UserManagement({ token, user, sheetId }) {
                         <div className="text-[8px] font-black text-amber-500 uppercase tracking-widest bg-amber-50 px-1.5 py-0.5 rounded-md border border-amber-100">Admin</div>
                       )}
                     </div>
-                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div className="relative z-20 flex items-center gap-1 transition-opacity pointer-events-auto">
                       {canManageGroupAdmins && (
                         <button
                           onClick={() => toggleGroupAdmin(m.id, m.is_admin)}
@@ -4991,7 +4994,7 @@ export default function UserManagement({ token, user, sheetId }) {
                       )}
                         <button
                           type="button"
-                          className="password-reset-trigger p-1.5 text-slate-300 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
+                          className="password-reset-trigger relative z-30 min-h-[28px] min-w-[68px] px-3 py-1 text-xs font-bold leading-none rounded-md border border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100 cursor-pointer pointer-events-auto"
                           onClick={(e) => {
                             e.stopPropagation();
                             openPasswordResetModal(m.id, m.email || "this user");
