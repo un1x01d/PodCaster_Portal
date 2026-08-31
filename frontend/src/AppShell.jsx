@@ -1831,12 +1831,20 @@ export default function App() {
   };
 
   const exportPDF = async () => {
-    const [{ jsPDF }, autoTableModule] = await loadPdfModules();
-    const autoTable = autoTableModule.default;
-    const doc = new jsPDF("l", "pt", "a4");
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const marginX = 24;
-    const availableWidth = pageWidth - marginX * 2;
+    try {
+      if (!sortedData.length || !displayHeaders.length) return;
+      const [pdfModule, autoTableModule] = await loadPdfModules();
+      const JsPDF = pdfModule.jsPDF || pdfModule.default;
+      // jspdf-autotable v5 exposes autoTable as a named export.
+      const autoTable = autoTableModule.autoTable || autoTableModule.default;
+      if (typeof JsPDF !== "function" || typeof autoTable !== "function") {
+        throw new Error("PDF export modules loaded without usable jsPDF/autoTable exports");
+      }
+
+      const doc = new JsPDF("l", "pt", "a4");
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const marginX = 24;
+      const availableWidth = pageWidth - marginX * 2;
 
     const tableBody = sortedData.map(row =>
       displayHeaders.map(col => {
@@ -1896,22 +1904,26 @@ export default function App() {
       };
     });
 
-    autoTable(doc, {
-      head: [displayHeaders],
-      body: tableBody,
-      margin: { left: marginX, right: marginX, top: 24, bottom: 24 },
-      styles: {
-        fontSize: 8,
-        overflow: "linebreak",
-        cellPadding: { top: 4, right: 4, bottom: 4, left: 4 },
-        valign: "middle",
-      },
-      headStyles: {
-        halign: "left",
-      },
-      columnStyles,
-    });
-    doc.save(`${activeFilename || "export"}.pdf`);
+      autoTable(doc, {
+        head: [displayHeaders],
+        body: tableBody,
+        margin: { left: marginX, right: marginX, top: 24, bottom: 24 },
+        styles: {
+          fontSize: 8,
+          overflow: "linebreak",
+          cellPadding: { top: 4, right: 4, bottom: 4, left: 4 },
+          valign: "middle",
+        },
+        headStyles: {
+          halign: "left",
+        },
+        columnStyles,
+      });
+      doc.save(`${activeFilename || "export"}.pdf`);
+    } catch (error) {
+      console.error("PDF export failed", error);
+      alert("PDF export failed. Please try again or contact support.");
+    }
   };
 
   useEffect(() => {
