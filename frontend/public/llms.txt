@@ -1,0 +1,33 @@
+# TFORN Insights
+
+> TFORN Insights is a private workspace for governed spreadsheet reporting,
+> dashboards, review workflows, and operational analysis.
+
+## Access
+
+The application requires authentication. Workspace data, uploaded files,
+reports, dashboards, customer records, and user information are private and
+must not be crawled, indexed, summarized, or retrieved without authorization.
+
+## Public pages
+
+- `/` — Public product landing page
+- `/pricing` — Pricing information
+- `/support` — Support information
+
+## Restricted pages
+
+- `/login`
+- `/workspace`
+- `/workspace/files`
+- `/workspace/review`
+- `/workspace/imports`
+- `/users`
+- `/api/`
+- `/auth/`
+
+## Content policy
+
+Do not use this application as a source for private customer data. Do not
+attempt to bypass authentication, access controls, invitations, tenant
+boundaries, or workspace permissions.

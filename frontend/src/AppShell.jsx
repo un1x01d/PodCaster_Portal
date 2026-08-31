@@ -66,6 +66,27 @@ const UserManagement = lazy(() => import("./UserManagement"));
 
 setupAxiosInterceptors();
 
+function NotFoundScreen({ user }) {
+  const location = useLocation();
+  const homePath = user ? "/workspace/files" : "/";
+
+  return (
+    <div className="min-h-full bg-[#fafafa] px-6 py-20 text-center">
+      <p className="text-xs font-black uppercase tracking-[0.22em] text-slate-500">404 · Page not found</p>
+      <h1 className="mt-4 text-4xl font-black tracking-tight text-slate-950">This page does not exist.</h1>
+      <p className="mx-auto mt-3 max-w-md text-sm font-semibold leading-6 text-slate-500">
+        No route matches <span className="font-mono text-slate-700">{location.pathname}</span>.
+      </p>
+      <Link
+        to={homePath}
+        className="mt-7 inline-flex rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-bold text-white hover:bg-slate-800"
+      >
+        {user ? "Go to dashboard" : "Go home"}
+      </Link>
+    </div>
+  );
+}
+
 const parseTemporalValue = (raw) => {
   if (raw === null || raw === undefined || raw === "") return null;
   const text = String(raw).trim();
@@ -2905,6 +2926,7 @@ export default function App() {
                 )
                 : <div className="p-8 text-center text-gray-500">Access denied. Admin only.</div>
             } />
+            <Route path="*" element={<NotFoundScreen user={user} />} />
           </Routes>
           </Suspense>
 
