@@ -41,7 +41,12 @@ grep -q '^POSTGRES_USER=' "${BACKEND_ENV}" || fail "POSTGRES_USER is missing in 
 grep -q '^POSTGRES_PASSWORD=' "${BACKEND_ENV}" || fail "POSTGRES_PASSWORD is missing in backend.env"
 ok "backend DB env keys present"
 
-NGINX_TEST_OUTPUT="$(nginx -t 2>&1)" || {
+NGINX_TEST_CMD=(nginx -t)
+if [[ "${EUID}" -ne 0 ]]; then
+  command -v sudo >/dev/null 2>&1 || fail "nginx config test requires root privileges or sudo"
+  NGINX_TEST_CMD=(sudo nginx -t)
+fi
+NGINX_TEST_OUTPUT="$("${NGINX_TEST_CMD[@]}" 2>&1)" || {
   echo "${NGINX_TEST_OUTPUT}" >&2
   fail "nginx config test failed"
 }
