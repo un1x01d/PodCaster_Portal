@@ -581,7 +581,6 @@ export default function DashboardBody(props) {
     storageProviderMeta,
     anyStoragePickerOpen,
     toggleReportSourceAutosync,
-    toggleMenu,
     setStoragePicker,
     resetStoragePicker,
     fetchStorageEntries,
@@ -2232,7 +2231,12 @@ export default function DashboardBody(props) {
 
                         {!importsOnly && (
                         <div className="left-menu-group">
-                            <button className="left-menu-section-toggle" onClick={() => toggleMenu("charts")} aria-expanded={expandedMenus.charts}>
+                            <button
+                                type="button"
+                                className="left-menu-section-toggle"
+                                onClick={() => setExpandedMenus((prev) => ({ ...prev, charts: !prev.charts }))}
+                                aria-expanded={expandedMenus.charts}
+                            >
                                 <span>Charts and Tools</span>
                                 <span>{expandedMenus.charts ? "▾" : "▸"}</span>
                             </button>
@@ -2279,7 +2283,12 @@ export default function DashboardBody(props) {
 
                         {!importsOnly && (
                         <div className="left-menu-group">
-                            <button className="left-menu-section-toggle" onClick={() => toggleMenu("export")} aria-expanded={expandedMenus.export}>
+                            <button
+                                type="button"
+                                className="left-menu-section-toggle"
+                                onClick={() => setExpandedMenus((prev) => ({ ...prev, export: !prev.export }))}
+                                aria-expanded={expandedMenus.export}
+                            >
                                 <span>Export</span>
                                 <span>{expandedMenus.export ? "▾" : "▸"}</span>
                             </button>
