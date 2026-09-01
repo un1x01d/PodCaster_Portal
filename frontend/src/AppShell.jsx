@@ -1,6 +1,8 @@
 import React, { Suspense, lazy, useState, useEffect, useRef, useMemo } from "react";
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate } from "react-router-dom";
 import axios from "axios";
+import { jsPDF } from "jspdf";
+import { autoTable } from "jspdf-autotable";
 
 import ErrorBoundary from "./ErrorBoundary";
 import DashboardHeader from "./components/dashboard/DashboardHeader";
@@ -146,20 +148,12 @@ const formatBytes = (bytes) => {
 };
 
 let xlsxModulePromise = null;
-let pdfModulesPromise = null;
 
 async function loadXlsxModule() {
   if (!xlsxModulePromise) {
     xlsxModulePromise = import("xlsx");
   }
   return xlsxModulePromise;
-}
-
-async function loadPdfModules() {
-  if (!pdfModulesPromise) {
-    pdfModulesPromise = Promise.all([import("jspdf"), import("jspdf-autotable")]);
-  }
-  return pdfModulesPromise;
 }
 
 function ScrollToHash() {
@@ -1054,10 +1048,11 @@ export default function App() {
         setSecondaryHasMoreData(true);
       }
     }
-    if (append) {
-        if (isPrimary) setIsBatchLoading(true);
-        else setSecondaryIsBatchLoading(true);
-    }
+    // Mark every request as loading, including the initial sheet load and
+    // explicit reloads. Previously this only covered infinite-scroll batches,
+    // leaving the sheet area blank with no progress feedback on first load.
+    if (isPrimary) setIsBatchLoading(true);
+    else setSecondaryIsBatchLoading(true);
 
     try {
       const params = new URLSearchParams();
@@ -1834,15 +1829,7 @@ export default function App() {
   const exportPDF = async () => {
     try {
       if (!sortedData.length || !displayHeaders.length) return;
-      const [pdfModule, autoTableModule] = await loadPdfModules();
-      const JsPDF = pdfModule.jsPDF || pdfModule.default;
-      // jspdf-autotable v5 exposes autoTable as a named export.
-      const autoTable = autoTableModule.autoTable || autoTableModule.default;
-      if (typeof JsPDF !== "function" || typeof autoTable !== "function") {
-        throw new Error("PDF export modules loaded without usable jsPDF/autoTable exports");
-      }
-
-      const doc = new JsPDF("l", "pt", "a4");
+      const doc = new jsPDF("l", "pt", "a4");
       const pageWidth = doc.internal.pageSize.getWidth();
       const marginX = 24;
       const availableWidth = pageWidth - marginX * 2;

@@ -492,8 +492,11 @@ export default function ChatHistory({ sheetId = null, messages, copy = DASHBOARD
                     queue.push(part);
                     flushQueue();
                     if (!started) {
+                        // Do not swallow autoplay/playback failures. If the
+                        // browser rejects this async playback, handleSpeak()
+                        // can use the browser speech-synthesis fallback.
+                        await audio.play();
                         started = true;
-                        audio.play().catch(() => {});
                     }
                 }
             }
